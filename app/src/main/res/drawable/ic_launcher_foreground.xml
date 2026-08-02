@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Camera lens icon -->
+    <path
+        android:fillColor="#FFD700"
+        android:pathData="M54,30 C40.7,30 30,40.7 30,54 C30,67.3 40.7,78 54,78 C67.3,78 78,67.3 78,54 C78,40.7 67.3,30 54,30 Z M54,72 C44.1,72 36,63.9 36,54 C36,44.1 44.1,36 54,36 C63.9,36 72,44.1 72,54 C72,63.9 63.9,72 54,72 Z" />
+    <path
+        android:fillColor="#FFD700"
+        android:pathData="M54,42 C47.4,42 42,47.4 42,54 C42,60.6 47.4,66 54,66 C60.6,66 66,60.6 66,54 C66,47.4 60.6,42 54,42 Z M54,60 C50.7,60 48,57.3 48,54 C48,50.7 50.7,48 54,48 C57.3,48 60,50.7 60,54 C60,57.3 57.3,60 54,60 Z" />
+    <!-- Connection signal arcs -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M74,34 L78,30 C72,24 64,20 54,20 L54,26 C62,26 69,29 74,34 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,74 L30,78 C36,84 44,88 54,88 L54,82 C46,82 39,79 34,74 Z" />
+</vector>

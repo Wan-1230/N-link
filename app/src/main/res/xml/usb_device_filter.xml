@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 尼康相机 USB 设备过滤器 -->
+<!-- VID 0x04B0 = Nikon Corporation -->
+<resources>
+    <usb-device vendor-id="1200" />
+</resources>

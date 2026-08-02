@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NikonLink</string>
+    <string name="notification_channel_connection">连接状态</string>
+    <string name="notification_channel_transfer">文件传输</string>
+    <string name="notification_connection_title">NikonLink 已连接</string>
+    <string name="notification_connection_text_ble">BLE 已连接</string>
+    <string name="notification_connection_text_full">BLE + WiFi 已连接</string>
+    <string name="notification_connection_text_disconnected">未连接</string>
+    <string name="notification_transfer_title">正在传输照片</string>
+</resources>
