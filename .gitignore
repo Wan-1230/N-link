@@ -1,0 +1,62 @@
+# Built application files
+*.apk
+*.aar
+*.ap_
+*.aab
+
+# Files for the ART/Dalvik VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated files
+bin/
+gen/
+out/
+release/
+
+# Gradle files
+.gradle/
+build/
+.kotlin/
+
+# Local media / reverse-engineering material
+.tmp_bili/
+release_extract/
+
+# Local configuration file (sdk path, etc)
+local.properties
+
+# Android Studio
+*.iml
+.idea/
+.DS_Store
+
+# Log files
+*.log
+
+# Signing files
+.signing/
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.key
+
+# Environment / secrets
+.env
+*.env
+
+# Memory dumps / captures
+*.hprof
+captures/
+
+# OS-specific files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# External native build
+.cxx/
+.externalNativeBuild/

@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_liveview">
+
+    <ImageView
+        android:id="@+id/ivLiveView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="Live View"
+        android:scaleType="fitCenter" />
+
+    <View
+        android:id="@+id/viewFocusIndicator"
+        android:layout_width="60dp"
+        android:layout_height="60dp"
+        android:background="@android:drawable/ic_menu_crop"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:background="@color/liveview_scrim"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="10dp">
+
+        <TextView
+            android:id="@+id/tvLiveStatus"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="○ 已停止"
+            android:textColor="@color/white"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/tvFps"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="14dp"
+            android:text="0 fps"
+            android:textColor="@color/liveview_text"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/tvLatency"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="14dp"
+            android:text="0ms"
+            android:textColor="@color/liveview_text"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/tvZoom"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="1.0x"
+            android:textColor="@color/liveview_text"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="@color/liveview_scrim"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnStartStop"
+                android:layout_width="0dp"
+                android:layout_height="42dp"
+                android:layout_marginEnd="8dp"
+                android:layout_weight="2"
+                android:text="开始 Live View"
+                android:textSize="13sp"
+                app:backgroundTint="@color/accent"
+                app:cornerRadius="10dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnGrid"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="42dp"
+                android:layout_marginEnd="8dp"
+                android:layout_weight="1"
+                android:text="三分线"
+                android:textSize="12sp"
+                app:cornerRadius="10dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnAfCenter"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="42dp"
+                android:layout_weight="1"
+                android:text="AF"
+                android:textSize="12sp"
+                app:cornerRadius="10dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnZoomOut"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="44dp"
+                android:layout_height="38dp"
+                android:layout_marginEnd="8dp"
+                android:text="−"
+                android:textSize="16sp"
+                app:cornerRadius="10dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnZoomReset"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="wrap_content"
+                android:layout_height="38dp"
+                android:layout_marginEnd="8dp"
+                android:text="1x"
+                android:textSize="12sp"
+                app:cornerRadius="10dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnZoomIn"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="44dp"
+                android:layout_height="38dp"
+                android:text="+"
+                android:textSize="16sp"
+                app:cornerRadius="10dp" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>
