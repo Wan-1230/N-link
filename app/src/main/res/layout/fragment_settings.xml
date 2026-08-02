@@ -4,22 +4,24 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/background"
-    android:fillViewport="true">
+    android:fillViewport="true"
+    android:clipToPadding="false">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="18dp">
+        android:paddingHorizontal="20dp"
+        android:paddingTop="16dp"
+        android:paddingBottom="24dp">
 
+        <!-- 页面标题 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@drawable/bg_chip"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingHorizontal="12dp"
-            android:paddingVertical="8dp">
+            android:layout_marginBottom="20dp">
 
             <TextView
                 android:layout_width="0dp"
@@ -27,44 +29,44 @@
                 android:layout_weight="1"
                 android:text="相机参数"
                 android:textColor="@color/on_background"
-                android:letterSpacing="0.01"
-                android:textSize="22sp"
+                android:textSize="28sp"
                 android:textStyle="bold" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnLock"
                 style="@style/Widget.Material3.Button.TonalButton"
                 android:layout_width="wrap_content"
-                android:layout_height="38dp"
+                android:layout_height="36dp"
                 android:layout_marginEnd="8dp"
                 android:text="未锁定"
                 android:textSize="12sp"
-                app:cornerRadius="10dp" />
+                app:cornerRadius="18dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnRefresh"
                 style="@style/Widget.Material3.Button.TonalButton"
                 android:layout_width="wrap_content"
-                android:layout_height="38dp"
+                android:layout_height="36dp"
                 android:text="刷新"
                 android:textSize="12sp"
-                app:cornerRadius="10dp" />
+                app:cornerRadius="18dp" />
         </LinearLayout>
 
+        <!-- 参数卡片 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
             android:background="@drawable/bg_card"
-            android:paddingVertical="6dp"
-            android:orientation="vertical">
+            android:orientation="vertical"
+            android:paddingVertical="4dp">
 
+            <!-- 光圈 -->
             <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="64dp"
+                android:layout_height="68dp"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
-                android:paddingHorizontal="16dp">
+                android:paddingHorizontal="20dp">
 
                 <TextView
                     android:layout_width="0dp"
@@ -81,11 +83,11 @@
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="减小光圈"
                     android:src="@drawable/ic_arrow_down"
-                    android:tint="@color/on_surface_variant" />
+                    app:tint="@color/on_surface_variant" />
 
                 <TextView
                     android:id="@+id/tvApertureValue"
-                    android:layout_width="88dp"
+                    android:layout_width="80dp"
                     android:layout_height="wrap_content"
                     android:gravity="center"
                     android:text="--"
@@ -100,21 +102,22 @@
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="增大光圈"
                     android:src="@drawable/ic_arrow_up"
-                    android:tint="@color/on_surface_variant" />
+                    app:tint="@color/on_surface_variant" />
             </LinearLayout>
 
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
-                android:layout_marginStart="16dp"
+                android:layout_marginHorizontal="20dp"
                 android:background="@color/outline" />
 
+            <!-- 快门速度 -->
             <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="64dp"
+                android:layout_height="68dp"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
-                android:paddingHorizontal="16dp">
+                android:paddingHorizontal="20dp">
 
                 <TextView
                     android:layout_width="0dp"
@@ -131,11 +134,11 @@
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="降低快门"
                     android:src="@drawable/ic_arrow_down"
-                    android:tint="@color/on_surface_variant" />
+                    app:tint="@color/on_surface_variant" />
 
                 <TextView
                     android:id="@+id/tvShutterValue"
-                    android:layout_width="88dp"
+                    android:layout_width="80dp"
                     android:layout_height="wrap_content"
                     android:gravity="center"
                     android:text="--"
@@ -150,21 +153,22 @@
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="提高快门"
                     android:src="@drawable/ic_arrow_up"
-                    android:tint="@color/on_surface_variant" />
+                    app:tint="@color/on_surface_variant" />
             </LinearLayout>
 
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
-                android:layout_marginStart="16dp"
+                android:layout_marginHorizontal="20dp"
                 android:background="@color/outline" />
 
+            <!-- ISO -->
             <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="64dp"
+                android:layout_height="68dp"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
-                android:paddingHorizontal="16dp">
+                android:paddingHorizontal="20dp">
 
                 <TextView
                     android:layout_width="0dp"
@@ -181,11 +185,11 @@
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="降低ISO"
                     android:src="@drawable/ic_arrow_down"
-                    android:tint="@color/on_surface_variant" />
+                    app:tint="@color/on_surface_variant" />
 
                 <TextView
                     android:id="@+id/tvIsoValue"
-                    android:layout_width="88dp"
+                    android:layout_width="80dp"
                     android:layout_height="wrap_content"
                     android:gravity="center"
                     android:text="--"
@@ -200,21 +204,22 @@
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:contentDescription="提高ISO"
                     android:src="@drawable/ic_arrow_up"
-                    android:tint="@color/on_surface_variant" />
+                    app:tint="@color/on_surface_variant" />
             </LinearLayout>
 
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
-                android:layout_marginStart="16dp"
+                android:layout_marginHorizontal="20dp"
                 android:background="@color/outline" />
 
+            <!-- 白平衡 -->
             <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="56dp"
+                android:layout_height="60dp"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
-                android:paddingHorizontal="16dp">
+                android:paddingHorizontal="20dp">
 
                 <TextView
                     android:layout_width="0dp"
@@ -230,21 +235,23 @@
                     android:layout_height="wrap_content"
                     android:text="--"
                     android:textColor="@color/on_surface"
-                    android:textSize="16sp" />
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
             </LinearLayout>
 
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
-                android:layout_marginStart="16dp"
+                android:layout_marginHorizontal="20dp"
                 android:background="@color/outline" />
 
+            <!-- 对焦模式 -->
             <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="56dp"
+                android:layout_height="60dp"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
-                android:paddingHorizontal="16dp">
+                android:paddingHorizontal="20dp">
 
                 <TextView
                     android:layout_width="0dp"
@@ -260,21 +267,23 @@
                     android:layout_height="wrap_content"
                     android:text="--"
                     android:textColor="@color/on_surface"
-                    android:textSize="16sp" />
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
             </LinearLayout>
 
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
-                android:layout_marginStart="16dp"
+                android:layout_marginHorizontal="20dp"
                 android:background="@color/outline" />
 
+            <!-- 拍摄模式 -->
             <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="56dp"
+                android:layout_height="60dp"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
-                android:paddingHorizontal="16dp">
+                android:paddingHorizontal="20dp">
 
                 <TextView
                     android:layout_width="0dp"
@@ -290,21 +299,23 @@
                     android:layout_height="wrap_content"
                     android:text="--"
                     android:textColor="@color/on_surface"
-                    android:textSize="16sp" />
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
             </LinearLayout>
 
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
-                android:layout_marginStart="16dp"
+                android:layout_marginHorizontal="20dp"
                 android:background="@color/outline" />
 
+            <!-- 测光模式 -->
             <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="56dp"
+                android:layout_height="60dp"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
-                android:paddingHorizontal="16dp">
+                android:paddingHorizontal="20dp">
 
                 <TextView
                     android:layout_width="0dp"
@@ -320,8 +331,10 @@
                     android:layout_height="wrap_content"
                     android:text="--"
                     android:textColor="@color/on_surface"
-                    android:textSize="16sp" />
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
             </LinearLayout>
         </LinearLayout>
+
     </LinearLayout>
 </ScrollView>

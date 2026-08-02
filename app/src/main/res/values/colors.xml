@@ -1,39 +1,58 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 机身底色：暖石墨，不用纯黑/纯白 -->
-    <color name="page">#0E1113</color>
-    <color name="background">#0E1113</color>
-    <color name="surface">#171C20</color>
-    <color name="surface_variant">#1E2429</color>
-    <color name="panel_2">#14181B</color>
-    <color name="outline">#2A3137</color>
+    <!-- 页面底色：暖白灰，类似截图中的浅米色背景 -->
+    <color name="page">#F2F0EC</color>
+    <color name="background">#F2F0EC</color>
 
-    <!-- 墨色 -->
-    <color name="on_background">#E8E6E2</color>
-    <color name="on_surface">#E8E6E2</color>
-    <color name="on_surface_variant">#9AA1A7</color>
+    <!-- 浅色表面：用于信息卡片 -->
+    <color name="surface">#FFFFFF</color>
+    <color name="surface_variant">#F8F7F5</color>
+    <color name="panel_2">#EDEBE8</color>
+    <color name="outline">#E2DFDB</color>
 
-    <!-- 琥珀强调色，色块上用深墨保证 AA 对比 -->
-    <color name="primary">#E8A33D</color>
-    <color name="primary_variant">#C6862F</color>
-    <color name="accent">#E8A33D</color>
+    <!-- 深色卡片：用于主英雄卡片（相机连接状态） -->
+    <color name="dark_card">#1C1C1E</color>
+    <color name="dark_card_inner">#2C2C2E</color>
+    <color name="dark_card_surface">#3A3A3C</color>
+
+    <!-- 深色卡片上的文字 -->
+    <color name="on_dark_card">#FFFFFF</color>
+    <color name="on_dark_card_variant">#98989D</color>
+
+    <!-- 浅色背景上的文字 -->
+    <color name="on_background">#1C1C1E</color>
+    <color name="on_surface">#1C1C1E</color>
+    <color name="on_surface_variant">#8E8E93</color>
+
+    <!-- 琥珀强调色：状态指示、品牌色 -->
+    <color name="primary">#D4922A</color>
+    <color name="primary_variant">#B87A1F</color>
+    <color name="accent">#D4922A</color>
     <color name="accent_2">#2FD3C5</color>
-    <color name="accent_soft">#3A2C15</color>
-    <color name="on_primary">#17120A</color>
-    <color name="on_accent">#17120A</color>
+    <color name="accent_soft">#FFF3E0</color>
+    <color name="on_primary">#FFFFFF</color>
+    <color name="on_accent">#FFFFFF</color>
 
-    <!-- 快门/告警保持功能性红色，不与品牌色混用 -->
+    <!-- 功能性颜色 -->
     <color name="secondary">#E5484D</color>
     <color name="secondary_variant">#C23B40</color>
     <color name="on_secondary">#FFFFFF</color>
 
-    <color name="status_connected">#3FCB86</color>
-    <color name="status_connecting">#E8A33D</color>
-    <color name="status_disconnected">#E5484D</color>
-    <color name="ble_indicator">#2FD3C5</color>
-    <color name="wifi_indicator">#3FCB86</color>
+    <!-- 连接状态色 -->
+    <color name="status_connected">#34C759</color>
+    <color name="status_connecting">#D4922A</color>
+    <color name="status_disconnected">#8E8E93</color>
+    <color name="ble_indicator">#5AC8FA</color>
+    <color name="wifi_indicator">#34C759</color>
 
-    <color name="liveview_scrim">#D9121417</color>
-    <color name="white">#F5F3EF</color>
-    <color name="liveview_text">#CCF5F3EF</color>
+    <!-- Live View 专用 -->
+    <color name="liveview_scrim">#CC000000</color>
+    <color name="white">#FFFFFF</color>
+    <color name="liveview_text">#CCFFFFFF</color>
+
+    <!-- 底部导航 -->
+    <color name="nav_background">#FFFFFF</color>
+    <color name="nav_active_bg">#F2F0EC</color>
+    <color name="nav_active_icon">#1C1C1E</color>
+    <color name="nav_inactive_icon">#8E8E93</color>
 </resources>
