@@ -457,8 +457,8 @@ class UsbPtpManager @Inject constructor(
      * USB 有线遥控拍摄
      * PRD 2.2: 与 WiFi 遥控共用 Nikon AF/快门指令
      */
-    suspend fun afDrive(start: Boolean): Boolean {
-        val response = sendCommand(PtpConstants.OP_NIKON_AF_DRIVE, listOf(if (start) 1 else 0))
+    suspend fun afDrive(): Boolean {
+        val response = sendCommand(PtpConstants.OP_NIKON_AF_DRIVE)
         return response?.isOk ?: false
     }
 
@@ -473,12 +473,12 @@ class UsbPtpManager @Inject constructor(
     }
 
     suspend fun startMovieRecording(): Boolean {
-        val response = sendCommand(0x920A, listOf(1))
+        val response = sendCommand(PtpConstants.OP_NIKON_START_MOVIE_REC_IN_CARD)
         return response?.isOk ?: false
     }
 
     suspend fun stopMovieRecording(): Boolean {
-        val response = sendCommand(0x920A, listOf(0))
+        val response = sendCommand(PtpConstants.OP_NIKON_END_MOVIE_REC)
         return response?.isOk ?: false
     }
 
@@ -561,9 +561,13 @@ class UsbPtpManager @Inject constructor(
                     val response = sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
                     if (response == null) {
                         Timber.tag(TAG).w("USB DeviceReady failed")
+                        _usbState.value = UsbConnectionState.ERROR
+                        break
                     }
                 } catch (e: Exception) {
                     Timber.tag(TAG).w(e, "USB keep-alive failed")
+                    _usbState.value = UsbConnectionState.ERROR
+                    break
                 }
             }
         }

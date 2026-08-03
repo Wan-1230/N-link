@@ -20,7 +20,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class PtpSessionManager @Inject constructor(
-    private val identityStore: PtpIdentityStore
+    private val identityStore: PtpClientIdentity
 ) {
 
     companion object {
@@ -90,8 +90,9 @@ class PtpSessionManager @Inject constructor(
                 connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
                 soTimeout = readTimeout
                 tcpNoDelay = true
-                receiveBufferSize = 1024 * 1024  // 1MB buffer for high throughput
-                sendBufferSize = 512 * 1024
+                keepAlive = true
+                receiveBufferSize = 4 * 1024 * 1024  // mirror WMU's enlarged TCP window
+                sendBufferSize = 1024 * 1024
             }
             // WiFi 到相机端口的 TCP 连接已建立，此时相机端会进入配对确认界面
             onWifiConnected?.invoke()
@@ -120,6 +121,8 @@ class PtpSessionManager @Inject constructor(
                 connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
                 // 配对模式下相机可能等待用户按 OK，超时后由上层重试
                 soTimeout = if (pairingMode) readTimeout else 0
+                keepAlive = true
+                receiveBufferSize = 4 * 1024 * 1024
             }
             eventInput = eventSocket!!.getInputStream()
             eventOutput = eventSocket!!.getOutputStream()
@@ -364,8 +367,30 @@ class PtpSessionManager @Inject constructor(
      * PRD 2.2: 远程快门
      */
     suspend fun initiateCapture(): Boolean {
-        val response = sendCommand(PtpConstants.OP_INITIATE_CAPTURE, listOf(sessionId))
+        // ISO 15740: InitiateCapture takes storage ID and object format (both 0 = default).
+        val response = sendCommand(PtpConstants.OP_INITIATE_CAPTURE, listOf(0, 0))
         return response.isOk
+    }
+
+    /**
+     * Nikon AF drive. 0x90C1 is a no-parameter toggle (mirrors libgphoto2).
+     */
+    suspend fun afDrive(): Boolean {
+        val response = sendCommand(PtpConstants.OP_NIKON_AF_DRIVE)
+        return response.isOk
+    }
+
+    suspend fun afDriveCancel(): Boolean {
+        val response = sendCommand(PtpConstants.OP_NIKON_AF_DRIVE_CANCEL)
+        return response.isOk
+    }
+
+    suspend fun startMovieRecording(): Boolean {
+        return sendCommand(PtpConstants.OP_NIKON_START_MOVIE_REC_IN_CARD).isOk
+    }
+
+    suspend fun stopMovieRecording(): Boolean {
+        return sendCommand(PtpConstants.OP_NIKON_END_MOVIE_REC).isOk
     }
 
     /**
@@ -474,25 +499,33 @@ class PtpSessionManager @Inject constructor(
                         response.responseCode != PtpConstants.RESPONSE_DEVICE_BUSY
                     ) {
                         Timber.tag(TAG).w("DeviceReady keep-alive rejected")
-                        _sessionState.value = PtpSessionState.ERROR
+                        markLinkError()
                         break
                     }
                     eventOutput?.write(PingPacket.toBytes())
                     eventOutput?.flush()
                 } catch (e: Exception) {
                     Timber.tag(TAG).w("Keep-alive failed: ${e.message}")
-                    _sessionState.value = PtpSessionState.ERROR
+                    markLinkError()
                     break
                 }
             }
         }
     }
 
+    private fun markLinkError() {
+        keepAliveJob?.cancel()
+        eventListenerJob?.cancel()
+        closeSockets()
+        sessionId = 0
+        _sessionState.value = PtpSessionState.ERROR
+    }
+
     private fun startEventListener() {
         eventListenerJob = scope?.launch(Dispatchers.IO) {
             try {
                 while (isActive) {
-                    val packet = PtpPacket.fromStream(eventInput!!)
+                    val packet = PtpPacket.fromStream(eventInput!!) ?: break
                     if (packet is EventResponsePacket) {
                         val event = PtpEvent(
                             eventCode = packet.eventCode,
@@ -508,6 +541,7 @@ class PtpSessionManager @Inject constructor(
             } catch (e: Exception) {
                 if (isActive) {
                     Timber.tag(TAG).w("Event listener error: ${e.message}")
+                    markLinkError()
                 }
             }
         }

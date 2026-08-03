@@ -58,9 +58,18 @@ object PtpConstants {
     const val OP_NIKON_GET_LIVE_VIEW_IMAGE = 0x9203
     const val OP_NIKON_MF_DRIVE = 0x9204
     const val OP_NIKON_CHANGE_AF_AREA = 0x9205
-    const val OP_NIKON_AF_DRIVE = 0x9206
-    const val OP_NIKON_GET_CAMERA_INFO = 0x9207
+    const val OP_NIKON_AF_DRIVE = 0x90C1
+    const val OP_NIKON_AF_DRIVE_CANCEL = 0x9206
+    const val OP_NIKON_INITIATE_CAPTURE_REC_IN_MEDIA = 0x9207
+    const val OP_NIKON_START_MOVIE_REC_IN_CARD = 0x920A
+    const val OP_NIKON_END_MOVIE_REC = 0x920B
+    const val OP_NIKON_TERMINATE_CAPTURE = 0x920C
+    const val OP_NIKON_CHECK_EVENT = 0x90C7
     const val OP_NIKON_DEVICE_READY = 0x90C8
+    const val OP_NIKON_GET_PREVIEW_IMG = 0x9200
+    const val OP_NIKON_GET_LARGE_THUMB = 0x90C4
+    const val OP_NIKON_INITIATE_CAPTURE_REC_IN_SDRAM = 0x90C0
+    const val OP_NIKON_AF_CAPTURE_SDRAM = 0x90CB
 
     // PTP Response Codes
     const val RESPONSE_OK = 0x2001
@@ -170,13 +179,17 @@ sealed class PtpPacket {
 
         private fun createPacket(type: Int, payload: ByteArray): PtpPacket {
             return when (type) {
+                PtpConstants.PACKET_TYPE_INIT_COMMAND -> InitCommandPacket.parse(payload)
                 PtpConstants.PACKET_TYPE_INIT_RESPONSE -> InitResponsePacket.parse(payload)
                 PtpConstants.PACKET_TYPE_INIT_EVENT_RESPONSE -> InitEventAckPacket
+                PtpConstants.PACKET_TYPE_INIT_EVENT_REQUEST -> InitEventRequestPacket.parse(payload)
+                PtpConstants.PACKET_TYPE_COMMAND_REQUEST -> CommandRequestPacket.parse(payload)
                 PtpConstants.PACKET_TYPE_COMMAND_RESPONSE -> CommandResponsePacket.parse(payload)
                 PtpConstants.PACKET_TYPE_EVENT -> EventResponsePacket.parse(payload)
                 PtpConstants.PACKET_TYPE_START_DATA -> StartDataPacket.parse(payload)
                 PtpConstants.PACKET_TYPE_DATA_PACKET -> DataPacket.parse(payload)
                 PtpConstants.PACKET_TYPE_END_DATA -> EndDataPacket.parse(payload)
+                PtpConstants.PACKET_TYPE_PING -> PingPacket
                 PtpConstants.PACKET_TYPE_PONG -> PongPacket
                 else -> UnknownPacket(type, payload)
             }
@@ -212,6 +225,23 @@ data class InitCommandPacket(
     }
 
     companion object {
+        fun parse(payload: ByteArray): InitCommandPacket {
+            val guid = payload.copyOfRange(0, 16)
+            val nameChars = mutableListOf<Char>()
+            var offset = 16
+            while (offset + 1 < payload.size) {
+                val charCode = (payload[offset].toInt() and 0xFF) or
+                        ((payload[offset + 1].toInt() and 0xFF) shl 8)
+                if (charCode == 0) break
+                nameChars.add(charCode.toChar())
+                offset += 2
+            }
+            return InitCommandPacket(
+                clientGuid = guid,
+                clientName = nameChars.joinToString("")
+            )
+        }
+
         fun generateGuid(): ByteArray {
             val guid = ByteArray(16)
             java.util.UUID.randomUUID().let {
@@ -287,6 +317,25 @@ data class CommandRequestPacket(
         parameters.forEach { buffer.putInt(it) }
 
         return buffer.array()
+    }
+
+    companion object {
+        fun parse(payload: ByteArray): CommandRequestPacket {
+            val buffer = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+            val dataPhase = buffer.int
+            val operationCode = buffer.short.toInt() and 0xFFFF
+            val transactionId = buffer.int
+            val params = mutableListOf<Int>()
+            while (buffer.remaining() >= 4) {
+                params.add(buffer.int)
+            }
+            return CommandRequestPacket(
+                transactionId = transactionId,
+                operationCode = operationCode,
+                parameters = params,
+                dataPhase = dataPhase == 2
+            )
+        }
     }
 }
 
@@ -421,6 +470,13 @@ data class InitEventRequestPacket(
         buffer.putInt(type)
         buffer.putInt(sessionId)
         return buffer.array()
+    }
+
+    companion object {
+        fun parse(payload: ByteArray): InitEventRequestPacket {
+            val buffer = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+            return InitEventRequestPacket(buffer.int)
+        }
     }
 }
 
