@@ -117,6 +117,9 @@
                     android:layout_height="48dp"
                     android:layout_marginEnd="8dp"
                     android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:minWidth="0dp"
                     android:text="获取照片"
                     android:textColor="@color/on_background"
                     android:textSize="14sp"
@@ -132,12 +135,99 @@
                     android:layout_height="48dp"
                     android:layout_marginStart="8dp"
                     android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:minWidth="0dp"
                     android:text="全部下载"
                     android:textColor="@color/on_dark_card"
                     android:textSize="14sp"
                     app:cornerRadius="24dp"
                     app:strokeColor="@color/dark_card_surface" />
             </LinearLayout>
+        </LinearLayout>
+
+        <!-- 格式筛选 -->
+        <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/filterGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            app:selectionRequired="true"
+            app:singleSelection="true">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnFilterAll"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:text="全部"
+                android:textSize="13sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnFilterJpg"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:text="JPG"
+                android:textSize="13sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnFilterRaw"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:text="RAW"
+                android:textSize="13sp" />
+        </com.google.android.material.button.MaterialButtonToggleGroup>
+
+        <!-- 选择与批量下载 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnSelectAll"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_marginEnd="6dp"
+                android:layout_weight="1"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:text="全选"
+                android:textSize="13sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnDownloadSelected"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:text="下载选中"
+                android:textColor="@color/on_background"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                app:backgroundTint="@color/white"
+                app:cornerRadius="20dp"
+                app:elevation="0dp" />
         </LinearLayout>
 
         <!-- 预览图 -->
@@ -191,6 +281,9 @@
                     android:layout_height="40dp"
                     android:layout_marginEnd="6dp"
                     android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:minWidth="0dp"
                     android:text="暂停"
                     android:textSize="12sp"
                     app:cornerRadius="12dp" />
@@ -202,6 +295,9 @@
                     android:layout_height="40dp"
                     android:layout_marginHorizontal="3dp"
                     android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:minWidth="0dp"
                     android:text="恢复"
                     android:textSize="12sp"
                     app:cornerRadius="12dp" />
@@ -213,6 +309,9 @@
                     android:layout_height="40dp"
                     android:layout_marginStart="6dp"
                     android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:minWidth="0dp"
                     android:text="取消全部"
                     android:textColor="@color/secondary"
                     android:textSize="12sp"
@@ -230,21 +329,13 @@
             android:orientation="vertical"
             android:padding="4dp">
 
-            <ScrollView
+            <ListView
+                android:id="@+id/listPhotos"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:fillViewport="true">
-
-                <TextView
-                    android:id="@+id/tvFileList"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:padding="16dp"
-                    android:text="点击&quot;获取照片&quot;浏览存储卡"
-                    android:textColor="@color/on_surface"
-                    android:textSize="13sp"
-                    android:lineSpacingExtra="4dp" />
-            </ScrollView>
+                android:divider="@color/outline"
+                android:dividerHeight="1dp"
+                android:scrollbars="vertical" />
         </LinearLayout>
 
     </LinearLayout>

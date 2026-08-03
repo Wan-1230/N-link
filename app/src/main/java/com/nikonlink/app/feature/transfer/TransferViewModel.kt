@@ -8,6 +8,7 @@ import com.nikonlink.app.core.ptp.PtpSessionManager
 import com.nikonlink.app.core.usb.UsbConnectionState
 import com.nikonlink.app.core.usb.UsbPtpManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -26,6 +27,19 @@ class TransferViewModel @Inject constructor(
 
     private val _photoList = MutableStateFlow<List<CameraFile>>(emptyList())
     val photoList: StateFlow<List<CameraFile>> = _photoList.asStateFlow()
+
+    private val _photoFilter = MutableStateFlow(PhotoFilter.ALL)
+    val photoFilter: StateFlow<PhotoFilter> = _photoFilter.asStateFlow()
+
+    private val _selectedHandles = MutableStateFlow<Set<Int>>(emptySet())
+    val selectedHandles: StateFlow<Set<Int>> = _selectedHandles.asStateFlow()
+
+    val filteredPhotos: StateFlow<List<CameraFile>> = combine(
+        _photoList,
+        _photoFilter
+    ) { photos, filter ->
+        photos.filter { filter.matches(it) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -73,9 +87,30 @@ class TransferViewModel @Inject constructor(
         viewModelScope.launch {
             val photos = transferManager.fetchPhotoList()
             _photoList.value = photos
+            _selectedHandles.value = emptySet()
             _isLoading.value = false
             _message.value = if (photos.isEmpty()) "存储卡为空或未连接" else "共 ${photos.size} 个文件"
         }
+    }
+
+    fun setPhotoFilter(filter: PhotoFilter) {
+        _photoFilter.value = filter
+    }
+
+    fun toggleSelection(handle: Int) {
+        val current = _selectedHandles.value.toMutableSet()
+        if (!current.add(handle)) {
+            current.remove(handle)
+        }
+        _selectedHandles.value = current
+    }
+
+    fun selectAllFiltered() {
+        _selectedHandles.value = filteredPhotos.value.mapTo(mutableSetOf()) { it.handle }
+    }
+
+    fun clearSelection() {
+        _selectedHandles.value = emptySet()
     }
 
     /**
@@ -113,6 +148,22 @@ class TransferViewModel @Inject constructor(
         _message.value = "已加入队列: ${files.size} 个文件"
     }
 
+    fun downloadSelected() {
+        val selected = _photoList.value.filter { it.handle in _selectedHandles.value }
+        if (selected.isNotEmpty()) {
+            transferManager.enqueue(selected)
+            _message.value = "已加入队列: ${selected.size} 个文件"
+        }
+    }
+
+    fun downloadFiltered() {
+        val files = filteredPhotos.value
+        if (files.isNotEmpty()) {
+            transferManager.enqueue(files)
+            _message.value = "已加入队列: ${files.size} 个文件"
+        }
+    }
+
     /**
      * 全部下载
      */
@@ -127,4 +178,21 @@ class TransferViewModel @Inject constructor(
     fun pauseTransfer() = transferManager.pause()
     fun resumeTransfer() = transferManager.resume()
     fun cancelAll() = transferManager.cancelAll()
+}
+
+/**
+ * 照片格式筛选
+ */
+enum class PhotoFilter(val label: String) {
+    ALL("全部"),
+    JPEG("JPG"),
+    RAW("RAW");
+
+    fun matches(file: CameraFile): Boolean {
+        return when (this) {
+            ALL -> file.isPhoto
+            JPEG -> file.format == CameraFileFormat.JPEG
+            RAW -> file.format == CameraFileFormat.RAW
+        }
+    }
 }

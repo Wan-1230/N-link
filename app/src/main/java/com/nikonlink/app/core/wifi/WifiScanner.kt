@@ -124,9 +124,12 @@ class WifiScanner @Inject constructor(
         val networks = currentIpv4Addresses()
         if (networks.isEmpty()) return
 
-        val hosts = networks.flatMap { (ip, prefix) ->
+        val subnetHosts = networks.flatMap { (ip, prefix) ->
             subnetHosts(ip, prefix).filterNot { it == ip }
         }.distinct()
+        // 相机 AP/STA 常见网关 IP，即使当前网段不同也做一次轻量探测。
+        val knownGatewayHosts = listOf("192.168.1.1", "192.168.0.1", "10.0.0.1", "192.168.42.1")
+        val hosts = (subnetHosts + knownGatewayHosts).distinct()
         if (hosts.isEmpty()) return
 
         val semaphore = Semaphore(MAX_SCAN_CONCURRENCY)
