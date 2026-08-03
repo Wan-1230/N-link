@@ -85,9 +85,9 @@ class RemoteShootingManager @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 if (usbPtpManager.isConnected()) {
-                    usbPtpManager.afDrive(true)
+                    usbPtpManager.afDrive()
                 } else {
-                    ptpSession.sendCommand(PtpConstants.OP_NIKON_AF_DRIVE, listOf(1)).isOk
+                    ptpSession.afDrive()
                 }
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Half press focus failed")
@@ -278,7 +278,7 @@ class RemoteShootingManager @Inject constructor(
                 val ok = if (usbPtpManager.isConnected()) {
                     usbPtpManager.startMovieRecording()
                 } else {
-                    ptpSession.sendCommand(0x920A, listOf(1)).isOk
+                    ptpSession.startMovieRecording()
                 }
                 if (ok) {
                     _shootingState.value = ShootingState.VIDEO_RECORDING
@@ -301,7 +301,7 @@ class RemoteShootingManager @Inject constructor(
                 val ok = if (usbPtpManager.isConnected()) {
                     usbPtpManager.stopMovieRecording()
                 } else {
-                    ptpSession.sendCommand(0x920A, listOf(0)).isOk
+                    ptpSession.stopMovieRecording()
                 }
                 _shootingState.value = ShootingState.IDLE
                 ok

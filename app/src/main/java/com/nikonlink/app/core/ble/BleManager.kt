@@ -68,8 +68,8 @@ object NikonBleProfile {
  * 连接流程不再使用推断 UUID，而是执行 Nikon SnapBridge 的 4 阶段配对：
  * 1. 写入 0x01 阶段消息到 2000
  * 2. 收到 0x00 回执后写入 0x03 阶段消息
- * 3. 收到 0x02 阶段消息（盐值校验）后写入 0x05 阶段消息
- * 4. 收到 0x04 阶段消息 + 2008 最终 OK 后写入客户端名称
+ * 3. 收到 0x02 阶段消息（盐值校验）后写入 0x03 阶段消息
+ * 4. 收到 0x04 阶段消息后等待 2008 最终 OK（或超时）再写入 32 字节客户端 ID
  */
 @Singleton
 class BleManager @Inject constructor(
@@ -94,10 +94,14 @@ class BleManager @Inject constructor(
     private var scanJob: Job? = null
     private var connectTimeoutJob: Job? = null
     private var pairingTimeoutJob: Job? = null
+    private var serviceDiscoveryTimeoutJob: Job? = null
+    private var finalizationJob: Job? = null
     private var fallbackScope: CoroutineScope? = null
     private var scope: CoroutineScope? = null
 
     private var pairingSession: NikonPairingSession? = null
+    private var pairingFinalized = false
+    private var mtuNegotiated = false
     private var pairedCharacteristic: BluetoothGattCharacteristic? = null
     private var currentGattService: BluetoothGattService? = null
     private val pendingNotifications = ArrayDeque<Pair<UUID, Boolean>>()
@@ -237,7 +241,13 @@ class BleManager @Inject constructor(
         connectTimeoutJob = null
         pairingTimeoutJob?.cancel()
         pairingTimeoutJob = null
+        serviceDiscoveryTimeoutJob?.cancel()
+        serviceDiscoveryTimeoutJob = null
+        finalizationJob?.cancel()
+        finalizationJob = null
         pairingSession = null
+        pairingFinalized = false
+        mtuNegotiated = false
         pairedCharacteristic = null
         currentGattService = null
         pendingNotifications.clear()
@@ -246,16 +256,11 @@ class BleManager @Inject constructor(
         _connectionState.value = BleConnectionState.CONNECTING
         connectedDeviceAddress = address
 
-        if (device.bondState != BluetoothDevice.BOND_BONDED) {
-            val bondRequested = device.createBond()
-            Timber.tag(TAG).i("Bond requested for $address: $bondRequested")
-        }
-
         gatt = device.connectGatt(
             context,
             false,
             gattCallback,
-            BluetoothDevice.TRANSPORT_AUTO
+            BluetoothDevice.TRANSPORT_LE
         )
 
         connectTimeoutJob = activeScope().launch {
@@ -281,7 +286,13 @@ class BleManager @Inject constructor(
         connectTimeoutJob = null
         pairingTimeoutJob?.cancel()
         pairingTimeoutJob = null
+        serviceDiscoveryTimeoutJob?.cancel()
+        serviceDiscoveryTimeoutJob = null
+        finalizationJob?.cancel()
+        finalizationJob = null
         pairingSession = null
+        pairingFinalized = false
+        mtuNegotiated = false
         pairedCharacteristic = null
         currentGattService = null
         pendingNotifications.clear()
@@ -306,10 +317,21 @@ class BleManager @Inject constructor(
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    Timber.tag(TAG).i("GATT connected, discovering services...")
-                    if (!gatt.discoverServices()) {
-                        Timber.tag(TAG).e("discoverServices failed")
-                        failConnect()
+                    Timber.tag(TAG).i("GATT connected, negotiating MTU 517...")
+                    mtuNegotiated = false
+                    val mtuRequested = runCatching { gatt.requestMtu(517) }.getOrDefault(false)
+                    if (mtuRequested) {
+                        serviceDiscoveryTimeoutJob?.cancel()
+                        serviceDiscoveryTimeoutJob = activeScope().launch {
+                            delay(3000)
+                            if (!mtuNegotiated && this@BleManager.gatt === gatt) {
+                                Timber.tag(TAG).w("MTU negotiation timed out, discovering services anyway")
+                                if (!gatt.discoverServices()) failConnect()
+                            }
+                        }
+                    } else {
+                        Timber.tag(TAG).w("MTU request rejected, discovering services directly")
+                        if (!gatt.discoverServices()) failConnect()
                     }
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
@@ -321,9 +343,15 @@ class BleManager @Inject constructor(
                     }
                     _connectionState.value = BleConnectionState.DISCONNECTED
                     stopHeartbeat()
+                    serviceDiscoveryTimeoutJob?.cancel()
+                    serviceDiscoveryTimeoutJob = null
+                    finalizationJob?.cancel()
+                    finalizationJob = null
                     pairingTimeoutJob?.cancel()
                     pairingTimeoutJob = null
                     pairingSession = null
+                    pairingFinalized = false
+                    mtuNegotiated = false
                     pairedCharacteristic = null
                     currentGattService = null
                     pendingNotifications.clear()
@@ -332,6 +360,21 @@ class BleManager @Inject constructor(
                         this@BleManager.gatt = null
                     }
                 }
+            }
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            mtuNegotiated = true
+            serviceDiscoveryTimeoutJob?.cancel()
+            serviceDiscoveryTimeoutJob = null
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Timber.tag(TAG).w("MTU negotiation failed (status=$status), using default MTU")
+            } else {
+                Timber.tag(TAG).i("MTU negotiated: $mtu")
+            }
+            if (!gatt.discoverServices()) {
+                Timber.tag(TAG).e("discoverServices failed")
+                failConnect()
             }
         }
 
@@ -381,7 +424,7 @@ class BleManager @Inject constructor(
                 NikonBleProfile.LSS_CONTROL_POINT -> {
                     if (isFinalOk(value)) {
                         Timber.tag(TAG).i("Nikon pairing final OK received")
-                        onPairingFinalOk(gatt)
+                        finalizePairing(gatt)
                     } else {
                         Timber.tag(TAG).d("LSS control point data: ${value.toHex()}")
                     }
@@ -525,8 +568,11 @@ class BleManager @Inject constructor(
         if (next != null) {
             val char = pairedCharacteristic ?: return
             writeCharacteristic(char, next)
+        } else if (session.isComplete()) {
+            val g = gatt ?: return
+            schedulePairingFinalization(g)
         } else if (!session.hasError()) {
-            // 0x04 阶段完成，等待 2008 最终 OK
+            // 等待下一阶段
         } else {
             Timber.tag(TAG).e("Nikon pairing stage rejected")
             failConnect()
@@ -534,9 +580,26 @@ class BleManager @Inject constructor(
     }
 
     @SuppressLint("MissingPermission")
-    private fun onPairingFinalOk(gatt: BluetoothGatt) {
+    private fun schedulePairingFinalization(gatt: BluetoothGatt) {
+        if (pairingFinalized || finalizationJob?.isActive == true) return
+        Timber.tag(TAG).i("Stage 4 complete, waiting for 2008 final OK before writing ID")
+        finalizationJob = activeScope().launch {
+            delay(2500)
+            if (!pairingFinalized && this@BleManager.gatt === gatt) {
+                Timber.tag(TAG).w("Final OK not received in time, writing ID anyway")
+                finalizePairing(gatt)
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun finalizePairing(gatt: BluetoothGatt) {
+        if (pairingFinalized) return
+        pairingFinalized = true
         pairingTimeoutJob?.cancel()
         pairingTimeoutJob = null
+        finalizationJob?.cancel()
+        finalizationJob = null
         pairingSession = null
         _pairingMessage.value = null
 
@@ -546,7 +609,11 @@ class BleManager @Inject constructor(
         val nameChar = service?.getCharacteristic(NikonBleProfile.CLIENT_DEVICE_NAME)
         if (nameChar != null) {
             val clientName = "$CLIENT_NAME_PREFIX-${ByteArray(3).also { secureRandom.nextBytes(it) }.toHex()}"
-            writeCharacteristic(nameChar, clientName.toByteArray(Charsets.UTF_8))
+            // Nikon expects a fixed 32-byte ASCII controller ID, zero-padded.
+            val nameBytes = clientName.toByteArray(Charsets.US_ASCII)
+            val padded = ByteArray(32)
+            nameBytes.copyInto(padded, 0, 0, nameBytes.size.coerceAtMost(32))
+            writeCharacteristic(nameChar, padded)
         }
 
         _connectionState.value = BleConnectionState.CONNECTED
@@ -689,6 +756,9 @@ private interface NikonPairingSession {
     fun handleStage(data: ByteArray): ByteArray?
 
     fun hasError(): Boolean = false
+
+    /** Stage 4 已收到并校验通过，可以进入最终确认（等待 2008 / 补写 ID）。 */
+    fun isComplete(): Boolean = false
 }
 
 /**
@@ -704,6 +774,7 @@ private class NikonSmartPairing(
 
     private var stage2Timestamp: ByteArray? = null
     private var error = false
+    private var complete = false
     private val blowfish = NikonBlowfish()
 
     init {
@@ -777,10 +848,14 @@ private class NikonSmartPairing(
             error = true
             return null
         }
-        return buildMessage(0x05, ByteArray(8), ByteArray(8))
+        // NSG/Z50II+Z8: smart-device pairing stops at stage 4; there is no stage 5.
+        complete = true
+        return null
     }
 
     override fun hasError(): Boolean = error
+
+    override fun isComplete(): Boolean = complete
 
     private fun buildMessage(stage: Int, ts: ByteArray, id: ByteArray): ByteArray {
         return ByteArray(17).also { out ->
@@ -814,6 +889,7 @@ private class NikonRemotePairing(
 ) : NikonPairingSession {
 
     private var error = false
+    private var complete = false
 
     override fun initialMessage(): ByteArray = buildMessage(0x01, timestamp, clientId)
 
@@ -833,7 +909,10 @@ private class NikonRemotePairing(
                     buildMessage(0x03, ByteArray(8), ByteArray(8))
                 }
             }
-            0x04 -> buildMessage(0x05, ByteArray(8), ByteArray(8))
+            0x04 -> {
+                complete = true
+                null
+            }
             else -> {
                 error = true
                 null
@@ -842,6 +921,8 @@ private class NikonRemotePairing(
     }
 
     override fun hasError(): Boolean = error
+
+    override fun isComplete(): Boolean = complete
 
     private fun buildMessage(stage: Int, ts: ByteArray, id: ByteArray): ByteArray {
         return ByteArray(17).also { out ->
@@ -855,7 +936,7 @@ private class NikonRemotePairing(
 /**
  * 仅使用 Blowfish ECB 加密 8 字节块，模拟 furble 中的 NikonSmart hash。
  */
-private class NikonBlowfish {
+internal class NikonBlowfish {
     private val cipher: Cipher?
 
     init {

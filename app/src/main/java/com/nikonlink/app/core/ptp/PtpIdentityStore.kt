@@ -16,10 +16,10 @@ import javax.inject.Singleton
 @Singleton
 class PtpIdentityStore @Inject constructor(
     @ApplicationContext private val context: Context
-) {
+) : PtpClientIdentity {
     private val prefs = context.getSharedPreferences("ptp_identity", Context.MODE_PRIVATE)
 
-    val clientGuid: ByteArray
+    override val clientGuid: ByteArray
         get() {
             val cached = prefs.getString(KEY_GUID, null)
             if (cached != null && cached.length == 32) {
@@ -30,7 +30,7 @@ class PtpIdentityStore @Inject constructor(
             return guid
         }
 
-    val clientName: String
+    override val clientName: String
         get() = "NikonLink-${clientGuid.copyOfRange(0, 4).toHex().uppercase()}"
 
     private fun generateGuid(): ByteArray {

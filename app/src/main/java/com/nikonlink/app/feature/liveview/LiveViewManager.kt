@@ -229,9 +229,9 @@ class LiveViewManager @Inject constructor(
                 if (response) {
                     // 触发 AF 驱动
                     if (usbPtpManager.isConnected()) {
-                        usbPtpManager.afDrive(true)
+                        usbPtpManager.afDrive()
                     } else {
-                        ptpSession.sendCommand(PtpConstants.OP_NIKON_AF_DRIVE, listOf(1))
+                        ptpSession.afDrive()
                     }
                     Timber.tag(TAG).d("Touch focus: ($afX, $afY)")
                 }
