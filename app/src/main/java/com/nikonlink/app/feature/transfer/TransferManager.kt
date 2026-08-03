@@ -99,7 +99,7 @@ class TransferManager @Inject constructor(
                     if (infoBytes != null) {
                         parseObjectInfo(handle, infoBytes)
                     } else null
-                }
+                }.filter { it.isPhoto }
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Failed to fetch photo list")
                 emptyList()
@@ -381,7 +381,8 @@ class TransferManager @Inject constructor(
                 fileName = fileName,
                 size = compressedSize,
                 formatCode = formatCode,
-                storageId = storageId
+                storageId = storageId,
+                format = classifyFormat(formatCode, fileName)
             )
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Failed to parse object info for handle=$handle")
@@ -409,8 +410,40 @@ data class CameraFile(
     val fileName: String,
     val size: Long,
     val formatCode: Int,
-    val storageId: Int
+    val storageId: Int,
+    val format: CameraFileFormat = CameraFileFormat.OTHER
 )
+
+/**
+ * 相机文件格式分类。传输页只展示照片（JPEG/RAW），视频与其他文件不进列表。
+ */
+enum class CameraFileFormat {
+    JPEG,
+    RAW,
+    VIDEO,
+    OTHER
+}
+
+val CameraFile.isPhoto: Boolean
+    get() = format == CameraFileFormat.JPEG || format == CameraFileFormat.RAW
+
+internal fun classifyFormat(formatCode: Int, fileName: String): CameraFileFormat {
+    val upperName = fileName.uppercase()
+    return when {
+        formatCode == 0x3801 || formatCode == 0x3808 || formatCode == 0x380B ||
+                upperName.endsWith(".JPG") || upperName.endsWith(".JPEG") -> CameraFileFormat.JPEG
+        formatCode == 0xB103 ||
+                upperName.endsWith(".NEF") || upperName.endsWith(".NRW") ||
+                upperName.endsWith(".ARW") || upperName.endsWith(".CR2") ||
+                upperName.endsWith(".DNG") -> CameraFileFormat.RAW
+        formatCode in VIDEO_FORMAT_CODES ||
+                upperName.endsWith(".MOV") || upperName.endsWith(".MP4") ||
+                upperName.endsWith(".AVI") -> CameraFileFormat.VIDEO
+        else -> CameraFileFormat.OTHER
+    }
+}
+
+private val VIDEO_FORMAT_CODES = setOf(0x300A, 0x300B, 0x300D, 0xB104, 0xB982, 0xB980)
 
 /**
  * 传输任务

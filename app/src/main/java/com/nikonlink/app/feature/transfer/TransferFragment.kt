@@ -5,13 +5,16 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.BaseAdapter
 import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
 import com.nikonlink.app.core.common.ConnectionState
 import com.nikonlink.app.core.usb.UsbConnectionState
+import com.nikonlink.app.R
 import com.nikonlink.app.databinding.FragmentTransferBinding
+import com.nikonlink.app.databinding.ItemPhotoBinding
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 
@@ -25,6 +28,7 @@ class TransferFragment : Fragment() {
     private var _binding: FragmentTransferBinding? = null
     private val binding get() = _binding!!
     private val viewModel: TransferViewModel by viewModels()
+    private val photoAdapter = PhotoAdapter()
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentTransferBinding.inflate(inflater, container, false)
@@ -44,6 +48,31 @@ class TransferFragment : Fragment() {
 
         binding.btnDownloadAll.setOnClickListener {
             viewModel.downloadAll()
+        }
+
+        binding.listPhotos.adapter = photoAdapter
+        binding.filterGroup.check(R.id.btnFilterAll)
+        binding.filterGroup.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (!isChecked) return@addOnButtonCheckedListener
+            viewModel.setPhotoFilter(
+                when (checkedId) {
+                    R.id.btnFilterJpg -> PhotoFilter.JPEG
+                    R.id.btnFilterRaw -> PhotoFilter.RAW
+                    else -> PhotoFilter.ALL
+                }
+            )
+        }
+
+        binding.btnSelectAll.setOnClickListener {
+            if (viewModel.selectedHandles.value.size == viewModel.filteredPhotos.value.size) {
+                viewModel.clearSelection()
+            } else {
+                viewModel.selectAllFiltered()
+            }
+        }
+
+        binding.btnDownloadSelected.setOnClickListener {
+            viewModel.downloadSelected()
         }
 
         binding.btnPause.setOnClickListener {
@@ -91,16 +120,20 @@ class TransferFragment : Fragment() {
         }
 
         viewLifecycleOwner.lifecycleScope.launch {
-            viewModel.photoList.collect { photos ->
-                binding.tvPhotoCount.text = "文件数: ${photos.size}"
-                // 显示文件列表（简化为文本列表）
-                val fileListText = photos.take(50).joinToString("\n") { file ->
-                    "${file.fileName}  (${formatSize(file.size)})"
-                }
-                binding.tvFileList.text = fileListText.ifEmpty { "点击\"获取照片\"浏览存储卡" }
-
-                // 加载前几张缩略图
+            viewModel.filteredPhotos.collect { photos ->
+                photoAdapter.items = photos
+                photoAdapter.selected = viewModel.selectedHandles.value
+                photoAdapter.notifyDataSetChanged()
+                binding.tvPhotoCount.text = "照片 ${photos.size} / 已选 ${photoAdapter.selected.size}"
                 photos.take(3).forEach { viewModel.loadThumbnail(it.handle) }
+            }
+        }
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.selectedHandles.collect { selected ->
+                photoAdapter.selected = selected
+                photoAdapter.notifyDataSetChanged()
+                binding.tvPhotoCount.text = "照片 ${photoAdapter.items.size} / 已选 ${selected.size}"
             }
         }
 
@@ -167,6 +200,41 @@ class TransferFragment : Fragment() {
                 ConnectionState.ERROR_WAITING_RETRY -> "通道: 等待重连"
                 ConnectionState.DISCONNECTED -> "通道: 未连接"
             }
+        }
+    }
+
+    private inner class PhotoAdapter : BaseAdapter() {
+        var items: List<CameraFile> = emptyList()
+        var selected: Set<Int> = emptySet()
+
+        override fun getCount(): Int = items.size
+
+        override fun getItem(position: Int): CameraFile = items[position]
+
+        override fun getItemId(position: Int): Long = items[position].handle.toLong()
+
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+            val binding = if (convertView == null) {
+                ItemPhotoBinding.inflate(layoutInflater, parent, false)
+            } else {
+                ItemPhotoBinding.bind(convertView)
+            }
+            val file = items[position]
+            binding.tvFileName.text = file.fileName
+            binding.tvFileMeta.text = "${formatSize(file.size)}"
+            binding.tvFormatBadge.text = when (file.format) {
+                CameraFileFormat.JPEG -> "JPG"
+                CameraFileFormat.RAW -> "RAW"
+                else -> "照片"
+            }
+            binding.cbSelect.isChecked = file.handle in selected
+            binding.cbSelect.setOnClickListener {
+                viewModel.toggleSelection(file.handle)
+            }
+            binding.root.setOnClickListener {
+                viewModel.toggleSelection(file.handle)
+            }
+            return binding.root
         }
     }
 

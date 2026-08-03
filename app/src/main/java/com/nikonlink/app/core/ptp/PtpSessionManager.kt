@@ -502,8 +502,6 @@ class PtpSessionManager @Inject constructor(
                         markLinkError()
                         break
                     }
-                    eventOutput?.write(PingPacket.toBytes())
-                    eventOutput?.flush()
                 } catch (e: Exception) {
                     Timber.tag(TAG).w("Keep-alive failed: ${e.message}")
                     markLinkError()
@@ -526,16 +524,27 @@ class PtpSessionManager @Inject constructor(
             try {
                 while (isActive) {
                     val packet = PtpPacket.fromStream(eventInput!!) ?: break
-                    if (packet is EventResponsePacket) {
-                        val event = PtpEvent(
-                            eventCode = packet.eventCode,
-                            transactionId = packet.transactionId,
-                            parameters = packet.parameters
-                        )
-                        _events.tryEmit(event)
-                        Timber.tag(TAG).d("Event received: code=0x${packet.eventCode.toString(16)}")
-                    } else if (packet is PongPacket) {
-                        Timber.tag(TAG).v("Pong received")
+                    when (packet) {
+                        is EventResponsePacket -> {
+                            val event = PtpEvent(
+                                eventCode = packet.eventCode,
+                                transactionId = packet.transactionId,
+                                parameters = packet.parameters
+                            )
+                            _events.tryEmit(event)
+                            Timber.tag(TAG).d("Event received: code=0x${packet.eventCode.toString(16)}")
+                        }
+                        is PingPacket -> {
+                            // Nikon sends ProbeRequest on the event channel to keep the link
+                            // alive; it drops the session if the client does not answer.
+                            eventOutput?.write(PongPacket.toBytes())
+                            eventOutput?.flush()
+                            Timber.tag(TAG).v("Camera probe answered with Pong")
+                        }
+                        is PongPacket -> {
+                            Timber.tag(TAG).v("Pong received")
+                        }
+                        else -> Unit
                     }
                 }
             } catch (e: Exception) {

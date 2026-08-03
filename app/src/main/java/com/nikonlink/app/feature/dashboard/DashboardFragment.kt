@@ -5,6 +5,9 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.content.res.ColorStateList
+import android.text.InputType
+import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
@@ -165,10 +168,6 @@ class DashboardFragment : Fragment() {
         }
 
         binding.btnConnect.setOnClickListener {
-            if (scannedDevices.isEmpty() && wifiDevices.isEmpty()) {
-                Toast.makeText(requireContext(), "请先扫描设备", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
             showDeviceDialog()
         }
 
@@ -230,6 +229,41 @@ class DashboardFragment : Fragment() {
                 when {
                     entry.bleDevice != null -> viewModel.connectToDevice(entry.bleDevice.address)
                     entry.wifiDevice != null -> viewModel.connectToWifiCamera(entry.wifiDevice)
+                }
+            }
+            .setNeutralButton("手动输入 IP") { _, _ ->
+                showManualIpDialog()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showManualIpDialog() {
+        val input = EditText(requireContext()).apply {
+            hint = "192.168.1.1 或 192.168.1.1:15740"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        }
+        val container = LinearLayout(requireContext()).apply {
+            setPadding(56, 28, 56, 8)
+            addView(input)
+        }
+
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("手动连接 WiFi 相机")
+            .setMessage("STA 模式下请输入相机在局域网中的 IP 地址")
+            .setView(container)
+            .setPositiveButton("连接") { _, _ ->
+                val raw = input.text.toString().trim()
+                val parts = raw.removePrefix("wifi:").split(":")
+                val ip = parts.firstOrNull().orEmpty()
+                val port = parts.getOrNull(1)?.toIntOrNull() ?: 15740
+                if (ip.isNotEmpty()) {
+                    viewModel.connectToWifiCamera(
+                        WifiCameraCandidate(ip, port, "手动相机", "manual")
+                    )
+                    Toast.makeText(requireContext(), "连接 $ip:$port", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(requireContext(), "IP 地址无效", Toast.LENGTH_SHORT).show()
                 }
             }
             .setNegativeButton("取消", null)
