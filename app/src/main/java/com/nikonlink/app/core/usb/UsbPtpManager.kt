@@ -10,6 +10,8 @@ import android.os.Build
 import com.nikonlink.app.core.ptp.PtpConstants
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
@@ -48,6 +50,7 @@ class UsbPtpManager @Inject constructor(
     private var interruptIn: UsbEndpoint? = null  // 事件接收
 
     private val transactionId = AtomicInteger(0)
+    private val commandMutex = Mutex()
     private var scope: CoroutineScope? = null
     private var eventPollJob: Job? = null
     private var keepAliveJob: Job? = null
@@ -268,30 +271,32 @@ class UsbPtpManager @Inject constructor(
         val inp = bulkIn ?: return null
 
         return withContext(Dispatchers.IO) {
-            try {
-                val txId = transactionId.incrementAndGet()
-                val container = UsbPtpProtocol.buildCommandContainer(txId, operationCode, params)
+            commandMutex.withLock {
+                try {
+                    val txId = transactionId.incrementAndGet()
+                    val container = UsbPtpProtocol.buildCommandContainer(txId, operationCode, params)
 
-                // 发送命令
-                val sent = conn.bulkTransfer(out, container, container.size, BULK_TIMEOUT_MS)
-                if (sent < 0) {
-                    Timber.tag(TAG).e("Bulk OUT failed")
-                    return@withContext null
+                    // 发送命令
+                    val sent = conn.bulkTransfer(out, container, container.size, BULK_TIMEOUT_MS)
+                    if (sent < 0) {
+                        Timber.tag(TAG).e("Bulk OUT failed")
+                        return@withLock null
+                    }
+
+                    // 读取响应（可能先收到 Data 包）
+                    val responseBuffer = ByteArray(4096)
+                    val read = conn.bulkTransfer(inp, responseBuffer, responseBuffer.size, BULK_TIMEOUT_MS)
+                    if (read < UsbPtpProtocol.HEADER_SIZE) {
+                        Timber.tag(TAG).e("Bulk IN failed or too short: $read")
+                        return@withLock null
+                    }
+
+                    val data = responseBuffer.copyOf(read)
+                    UsbPtpProtocol.parseResponseContainer(data)
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "sendCommand error: op=0x${operationCode.toString(16)}")
+                    null
                 }
-
-                // 读取响应（可能先收到 Data 包）
-                val responseBuffer = ByteArray(4096)
-                val read = conn.bulkTransfer(inp, responseBuffer, responseBuffer.size, BULK_TIMEOUT_MS)
-                if (read < UsbPtpProtocol.HEADER_SIZE) {
-                    Timber.tag(TAG).e("Bulk IN failed or too short: $read")
-                    return@withContext null
-                }
-
-                val data = responseBuffer.copyOf(read)
-                UsbPtpProtocol.parseResponseContainer(data)
-            } catch (e: Exception) {
-                Timber.tag(TAG).e(e, "sendCommand error: op=0x${operationCode.toString(16)}")
-                null
             }
         }
     }
@@ -309,65 +314,67 @@ class UsbPtpManager @Inject constructor(
         val inp = bulkIn ?: return null
 
         return withContext(Dispatchers.IO) {
-            try {
-                val txId = transactionId.incrementAndGet()
-                val container = UsbPtpProtocol.buildCommandContainer(txId, operationCode, params)
+            commandMutex.withLock {
+                try {
+                    val txId = transactionId.incrementAndGet()
+                    val container = UsbPtpProtocol.buildCommandContainer(txId, operationCode, params)
 
-                val sent = conn.bulkTransfer(out, container, container.size, BULK_TIMEOUT_MS)
-                if (sent < 0) return@withContext null
+                    val sent = conn.bulkTransfer(out, container, container.size, BULK_TIMEOUT_MS)
+                    if (sent < 0) return@withLock null
 
-                // 读取数据包（可能多个）
-                val chunks = mutableListOf<ByteArray>()
-                var gotResponse = false
-                var receivedBytes = 0L
+                    // 读取数据包（可能多个）
+                    val chunks = mutableListOf<ByteArray>()
+                    var gotResponse = false
+                    var receivedBytes = 0L
 
-                var responseCode = 0
-                while (!gotResponse) {
-                    val buffer = ByteArray(65536)
-                    val read = conn.bulkTransfer(inp, buffer, buffer.size, BULK_TIMEOUT_MS)
-                    if (read < UsbPtpProtocol.HEADER_SIZE) break
+                    var responseCode = 0
+                    while (!gotResponse) {
+                        val buffer = ByteArray(65536)
+                        val read = conn.bulkTransfer(inp, buffer, buffer.size, BULK_TIMEOUT_MS)
+                        if (read < UsbPtpProtocol.HEADER_SIZE) break
 
-                    val data = buffer.copyOf(read)
-                    val headerType = java.nio.ByteBuffer.wrap(data, 4, 2)
-                        .order(java.nio.ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+                        val data = buffer.copyOf(read)
+                        val headerType = java.nio.ByteBuffer.wrap(data, 4, 2)
+                            .order(java.nio.ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
 
-                    when (headerType) {
-                        UsbPtpProtocol.TYPE_DATA -> {
-                            val parsed = UsbPtpProtocol.parseDataContainer(data)
-                            if (parsed != null) {
-                                chunks.add(parsed.payload)
-                                receivedBytes += parsed.payload.size
-                                // USB PTP 数据容器不携带总长度，未知总大小时进度交给上层按 0 处理
-                                onProgress?.invoke(receivedBytes, 0L)
+                        when (headerType) {
+                            UsbPtpProtocol.TYPE_DATA -> {
+                                val parsed = UsbPtpProtocol.parseDataContainer(data)
+                                if (parsed != null) {
+                                    chunks.add(parsed.payload)
+                                    receivedBytes += parsed.payload.size
+                                    // USB PTP 数据容器不携带总长度，未知总大小时进度交给上层按 0 处理
+                                    onProgress?.invoke(receivedBytes, 0L)
+                                }
+                            }
+                            UsbPtpProtocol.TYPE_RESPONSE -> {
+                                responseCode = UsbPtpProtocol.parseResponseContainer(data)?.responseCode ?: 0
+                                gotResponse = true
                             }
                         }
-                        UsbPtpProtocol.TYPE_RESPONSE -> {
-                            responseCode = UsbPtpProtocol.parseResponseContainer(data)?.responseCode ?: 0
-                            gotResponse = true
-                        }
                     }
-                }
 
-                if (responseCode != 0x2001) {
-                    Timber.tag(TAG).w(
-                        "sendCommandWithData rejected: op=0x${operationCode.toString(16)} code=0x${responseCode.toString(16)}"
-                    )
-                    return@withContext null
-                }
-                if (chunks.isEmpty()) return@withContext ByteArray(0)
+                    if (responseCode != 0x2001) {
+                        Timber.tag(TAG).w(
+                            "sendCommandWithData rejected: op=0x${operationCode.toString(16)} code=0x${responseCode.toString(16)}"
+                        )
+                        return@withLock null
+                    }
+                    if (chunks.isEmpty()) return@withLock ByteArray(0)
 
-                // 合并所有数据块
-                val totalSize = chunks.sumOf { it.size }
-                val result = ByteArray(totalSize)
-                var offset = 0
-                chunks.forEach { chunk ->
-                    System.arraycopy(chunk, 0, result, offset, chunk.size)
-                    offset += chunk.size
+                    // 合并所有数据块
+                    val totalSize = chunks.sumOf { it.size }
+                    val result = ByteArray(totalSize)
+                    var offset = 0
+                    chunks.forEach { chunk ->
+                        System.arraycopy(chunk, 0, result, offset, chunk.size)
+                        offset += chunk.size
+                    }
+                    result
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "sendCommandWithData error")
+                    null
                 }
-                result
-            } catch (e: Exception) {
-                Timber.tag(TAG).e(e, "sendCommandWithData error")
-                null
             }
         }
     }
@@ -438,31 +445,33 @@ class UsbPtpManager @Inject constructor(
         val inp = bulkIn ?: return false
 
         return withContext(Dispatchers.IO) {
-            try {
-                val txId = transactionId.incrementAndGet()
-                val command = UsbPtpProtocol.buildCommandContainer(
-                    txId,
-                    PtpConstants.OP_SET_DEVICE_PROP_VALUE,
-                    listOf(propCode)
-                )
-                if (conn.bulkTransfer(out, command, command.size, BULK_TIMEOUT_MS) < 0) {
-                    Timber.tag(TAG).e("SetDevicePropValue command failed")
-                    return@withContext false
-                }
+            commandMutex.withLock {
+                try {
+                    val txId = transactionId.incrementAndGet()
+                    val command = UsbPtpProtocol.buildCommandContainer(
+                        txId,
+                        PtpConstants.OP_SET_DEVICE_PROP_VALUE,
+                        listOf(propCode)
+                    )
+                    if (conn.bulkTransfer(out, command, command.size, BULK_TIMEOUT_MS) < 0) {
+                        Timber.tag(TAG).e("SetDevicePropValue command failed")
+                        return@withLock false
+                    }
 
-                val data = UsbPtpProtocol.buildDataContainer(txId, value)
-                if (conn.bulkTransfer(out, data, data.size, BULK_TIMEOUT_MS) < 0) {
-                    Timber.tag(TAG).e("SetDevicePropValue data failed")
-                    return@withContext false
-                }
+                    val data = UsbPtpProtocol.buildDataContainer(txId, value)
+                    if (conn.bulkTransfer(out, data, data.size, BULK_TIMEOUT_MS) < 0) {
+                        Timber.tag(TAG).e("SetDevicePropValue data failed")
+                        return@withLock false
+                    }
 
-                val buffer = ByteArray(4096)
-                val read = conn.bulkTransfer(inp, buffer, buffer.size, BULK_TIMEOUT_MS)
-                if (read < UsbPtpProtocol.HEADER_SIZE) return@withContext false
-                UsbPtpProtocol.parseResponseContainer(buffer.copyOf(read))?.isOk ?: false
-            } catch (e: Exception) {
-                Timber.tag(TAG).e(e, "setDevicePropValue error")
-                false
+                    val buffer = ByteArray(4096)
+                    val read = conn.bulkTransfer(inp, buffer, buffer.size, BULK_TIMEOUT_MS)
+                    if (read < UsbPtpProtocol.HEADER_SIZE) return@withLock false
+                    UsbPtpProtocol.parseResponseContainer(buffer.copyOf(read))?.isOk ?: false
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "setDevicePropValue error")
+                    false
+                }
             }
         }
     }

@@ -10,7 +10,9 @@ import com.nikonlink.app.core.usb.UsbPtpManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 /**
@@ -81,6 +83,25 @@ class TransferViewModel @Inject constructor(
                     } else {
                         _isLoading.value = false
                         _message.value = "USB 连接尚未就绪，请稍后重试"
+                    }
+                }
+                return
+            }
+            // USB 设备已插入但会话仍在建立（CONNECTING/权限请求中）时，等待会话就绪，不要误走 WiFi
+            if (usbPtpManager.usbState.value == UsbConnectionState.CONNECTING ||
+                usbPtpManager.usbState.value == UsbConnectionState.REQUESTING_PERMISSION
+            ) {
+                _message.value = "正在建立 USB 通道..."
+                viewModelScope.launch {
+                    val connected = withTimeoutOrNull(15000L) {
+                        while (!usbPtpManager.isConnected()) delay(200)
+                        true
+                    } ?: false
+                    if (connected) {
+                        loadPhotos()
+                    } else {
+                        _isLoading.value = false
+                        _message.value = "USB 连接尚未就绪，请检查相机 USB 模式（PTP）"
                     }
                 }
                 return
