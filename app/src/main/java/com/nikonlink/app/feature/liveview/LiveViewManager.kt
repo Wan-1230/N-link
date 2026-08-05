@@ -33,7 +33,7 @@ class LiveViewManager @Inject constructor(
 ) {
     companion object {
         private const val TAG = "LiveViewMgr"
-        private const val FRAME_INTERVAL_MS = 33L  // ~30fps
+        private const val FRAME_INTERVAL_MS = 66L  // ~15fps，预留保活通道余量防断联
         private const val MAX_CONSECUTIVE_ERRORS = 5
     }
 
@@ -43,6 +43,9 @@ class LiveViewManager @Inject constructor(
 
     private val _liveViewState = MutableStateFlow(LiveViewState.STOPPED)
     val liveViewState: StateFlow<LiveViewState> = _liveViewState.asStateFlow()
+
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
     /** 最新帧数据（JPEG/MJPEG） */
     private val _latestFrame = MutableSharedFlow<LiveViewFrame>(extraBufferCapacity = 2)
@@ -84,16 +87,35 @@ class LiveViewManager @Inject constructor(
     suspend fun startLiveView(): Boolean {
         if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) {
             Timber.tag(TAG).w("PTP not connected")
+            _errorMessage.value = "相机尚未连接，请先完成配对"
             return false
         }
 
+        _liveViewState.value = LiveViewState.STARTING
+        _errorMessage.value = null
         return withContext(Dispatchers.IO) {
             try {
-                val success = if (usbPtpManager.isConnected()) {
-                    usbPtpManager.startLiveView()
-                } else {
-                    ptpSession.startLiveView()
+                // 参考影犀日志: 启动 LiveView 前先设置 Nikon 图像配置 0xD1AC=3，
+                // 否则相机可能不输出 JPEG 帧
+                runCatching {
+                    val profileOk = if (usbPtpManager.isConnected()) {
+                        usbPtpManager.setDevicePropValue(
+                            PtpConstants.PROP_NIKON_LV_IMAGE_PROFILE,
+                            byteArrayOf(3)
+                        )
+                    } else {
+                        ptpSession.setDevicePropValue(
+                            PtpConstants.PROP_NIKON_LV_IMAGE_PROFILE,
+                            byteArrayOf(3)
+                        )
+                    }
+                    if (profileOk) {
+                        Timber.tag(TAG).i("LiveView image profile set 0xD1AC=3")
+                    } else {
+                        Timber.tag(TAG).w("LiveView image profile 0xD1AC=3 rejected (non-fatal)")
+                    }
                 }
+                val success = startLiveViewCommand()
                 if (success) {
                     _liveViewState.value = LiveViewState.RUNNING
                     consecutiveErrors = 0
@@ -101,12 +123,68 @@ class LiveViewManager @Inject constructor(
                     Timber.tag(TAG).i("✓ Live View started")
                 } else {
                     Timber.tag(TAG).e("Failed to start Live View")
+                    _liveViewState.value = LiveViewState.ERROR
+                    _errorMessage.value =
+                        "实时取景启动失败，请检查相机模式（P/A/S/M）并重试"
                 }
                 success
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Start Live View error")
+                _liveViewState.value = LiveViewState.ERROR
+                _errorMessage.value = "实时取景启动异常：${e.message ?: "未知错误"}"
                 false
             }
+        }
+    }
+
+    /**
+     * 参考 NikonStartLiveViewAction / 影犀日志：StartLiveView 返回 DeviceBusy 时，
+     * 等待相机就绪（DeviceReady）而不是立即报错。
+     */
+    private suspend fun startLiveViewCommand(): Boolean {
+        val (firstOk, firstCode) = startLiveViewResult()
+        if (firstCode < 0) return false
+
+        if (firstOk) return true
+        if (firstCode != PtpConstants.RESPONSE_DEVICE_BUSY &&
+            firstCode != PtpConstants.RESPONSE_NIKON_NOT_LIVE_VIEW
+        ) {
+            Timber.tag(TAG).w("StartLiveView rejected: 0x${firstCode.toString(16)}")
+            return false
+        }
+
+        repeat(10) { attempt ->
+            delay(250)
+            val (readyOk, readyCode) = deviceReadyResult()
+            if (readyOk) {
+                Timber.tag(TAG).i("LiveView became ready after $attempt retries")
+                return true
+            }
+            if (readyCode != -1 && readyCode != PtpConstants.RESPONSE_DEVICE_BUSY) {
+                Timber.tag(TAG).w("DeviceReady while starting LiveView: 0x${readyCode.toString(16)}")
+                return false
+            }
+        }
+        return false
+    }
+
+    private suspend fun startLiveViewResult(): Pair<Boolean, Int> {
+        return if (usbPtpManager.isConnected()) {
+            val response = usbPtpManager.sendCommand(PtpConstants.OP_NIKON_START_LIVE_VIEW)
+            if (response == null) Pair(false, -1) else Pair(response.isOk, response.responseCode)
+        } else {
+            val response = ptpSession.sendCommand(PtpConstants.OP_NIKON_START_LIVE_VIEW)
+            Pair(response.isOk, response.responseCode)
+        }
+    }
+
+    private suspend fun deviceReadyResult(): Pair<Boolean, Int> {
+        return if (usbPtpManager.isConnected()) {
+            val response = usbPtpManager.sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
+            if (response == null) Pair(false, -1) else Pair(response.isOk, response.responseCode)
+        } else {
+            val response = ptpSession.sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
+            Pair(response.isOk, response.responseCode)
         }
     }
 
@@ -116,6 +194,7 @@ class LiveViewManager @Inject constructor(
     fun stopLiveView() {
         frameJob?.cancel()
         frameJob = null
+        _errorMessage.value = null
         if (_liveViewState.value == LiveViewState.RUNNING) {
             scope?.launch(Dispatchers.IO) {
                 try {
@@ -195,6 +274,7 @@ class LiveViewManager @Inject constructor(
         if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
             Timber.tag(TAG).e("Too many errors, stopping Live View")
             _liveViewState.value = LiveViewState.ERROR
+            _errorMessage.value = "实时取景长时间无画面，已自动停止，请重试"
             frameJob?.cancel()
         } else {
             delay(100)  // 短暂等待后重试
@@ -213,9 +293,12 @@ class LiveViewManager @Inject constructor(
         if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) return false
         return withContext(Dispatchers.IO) {
             try {
-                // 将归一化坐标转换为相机 AF 区域坐标 (320x240 参考)
-                val afX = (x * 320).toInt().coerceIn(0, 319)
-                val afY = (y * 240).toInt().coerceIn(0, 239)
+                // 参考影犀日志: 触摸对焦坐标范围约 x:0~4000, y:0~3000，
+                // 将归一化坐标映射到该范围
+                val afX = (x * PtpConstants.AF_COORD_MAX_X).toInt()
+                    .coerceIn(0, PtpConstants.AF_COORD_MAX_X)
+                val afY = (y * PtpConstants.AF_COORD_MAX_Y).toInt()
+                    .coerceIn(0, PtpConstants.AF_COORD_MAX_Y)
 
                 val response = if (usbPtpManager.isConnected()) {
                     usbPtpManager.changeAfArea(afX, afY)

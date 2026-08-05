@@ -8,6 +8,10 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.View
+import android.view.animation.DecelerateInterpolator
+import android.widget.ImageView
+import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -40,6 +44,14 @@ class MainActivity : AppCompatActivity() {
     private val settingsFragment = SettingsFragment()
     private var activeFragment: Fragment = dashboardFragment
 
+    // 任务7: 底部 Tab 配置
+    private var tabWidth = 0f
+    private var currentTab = 0
+    private lateinit var tabViews: List<View>
+    private lateinit var tabIcons: List<ImageView>
+    private lateinit var tabLabels: List<TextView>
+    private val tabFragments: List<Fragment> get() = listOf(dashboardFragment, transferFragment, remoteFragment, settingsFragment)
+
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -70,14 +82,51 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupBottomNav() {
-        binding.bottomNav.setOnItemSelectedListener { item ->
-            when (item.itemId) {
-                R.id.nav_dashboard -> switchFragment(dashboardFragment)
-                R.id.nav_transfer -> switchFragment(transferFragment)
-                R.id.nav_remote -> switchFragment(remoteFragment)
-                R.id.nav_settings -> switchFragment(settingsFragment)
-            }
-            true
+        tabViews = listOf(binding.tabDashboard, binding.tabTransfer, binding.tabRemote, binding.tabSettings)
+        tabIcons = listOf(binding.iconDashboard, binding.iconTransfer, binding.iconRemote, binding.iconSettings)
+        tabLabels = listOf(binding.labelDashboard, binding.labelTransfer, binding.labelRemote, binding.labelSettings)
+
+        tabViews.forEachIndexed { index, view ->
+            view.setOnClickListener { selectTab(index) }
+        }
+
+        // 布局完成后初始化药丸宽度与位置
+        binding.bottomBar.post {
+            tabWidth = binding.tabRow.width / 4f
+            val inset = tabWidth * 0.12f
+            val lp = binding.tabPill.layoutParams
+            lp.width = (tabWidth - inset * 2).toInt()
+            binding.tabPill.layoutParams = lp
+            binding.tabPill.translationX = currentTab * tabWidth + inset
+            applyTabColors(currentTab)
+        }
+        applyTabColors(currentTab)
+    }
+
+    private fun selectTab(index: Int) {
+        if (index == currentTab) return
+        switchFragment(tabFragments[index])
+
+        // 任务7: 药丸指示器平滑跟随动画
+        val inset = tabWidth * 0.12f
+        binding.tabPill.animate()
+            .translationX(index * tabWidth + inset)
+            .setDuration(260)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+
+        currentTab = index
+        applyTabColors(index)
+    }
+
+    /** 任务7: 激活 Tab 用对比色（白）高亮，未激活用灰 */
+    private fun applyTabColors(active: Int) {
+        val activeColor = ContextCompat.getColor(this, R.color.on_dark_card)
+        val inactiveColor = ContextCompat.getColor(this, R.color.nav_inactive_icon)
+        for (i in tabViews.indices) {
+            val color = if (i == active) activeColor else inactiveColor
+            tabIcons[i].setColorFilter(color)
+            tabLabels[i].setTextColor(color)
         }
     }
 

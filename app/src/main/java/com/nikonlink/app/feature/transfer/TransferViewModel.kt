@@ -85,11 +85,33 @@ class TransferViewModel @Inject constructor(
     private fun loadPhotos() {
         _isLoading.value = true
         viewModelScope.launch {
-            val photos = transferManager.fetchPhotoList()
+            // 参考影犀日志: 媒体列表按 limit=18 分页，每页完成后立即刷新网格，
+            // 避免照片多时等待整份列表返回才看到内容。
+            val photos = transferManager.fetchPhotoList(
+                onPage = { page -> _photoList.value = page }
+            )
             _photoList.value = photos
             _selectedHandles.value = emptySet()
             _isLoading.value = false
             _message.value = if (photos.isEmpty()) "存储卡为空或未连接" else "共 ${photos.size} 个文件"
+            // 加载全部缩略图，实现相册式实时预览
+            loadAllThumbnails()
+        }
+    }
+
+    /**
+     * 加载全部照片缩略图（实时预览）
+     * 逐个加载，加载完一张立即刷新一张
+     */
+    private fun loadAllThumbnails() {
+        viewModelScope.launch {
+            for (photo in _photoList.value) {
+                if (_thumbnails.value.containsKey(photo.handle)) continue
+                val thumb = transferManager.fetchThumbnail(photo.handle)
+                if (thumb != null) {
+                    _thumbnails.value = _thumbnails.value + (photo.handle to thumb)
+                }
+            }
         }
     }
 

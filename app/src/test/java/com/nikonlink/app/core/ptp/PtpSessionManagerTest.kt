@@ -140,6 +140,13 @@ private class MockPtpCamera {
         eventOut.write(InitEventAckPacket.toBytes())
         eventOut.flush()
 
+        // 与真实相机一致：EventAck 后等待客户端 PING 并回 PONG，
+        // 缺少这一握手时客户端不会进入后续命令阶段。
+        val ping = PtpPacket.fromStream(eventIn)
+        if (ping !is PingPacket) return
+        eventOut.write(PongPacket.toBytes())
+        eventOut.flush()
+
         var pendingSetResponseTx: Int? = null
         while (true) {
             val packet = PtpPacket.fromStream(commandIn) ?: break

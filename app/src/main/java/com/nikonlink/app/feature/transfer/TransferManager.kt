@@ -39,6 +39,8 @@ class TransferManager @Inject constructor(
     companion object {
         private const val TAG = "TransferMgr"
         private const val PARTIAL_CHUNK_SIZE = 1024 * 1024  // 1MB chunks for partial transfer
+        // 参考影犀日志: 媒体列表分页 limit=18，逐页加载避免一次性阻塞
+        private const val PAGE_SIZE = 18
     }
 
     private var scope: CoroutineScope? = null
@@ -77,7 +79,9 @@ class TransferManager @Inject constructor(
      * 获取相机存储卡照片列表
      * PRD 2.1: 浏览相机存储卡照片列表
      */
-    suspend fun fetchPhotoList(): List<CameraFile> {
+    suspend fun fetchPhotoList(
+        onPage: ((List<CameraFile>) -> Unit)? = null
+    ): List<CameraFile> {
         val transport = currentTransport()
         if (!transport.isConnected) {
             Timber.tag(TAG).w("No camera transport connected, cannot fetch photo list")
@@ -94,12 +98,17 @@ class TransferManager @Inject constructor(
                 }
                 Timber.tag(TAG).i("Found ${handles.size} objects on camera")
 
-                handles.mapNotNull { handle ->
-                    val infoBytes = transport.objectInfo(handle)
-                    if (infoBytes != null) {
-                        parseObjectInfo(handle, infoBytes)
-                    } else null
-                }.filter { it.isPhoto }
+                // 参考影犀日志: 按 PAGE_SIZE=18 分页读取 ObjectInfo，逐页回调
+                val result = mutableListOf<CameraFile>()
+                handles.chunked(PAGE_SIZE).forEach { page ->
+                    val pageFiles = page.mapNotNull { handle ->
+                        val infoBytes = transport.objectInfo(handle)
+                        if (infoBytes != null) parseObjectInfo(handle, infoBytes) else null
+                    }.filter { it.isPhoto }
+                    result.addAll(pageFiles)
+                    onPage?.invoke(result.toList())
+                }
+                result
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Failed to fetch photo list")
                 emptyList()
@@ -147,8 +156,9 @@ class TransferManager @Inject constructor(
                 }
 
                 val completed = downloadToFile(transport, file, tempFile) { received, total ->
-                    onProgress?.invoke(received, total)
-                    _transferState.value = TransferState.Downloading(file, received, total)
+                    val resolvedTotal = resolveProgressTotal(file.size, total, received)
+                    onProgress?.invoke(received, resolvedTotal)
+                    _transferState.value = TransferState.Downloading(file, received, resolvedTotal)
                 }
 
                 if (!completed) {
@@ -186,37 +196,101 @@ class TransferManager @Inject constructor(
         onProgress: ((Long, Long) -> Unit)? = null
     ): Boolean {
         var totalReceived = target.length()
-        if (totalReceived > file.size) {
+        if (file.size > 0 && totalReceived > file.size) {
             target.delete()
             totalReceived = 0
         }
+        if (file.size > 0 && totalReceived >= file.size) return true
+
+        // 相机未返回可靠文件大小时直接整文件下载，避免循环条件把文件当作空文件。
+        if (file.size <= 0) {
+            val full = transport.getObject(file.handle) { received, declared ->
+                val total = resolveProgressTotal(file.size, declared, received)
+                onProgress?.invoke(received, total)
+            } ?: return false
+            FileOutputStream(target, false).use { output -> output.write(full) }
+            totalReceived = full.size.toLong()
+            onProgress?.invoke(totalReceived, totalReceived)
+            return full.isNotEmpty()
+        }
+
+        val startOffset = totalReceived
+        while (totalReceived < file.size) {
+            val remaining = (file.size - totalReceived).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            val chunkSize = minOf(PARTIAL_CHUNK_SIZE, remaining)
+            val partial = transport.partialObject(
+                file.handle,
+                totalReceived.toInt(),
+                chunkSize
+            )
+            if (partial == null || partial.isEmpty()) break
+
+            FileOutputStream(target, true).use { output -> output.write(partial) }
+            totalReceived += partial.size
+            onProgress?.invoke(totalReceived, file.size)
+        }
+
         if (totalReceived >= file.size) return true
 
-        FileOutputStream(target, true).use { output ->
-            while (totalReceived < file.size) {
-                val remaining = (file.size - totalReceived).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-                val chunkSize = minOf(PARTIAL_CHUNK_SIZE, remaining)
-                val partial = transport.partialObject(
-                    file.handle,
-                    totalReceived.toInt(),
-                    chunkSize
-                )
-                if (partial == null && totalReceived == 0L) {
-                    // 部分传输不支持时整文件重下，与相机兼容性保持一致
-                    val full = transport.getObject(file.handle) ?: break
-                    output.write(full)
-                    totalReceived = full.size.toLong()
-                    onProgress?.invoke(totalReceived, file.size)
-                    break
-                }
-                if (partial == null || partial.isEmpty()) break
-
-                output.write(partial)
-                totalReceived += partial.size
-                onProgress?.invoke(totalReceived, file.size)
-            }
+        // 部分传输完全不支持时，清掉占位文件后整文件下载并带进度。
+        if (startOffset == 0L && totalReceived == 0L) {
+            target.delete()
+            val full = transport.getObject(file.handle) { received, _ ->
+                onProgress?.invoke(received, file.size)
+            } ?: return false
+            FileOutputStream(target, false).use { output -> output.write(full) }
+            totalReceived = full.size.toLong()
+            onProgress?.invoke(totalReceived, file.size)
+            return totalReceived >= file.size
         }
-        return totalReceived >= file.size
+        return false
+    }
+
+    private fun resolveProgressTotal(expected: Long, declared: Long, received: Long): Long {
+        val validExpected = expected > 0 && expected != 0xFFFFFFFFL
+        val validDeclared = declared > 0 && declared != 0xFFFFFFFFL && declared >= received
+        return when {
+            validExpected -> expected
+            validDeclared -> declared
+            else -> received
+        }
+    }
+
+    private fun parseObjectInfo(handle: Int, data: ByteArray): CameraFile? {
+        return try {
+            val buffer = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            val storageId = buffer.int
+            val formatCode = buffer.short.toInt() and 0xFFFF
+            val protectionStatus = buffer.short.toInt()
+            var compressedSize = buffer.int.toLong() and 0xFFFFFFFFL
+            if (compressedSize == 0xFFFFFFFFL) compressedSize = 0L
+            // Skip thumb format, thumb compressed size, thumb pix width/height
+            buffer.short; buffer.int; buffer.int; buffer.int
+            // Skip image pix width/height, bit depth
+            buffer.int; buffer.int; buffer.int
+            val parentObject = buffer.int
+            val associationType = buffer.short
+            val associationDesc = buffer.int
+            val sequenceNumber = buffer.int
+
+            // Read filename (UTF-16LE string with length prefix)
+            val nameLength = buffer.get().toInt() and 0xFF
+            val nameBytes = ByteArray(nameLength * 2)
+            buffer.get(nameBytes)
+            val fileName = String(nameBytes, Charsets.UTF_16LE).trimEnd('\u0000')
+
+            CameraFile(
+                handle = handle,
+                fileName = fileName,
+                size = compressedSize,
+                formatCode = formatCode,
+                storageId = storageId,
+                format = classifyFormat(formatCode, fileName)
+            )
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "Failed to parse object info for handle=$handle")
+            null
+        }
     }
 
     private fun currentTransport(): CameraTransport {
@@ -291,9 +365,13 @@ class TransferManager @Inject constructor(
             val result = try {
                 downloadPhoto(
                     file = nextTask.file,
-                    onProgress = { received, _ ->
-                        _transferState.value =
-                            TransferState.Downloading(nextTask.file, received, nextTask.file.size)
+                    onProgress = { received, total ->
+                        val resolvedTotal = resolveProgressTotal(nextTask.file.size, total, received)
+                        _transferState.value = TransferState.Downloading(
+                            nextTask.file,
+                            received,
+                            resolvedTotal
+                        )
                     },
                     targetFile = tempFile
                 )
@@ -350,42 +428,6 @@ class TransferManager @Inject constructor(
             uri.toString()
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Failed to save to MediaStore")
-            null
-        }
-    }
-
-    private fun parseObjectInfo(handle: Int, data: ByteArray): CameraFile? {
-        return try {
-            val buffer = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-            val storageId = buffer.int
-            val formatCode = buffer.short.toInt() and 0xFFFF
-            val protectionStatus = buffer.short.toInt()
-            val compressedSize = buffer.int.toLong() and 0xFFFFFFFFL
-            // Skip thumb format, thumb compressed size, thumb pix width/height
-            buffer.short; buffer.int; buffer.int; buffer.int
-            // Skip image pix width/height, bit depth
-            buffer.int; buffer.int; buffer.int
-            val parentObject = buffer.int
-            val associationType = buffer.short
-            val associationDesc = buffer.int
-            val sequenceNumber = buffer.int
-
-            // Read filename (UTF-16LE string with length prefix)
-            val nameLength = buffer.get().toInt() and 0xFF
-            val nameBytes = ByteArray(nameLength * 2)
-            buffer.get(nameBytes)
-            val fileName = String(nameBytes, Charsets.UTF_16LE).trimEnd('\u0000')
-
-            CameraFile(
-                handle = handle,
-                fileName = fileName,
-                size = compressedSize,
-                formatCode = formatCode,
-                storageId = storageId,
-                format = classifyFormat(formatCode, fileName)
-            )
-        } catch (e: Exception) {
-            Timber.tag(TAG).e(e, "Failed to parse object info for handle=$handle")
             null
         }
     }
@@ -485,7 +527,7 @@ private interface CameraTransport {
     suspend fun storageIds(): List<Int>
     suspend fun objectHandles(storageId: Int): List<Int>
     suspend fun objectInfo(handle: Int): ByteArray?
-    suspend fun getObject(handle: Int): ByteArray?
+    suspend fun getObject(handle: Int, onProgress: ((Long, Long) -> Unit)? = null): ByteArray?
     suspend fun thumbnail(handle: Int): ByteArray?
     suspend fun partialObject(handle: Int, offset: Int, size: Int): ByteArray?
 }
@@ -498,7 +540,8 @@ private class PtpTransport(
     override suspend fun objectHandles(storageId: Int): List<Int> =
         ptp.getObjectHandles(storageId)
     override suspend fun objectInfo(handle: Int): ByteArray? = ptp.getObjectInfo(handle)
-    override suspend fun getObject(handle: Int): ByteArray? = ptp.getObject(handle)
+    override suspend fun getObject(handle: Int, onProgress: ((Long, Long) -> Unit)?): ByteArray? =
+        ptp.getObject(handle, onProgress)
     override suspend fun thumbnail(handle: Int): ByteArray? = ptp.getThumbnail(handle)
     override suspend fun partialObject(handle: Int, offset: Int, size: Int): ByteArray? =
         ptp.getPartialObject(handle, offset, size)
@@ -512,7 +555,8 @@ private class UsbTransport(
     override suspend fun objectHandles(storageId: Int): List<Int> =
         usb.getObjectHandles(storageId)
     override suspend fun objectInfo(handle: Int): ByteArray? = usb.getObjectInfo(handle)
-    override suspend fun getObject(handle: Int): ByteArray? = usb.getObject(handle)
+    override suspend fun getObject(handle: Int, onProgress: ((Long, Long) -> Unit)?): ByteArray? =
+        usb.getObject(handle, onProgress)
     override suspend fun thumbnail(handle: Int): ByteArray? = usb.getThumbnail(handle)
     override suspend fun partialObject(handle: Int, offset: Int, size: Int): ByteArray? =
         usb.getPartialObject(handle, offset, size)

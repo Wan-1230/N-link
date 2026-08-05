@@ -43,6 +43,7 @@ class WifiScanner @Inject constructor(
         private const val DEFAULT_SCAN_TIMEOUT_MS = 12000L
         private const val TCP_PROBE_TIMEOUT_MS = 400
         private const val MAX_SCAN_CONCURRENCY = 32
+        private const val GENERIC_NAME = "尼康相机"
     }
 
     private val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
@@ -58,7 +59,14 @@ class WifiScanner @Inject constructor(
             val subnetJob = async { scanSubnet(timeoutMs, results) }
             awaitAll(mdnsJob, subnetJob)
         }
-        return results.sortedBy { it.name }
+        // 任务2: 同一台相机会产生多个同名/异名条目（mDNS+网段扫描），按 IP 去重，
+        // 优先保留相机自定义名称条目，隐藏通用占位名称的重复项
+        return results
+            .groupBy { it.ipAddress }
+            .map { (_, cands) ->
+                cands.firstOrNull { it.name != GENERIC_NAME } ?: cands.first()
+            }
+            .sortedBy { it.name }
     }
 
     private suspend fun collectMdns(

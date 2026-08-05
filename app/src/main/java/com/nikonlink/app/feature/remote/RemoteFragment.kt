@@ -63,10 +63,14 @@ class RemoteFragment : Fragment() {
     private fun startSessionFeatures() {
         if (sessionFeaturesStarted) return
         sessionFeaturesStarted = true
+        // 轻量一次性读取，避免与 LiveView 同时抢占 PTP 通道导致保活超时断联
         viewModel.refreshStatus()
-        paramsViewModel.startPolling()
         paramsViewModel.readAll()
-        liveViewViewModel.startLiveView()
+        // 参数轮询与 LiveView 互斥：仅在 LiveView 未运行时轮询
+        if (liveViewViewModel.liveViewState.value != LiveViewState.RUNNING) {
+            paramsViewModel.startPolling(5000L)
+        }
+        // 不自动开启 LiveView，由用户手动点击「开始」，防止打开页面即占满通道
     }
 
     private fun stopSessionFeatures() {
@@ -93,9 +97,22 @@ class RemoteFragment : Fragment() {
             true
         }
 
-        binding.btnFocus.setOnClickListener {
-            viewModel.halfPressFocus()
-            Toast.makeText(requireContext(), "对焦中...", Toast.LENGTH_SHORT).show()
+        // 任务6: A/F 对焦按钮长按持续对焦，模拟实体对焦按键
+        binding.btnFocus.setOnTouchListener { v, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.isPressed = true
+                    viewModel.startContinuousFocus()
+                    Toast.makeText(requireContext(), "持续对焦中...", Toast.LENGTH_SHORT).show()
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    v.isPressed = false
+                    viewModel.stopContinuousFocus()
+                    true
+                }
+                else -> false
+            }
         }
     }
 
@@ -248,12 +265,28 @@ class RemoteFragment : Fragment() {
                     LiveViewState.ERROR -> "✕ 错误"
                     LiveViewState.STOPPED -> "○ 已停止"
                 }
+                // LiveView 与参数轮询互斥，避免同时抢占 PTP 通道造成保活超时断联
+                if (state == LiveViewState.RUNNING) {
+                    paramsViewModel.stopPolling()
+                } else if (sessionFeaturesStarted) {
+                    paramsViewModel.startPolling(5000L)
+                }
+            }
+        }
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            liveViewViewModel.errorMessage.collect { message ->
+                if (!message.isNullOrBlank()) {
+                    Toast.makeText(requireContext(), message, Toast.LENGTH_SHORT).show()
+                }
             }
         }
 
         viewLifecycleOwner.lifecycleScope.launch {
             liveViewViewModel.latestFrame.collect { frame ->
-                val bitmap = BitmapFactory.decodeByteArray(frame.data, 0, frame.data.size)
+                val data = frame.data
+                val start = findJpegStart(data)
+                val bitmap = BitmapFactory.decodeByteArray(data, start, data.size - start)
                 if (bitmap != null) {
                     binding.ivLiveView.setImageBitmap(bitmap)
                 }
@@ -285,6 +318,16 @@ class RemoteFragment : Fragment() {
                 binding.tvZoom.text = String.format("%.1fx", zoom)
             }
         }
+    }
+
+    /** 定位 JPEG SOI，兼容尼康 LiveView 帧头（影犀日志 offset=1024） */
+    private fun findJpegStart(data: ByteArray): Int {
+        for (i in 0 until data.size - 1) {
+            if (data[i].toInt() and 0xFF == 0xFF && data[i + 1].toInt() and 0xFF == 0xD8) {
+                return i
+            }
+        }
+        return 0
     }
 
     private fun observeParams() {
