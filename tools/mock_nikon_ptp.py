@@ -280,7 +280,10 @@ class MockCamera:
                 print("event connection closed by client")
                 break
             if ptype == 0x0D:
+                print("event PING -> PONG")
                 send_packet(conn, 0x0E)
+            elif ptype == 0x0E:
+                print("event PONG received")
             else:
                 print("event packet: %s (%s bytes)" % (PACKET_NAMES.get(ptype, hex(ptype)), len(payload)))
 

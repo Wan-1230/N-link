@@ -139,10 +139,17 @@ class UsbPtpManager @Inject constructor(
             openConnection(device)
         } else {
             _usbState.value = UsbConnectionState.REQUESTING_PERMISSION
+            // Fix P0-3: Android 12+ 必须用 FLAG_MUTABLE，系统才能向广播附加
+            // EXTRA_PERMISSION_GRANTED/EXTRA_DEVICE 结果，否则永远判定拒绝
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_MUTABLE
+            } else {
+                0
+            }
             val permissionIntent = PendingIntent.getBroadcast(
                 context, 0,
                 Intent(ACTION_USB_PERMISSION).setPackage(context.packageName),
-                PendingIntent.FLAG_IMMUTABLE
+                flags
             )
             usbManager.requestPermission(device, permissionIntent)
         }
@@ -241,7 +248,11 @@ class UsbPtpManager @Inject constructor(
     private suspend fun openPtpSession(): Boolean = withContext(Dispatchers.IO) {
         try {
             val response = sendCommand(PtpConstants.OP_OPEN_SESSION, listOf(1))
-            response?.isOk ?: false
+            // Fix P0-3: 接受 OK 或 SESSION_ALREADY_OPEN（重复连接时相机可能已开会话）
+            val ok = response?.isOk == true ||
+                    response?.responseCode == PtpConstants.RESPONSE_SESSION_ALREADY_OPEN
+            if (!ok) Timber.tag(TAG).e("OpenSession code=0x${response?.responseCode?.toString(16)}")
+            ok
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "OpenSession failed")
             false
@@ -288,7 +299,11 @@ class UsbPtpManager @Inject constructor(
     /**
      * 发送命令并接收数据（获取文件/缩略图/设备信息等）
      */
-    suspend fun sendCommandWithData(operationCode: Int, params: List<Int> = emptyList()): ByteArray? {
+    suspend fun sendCommandWithData(
+        operationCode: Int,
+        params: List<Int> = emptyList(),
+        onProgress: ((Long, Long) -> Unit)? = null
+    ): ByteArray? {
         val conn = usbConnection ?: return null
         val out = bulkOut ?: return null
         val inp = bulkIn ?: return null
@@ -304,6 +319,7 @@ class UsbPtpManager @Inject constructor(
                 // 读取数据包（可能多个）
                 val chunks = mutableListOf<ByteArray>()
                 var gotResponse = false
+                var receivedBytes = 0L
 
                 while (!gotResponse) {
                     val buffer = ByteArray(65536)
@@ -317,7 +333,11 @@ class UsbPtpManager @Inject constructor(
                     when (headerType) {
                         UsbPtpProtocol.TYPE_DATA -> {
                             val parsed = UsbPtpProtocol.parseDataContainer(data)
-                            if (parsed != null) chunks.add(parsed.payload)
+                            if (parsed != null) {
+                                chunks.add(parsed.payload)
+                                receivedBytes += parsed.payload.size
+                                onProgress?.invoke(receivedBytes, receivedBytes)
+                            }
                         }
                         UsbPtpProtocol.TYPE_RESPONSE -> {
                             gotResponse = true
@@ -378,8 +398,11 @@ class UsbPtpManager @Inject constructor(
     /**
      * 获取对象（照片下载）
      */
-    suspend fun getObject(handle: Int): ByteArray? {
-        return sendCommandWithData(PtpConstants.OP_GET_OBJECT, listOf(handle))
+    suspend fun getObject(
+        handle: Int,
+        onProgress: ((Long, Long) -> Unit)? = null
+    ): ByteArray? {
+        return sendCommandWithData(PtpConstants.OP_GET_OBJECT, listOf(handle), onProgress)
     }
 
     /**
@@ -459,6 +482,11 @@ class UsbPtpManager @Inject constructor(
      */
     suspend fun afDrive(): Boolean {
         val response = sendCommand(PtpConstants.OP_NIKON_AF_DRIVE)
+        return response?.isOk ?: false
+    }
+
+    suspend fun afDriveCancel(): Boolean {
+        val response = sendCommand(PtpConstants.OP_NIKON_AF_DRIVE_CANCEL)
         return response?.isOk ?: false
     }
 
@@ -555,19 +583,30 @@ class UsbPtpManager @Inject constructor(
     private fun startKeepAlive() {
         keepAliveJob?.cancel()
         keepAliveJob = scope?.launch {
+            var consecutiveFailures = 0
             while (isActive) {
                 delay(5000)
                 try {
                     val response = sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
-                    if (response == null) {
-                        Timber.tag(TAG).w("USB DeviceReady failed")
-                        _usbState.value = UsbConnectionState.ERROR
-                        break
+                    // Fix P0-3: 允许 DeviceBusy/单次失败，连续失败才判定断联
+                    val ok = response != null &&
+                            (response.isOk || response.responseCode == PtpConstants.RESPONSE_DEVICE_BUSY)
+                    if (ok) {
+                        consecutiveFailures = 0
+                    } else {
+                        consecutiveFailures++
+                        if (consecutiveFailures >= 2) {
+                            _usbState.value = UsbConnectionState.ERROR
+                            break
+                        }
                     }
                 } catch (e: Exception) {
                     Timber.tag(TAG).w(e, "USB keep-alive failed")
-                    _usbState.value = UsbConnectionState.ERROR
-                    break
+                    consecutiveFailures++
+                    if (consecutiveFailures >= 2) {
+                        _usbState.value = UsbConnectionState.ERROR
+                        break
+                    }
                 }
             }
         }

@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 相册网格项：缩略图 + 右上角选择框 + 格式角标 -->
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:padding="1.5dp">
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintDimensionRatio="1:1"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <!-- 缩略图 -->
+        <ImageView
+            android:id="@+id/ivThumb"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:background="@color/panel_2"
+            android:contentDescription="照片缩略图"
+            android:scaleType="centerCrop"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <!-- 加载中占位 -->
+        <ProgressBar
+            android:id="@+id/progressThumb"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:indeterminateTint="@color/on_surface_variant"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <!-- 选中遮罩 -->
+        <View
+            android:id="@+id/viewSelectedMask"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:background="#55D4922A"
+            android:visibility="gone"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <!-- 右上角选择框 -->
+        <CheckBox
+            android:id="@+id/cbSelect"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:layout_margin="6dp"
+            android:background="@drawable/bg_chip"
+            android:buttonTint="@color/white"
+            android:clickable="false"
+            android:focusable="false"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
+
+        <!-- 左下角格式角标 -->
+        <TextView
+            android:id="@+id/tvFormatBadge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_margin="6dp"
+            android:background="#AA1C1C1E"
+            android:paddingHorizontal="6dp"
+            android:paddingVertical="2dp"
+            android:text="JPG"
+            android:textColor="@color/white"
+            android:textSize="9sp"
+            android:textStyle="bold"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent" />
+    </androidx.constraintlayout.widget.ConstraintLayout>
+</androidx.constraintlayout.widget.ConstraintLayout>

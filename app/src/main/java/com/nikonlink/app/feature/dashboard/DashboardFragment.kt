@@ -8,7 +8,6 @@ import android.content.res.ColorStateList
 import android.text.InputType
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
@@ -178,7 +177,8 @@ class DashboardFragment : Fragment() {
         // USB 有线连接按钮
         binding.btnUsbConnect.setOnClickListener {
             viewModel.connectUsb()
-            Toast.makeText(requireContext(), "检测 USB 相机...", Toast.LENGTH_SHORT).show()
+            // Fix P2-5: 移除冗余 Toast，改用状态栏文字反馈
+            binding.tvUsbStatus.text = "检测 USB 相机..."
         }
 
         // 观察 USB 连接状态
@@ -225,7 +225,8 @@ class DashboardFragment : Fragment() {
             .setTitle("选择相机设备")
             .setItems(names) { _, which ->
                 val entry = entries[which]
-                Toast.makeText(requireContext(), "连接: ${entry.label}", Toast.LENGTH_SHORT).show()
+                // Fix P2-5: 状态栏文字反馈，替代 Toast
+                binding.tvStatusMessage.text = "连接: ${entry.label}"
                 when {
                     entry.bleDevice != null -> viewModel.connectToDevice(entry.bleDevice.address)
                     entry.wifiDevice != null -> viewModel.connectToWifiCamera(entry.wifiDevice)
@@ -258,12 +259,12 @@ class DashboardFragment : Fragment() {
                 val ip = parts.firstOrNull().orEmpty()
                 val port = parts.getOrNull(1)?.toIntOrNull() ?: 15740
                 if (ip.isNotEmpty()) {
+                    binding.tvStatusMessage.text = "连接 $ip:$port"
                     viewModel.connectToWifiCamera(
                         WifiCameraCandidate(ip, port, "手动相机", "manual")
                     )
-                    Toast.makeText(requireContext(), "连接 $ip:$port", Toast.LENGTH_SHORT).show()
                 } else {
-                    Toast.makeText(requireContext(), "IP 地址无效", Toast.LENGTH_SHORT).show()
+                    binding.tvStatusMessage.text = "IP 地址无效"
                 }
             }
             .setNegativeButton("取消", null)

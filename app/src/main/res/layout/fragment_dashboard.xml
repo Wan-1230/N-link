@@ -207,9 +207,14 @@
                     android:insetTop="0dp"
                     android:insetBottom="0dp"
                     android:minWidth="0dp"
+                    android:maxLines="1"
+                    android:paddingHorizontal="4dp"
                     android:text="BLE 扫描"
                     android:textColor="@color/on_dark_card"
                     android:textSize="13sp"
+                    app:autoSizeTextType="uniform"
+                    app:autoSizeMinTextSize="9sp"
+                    app:autoSizeMaxTextSize="13sp"
                     app:cornerRadius="12dp"
                     app:strokeColor="@color/dark_card_surface" />
 
@@ -223,9 +228,14 @@
                     android:insetTop="0dp"
                     android:insetBottom="0dp"
                     android:minWidth="0dp"
+                    android:maxLines="1"
+                    android:paddingHorizontal="4dp"
                     android:text="WiFi 扫描"
                     android:textColor="@color/on_dark_card"
                     android:textSize="13sp"
+                    app:autoSizeTextType="uniform"
+                    app:autoSizeMinTextSize="9sp"
+                    app:autoSizeMaxTextSize="13sp"
                     app:cornerRadius="12dp"
                     app:strokeColor="@color/dark_card_surface" />
 
@@ -239,9 +249,14 @@
                     android:insetTop="0dp"
                     android:insetBottom="0dp"
                     android:minWidth="0dp"
-                    android:text="USB"
+                    android:maxLines="1"
+                    android:paddingHorizontal="4dp"
+                    android:text="USB 连接"
                     android:textColor="@color/on_dark_card"
                     android:textSize="13sp"
+                    app:autoSizeTextType="uniform"
+                    app:autoSizeMinTextSize="9sp"
+                    app:autoSizeMaxTextSize="13sp"
                     app:cornerRadius="12dp"
                     app:strokeColor="@color/dark_card_surface" />
             </LinearLayout>

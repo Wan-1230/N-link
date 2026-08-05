@@ -20,6 +20,7 @@
         android:visibility="gone" />
 
     <LinearLayout
+        android:id="@+id/liveTopBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top"
@@ -60,12 +61,27 @@
             android:id="@+id/tvZoom"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:layout_marginEnd="14dp"
             android:text="1.0x"
             android:textColor="@color/liveview_text"
             android:textSize="12sp" />
+
+        <!-- 任务5: 全屏切换按钮 -->
+        <TextView
+            android:id="@+id/btnFullscreen"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="?attr/selectableItemBackground"
+            android:paddingHorizontal="8dp"
+            android:paddingVertical="4dp"
+            android:text=" 全屏"
+            android:textColor="@color/white"
+            android:textSize="13sp"
+            android:textStyle="bold" />
     </LinearLayout>
 
     <LinearLayout
+        android:id="@+id/liveBottomBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
@@ -116,7 +132,7 @@
                 android:insetTop="0dp"
                 android:insetBottom="0dp"
                 android:minWidth="0dp"
-                android:text="AF"
+                android:text="对焦"
                 android:textSize="12sp"
                 app:cornerRadius="10dp" />
         </LinearLayout>
@@ -131,14 +147,14 @@
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnZoomOut"
                 style="@style/Widget.Material3.Button.TonalButton"
-                android:layout_width="44dp"
+                android:layout_width="wrap_content"
                 android:layout_height="38dp"
                 android:layout_marginEnd="8dp"
                 android:insetTop="0dp"
                 android:insetBottom="0dp"
                 android:minWidth="0dp"
-                android:text="−"
-                android:textSize="16sp"
+                android:text="− 缩小"
+                android:textSize="12sp"
                 app:cornerRadius="10dp" />
 
             <com.google.android.material.button.MaterialButton
@@ -150,20 +166,20 @@
                 android:insetTop="0dp"
                 android:insetBottom="0dp"
                 android:minWidth="0dp"
-                android:text="1x"
+                android:text="重置"
                 android:textSize="12sp"
                 app:cornerRadius="10dp" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnZoomIn"
                 style="@style/Widget.Material3.Button.TonalButton"
-                android:layout_width="44dp"
+                android:layout_width="wrap_content"
                 android:layout_height="38dp"
                 android:insetTop="0dp"
                 android:insetBottom="0dp"
                 android:minWidth="0dp"
-                android:text="+"
-                android:textSize="16sp"
+                android:text="＋ 放大"
+                android:textSize="12sp"
                 app:cornerRadius="10dp" />
         </LinearLayout>
     </LinearLayout>

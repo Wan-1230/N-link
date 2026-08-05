@@ -176,9 +176,8 @@ class ConnectionManager @Inject constructor(
                 }
 
                 if (ok) {
-                    if (bleManager.isConnected()) {
-                        bleManager.requestWifiReconnect()
-                    }
+                    // Fix 任务1(STA): 直连成功后不再发 BLE 指令令相机切换 WiFi 模式，
+                    // 避免 STA 模式下相机会话被重置导致后续操作失败
                     _connectionHint.value = ConnectionHint(
                         "配对完成。OK确定",
                         kind = ConnectionHintKind.PAIRING_COMPLETE
@@ -479,9 +478,6 @@ class ConnectionManager @Inject constructor(
             val ok = ptpSession.connect(ip, port, pairingMode = true)
             if (ok) {
                 Timber.tag(TAG).i("PTP session recovered")
-                if (bleManager.isConnected()) {
-                    bleManager.requestWifiReconnect()
-                }
                 stateMachine.dispatch(ConnectionEvent.WifiConnected)
             } else {
                 Timber.tag(TAG).w("PTP session recovery failed")
@@ -545,9 +541,6 @@ class ConnectionManager @Inject constructor(
         val success = ptpSession.connect(host, port)
         if (success) {
             Timber.tag(TAG).i("✓ PTP session ready")
-            if (bleManager.isConnected()) {
-                bleManager.requestWifiReconnect()
-            }
             stateMachine.dispatch(ConnectionEvent.WifiConnected)
         } else {
             Timber.tag(TAG).w("PTP session failed, will retry on next WiFi reconnect")

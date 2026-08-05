@@ -95,9 +95,20 @@ object PtpConstants {
     const val RESPONSE_INVALID_DEVICE_PROP_VALUE = 0x201C
     const val RESPONSE_SESSION_ALREADY_OPEN = 0x201E
     const val RESPONSE_TRANSACTION_CANCELLED = 0x201F
+    const val RESPONSE_NIKON_NOT_LIVE_VIEW = 0xA00B
 
     // PTP Event Codes
+    // 参考影犀日志: event code=0x4002 (ObjectAdded) / 0x4006 (DevicePropChanged) / 0x400d
+    const val EVENT_OBJECT_ADDED = 0x4002
     const val EVENT_DEVICE_PROP_CHANGED = 0x4006
+    const val EVENT_CAPTURE_COMPLETE = 0x400D
+
+    // Nikon 厂商属性: LiveView 图像配置 (参考影犀日志: image profile set size=0xd1ac:3)
+    const val PROP_NIKON_LV_IMAGE_PROFILE = 0xD1AC
+
+    // 参考影犀日志: 触摸对焦坐标范围约 x:0~4000, y:0~3000
+    const val AF_COORD_MAX_X = 4000
+    const val AF_COORD_MAX_Y = 3000
 
     // PTP Device Property Codes
     const val PROP_BATTERY_LEVEL = 0x5001
@@ -541,7 +552,14 @@ data object PingPacket : PtpPacket() {
  */
 data object PongPacket : PtpPacket() {
     override val type = PtpConstants.PACKET_TYPE_PONG
-    override fun toBytes(): ByteArray = ByteArray(0)
+
+    override fun toBytes(): ByteArray {
+        val buffer = ByteBuffer.allocate(PtpConstants.PTP_IP_HEADER_SIZE)
+            .order(ByteOrder.LITTLE_ENDIAN)
+        buffer.putInt(PtpConstants.PTP_IP_HEADER_SIZE)
+        buffer.putInt(type)
+        return buffer.array()
+    }
 }
 
 /**

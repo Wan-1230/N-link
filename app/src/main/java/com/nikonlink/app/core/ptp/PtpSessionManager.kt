@@ -28,7 +28,8 @@ class PtpSessionManager @Inject constructor(
         private const val CONNECT_TIMEOUT_MS = 10000
         private const val READ_TIMEOUT_MS = 30000
         private const val PAIRING_TIMEOUT_MS = 60000L
-        private const val KEEP_ALIVE_INTERVAL_MS = 5000L
+        private const val KEEP_ALIVE_INTERVAL_MS = 15000L
+        private const val EVENT_PING_TIMEOUT_MS = 1500
     }
 
     private var commandSocket: Socket? = null
@@ -139,8 +140,33 @@ class PtpSessionManager @Inject constructor(
                 return@withContext false
             }
 
-            // 打开 PTP 会话
-            val openResult = sendCommand(PtpConstants.OP_OPEN_SESSION, listOf(response.sessionId))
+            // 参考影犀日志: EventAck 后客户端主动发送 PING，收到 PONG 才继续。
+            // 部分相机在缺少这一握手时会把连接判定为失败，并在数秒后断开。
+            eventSocket?.soTimeout = EVENT_PING_TIMEOUT_MS
+            runCatching {
+                eventOutput?.write(PingPacket.toBytes())
+                eventOutput?.flush()
+                val pong = PtpPacket.fromStream(eventInput!!)
+                if (pong is PongPacket) {
+                    Timber.tag(TAG).i("Event ping answered with Pong")
+                } else {
+                    Timber.tag(TAG).w("Event ping did not get Pong (${pong?.type})")
+                }
+            }.onFailure {
+                Timber.tag(TAG).w("Event ping timed out: ${it.message}")
+            }
+
+            // Fix P0-2: 与 Nikon_connect 一致，OpenSession 前先 GetDeviceInfo，
+            // 让相机识别客户端并在屏幕显示连接状态
+            val deviceInfo = sendCommandWithData(PtpConstants.OP_GET_DEVICE_INFO)
+            if (deviceInfo is PtpDataResult.Success) {
+                Timber.tag(TAG).i("GetDeviceInfo OK (${deviceInfo.data.size} bytes) before OpenSession")
+            } else {
+                Timber.tag(TAG).w("GetDeviceInfo before OpenSession not OK (non-fatal)")
+            }
+
+            // Fix P0-2: OpenSession 参数固定为 1（标准会话 ID），而非 connectionNumber
+            val openResult = sendCommand(PtpConstants.OP_OPEN_SESSION, listOf(1))
             if (!openResult.isOk) {
                 Timber.tag(TAG).e("Failed to open session: 0x${openResult.responseCode.toString(16)}")
                 _sessionState.value = PtpSessionState.ERROR
@@ -148,12 +174,11 @@ class PtpSessionManager @Inject constructor(
             }
             sessionId = response.sessionId
 
-            // 会话建立后立即向相机反馈，防止相机因未收到确认而断开
-            val readyResult = sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
-            if (!readyResult.isOk) {
-                Timber.tag(TAG).w(
-                    "Camera did not confirm DeviceReady: 0x${readyResult.responseCode.toString(16)}"
-                )
+            // 参考影犀日志: OpenSession 后先排空 Nikon GetEventEx (0x90C7)，
+            // 清除相机缓存的旧事件，避免干扰后续异步事件监听
+            runCatching {
+                sendCommand(PtpConstants.OP_NIKON_CHECK_EVENT, listOf(0xFFFFFFFF.toInt(), 0, 0))
+                Timber.tag(TAG).i("GetEventEx drain after OpenSession")
             }
 
             // 缩短断联检测时间：会话建立后命令通道超时降至 10s
@@ -239,18 +264,12 @@ class PtpSessionManager @Inject constructor(
                             is DataPacket -> {
                                 dataChunks.add(pkt.data)
                                 receivedSize += pkt.data.size
-                                onProgress?.invoke(
-                                    receivedSize,
-                                    if (declaredSize > 0) declaredSize else receivedSize
-                                )
+                                onProgress?.invoke(receivedSize, progressTotal(receivedSize, declaredSize))
                             }
                             is EndDataPacket -> {
                                 dataChunks.add(pkt.data)
                                 receivedSize += pkt.data.size
-                                onProgress?.invoke(
-                                    receivedSize,
-                                    if (declaredSize > 0) declaredSize else receivedSize
-                                )
+                                onProgress?.invoke(receivedSize, progressTotal(receivedSize, declaredSize))
                             }
                             is CommandResponsePacket -> {
                                 if (pkt.transactionId == txId) {
@@ -283,6 +302,14 @@ class PtpSessionManager @Inject constructor(
                     PtpDataResult.Failure(CommandResponsePacket(txId, PtpConstants.RESPONSE_GENERAL_ERROR))
                 }
             }
+        }
+    }
+
+    private fun progressTotal(received: Long, declared: Long): Long {
+        return if (declared > 0 && declared != 0xFFFFFFFFL && declared >= received) {
+            declared
+        } else {
+            received
         }
     }
 
@@ -489,23 +516,29 @@ class PtpSessionManager @Inject constructor(
     }
 
     private fun startKeepAlive() {
-        keepAliveJob = scope?.launch {
+        keepAliveJob = scope?.launch(Dispatchers.IO) {
+            var consecutiveFailures = 0
             while (isActive) {
                 delay(KEEP_ALIVE_INTERVAL_MS)
-                try {
-                    // Nikon 依赖持续收到的 DeviceReady 来维持连接
+                // 参考影犀日志: 心跳间隔 15s，走 keepAlive 命令（DeviceReady）而非 Probe。
+                // 经 commandMutex 串行发送，15s 间隔不会与业务命令争用。
+                val ok = try {
                     val response = sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
-                    if (!response.isOk &&
-                        response.responseCode != PtpConstants.RESPONSE_DEVICE_BUSY
-                    ) {
-                        Timber.tag(TAG).w("DeviceReady keep-alive rejected")
+                    response.isOk || response.responseCode == PtpConstants.RESPONSE_DEVICE_BUSY
+                } catch (e: Exception) {
+                    Timber.tag(TAG).w("keepAlive command failed: ${e.message}")
+                    false
+                }
+
+                if (ok) {
+                    consecutiveFailures = 0
+                } else {
+                    consecutiveFailures++
+                    Timber.tag(TAG).w("keepAlive failed ($consecutiveFailures)")
+                    if (consecutiveFailures >= 2) {
                         markLinkError()
                         break
                     }
-                } catch (e: Exception) {
-                    Timber.tag(TAG).w("Keep-alive failed: ${e.message}")
-                    markLinkError()
-                    break
                 }
             }
         }

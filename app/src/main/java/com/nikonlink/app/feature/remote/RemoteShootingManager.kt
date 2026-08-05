@@ -34,6 +34,7 @@ class RemoteShootingManager @Inject constructor(
     private var scope: CoroutineScope? = null
     private var intervalJob: Job? = null
     private var timerJob: Job? = null
+    private var focusJob: Job? = null
     private var bulbStartTime = 0L
 
     private val _shootingState = MutableStateFlow(ShootingState.IDLE)
@@ -99,12 +100,17 @@ class RemoteShootingManager @Inject constructor(
     /**
      * 全按拍摄（单张）
      * PRD 5.1: 遥控快门延迟 < 150ms
+     * 参考影犀日志: 拍照请求 autofocus=true 时先触发 AF 再释放快门
      */
-    suspend fun capture(): Boolean {
+    suspend fun capture(autofocus: Boolean = true): Boolean {
         if (!isRemoteReady()) return false
         return withContext(Dispatchers.IO) {
             try {
                 _shootingState.value = ShootingState.CAPTURING
+                // 参考影犀日志: 拍照前先自动对焦
+                if (autofocus) {
+                    runCatching { halfPressFocus() }
+                }
                 val success = if (usbPtpManager.isConnected()) {
                     usbPtpManager.capture()
                 } else {
@@ -122,6 +128,38 @@ class RemoteShootingManager @Inject constructor(
                 false
             }
         }
+    }
+
+    /**
+     * 任务6: 长按持续对焦（模拟实体对焦按键）。
+     * 循环触发 AF Drive，直到调用 stopContinuousFocus()。
+     */
+    fun startContinuousFocus() {
+        if (focusJob?.isActive == true) return
+        focusJob = scope?.launch {
+            while (isActive && isRemoteReady()) {
+                try {
+                    if (usbPtpManager.isConnected()) usbPtpManager.afDrive()
+                    else ptpSession.afDrive()
+                } catch (e: Exception) {
+                    Timber.tag(TAG).w(e, "Continuous AF drive failed")
+                }
+                delay(600)
+            }
+        }
+        Timber.tag(TAG).i("Continuous focus started")
+    }
+
+    fun stopContinuousFocus() {
+        focusJob?.cancel()
+        focusJob = null
+        scope?.launch {
+            runCatching {
+                if (usbPtpManager.isConnected()) usbPtpManager.afDriveCancel()
+                else ptpSession.afDriveCancel()
+            }
+        }
+        Timber.tag(TAG).i("Continuous focus stopped")
     }
 
     // ==================== 定时拍摄 ====================

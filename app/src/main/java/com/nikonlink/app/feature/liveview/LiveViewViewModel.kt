@@ -23,6 +23,7 @@ class LiveViewViewModel @Inject constructor(
     val latency: StateFlow<Long> = liveViewManager.latency
     val gridOverlay: StateFlow<GridOverlay> = liveViewManager.gridOverlay
     val zoomLevel: StateFlow<Float> = liveViewManager.zoomLevel
+    val errorMessage: StateFlow<String?> = liveViewManager.errorMessage
 
     init {
         liveViewManager.start(viewModelScope)

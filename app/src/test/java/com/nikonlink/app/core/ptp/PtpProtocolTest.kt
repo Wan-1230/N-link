@@ -149,6 +149,16 @@ class PtpProtocolTest {
     }
 
     @Test
+    fun `pong packet is header only and round trips through stream parser`() {
+        val bytes = PongPacket.toBytes()
+        assertEquals(8, bytes.size)
+        assertEquals(8, intLE(bytes, 0))
+        assertEquals(PtpConstants.PACKET_TYPE_PONG, intLE(bytes, 4))
+        val parsed = PtpPacket.fromStream(ByteArrayInputStream(bytes))
+        assertEquals(PtpConstants.PACKET_TYPE_PONG, parsed!!.type)
+    }
+
+    @Test
     fun `unknown init fail packet is parsed without crashing`() {
         val bytes = ByteBuffer.allocate(12)
             .order(ByteOrder.LITTLE_ENDIAN)

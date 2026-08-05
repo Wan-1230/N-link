@@ -36,6 +36,15 @@ class RemoteShootingViewModel @Inject constructor(
         viewModelScope.launch { remoteManager.halfPressFocus() }
     }
 
+    /** 任务6: 长按持续对焦 */
+    fun startContinuousFocus() {
+        remoteManager.startContinuousFocus()
+    }
+
+    fun stopContinuousFocus() {
+        remoteManager.stopContinuousFocus()
+    }
+
     fun startTimerCapture(seconds: Int) {
         remoteManager.startTimerCapture(seconds)
     }
