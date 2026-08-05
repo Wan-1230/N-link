@@ -91,9 +91,10 @@ class TransferManager @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 val storageIds = transport.storageIds()
-                val handles = if (storageIds.isNotEmpty()) {
-                    transport.objectHandles(storageIds.first())
-                } else {
+                // 遍历所有存储（机身/双卡），避免只读第一张卡漏掉照片
+                val handles = storageIds.flatMap { storageId ->
+                    transport.objectHandles(storageId)
+                }.distinct().ifEmpty {
                     transport.objectHandles(0xFFFFFFFF.toInt())
                 }
                 Timber.tag(TAG).i("Found ${handles.size} objects on camera")
@@ -104,7 +105,11 @@ class TransferManager @Inject constructor(
                     val pageFiles = page.mapNotNull { handle ->
                         val infoBytes = transport.objectInfo(handle)
                         if (infoBytes != null) parseObjectInfo(handle, infoBytes) else null
-                    }.filter { it.isPhoto }
+                    }.filter {
+                        it.format == CameraFileFormat.JPEG ||
+                                it.format == CameraFileFormat.RAW ||
+                                it.format == CameraFileFormat.VIDEO
+                    }
                     result.addAll(pageFiles)
                     onPage?.invoke(result.toList())
                 }
@@ -246,13 +251,28 @@ class TransferManager @Inject constructor(
         return false
     }
 
+    /**
+     * 批量删除相机存储卡文件（PTP DeleteObject）。
+     * 返回成功删除的 handle 列表。
+     */
+    suspend fun deleteFiles(files: List<CameraFile>): List<Int> {
+        val transport = currentTransport()
+        if (!transport.isConnected) return emptyList()
+        return withContext(Dispatchers.IO) {
+            files.mapNotNull { file ->
+                val ok = runCatching { transport.deleteObject(file.handle) }.getOrDefault(false)
+                if (ok) file.handle else null
+            }
+        }
+    }
+
     private fun resolveProgressTotal(expected: Long, declared: Long, received: Long): Long {
         val validExpected = expected > 0 && expected != 0xFFFFFFFFL
         val validDeclared = declared > 0 && declared != 0xFFFFFFFFL && declared >= received
         return when {
             validExpected -> expected
             validDeclared -> declared
-            else -> received
+            else -> 0L
         }
     }
 
@@ -530,6 +550,7 @@ private interface CameraTransport {
     suspend fun getObject(handle: Int, onProgress: ((Long, Long) -> Unit)? = null): ByteArray?
     suspend fun thumbnail(handle: Int): ByteArray?
     suspend fun partialObject(handle: Int, offset: Int, size: Int): ByteArray?
+    suspend fun deleteObject(handle: Int): Boolean
 }
 
 private class PtpTransport(
@@ -545,6 +566,7 @@ private class PtpTransport(
     override suspend fun thumbnail(handle: Int): ByteArray? = ptp.getThumbnail(handle)
     override suspend fun partialObject(handle: Int, offset: Int, size: Int): ByteArray? =
         ptp.getPartialObject(handle, offset, size)
+    override suspend fun deleteObject(handle: Int): Boolean = ptp.deleteObject(handle)
 }
 
 private class UsbTransport(
@@ -560,4 +582,5 @@ private class UsbTransport(
     override suspend fun thumbnail(handle: Int): ByteArray? = usb.getThumbnail(handle)
     override suspend fun partialObject(handle: Int, offset: Int, size: Int): ByteArray? =
         usb.getPartialObject(handle, offset, size)
+    override suspend fun deleteObject(handle: Int): Boolean = usb.deleteObject(handle)
 }

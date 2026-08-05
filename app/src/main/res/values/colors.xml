@@ -1,58 +1,65 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 黑白双色设计系统 · 日间模式 -->
 <resources>
-    <!-- 页面底色：暖白灰，类似截图中的浅米色背景 -->
-    <color name="page">#F2F0EC</color>
-    <color name="background">#F2F0EC</color>
-
-    <!-- 浅色表面：用于信息卡片 -->
+    <!-- 背景层：纯白主背景，浅灰次级背景 -->
+    <color name="page">#FFFFFF</color>
+    <color name="background">#FFFFFF</color>
     <color name="surface">#FFFFFF</color>
-    <color name="surface_variant">#F8F7F5</color>
-    <color name="panel_2">#EDEBE8</color>
-    <color name="outline">#E2DFDB</color>
+    <color name="surface_variant">#F5F5F5</color>
+    <color name="panel_2">#F5F5F5</color>
+    <color name="outline">#E4E4E4</color>
+    <color name="divider">#EBEBEB</color>
 
-    <!-- 深色卡片：用于主英雄卡片（相机连接状态） -->
-    <color name="dark_card">#1C1C1E</color>
-    <color name="dark_card_inner">#2C2C2E</color>
-    <color name="dark_card_surface">#3A3A3C</color>
-
-    <!-- 深色卡片上的文字 -->
+    <!-- 对比卡片（日间=纯黑底白字；夜间=纯白底黑字） -->
+    <color name="dark_card">#000000</color>
+    <color name="dark_card_inner">#1A1A1A</color>
+    <color name="dark_card_surface">#262626</color>
     <color name="on_dark_card">#FFFFFF</color>
-    <color name="on_dark_card_variant">#98989D</color>
+    <color name="on_dark_card_variant">#A3A3A3</color>
 
-    <!-- 浅色背景上的文字 -->
-    <color name="on_background">#1C1C1E</color>
-    <color name="on_surface">#1C1C1E</color>
-    <color name="on_surface_variant">#8E8E93</color>
+    <!-- 文字层：一级纯黑 / 二级深灰 / 辅助中灰 -->
+    <color name="text_primary">#000000</color>
+    <color name="text_secondary">#525252</color>
+    <color name="text_tertiary">#8C8C8C</color>
+    <color name="text_disabled">#66000000</color>
+    <color name="on_background">#000000</color>
+    <color name="on_surface">#000000</color>
+    <color name="on_surface_variant">#737373</color>
 
-    <!-- 琥珀强调色：状态指示、品牌色 -->
-    <color name="primary">#D4922A</color>
-    <color name="primary_variant">#B87A1F</color>
-    <color name="accent">#D4922A</color>
-    <color name="accent_2">#2FD3C5</color>
-    <color name="accent_soft">#FFF3E0</color>
+    <!-- 组件层：主按钮/选中态纯黑填充 -->
+    <color name="primary">#000000</color>
+    <color name="primary_variant">#1A1A1A</color>
+    <color name="accent">#000000</color>
+    <color name="accent_2">#525252</color>
+    <color name="accent_soft">#F5F5F5</color>
     <color name="on_primary">#FFFFFF</color>
     <color name="on_accent">#FFFFFF</color>
 
-    <!-- 功能性颜色 -->
-    <color name="secondary">#E5484D</color>
-    <color name="secondary_variant">#C23B40</color>
+    <color name="secondary">#262626</color>
+    <color name="secondary_variant">#404040</color>
     <color name="on_secondary">#FFFFFF</color>
 
-    <!-- 连接状态色 -->
-    <color name="status_connected">#34C759</color>
-    <color name="status_connecting">#D4922A</color>
-    <color name="status_disconnected">#8E8E93</color>
-    <color name="ble_indicator">#5AC8FA</color>
-    <color name="wifi_indicator">#34C759</color>
+    <!-- 状态色：仅灰度表达（规范：不引入彩色） -->
+    <color name="status_connected">#000000</color>
+    <color name="status_connecting">#737373</color>
+    <color name="status_disconnected">#BFBFBF</color>
+    <color name="ble_indicator">#525252</color>
+    <color name="wifi_indicator">#000000</color>
+
+    <!-- 点击反馈 / 遮罩 -->
+    <color name="pressed_overlay">#14000000</color>
+    <color name="scrim">#80000000</color>
+    <color name="chip_unselected">#F0F0F0</color>
 
     <!-- Live View 专用 -->
-    <color name="liveview_scrim">#CC000000</color>
+    <color name="liveview_scrim">#99000000</color>
     <color name="white">#FFFFFF</color>
-    <color name="liveview_text">#CCFFFFFF</color>
+    <color name="black">#000000</color>
+    <color name="liveview_text">#E6FFFFFF</color>
 
-    <!-- 底部导航 -->
+    <!-- 底部导航：背景与页面底色一致 -->
     <color name="nav_background">#FFFFFF</color>
-    <color name="nav_active_bg">#F2F0EC</color>
-    <color name="nav_active_icon">#1C1C1E</color>
-    <color name="nav_inactive_icon">#8E8E93</color>
+    <color name="nav_active_bg">#F5F5F5</color>
+    <color name="nav_active_icon">#000000</color>
+    <color name="nav_inactive_icon">#9E9E9E</color>
 </resources>

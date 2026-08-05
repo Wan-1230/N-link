@@ -2,6 +2,7 @@ package com.nikonlink.app.core.wifi
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.ByteArrayOutputStream
@@ -41,7 +42,7 @@ class WifiScanner @Inject constructor(
         private const val PTP_PORT = 15740
         private const val MDNS_ADDRESS = "224.0.0.251"
         private const val DEFAULT_SCAN_TIMEOUT_MS = 12000L
-        private const val TCP_PROBE_TIMEOUT_MS = 400
+        private const val TCP_PROBE_TIMEOUT_MS = 800
         private const val MAX_SCAN_CONCURRENCY = 32
         private const val GENERIC_NAME = "尼康相机"
     }
@@ -282,11 +283,17 @@ class WifiScanner @Inject constructor(
     }
 
     private fun currentIpv4Addresses(): List<Pair<String, Int>> {
-        val network = connectivityManager.activeNetwork ?: return emptyList()
-        val properties = connectivityManager.getLinkProperties(network) ?: return emptyList()
-        return properties.linkAddresses.mapNotNull { address ->
-            val inet = address.address as? Inet4Address ?: return@mapNotNull null
-            inet.hostAddress to address.prefixLength
+        // 只扫描 WiFi transport，避免把蜂窝网段（如 ccmni3）误当成相机所在网段。
+        return connectivityManager.allNetworks.mapNotNull { network ->
+            val capabilities = connectivityManager.getNetworkCapabilities(network)
+            if (capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) != true) {
+                return@mapNotNull null
+            }
+            val properties = connectivityManager.getLinkProperties(network) ?: return@mapNotNull null
+            properties.linkAddresses.firstNotNullOfOrNull { address ->
+                val inet = address.address as? Inet4Address ?: return@firstNotNullOfOrNull null
+                inet.hostAddress to address.prefixLength
+            }
         }
     }
 

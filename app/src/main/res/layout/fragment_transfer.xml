@@ -1,319 +1,213 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 相册风格传输页：顶部选择栏 + 三栏筛选 + 照片网格 + 底部悬浮操作栏 -->
-<androidx.constraintlayout.widget.ConstraintLayout
-    xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- Tab2 相机相册：顶部导航 + 分类标签 + 影像网格 + 多选悬浮操作栏 -->
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/background">
 
-    <!-- 顶部选择栏：全选 | 已选择N项 | 取消 -->
+    <!-- 顶部导航：标题 + 筛选 + 多选 -->
     <LinearLayout
         android:id="@+id/topBar"
         android:layout_width="0dp"
-        android:layout_height="52dp"
-        android:background="@color/background"
+        android:layout_height="56dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingHorizontal="16dp"
-        app:layout_constraintTop_toTopOf="parent"
+        android:paddingHorizontal="@dimen/page_margin"
+        app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent">
+        app:layout_constraintTop_toTopOf="parent">
 
         <TextView
-            android:id="@+id/btnSelectAll"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="全选"
-            android:textColor="@color/accent"
-            android:textSize="15sp"
-            android:textStyle="bold"
-            android:background="?attr/selectableItemBackground"
-            android:paddingVertical="8dp" />
-
-        <TextView
-            android:id="@+id/tvSelectionTitle"
+            style="@style/NlText.Title"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:gravity="center"
-            android:text="相机照片"
-            android:textColor="@color/on_background"
-            android:textSize="16sp"
-            android:textStyle="bold" />
+            android:text="相机相册" />
+
+        <ImageView
+            android:id="@+id/btnRefresh"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="刷新"
+            android:padding="8dp"
+            android:src="@drawable/ic_refresh"
+            app:tint="@color/text_primary" />
 
         <TextView
-            android:id="@+id/btnCancelSelection"
+            android:id="@+id/btnMultiSelect"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="取消"
-            android:textColor="@color/accent"
-            android:textSize="15sp"
-            android:textStyle="bold"
-            android:background="?attr/selectableItemBackground"
-            android:paddingVertical="8dp" />
+            android:layout_height="32dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/bg_chip"
+            android:gravity="center"
+            android:paddingHorizontal="14dp"
+            android:text="多选"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
     </LinearLayout>
 
-    <!-- 状态行：通道 + 传输状态 -->
-    <LinearLayout
-        android:id="@+id/statusRow"
+    <View
+        android:id="@+id/topDivider"
+        android:layout_width="0dp"
+        android:layout_height="@dimen/divider_height"
+        android:background="@color/divider"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/topBar" />
+
+    <!-- 分类标签栏：横向滚动胶囊 -->
+    <HorizontalScrollView
+        android:id="@+id/chipScroll"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingHorizontal="16dp"
-        android:paddingBottom="6dp"
-        app:layout_constraintTop_toBottomOf="@id/topBar"
+        android:clipToPadding="false"
+        android:paddingVertical="10dp"
+        android:paddingHorizontal="@dimen/page_margin"
+        android:scrollbars="none"
+        app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent">
+        app:layout_constraintTop_toBottomOf="@id/topDivider">
 
-        <TextView
-            android:id="@+id/tvChannelStatus"
+        <LinearLayout
+            android:id="@+id/chipRow"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="通道: 未连接"
-            android:textColor="@color/ble_indicator"
-            android:textSize="12sp" />
+            android:orientation="horizontal" />
+    </HorizontalScrollView>
 
-        <TextView
-            android:id="@+id/tvTransferStatus"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
-            android:layout_weight="1"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:text="传输空闲"
-            android:textColor="@color/on_surface_variant"
-            android:textSize="12sp" />
-
-        <TextView
-            android:id="@+id/tvPhotoCount"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="0 文件"
-            android:textColor="@color/on_surface_variant"
-            android:textSize="12sp" />
-    </LinearLayout>
-
-    <!-- Fix P1-4: 下载确定进度条（0-100%） -->
+    <!-- 下载确定进度条（0-100%） -->
     <ProgressBar
         android:id="@+id/progressDownload"
         style="@style/Widget.AppCompat.ProgressBar.Horizontal"
         android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginHorizontal="16dp"
+        android:layout_height="3dp"
+        android:layout_marginHorizontal="@dimen/page_margin"
         android:max="100"
         android:progress="0"
-        android:progressTint="@color/accent"
+        android:progressTint="@color/text_primary"
+        android:progressBackgroundTint="@color/outline"
         android:visibility="gone"
-        app:layout_constraintTop_toBottomOf="@id/statusRow"
+        app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+        app:layout_constraintTop_toBottomOf="@id/chipScroll" />
 
-    <!-- 三栏筛选：全部 / JPG / RAW -->
-    <com.google.android.material.button.MaterialButtonToggleGroup
-        android:id="@+id/filterGroup"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginHorizontal="16dp"
-        android:layout_marginBottom="8dp"
-        app:selectionRequired="true"
-        app:singleSelection="true"
-        app:layout_constraintTop_toBottomOf="@id/progressDownload"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent">
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnFilterAll"
-            style="@style/Widget.Material3.Button.TonalButton"
-            android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_weight="1"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:minWidth="0dp"
-            android:text="全部"
-            android:textSize="13sp" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnFilterJpg"
-            style="@style/Widget.Material3.Button.TonalButton"
-            android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_weight="1"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:minWidth="0dp"
-            android:text="JPG"
-            android:textSize="13sp" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnFilterRaw"
-            style="@style/Widget.Material3.Button.TonalButton"
-            android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_weight="1"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:minWidth="0dp"
-            android:text="RAW"
-            android:textSize="13sp" />
-    </com.google.android.material.button.MaterialButtonToggleGroup>
-
-    <!-- 加载进度 -->
-    <ProgressBar
-        android:id="@+id/progressBar"
-        style="@style/Widget.AppCompat.ProgressBar.Horizontal"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginHorizontal="16dp"
-        android:indeterminate="true"
-        android:progressTint="@color/accent"
-        android:visibility="gone"
-        app:layout_constraintTop_toBottomOf="@id/filterGroup"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
-
-    <!-- 照片网格 -->
+    <!-- 影像网格：3 列等宽方形 -->
     <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/rvPhotos"
+        android:id="@+id/gridPhotos"
         android:layout_width="0dp"
         android:layout_height="0dp"
+        android:layout_marginTop="4dp"
         android:clipToPadding="false"
-        android:paddingHorizontal="4dp"
+        android:paddingHorizontal="2dp"
         android:paddingBottom="96dp"
-        app:layout_constraintTop_toBottomOf="@id/progressBar"
         app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+        app:layout_constraintTop_toBottomOf="@id/progressDownload" />
 
-    <!-- 空状态 -->
-    <TextView
-        android:id="@+id/tvEmpty"
+    <!-- 空状态 / 加载提示 -->
+    <LinearLayout
+        android:id="@+id/layoutEmpty"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="暂无照片\n点击下方「获取照片」浏览存储卡"
         android:gravity="center"
-        android:textColor="@color/on_surface_variant"
-        android:textSize="14sp"
-        android:visibility="gone"
-        app:layout_constraintTop_toTopOf="@id/rvPhotos"
-        app:layout_constraintBottom_toBottomOf="@id/rvPhotos"
+        android:orientation="vertical"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+        app:layout_constraintTop_toBottomOf="@id/chipScroll">
 
-    <!-- 底部悬浮操作栏 -->
+        <ProgressBar
+            android:id="@+id/progressLoading"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:indeterminateTint="@color/text_secondary"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/tvMessage"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center"
+            android:paddingHorizontal="40dp"
+            android:text="连接相机后查看相册"
+            android:textColor="@color/text_tertiary"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <!-- 底部悬浮操作栏（多选模式）：下载 / 删除 / 分享 / 全选 -->
     <LinearLayout
         android:id="@+id/bottomBar"
         android:layout_width="0dp"
-        android:layout_height="64dp"
-        android:layout_marginHorizontal="16dp"
+        android:layout_height="56dp"
+        android:layout_marginHorizontal="20dp"
         android:layout_marginBottom="16dp"
-        android:background="@drawable/bg_pill_white"
-        android:elevation="8dp"
-        android:gravity="center"
+        android:background="@drawable/bg_floating_bar"
+        android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingHorizontal="8dp"
+        android:visibility="gone"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent">
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnFetchPhotos"
-            style="@style/Widget.Material3.Button.TextButton"
+        <TextView
+            android:id="@+id/tvSelectedCount"
             android:layout_width="0dp"
-            android:layout_height="48dp"
+            android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:autoSizeMaxTextSize="13sp"
-            android:autoSizeMinTextSize="9sp"
-            android:autoSizeTextType="uniform"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:maxLines="1"
-            android:minWidth="0dp"
-            android:paddingHorizontal="2dp"
-            android:text="获取照片"
-            android:textColor="@color/on_background"
-            android:textSize="12sp"
-            app:cornerRadius="16dp" />
+            android:paddingStart="18dp"
+            android:text="已选 0 项"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp"
+            android:textStyle="bold" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnDownloadSelected"
-            style="@style/Widget.Material3.Button.TextButton"
-            android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_weight="1"
-            android:autoSizeMaxTextSize="13sp"
-            android:autoSizeMinTextSize="9sp"
-            android:autoSizeTextType="uniform"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:maxLines="1"
-            android:minWidth="0dp"
-            android:paddingHorizontal="2dp"
-            android:text="下载选中"
-            android:textColor="@color/accent"
-            android:textSize="12sp"
-            android:textStyle="bold"
-            app:backgroundTint="@android:color/transparent"
-            app:cornerRadius="16dp" />
+        <TextView
+            android:id="@+id/btnSelectAll"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:background="?attr/selectableItemBackground"
+            android:gravity="center"
+            android:paddingHorizontal="12dp"
+            android:text="全选"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnDownloadAll"
-            style="@style/Widget.Material3.Button.TextButton"
-            android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_weight="1"
-            android:autoSizeMaxTextSize="13sp"
-            android:autoSizeMinTextSize="9sp"
-            android:autoSizeTextType="uniform"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:maxLines="1"
-            android:minWidth="0dp"
-            android:paddingHorizontal="2dp"
-            android:text="下载全部"
-            android:textColor="@color/on_background"
-            android:textSize="12sp"
-            app:cornerRadius="16dp" />
+        <TextView
+            android:id="@+id/btnShare"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:background="?attr/selectableItemBackground"
+            android:gravity="center"
+            android:paddingHorizontal="12dp"
+            android:text="分享"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnPause"
-            style="@style/Widget.Material3.Button.TextButton"
-            android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_weight="1"
-            android:autoSizeMaxTextSize="13sp"
-            android:autoSizeMinTextSize="9sp"
-            android:autoSizeTextType="uniform"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:maxLines="1"
-            android:minWidth="0dp"
-            android:paddingHorizontal="2dp"
-            android:text="暂停"
-            android:textColor="@color/on_background"
-            android:textSize="12sp"
-            app:cornerRadius="16dp" />
+        <TextView
+            android:id="@+id/btnDelete"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:background="?attr/selectableItemBackground"
+            android:gravity="center"
+            android:paddingHorizontal="12dp"
+            android:text="删除"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnCancelAll"
-            style="@style/Widget.Material3.Button.TextButton"
-            android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_weight="1"
-            android:autoSizeMaxTextSize="13sp"
-            android:autoSizeMinTextSize="9sp"
-            android:autoSizeTextType="uniform"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:maxLines="1"
-            android:minWidth="0dp"
-            android:paddingHorizontal="2dp"
-            android:text="清空队列"
-            android:textColor="@color/secondary"
-            android:textSize="12sp"
-            app:cornerRadius="16dp" />
+        <TextView
+            android:id="@+id/btnDownload"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginEnd="10dp"
+            android:background="@drawable/bg_chip_selected"
+            android:gravity="center"
+            android:paddingHorizontal="16dp"
+            android:text="下载"
+            android:textColor="@color/on_primary"
+            android:textSize="13sp"
+            android:textStyle="bold" />
     </LinearLayout>
 </androidx.constraintlayout.widget.ConstraintLayout>

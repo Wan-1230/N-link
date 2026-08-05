@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 监看画面三分构图网格线（白色半透） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path
+        android:strokeColor="#66FFFFFF" android:strokeWidth="0.3"
+        android:pathData="M8,0 V24 M16,0 V24 M0,8 H24 M0,16 H24" />
+</vector>

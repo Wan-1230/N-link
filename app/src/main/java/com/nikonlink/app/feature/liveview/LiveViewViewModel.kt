@@ -30,6 +30,7 @@ class LiveViewViewModel @Inject constructor(
     }
 
     fun startLiveView() {
+        liveViewManager.start(viewModelScope)
         viewModelScope.launch { liveViewManager.startLiveView() }
     }
 

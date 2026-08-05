@@ -26,6 +26,16 @@ import kotlinx.coroutines.launch
 @AndroidEntryPoint
 class LiveViewFragment : Fragment() {
 
+    companion object {
+        private const val EXTRA_AUTO_START = "auto_start"
+
+        fun newAutoStart(): LiveViewFragment {
+            return LiveViewFragment().apply {
+                arguments = Bundle().apply { putBoolean(EXTRA_AUTO_START, true) }
+            }
+        }
+    }
+
     private var _binding: FragmentLiveviewBinding? = null
     private val binding get() = _binding!!
     private val viewModel: LiveViewViewModel by viewModels()
@@ -43,6 +53,9 @@ class LiveViewFragment : Fragment() {
         setupFullscreen()
         setupTouchFocus()
         observeState()
+        if (arguments?.getBoolean(EXTRA_AUTO_START, false) == true) {
+            viewModel.startLiveView()
+        }
     }
 
     /** 任务5: 监看画面圆角，与全局 UI 风格一致 */

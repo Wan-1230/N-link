@@ -58,6 +58,7 @@ dependencies {
     implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.fragment.ktx)
+    implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
 
     // Lifecycle
     implementation(libs.lifecycle.viewmodel.ktx)

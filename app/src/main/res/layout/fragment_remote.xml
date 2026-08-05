@@ -1,689 +1,423 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- Tab3 遥控拍摄：实时监看(2/3) + 参数控制区(1/3) -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/background"
-    android:fillViewport="true"
-    android:clipToPadding="false">
+    android:orientation="vertical">
 
+    <!-- 顶部：照片/视频模式切换 + 状态 -->
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:gravity="center_horizontal"
-        android:orientation="vertical"
-        android:paddingHorizontal="20dp"
-        android:paddingTop="16dp"
-        android:paddingBottom="24dp">
+        android:layout_height="52dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="@dimen/page_margin">
 
-        <!-- 页面标题 -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="34dp"
+            android:background="@drawable/bg_chip"
+            android:orientation="horizontal"
+            android:padding="3dp">
+
+            <TextView
+                android:id="@+id/btnModePhoto"
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:background="@drawable/bg_chip_selected"
+                android:gravity="center"
+                android:paddingHorizontal="18dp"
+                android:text="照片"
+                android:textColor="@color/on_primary"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/btnModeVideo"
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:paddingHorizontal="18dp"
+                android:text="视频"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
         <TextView
-            android:layout_width="match_parent"
+            android:id="@+id/tvRemoteStatus"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="遥控拍摄"
-            android:textColor="@color/on_background"
-            android:textSize="28sp"
-            android:textStyle="bold"
-            android:layout_marginBottom="20dp" />
+            android:text="未连接"
+            android:textColor="@color/text_tertiary"
+            android:textSize="12sp" />
+    </LinearLayout>
 
-        <!-- 深色状态卡片 -->
+    <!-- 实时取景区域（占 2/3） -->
+    <FrameLayout
+        android:id="@+id/liveContainer"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginHorizontal="@dimen/page_margin"
+        android:layout_weight="2"
+        android:background="@drawable/bg_liveview">
+
+        <ImageView
+            android:id="@+id/ivLiveView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="实时取景画面"
+            android:scaleType="fitCenter" />
+
+        <!-- 三分构图网格线 -->
+        <ImageView
+            android:id="@+id/viewGrid"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="网格线"
+            android:scaleType="fitXY"
+            android:src="@drawable/bg_grid_thirds"
+            android:visibility="gone" />
+
+        <!-- 顶部悬浮信息：半透黑底白字 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@drawable/bg_dark_card"
-            android:orientation="vertical"
-            android:padding="20dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:id="@+id/tvShootingState"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="就绪"
-                    android:textColor="@color/status_connected"
-                    android:textSize="18sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/tvBattery"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:background="@drawable/bg_dark_chip"
-                    android:paddingHorizontal="12dp"
-                    android:paddingVertical="6dp"
-                    android:text="电量: --"
-                    android:textColor="@color/on_dark_card_variant"
-                    android:textSize="12sp" />
-            </LinearLayout>
-        </LinearLayout>
-
-        <!-- Live View 面板 -->
-        <FrameLayout
-            android:id="@+id/liveViewPanel"
-            android:layout_width="match_parent"
-            android:layout_height="240dp"
-            android:layout_marginTop="16dp"
-            android:background="@drawable/bg_liveview">
+            android:layout_gravity="top"
+            android:background="@color/liveview_scrim"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="14dp"
+            android:paddingVertical="8dp">
 
             <ImageView
-                android:id="@+id/ivLiveView"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:contentDescription="实时取景"
-                android:scaleType="fitCenter" />
+                android:layout_width="14dp"
+                android:layout_height="14dp"
+                android:contentDescription="电量"
+                android:src="@drawable/ic_battery"
+                app:tint="@color/liveview_text" />
+
+            <TextView
+                android:id="@+id/tvLvBattery"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:text="--"
+                android:textColor="@color/liveview_text"
+                android:textSize="11sp" />
+
+            <ImageView
+                android:layout_width="14dp"
+                android:layout_height="14dp"
+                android:layout_marginStart="14dp"
+                android:contentDescription="剩余"
+                android:src="@drawable/ic_sd_card"
+                app:tint="@color/liveview_text" />
+
+            <TextView
+                android:id="@+id/tvLvShots"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:text="--"
+                android:textColor="@color/liveview_text"
+                android:textSize="11sp" />
 
             <View
-                android:id="@+id/viewFocusIndicator"
-                android:layout_width="56dp"
-                android:layout_height="56dp"
-                android:background="@android:drawable/ic_menu_crop"
-                android:visibility="gone" />
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
 
-            <!-- 顶部信息栏 -->
-            <LinearLayout
-                android:layout_width="match_parent"
+            <TextView
+                android:id="@+id/tvLvConn"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="top"
-                android:background="@color/liveview_scrim"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                android:paddingHorizontal="14dp"
-                android:paddingVertical="10dp">
+                android:text="未连接"
+                android:textColor="@color/liveview_text"
+                android:textSize="11sp" />
+        </LinearLayout>
 
-                <TextView
-                    android:id="@+id/tvLiveStatus"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="○ 已停止"
-                    android:textColor="@color/white"
-                    android:textSize="12sp" />
-
-                <TextView
-                    android:id="@+id/tvFps"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginEnd="12dp"
-                    android:text="0 fps"
-                    android:textColor="@color/liveview_text"
-                    android:textSize="11sp" />
-
-                <TextView
-                    android:id="@+id/tvLatency"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginEnd="12dp"
-                    android:text="0ms"
-                    android:textColor="@color/liveview_text"
-                    android:textSize="11sp" />
-
-                <TextView
-                    android:id="@+id/tvZoom"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="1.0x"
-                    android:textColor="@color/liveview_text"
-                    android:textSize="11sp" />
-            </LinearLayout>
-
-            <!-- 底部控制栏 -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_gravity="bottom"
-                android:background="@color/liveview_scrim"
-                android:gravity="center"
-                android:orientation="horizontal"
-                android:paddingHorizontal="12dp"
-                android:paddingVertical="10dp">
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnStartStop"
-                    android:layout_width="0dp"
-                    android:layout_height="38dp"
-                    android:layout_marginEnd="6dp"
-                    android:layout_weight="2"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:minWidth="0dp"
-                    android:text="开始 Live View"
-                    android:textSize="11sp"
-                    app:backgroundTint="@color/secondary"
-                    app:cornerRadius="8dp" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnGrid"
-                    style="@style/Widget.Material3.Button.TonalButton"
-                    android:layout_width="0dp"
-                    android:layout_height="38dp"
-                    android:layout_marginEnd="6dp"
-                    android:layout_weight="1"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:minWidth="0dp"
-                    android:text="网格"
-                    android:textSize="10sp"
-                    app:cornerRadius="8dp" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnAfCenter"
-                    style="@style/Widget.Material3.Button.TonalButton"
-                    android:layout_width="0dp"
-                    android:layout_height="38dp"
-                    android:layout_marginEnd="6dp"
-                    android:layout_weight="1"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:minWidth="0dp"
-                    android:text="AF"
-                    android:textSize="10sp"
-                    app:cornerRadius="8dp" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnZoomOut"
-                    style="@style/Widget.Material3.Button.TonalButton"
-                    android:layout_width="36dp"
-                    android:layout_height="38dp"
-                    android:layout_marginEnd="4dp"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:minWidth="0dp"
-                    android:text="−"
-                    android:textSize="14sp"
-                    app:cornerRadius="8dp" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnZoomReset"
-                    style="@style/Widget.Material3.Button.TonalButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="38dp"
-                    android:layout_marginEnd="4dp"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:minWidth="0dp"
-                    android:text="1x"
-                    android:textSize="10sp"
-                    app:cornerRadius="8dp" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnZoomIn"
-                    style="@style/Widget.Material3.Button.TonalButton"
-                    android:layout_width="36dp"
-                    android:layout_height="38dp"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:minWidth="0dp"
-                    android:text="+"
-                    android:textSize="14sp"
-                    app:cornerRadius="8dp" />
-            </LinearLayout>
-        </FrameLayout>
-
-        <!-- 拍摄参数卡片 -->
+        <!-- 录制状态标识：实心圆点 + 时长（灰度，不引入彩色） -->
         <LinearLayout
+            android:id="@+id/layoutRecordBadge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="40dp"
+            android:background="@color/liveview_scrim"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="5dp"
+            android:visibility="gone">
+
+            <ImageView
+                android:layout_width="10dp"
+                android:layout_height="10dp"
+                android:contentDescription="录制中"
+                android:src="@drawable/ic_record_dot"
+                app:tint="@color/white" />
+
+            <TextView
+                android:id="@+id/tvRecordTime"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:text="00:00"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- 触摸对焦点指示器（淡入淡出） -->
+        <ImageView
+            android:id="@+id/viewFocusIndicator"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:contentDescription="对焦点"
+            android:src="@drawable/ic_focus"
+            android:visibility="gone"
+            app:tint="@color/white" />
+
+        <!-- 开始监看按钮 -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnStartLv"
+            style="@style/NlButton.Primary"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:layout_gravity="center"
+            android:paddingHorizontal="28dp"
+            android:text="开始监看" />
+
+        <!-- 横屏全屏监看入口 -->
+        <ImageView
+            android:id="@+id/btnFullscreenLv"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="48dp"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/bg_icon_circle"
+            android:contentDescription="全屏监看"
+            android:padding="9dp"
+            android:src="@drawable/ic_fullscreen"
+            app:tint="@color/white" />
+
+        <!-- 快门闪白反馈 -->
+        <View
+            android:id="@+id/viewFlash"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:alpha="0"
+            android:background="@color/white"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <!-- 参数控制区（占 1/3） -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:paddingTop="10dp">
+
+        <!-- 基础参数行：模式/光圈/快门/ISO/白平衡（点击弹出滚轮选择器） -->
+        <HorizontalScrollView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:background="@drawable/bg_card"
-            android:orientation="vertical"
-            android:padding="16dp">
+            android:clipToPadding="false"
+            android:paddingHorizontal="@dimen/page_margin"
+            android:scrollbars="none">
 
             <LinearLayout
-                android:layout_width="match_parent"
+                android:id="@+id/paramRow"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:gravity="center_vertical"
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
+
+        <!-- 全参数展开面板：对焦/测光/间隔/B门 -->
+        <HorizontalScrollView
+            android:id="@+id/extraParamScroll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:clipToPadding="false"
+            android:paddingHorizontal="@dimen/page_margin"
+            android:scrollbars="none"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
                 android:orientation="horizontal">
 
                 <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="拍摄参数"
-                    android:textColor="@color/on_surface"
-                    android:textSize="15sp"
-                    android:textStyle="bold" />
+                    android:id="@+id/btnFocusModeCycle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="34dp"
+                    android:layout_marginEnd="8dp"
+                    android:background="@drawable/bg_chip"
+                    android:gravity="center"
+                    android:paddingHorizontal="14dp"
+                    android:text="对焦 AF-S"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp" />
 
                 <TextView
-                    android:id="@+id/tvQuickLock"
+                    android:id="@+id/btnMeteringCycle"
                     android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:background="@drawable/bg_info_grid_item"
-                    android:paddingHorizontal="10dp"
-                    android:paddingVertical="4dp"
-                    android:text="未锁定"
-                    android:textColor="@color/on_surface_variant"
-                    android:textSize="11sp" />
+                    android:layout_height="34dp"
+                    android:layout_marginEnd="8dp"
+                    android:background="@drawable/bg_chip"
+                    android:gravity="center"
+                    android:paddingHorizontal="14dp"
+                    android:text="测光 矩阵"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/btnInterval"
+                    android:layout_width="wrap_content"
+                    android:layout_height="34dp"
+                    android:layout_marginEnd="8dp"
+                    android:background="@drawable/bg_chip"
+                    android:gravity="center"
+                    android:paddingHorizontal="14dp"
+                    android:text="间隔拍摄"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/btnBulb"
+                    android:layout_width="wrap_content"
+                    android:layout_height="34dp"
+                    android:background="@drawable/bg_chip"
+                    android:gravity="center"
+                    android:paddingHorizontal="14dp"
+                    android:text="B门 长按曝光"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp" />
             </LinearLayout>
+        </HorizontalScrollView>
 
-            <HorizontalScrollView
-                android:layout_width="match_parent"
+        <!-- 快门区：定时 | 快门 | 连拍 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:paddingHorizontal="@dimen/page_margin">
+
+            <FrameLayout
+                android:id="@+id/btnTimer"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_icon_circle">
+
+                <ImageView
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="定时拍摄"
+                    android:src="@drawable/ic_timer"
+                    app:tint="@color/text_primary" />
+            </FrameLayout>
+
+            <FrameLayout
+                android:id="@+id/btnShutter"
+                android:layout_width="76dp"
+                android:layout_height="76dp"
+                android:layout_marginHorizontal="36dp"
+                android:background="@drawable/bg_circle_primary">
+
+                <ImageView
+                    android:id="@+id/ivShutterIcon"
+                    android:layout_width="34dp"
+                    android:layout_height="34dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="快门"
+                    android:src="@drawable/ic_shutter_white" />
+            </FrameLayout>
+
+            <FrameLayout
+                android:id="@+id/btnBurst"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_icon_circle">
+
+                <ImageView
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="连拍"
+                    android:src="@drawable/ic_burst"
+                    app:tint="@color/text_primary" />
+            </FrameLayout>
+        </LinearLayout>
+
+        <!-- 功能辅助行：长按对焦 / 网格线 / 更多参数 / 张数 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:paddingHorizontal="@dimen/page_margin"
+            android:paddingBottom="12dp">
+
+            <TextView
+                android:id="@+id/btnFocusHold"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:background="@drawable/bg_chip"
+                android:gravity="center"
+                android:paddingHorizontal="14dp"
+                android:text="长按对焦"
+                android:textColor="@color/text_primary"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/btnGridToggle"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_chip"
+                android:gravity="center"
+                android:paddingHorizontal="14dp"
+                android:text="网格线"
+                android:textColor="@color/text_primary"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/btnExtraToggle"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_chip"
+                android:gravity="center"
+                android:paddingHorizontal="14dp"
+                android:text="更多参数"
+                android:textColor="@color/text_primary"
+                android:textSize="12sp" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <TextView
+                android:id="@+id/tvShotCount"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:scrollbars="none">
-
-                <LinearLayout
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal">
-
-                    <!-- 光圈 -->
-                    <LinearLayout
-                        android:layout_width="100dp"
-                        android:layout_height="wrap_content"
-                        android:background="@drawable/bg_info_grid_item"
-                        android:layout_marginEnd="8dp"
-                        android:gravity="center"
-                        android:orientation="vertical"
-                        android:padding="12dp">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="光圈"
-                            android:textColor="@color/on_surface_variant"
-                            android:textSize="11sp" />
-
-                        <TextView
-                            android:id="@+id/tvQuickAperture"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
-                            android:text="--"
-                            android:textColor="@color/on_surface"
-                            android:textSize="16sp"
-                            android:textStyle="bold" />
-
-                        <LinearLayout
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
-                            android:orientation="horizontal">
-
-                            <ImageButton
-                                android:id="@+id/btnQuickApertureDown"
-                                android:layout_width="30dp"
-                                android:layout_height="30dp"
-                                android:background="?attr/selectableItemBackgroundBorderless"
-                                android:contentDescription="减小光圈"
-                                android:src="@drawable/ic_arrow_down"
-                                app:tint="@color/on_surface_variant" />
-
-                            <ImageButton
-                                android:id="@+id/btnQuickApertureUp"
-                                android:layout_width="30dp"
-                                android:layout_height="30dp"
-                                android:background="?attr/selectableItemBackgroundBorderless"
-                                android:contentDescription="增大光圈"
-                                android:src="@drawable/ic_arrow_up"
-                                app:tint="@color/on_surface_variant" />
-                        </LinearLayout>
-                    </LinearLayout>
-
-                    <!-- 快门 -->
-                    <LinearLayout
-                        android:layout_width="100dp"
-                        android:layout_height="wrap_content"
-                        android:background="@drawable/bg_info_grid_item"
-                        android:layout_marginEnd="8dp"
-                        android:gravity="center"
-                        android:orientation="vertical"
-                        android:padding="12dp">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="快门"
-                            android:textColor="@color/on_surface_variant"
-                            android:textSize="11sp" />
-
-                        <TextView
-                            android:id="@+id/tvQuickShutter"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
-                            android:text="--"
-                            android:textColor="@color/on_surface"
-                            android:textSize="16sp"
-                            android:textStyle="bold" />
-
-                        <LinearLayout
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
-                            android:orientation="horizontal">
-
-                            <ImageButton
-                                android:id="@+id/btnQuickShutterDown"
-                                android:layout_width="30dp"
-                                android:layout_height="30dp"
-                                android:background="?attr/selectableItemBackgroundBorderless"
-                                android:contentDescription="降低快门"
-                                android:src="@drawable/ic_arrow_down"
-                                app:tint="@color/on_surface_variant" />
-
-                            <ImageButton
-                                android:id="@+id/btnQuickShutterUp"
-                                android:layout_width="30dp"
-                                android:layout_height="30dp"
-                                android:background="?attr/selectableItemBackgroundBorderless"
-                                android:contentDescription="提高快门"
-                                android:src="@drawable/ic_arrow_up"
-                                app:tint="@color/on_surface_variant" />
-                        </LinearLayout>
-                    </LinearLayout>
-
-                    <!-- ISO -->
-                    <LinearLayout
-                        android:layout_width="100dp"
-                        android:layout_height="wrap_content"
-                        android:background="@drawable/bg_info_grid_item"
-                        android:layout_marginEnd="8dp"
-                        android:gravity="center"
-                        android:orientation="vertical"
-                        android:padding="12dp">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="ISO"
-                            android:textColor="@color/on_surface_variant"
-                            android:textSize="11sp" />
-
-                        <TextView
-                            android:id="@+id/tvQuickIso"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
-                            android:text="--"
-                            android:textColor="@color/on_surface"
-                            android:textSize="16sp"
-                            android:textStyle="bold" />
-
-                        <LinearLayout
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
-                            android:orientation="horizontal">
-
-                            <ImageButton
-                                android:id="@+id/btnQuickIsoDown"
-                                android:layout_width="30dp"
-                                android:layout_height="30dp"
-                                android:background="?attr/selectableItemBackgroundBorderless"
-                                android:contentDescription="降低ISO"
-                                android:src="@drawable/ic_arrow_down"
-                                app:tint="@color/on_surface_variant" />
-
-                            <ImageButton
-                                android:id="@+id/btnQuickIsoUp"
-                                android:layout_width="30dp"
-                                android:layout_height="30dp"
-                                android:background="?attr/selectableItemBackgroundBorderless"
-                                android:contentDescription="提高ISO"
-                                android:src="@drawable/ic_arrow_up"
-                                app:tint="@color/on_surface_variant" />
-                        </LinearLayout>
-                    </LinearLayout>
-
-                    <!-- 白平衡 -->
-                    <LinearLayout
-                        android:layout_width="100dp"
-                        android:layout_height="wrap_content"
-                        android:background="@drawable/bg_info_grid_item"
-                        android:layout_marginEnd="8dp"
-                        android:gravity="center"
-                        android:orientation="vertical"
-                        android:padding="12dp">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="白平衡"
-                            android:textColor="@color/on_surface_variant"
-                            android:textSize="11sp" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btnQuickWb"
-                            style="@style/Widget.Material3.Button.TextButton"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:minHeight="30dp"
-                            android:paddingHorizontal="6dp"
-                            android:text="--"
-                            android:textColor="@color/on_surface"
-                            android:textSize="13sp" />
-                    </LinearLayout>
-
-                    <!-- 对焦 -->
-                    <LinearLayout
-                        android:layout_width="100dp"
-                        android:layout_height="wrap_content"
-                        android:background="@drawable/bg_info_grid_item"
-                        android:gravity="center"
-                        android:orientation="vertical"
-                        android:padding="12dp">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="对焦"
-                            android:textColor="@color/on_surface_variant"
-                            android:textSize="11sp" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/btnQuickAf"
-                            style="@style/Widget.Material3.Button.TextButton"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:minHeight="30dp"
-                            android:paddingHorizontal="6dp"
-                            android:text="--"
-                            android:textColor="@color/on_surface"
-                            android:textSize="13sp" />
-                    </LinearLayout>
-                </LinearLayout>
-            </HorizontalScrollView>
+                android:text="已拍 0 张"
+                android:textColor="@color/text_tertiary"
+                android:textSize="12sp" />
         </LinearLayout>
-
-        <!-- 拍摄计数 -->
-        <TextView
-            android:id="@+id/tvShotCount"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text="已拍: 0 张"
-            android:textColor="@color/on_surface_variant"
-            android:textSize="13sp" />
-
-        <!-- 定时器显示 -->
-        <TextView
-            android:id="@+id/tvTimerDisplay"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:textColor="@color/primary"
-            android:letterSpacing="0.02"
-            android:textSize="48sp"
-            android:textStyle="bold"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/tvBulbTime"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:textColor="@color/secondary"
-            android:textSize="20sp"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/tvIntervalProgress"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:textColor="@color/ble_indicator"
-            android:textSize="14sp"
-            android:visibility="gone" />
-
-        <!-- 快门按钮 -->
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnShutter"
-            android:layout_width="100dp"
-            android:layout_height="100dp"
-            android:layout_marginTop="20dp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:text="快门"
-            android:textColor="@color/on_secondary"
-            android:textSize="15sp"
-            app:backgroundTint="@color/secondary"
-            app:cornerRadius="50dp" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnFocus"
-            style="@style/Widget.Material3.Button.OutlinedButton"
-            android:layout_width="120dp"
-            android:layout_height="42dp"
-            android:layout_marginTop="14dp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:minWidth="0dp"
-            android:text="AF 对焦"
-            android:textColor="@color/on_surface"
-            app:cornerRadius="21dp"
-            app:strokeColor="@color/outline" />
-
-        <!-- 定时拍摄 -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:text="定时拍摄"
-            android:textColor="@color/on_surface_variant"
-            android:textSize="13sp" />
-
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal">
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnTimer2s"
-                style="@style/Widget.Material3.Button.TonalButton"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginEnd="8dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="2s"
-                app:cornerRadius="12dp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnTimer5s"
-                style="@style/Widget.Material3.Button.TonalButton"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:layout_marginEnd="8dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="5s"
-                app:cornerRadius="12dp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnTimer10s"
-                style="@style/Widget.Material3.Button.TonalButton"
-                android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="10s"
-                app:cornerRadius="12dp" />
-        </LinearLayout>
-
-        <!-- 间隔/视频控制 -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
-            android:orientation="horizontal">
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnInterval"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_marginEnd="6dp"
-                android:layout_weight="1"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="间隔拍摄"
-                android:textColor="@color/on_surface"
-                app:cornerRadius="12dp"
-                app:strokeColor="@color/outline" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnStopInterval"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_marginStart="6dp"
-                android:layout_weight="1"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="停止间隔"
-                android:textColor="@color/secondary"
-                app:cornerRadius="12dp"
-                app:strokeColor="@color/secondary" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:orientation="horizontal">
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnVideo"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_marginEnd="6dp"
-                android:layout_weight="1"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="开始录制"
-                android:textColor="@color/on_surface"
-                app:cornerRadius="12dp"
-                app:strokeColor="@color/outline" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnStopVideo"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="44dp"
-                android:layout_marginStart="6dp"
-                android:layout_weight="1"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="停止录制"
-                android:textColor="@color/secondary"
-                app:cornerRadius="12dp"
-                app:strokeColor="@color/secondary" />
-        </LinearLayout>
-
     </LinearLayout>
-</ScrollView>
+</LinearLayout>

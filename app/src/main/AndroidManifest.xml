@@ -73,6 +73,20 @@
                 android:resource="@xml/usb_device_filter" />
         </activity>
 
+        <!-- 全屏预览页（纯黑沉浸主题，右推入转场） -->
+        <activity
+            android:name=".feature.transfer.PreviewActivity"
+            android:exported="false"
+            android:theme="@style/Theme.NikonLink.Preview" />
+
+        <!-- 横屏全屏监看页 -->
+        <activity
+            android:name=".feature.liveview.LiveViewActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@style/Theme.NikonLink.Preview" />
+
         <!-- Connection Foreground Service -->
         <service
             android:name=".service.ConnectionService"

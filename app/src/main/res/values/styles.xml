@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 黑白双色设计系统 · 通用组件样式 -->
+<resources>
+    <!-- 排版：大标题 700 / 模块标题 600 / 正文 400 / 辅助 300 -->
+    <style name="NlText.Title" parent="TextAppearance.Material3.TitleLarge">
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textSize">22sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <style name="NlText.SectionTitle">
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <style name="NlText.Body">
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textSize">15sp</item>
+    </style>
+
+    <style name="NlText.Secondary">
+        <item name="android:textColor">@color/text_secondary</item>
+        <item name="android:textSize">13sp</item>
+    </style>
+
+    <style name="NlText.Caption">
+        <item name="android:textColor">@color/text_tertiary</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:fontFamily">sans-serif-light</item>
+    </style>
+
+    <style name="NlText" parent="TextAppearance.Material3.BodyMedium" />
+
+    <!-- 主按钮：黑底白字填充，8px 圆角 -->
+    <style name="NlButton.Primary" parent="Widget.Material3.Button">
+        <item name="android:textColor">@color/on_primary</item>
+        <item name="backgroundTint">@color/primary</item>
+        <item name="cornerRadius">8dp</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="android:stateListAnimator">@null</item>
+    </style>
+
+    <!-- 次要按钮：极细灰描边 -->
+    <style name="NlButton.Outline" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="strokeColor">@color/outline</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="cornerRadius">8dp</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="android:stateListAnimator">@null</item>
+    </style>
+
+    <!-- 文字按钮 -->
+    <style name="NlButton.Text" parent="Widget.Material3.Button.TextButton">
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+    </style>
+
+    <!-- 内容卡片：1px 极细灰边框，无阴影，12px 圆角 -->
+    <style name="NlCard" parent="Widget.Material3.CardView.Outlined">
+        <item name="cardBackgroundColor">@color/surface</item>
+        <item name="cardCornerRadius">12dp</item>
+        <item name="cardElevation">0dp</item>
+        <item name="strokeColor">@color/outline</item>
+        <item name="strokeWidth">1dp</item>
+    </style>
+
+    <!-- 底部悬浮操作栏：白药丸 + 细边框 -->
+    <style name="NlFloatingBar">
+        <item name="android:background">@drawable/bg_floating_bar</item>
+    </style>
+
+    <!-- 滚轮选择器黑白主题 -->
+    <style name="NlPicker">
+        <item name="colorControlNormal">@color/outline</item>
+        <item name="android:textColorPrimary">@color/text_primary</item>
+        <item name="android:textSize">16sp</item>
+    </style>
+</resources>

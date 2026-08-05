@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 黑白双色设计系统 · 夜间模式（跟随系统自动切换） -->
+<resources>
+    <!-- 背景层：纯黑主背景，深灰次级背景 -->
+    <color name="page">#000000</color>
+    <color name="background">#000000</color>
+    <color name="surface">#000000</color>
+    <color name="surface_variant">#121212</color>
+    <color name="panel_2">#121212</color>
+    <color name="outline">#262626</color>
+    <color name="divider">#1F1F1F</color>
+
+    <!-- 对比卡片：夜间=纯白底黑字 -->
+    <color name="dark_card">#FFFFFF</color>
+    <color name="dark_card_inner">#EBEBEB</color>
+    <color name="dark_card_surface">#E0E0E0</color>
+    <color name="on_dark_card">#000000</color>
+    <color name="on_dark_card_variant">#525252</color>
+
+    <!-- 文字层：一级纯白 / 二级浅灰 / 辅助中灰 -->
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#ADADAD</color>
+    <color name="text_tertiary">#7A7A7A</color>
+    <color name="text_disabled">#66FFFFFF</color>
+    <color name="on_background">#FFFFFF</color>
+    <color name="on_surface">#FFFFFF</color>
+    <color name="on_surface_variant">#A3A3A3</color>
+
+    <!-- 组件层：主按钮/选中态纯白填充 -->
+    <color name="primary">#FFFFFF</color>
+    <color name="primary_variant">#E6E6E6</color>
+    <color name="accent">#FFFFFF</color>
+    <color name="accent_2">#ADADAD</color>
+    <color name="accent_soft">#121212</color>
+    <color name="on_primary">#000000</color>
+    <color name="on_accent">#000000</color>
+
+    <color name="secondary">#D9D9D9</color>
+    <color name="secondary_variant">#BFBFBF</color>
+    <color name="on_secondary">#000000</color>
+
+    <!-- 状态色：仅灰度 -->
+    <color name="status_connected">#FFFFFF</color>
+    <color name="status_connecting">#A3A3A3</color>
+    <color name="status_disconnected">#5C5C5C</color>
+    <color name="ble_indicator">#ADADAD</color>
+    <color name="wifi_indicator">#FFFFFF</color>
+
+    <!-- 点击反馈 / 遮罩 -->
+    <color name="pressed_overlay">#1FFFFFFF</color>
+    <color name="scrim">#99000000</color>
+    <color name="chip_unselected">#1A1A1A</color>
+
+    <!-- Live View 专用 -->
+    <color name="liveview_scrim">#99000000</color>
+    <color name="white">#FFFFFF</color>
+    <color name="black">#000000</color>
+    <color name="liveview_text">#E6FFFFFF</color>
+
+    <!-- 底部导航 -->
+    <color name="nav_background">#000000</color>
+    <color name="nav_active_bg">#121212</color>
+    <color name="nav_active_icon">#FFFFFF</color>
+    <color name="nav_inactive_icon">#6E6E6E</color>
+</resources>

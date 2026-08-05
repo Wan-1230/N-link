@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tab 切换：淡出 + 10px 轻微下移，0.25s ease-out -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:duration="250"
+    android:interpolator="@android:anim/decelerate_interpolator">
+    <alpha android:fromAlpha="1.0" android:toAlpha="0.0" />
+    <translate android:fromYDelta="0" android:toYDelta="10dp" />
+</set>

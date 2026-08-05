@@ -53,6 +53,11 @@ class TransferViewModel @Inject constructor(
     private val _message = MutableStateFlow("")
     val message: StateFlow<String> = _message.asStateFlow()
 
+    /** 供 UI 层显示轻量状态消息 */
+    fun showMessage(msg: String) {
+        _message.value = msg
+    }
+
     val connectionState: StateFlow<ConnectionState> = connectionManager.connectionState
     val statusMessage: StateFlow<String> = connectionManager.statusMessage
     val usbState: StateFlow<UsbConnectionState> = usbPtpManager.usbState
@@ -66,6 +71,20 @@ class TransferViewModel @Inject constructor(
      */
     fun fetchPhotos() {
         if (!transferManager.hasActiveSession()) {
+            val usbConnected = usbPtpManager.isConnected()
+            if (usbConnected) {
+                _message.value = "正在建立 USB 通道..."
+                viewModelScope.launch {
+                    val connected = usbPtpManager.isConnected()
+                    if (connected) {
+                        loadPhotos()
+                    } else {
+                        _isLoading.value = false
+                        _message.value = "USB 连接尚未就绪，请稍后重试"
+                    }
+                }
+                return
+            }
             _message.value = "正在建立 WiFi 通道..."
             connectionManager.requestWifiReconnect()
             viewModelScope.launch {
@@ -172,9 +191,42 @@ class TransferViewModel @Inject constructor(
 
     fun downloadSelected() {
         val selected = _photoList.value.filter { it.handle in _selectedHandles.value }
-        if (selected.isNotEmpty()) {
-            transferManager.enqueue(selected)
-            _message.value = "已加入队列: ${selected.size} 个文件"
+        if (selected.isEmpty()) {
+            _message.value = "请先选择要下载的照片"
+            return
+        }
+        if (!transferManager.hasActiveSession() && !usbPtpManager.isConnected()) {
+            _message.value = "相机未连接，无法下载"
+            return
+        }
+        transferManager.enqueue(selected)
+        _message.value = "已加入队列: ${selected.size} 个文件"
+    }
+
+    /**
+     * 从相机存储卡删除选中的文件。
+     */
+    fun deleteSelected() {
+        val selected = _photoList.value.filter { it.handle in _selectedHandles.value }
+        if (selected.isEmpty()) {
+            _message.value = "请先选择要删除的照片"
+            return
+        }
+        if (!transferManager.hasActiveSession()) {
+            _message.value = "相机未连接，无法删除"
+            return
+        }
+        viewModelScope.launch {
+            val deleted = transferManager.deleteFiles(selected)
+            if (deleted.isEmpty()) {
+                _message.value = "删除失败，相机可能不支持该操作"
+                return@launch
+            }
+            val deletedSet = deleted.toSet()
+            _photoList.value = _photoList.value.filterNot { it.handle in deletedSet }
+            _thumbnails.value = _thumbnails.value.filterKeys { it !in deletedSet }
+            _selectedHandles.value = _selectedHandles.value - deletedSet
+            _message.value = "已从相机删除 ${deleted.size} 个文件"
         }
     }
 
@@ -203,16 +255,21 @@ class TransferViewModel @Inject constructor(
 }
 
 /**
- * 照片格式筛选
+ * 影像筛选：全部 / 照片 / 视频 / RAW / JPG / 按日期
  */
 enum class PhotoFilter(val label: String) {
     ALL("全部"),
+    PHOTOS("照片"),
+    VIDEO("视频"),
+    RAW("RAW"),
     JPEG("JPG"),
-    RAW("RAW");
+    DATE("按日期");
 
     fun matches(file: CameraFile): Boolean {
         return when (this) {
-            ALL -> file.isPhoto
+            ALL, DATE -> true
+            PHOTOS -> file.isPhoto
+            VIDEO -> file.format == CameraFileFormat.VIDEO
             JPEG -> file.format == CameraFileFormat.JPEG
             RAW -> file.format == CameraFileFormat.RAW
         }
