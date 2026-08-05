@@ -53,6 +53,7 @@ class ConnectionManager @Inject constructor(
     private var userDisconnectRequested = false
     private var connectedSince: Long? = null
     private var pairingJob: Job? = null
+    private var recoveryJob: Job? = null
 
     private val _connectionMetrics = MutableStateFlow(ConnectionMetrics())
     val connectionMetrics: StateFlow<ConnectionMetrics> = _connectionMetrics.asStateFlow()
@@ -144,6 +145,7 @@ class ConnectionManager @Inject constructor(
         pairingJob?.cancel()
         pairedDeviceAddress = "wifi:$ipAddress:$port"
         userDisconnectRequested = false
+        wifiManager.bindToActiveWifi()
         stateMachine.dispatch(ConnectionEvent.StartConnect)
         _connectionHint.value = null
 
@@ -229,7 +231,20 @@ class ConnectionManager @Inject constructor(
      * 扫描当前 WiFi 网络中的尼康相机（UDP 5353 + TCP 15740 探测）。
      */
     suspend fun scanWifiCameras(timeoutMs: Long = 12000L): List<WifiCameraCandidate> {
-        return wifiScanner.scan(timeoutMs)
+        val candidates = wifiScanner.scan(timeoutMs).toMutableList()
+        // 参考影犀 STA 日志: 扫描失败时直接复用历史 IP 发起 PTP/IP，避免每次都全段盲扫。
+        val last = runCatching { deviceRepository.getLastAutoConnectDevice() }.getOrNull()
+        if (last != null && last.address.startsWith("wifi:")) {
+            val parts = last.address.removePrefix("wifi:").split(":")
+            val ip = parts.firstOrNull().orEmpty()
+            val port = parts.getOrNull(1)?.toIntOrNull() ?: 15740
+            if (ip.isNotEmpty() && candidates.none { it.ipAddress == ip }) {
+                candidates.add(
+                    WifiCameraCandidate(ip, port, last.deviceName.ifBlank { "尼康相机(历史)" }, "sta")
+                )
+            }
+        }
+        return candidates
     }
 
     /**
@@ -468,23 +483,34 @@ class ConnectionManager @Inject constructor(
 
     private fun recoverWifiSession() {
         val address = pairedDeviceAddress ?: return
+        if (recoveryJob?.isActive == true) return
         val parts = address.removePrefix("wifi:").split(":")
         val ip = parts.firstOrNull().orEmpty()
         val port = parts.getOrNull(1)?.toIntOrNull() ?: 15740
         if (ip.isEmpty()) return
 
-        scope?.launch(Dispatchers.IO) {
-            delay(2000)
-            val ok = ptpSession.connect(ip, port, pairingMode = true)
+        recoveryJob = scope?.launch(Dispatchers.IO) {
+            wifiManager.bindToActiveWifi()
+            // Fix 真机日志: 首次恢复时相机可能还在清理旧会话，返回异常包导致握手失败；
+            // 改为最多重试 3 次（间隔递增），只有全部失败才判定不可恢复
+            var ok = false
+            var attempt = 0
+            while (!ok && attempt < 3) {
+                attempt++
+                delay(2000L * attempt)
+                ok = ptpSession.connect(ip, port, pairingMode = true)
+                if (!ok) Timber.tag(TAG).w("PTP recovery attempt $attempt failed")
+            }
             if (ok) {
-                Timber.tag(TAG).i("PTP session recovered")
+                Timber.tag(TAG).i("PTP session recovered (attempt $attempt)")
                 stateMachine.dispatch(ConnectionEvent.WifiConnected)
             } else {
-                Timber.tag(TAG).w("PTP session recovery failed")
+                Timber.tag(TAG).w("PTP session recovery failed after 3 attempts")
                 stateMachine.dispatch(
                     ConnectionEvent.ErrorOccurred("WiFi 连接已断开", recoverable = false)
                 )
             }
+            recoveryJob = null
         }
     }
 
@@ -534,6 +560,7 @@ class ConnectionManager @Inject constructor(
         }
         // 等待 WiFi 网络稳定
         delay(500)
+        wifiManager.bindToActiveWifi()
         val credential = bleManager.wifiCredential.replayCache.firstOrNull()
         val host = credential?.ipAddress ?: "192.168.1.1"
         val port = credential?.port ?: 15740

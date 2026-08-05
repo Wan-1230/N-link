@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tab1 设备 · 线性相机 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path
+        android:strokeColor="#FF000000" android:strokeWidth="1.6"
+        android:pathData="M8.5,4 L7,6 H4.5 C3.67,6 3,6.67 3,7.5 V18 C3,18.83 3.67,19.5 4.5,19.5 H19.5 C20.33,19.5 21,18.83 21,18 V7.5 C21,6.67 20.33,6 19.5,6 H17 L15.5,4 Z" />
+    <path
+        android:strokeColor="#FF000000" android:strokeWidth="1.6"
+        android:pathData="M12,16.25 a3.75,3.75 0 1,1 0,-7.5 a3.75,3.75 0 1,1 0,7.5 z" />
+</vector>

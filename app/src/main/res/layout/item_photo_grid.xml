@@ -1,19 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 相册网格项：缩略图 + 右上角选择框 + 格式角标 -->
-<androidx.constraintlayout.widget.ConstraintLayout
-    xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- 相册网格项：方形缩略图 + 右上角黑色对勾 + 左下角格式角标 -->
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:padding="1.5dp">
+    android:padding="1dp">
 
     <androidx.constraintlayout.widget.ConstraintLayout
         android:layout_width="0dp"
         android:layout_height="0dp"
         app:layout_constraintDimensionRatio="1:1"
-        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent">
+        app:layout_constraintTop_toTopOf="parent">
 
         <!-- 缩略图 -->
         <ImageView
@@ -23,54 +22,66 @@
             android:background="@color/panel_2"
             android:contentDescription="照片缩略图"
             android:scaleType="centerCrop"
-            app:layout_constraintTop_toTopOf="parent"
             app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintEnd_toEndOf="parent" />
+            app:layout_constraintTop_toTopOf="parent" />
 
-        <!-- 加载中占位 -->
+        <!-- 加载中占位：极简线性 -->
         <ProgressBar
             android:id="@+id/progressThumb"
-            android:layout_width="24dp"
-            android:layout_height="24dp"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
             android:indeterminateTint="@color/on_surface_variant"
-            app:layout_constraintTop_toTopOf="parent"
             app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintEnd_toEndOf="parent" />
+            app:layout_constraintTop_toTopOf="parent" />
 
-        <!-- 选中遮罩 -->
+        <!-- 选中遮罩：轻微降低透明度 -->
         <View
             android:id="@+id/viewSelectedMask"
             android:layout_width="0dp"
             android:layout_height="0dp"
-            android:background="#55D4922A"
+            android:background="#33000000"
             android:visibility="gone"
-            app:layout_constraintTop_toTopOf="parent"
             app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintEnd_toEndOf="parent" />
+            app:layout_constraintTop_toTopOf="parent" />
 
-        <!-- 右上角选择框 -->
-        <CheckBox
-            android:id="@+id/cbSelect"
-            android:layout_width="32dp"
-            android:layout_height="32dp"
+        <!-- 右上角黑色对勾标记 -->
+        <FrameLayout
+            android:id="@+id/checkContainer"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
             android:layout_margin="6dp"
-            android:background="@drawable/bg_chip"
-            android:buttonTint="@color/white"
-            android:clickable="false"
-            android:focusable="false"
-            app:layout_constraintTop_toTopOf="parent"
-            app:layout_constraintEnd_toEndOf="parent" />
+            android:visibility="gone"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintTop_toTopOf="parent">
 
-        <!-- 左下角格式角标 -->
+            <ImageView
+                android:id="@+id/checkImage"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:contentDescription="已选中" />
+
+            <ImageView
+                android:layout_width="14dp"
+                android:layout_height="14dp"
+                android:layout_gravity="center"
+                android:contentDescription="对勾"
+                android:src="@drawable/ic_check"
+                app:tint="@color/on_primary" />
+        </FrameLayout>
+
+        <!-- 左下角格式 / 时长角标 -->
         <TextView
             android:id="@+id/tvFormatBadge"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_margin="6dp"
-            android:background="#AA1C1C1E"
+            android:background="#AA000000"
             android:paddingHorizontal="6dp"
             android:paddingVertical="2dp"
             android:text="JPG"

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 黑白开关滑块：开=主色，关=白 -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:color="@color/primary" android:state_checked="true" />
+    <item android:color="@color/white" />
+</selector>

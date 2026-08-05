@@ -3,16 +3,17 @@ package com.nikonlink.app
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
-import android.view.animation.DecelerateInterpolator
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.DrawableRes
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
@@ -22,18 +23,24 @@ import com.nikonlink.app.feature.remote.RemoteFragment
 import com.nikonlink.app.feature.settings.SettingsFragment
 import com.nikonlink.app.feature.transfer.TransferFragment
 import com.nikonlink.app.service.ConnectionService
+import com.nikonlink.app.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import timber.log.Timber
 
 /**
- * 主 Activity - 底部导航切换模块
- * PRD: 连接 / 传输 / 拍摄 / 参数
+ * 主 Activity — 黑白极简四 Tab 框架
+ * Tab1 设备 / Tab2 相册 / Tab3 拍摄 / Tab4 设置
+ * 转场规范：Tab 切换淡入淡出 + 10px 位移，0.25s ease-out
  */
 @AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
+        const val TAB_HOME = 0
+        const val TAB_ALBUM = 1
+        const val TAB_REMOTE = 2
+        const val TAB_SETTINGS = 3
     }
 
     private lateinit var binding: ActivityMainBinding
@@ -43,14 +50,27 @@ class MainActivity : AppCompatActivity() {
     private val remoteFragment = RemoteFragment()
     private val settingsFragment = SettingsFragment()
     private var activeFragment: Fragment = dashboardFragment
+    private var currentTab = TAB_HOME
 
-    // 任务7: 底部 Tab 配置
-    private var tabWidth = 0f
-    private var currentTab = 0
     private lateinit var tabViews: List<View>
     private lateinit var tabIcons: List<ImageView>
     private lateinit var tabLabels: List<TextView>
-    private val tabFragments: List<Fragment> get() = listOf(dashboardFragment, transferFragment, remoteFragment, settingsFragment)
+    private val tabFragments: List<Fragment>
+        get() = listOf(dashboardFragment, transferFragment, remoteFragment, settingsFragment)
+
+    /** 线性图标（未选中） */
+    @DrawableRes
+    private val iconsLine = listOf(
+        R.drawable.ic_nav_home, R.drawable.ic_nav_album,
+        R.drawable.ic_nav_camera, R.drawable.ic_nav_settings
+    )
+
+    /** 实心图标（选中） */
+    @DrawableRes
+    private val iconsFilled = listOf(
+        R.drawable.ic_nav_home_filled, R.drawable.ic_nav_album_filled,
+        R.drawable.ic_nav_camera_filled, R.drawable.ic_nav_settings_filled
+    )
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -87,52 +107,39 @@ class MainActivity : AppCompatActivity() {
         tabLabels = listOf(binding.labelDashboard, binding.labelTransfer, binding.labelRemote, binding.labelSettings)
 
         tabViews.forEachIndexed { index, view ->
-            view.setOnClickListener { selectTab(index) }
+            view.pressEffect()
+            view.setOnClickListener { switchToTab(index) }
         }
-
-        // 布局完成后初始化药丸宽度与位置
-        binding.bottomBar.post {
-            tabWidth = binding.tabRow.width / 4f
-            val inset = tabWidth * 0.12f
-            val lp = binding.tabPill.layoutParams
-            lp.width = (tabWidth - inset * 2).toInt()
-            binding.tabPill.layoutParams = lp
-            binding.tabPill.translationX = currentTab * tabWidth + inset
-            applyTabColors(currentTab)
-        }
-        applyTabColors(currentTab)
+        applyTabStyle(currentTab)
     }
 
-    private fun selectTab(index: Int) {
-        if (index == currentTab) return
-        switchFragment(tabFragments[index])
-
-        // 任务7: 药丸指示器平滑跟随动画
-        val inset = tabWidth * 0.12f
-        binding.tabPill.animate()
-            .translationX(index * tabWidth + inset)
-            .setDuration(260)
-            .setInterpolator(DecelerateInterpolator())
-            .start()
-
-        currentTab = index
-        applyTabColors(index)
+    /** 供 Fragment 快捷入口跳转 Tab */
+    fun switchToTab(index: Int) {
+        if (index != currentTab) {
+            switchFragment(tabFragments[index])
+            currentTab = index
+        }
+        applyTabStyle(index)
     }
 
-    /** 任务7: 激活 Tab 用对比色（白）高亮，未激活用灰 */
-    private fun applyTabColors(active: Int) {
-        val activeColor = ContextCompat.getColor(this, R.color.on_dark_card)
+    /** 选中态：实心图标 + 加粗文字；未选中：线性图标 + 常规字重 */
+    private fun applyTabStyle(active: Int) {
+        val activeColor = ContextCompat.getColor(this, R.color.nav_active_icon)
         val inactiveColor = ContextCompat.getColor(this, R.color.nav_inactive_icon)
         for (i in tabViews.indices) {
-            val color = if (i == active) activeColor else inactiveColor
-            tabIcons[i].setColorFilter(color)
-            tabLabels[i].setTextColor(color)
+            val selected = i == active
+            tabIcons[i].setImageResource(if (selected) iconsFilled[i] else iconsLine[i])
+            tabIcons[i].setColorFilter(if (selected) activeColor else inactiveColor)
+            tabLabels[i].setTextColor(if (selected) activeColor else inactiveColor)
+            tabLabels[i].typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
         }
     }
 
     private fun switchFragment(target: Fragment) {
         if (target == activeFragment) return
         supportFragmentManager.beginTransaction().apply {
+            // Tab 切换：淡入淡出 + 10px 轻微位移，0.25s ease-out
+            setCustomAnimations(R.anim.tab_enter, R.anim.tab_exit)
             hide(activeFragment)
             show(target)
         }.commit()

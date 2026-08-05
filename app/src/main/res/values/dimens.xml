@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 全局边距规范：页面左右 24dp，模块间距 16-24dp，组内间距 8-12dp -->
+<resources>
+    <dimen name="page_margin">24dp</dimen>
+    <dimen name="module_gap_large">24dp</dimen>
+    <dimen name="module_gap">16dp</dimen>
+    <dimen name="group_gap">12dp</dimen>
+    <dimen name="group_gap_small">8dp</dimen>
+    <dimen name="card_radius">12dp</dimen>
+    <dimen name="btn_radius">8dp</dimen>
+    <dimen name="divider_height">1dp</dimen>
+</resources>

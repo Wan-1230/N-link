@@ -208,6 +208,13 @@ class PtpSessionManager @Inject constructor(
         return withContext(Dispatchers.IO) {
             commandMutex.withLock {
                 try {
+                    // 回退说明: 上一版在此加了 sessionState != CONNECTED 拦截，
+                    // 但 connect() 握手阶段状态还是 CONNECTING，导致 OpenSession 被拦截、无法连接。
+                    // 现仅保留空流防护（防断联后 NPE），不再检查会话状态。
+                    if (commandOutput == null || commandInput == null) {
+                        Timber.tag(TAG).w("sendCommand skipped (stream closed): op=0x${operationCode.toString(16)}")
+                        return@withLock CommandResponsePacket(txId, PtpConstants.RESPONSE_GENERAL_ERROR)
+                    }
                     sendPacket(packet)
                     // 等待命令响应（可能先收到数据包）
                     var response: PtpPacket?
@@ -306,11 +313,7 @@ class PtpSessionManager @Inject constructor(
     }
 
     private fun progressTotal(received: Long, declared: Long): Long {
-        return if (declared > 0 && declared != 0xFFFFFFFFL && declared >= received) {
-            declared
-        } else {
-            received
-        }
+        return if (declared > 0 && declared != 0xFFFFFFFFL && declared >= received) declared else 0L
     }
 
     /**
@@ -387,6 +390,13 @@ class PtpSessionManager @Inject constructor(
             listOf(handle, offset, maxBytes)
         )
         return (result as? PtpDataResult.Success)?.data
+    }
+
+    /**
+     * 删除相机存储卡中的对象。
+     */
+    suspend fun deleteObject(handle: Int): Boolean {
+        return sendCommand(PtpConstants.OP_DELETE_OBJECT, listOf(handle)).isOk
     }
 
     /**
@@ -515,30 +525,36 @@ class PtpSessionManager @Inject constructor(
         commandOutput?.flush()
     }
 
+        /** 事件通道最近活动时间（用于保活容错判定） */
+    @Volatile
+    private var lastEventActivityAt = 0L
+
     private fun startKeepAlive() {
+        lastEventActivityAt = System.currentTimeMillis()
         keepAliveJob = scope?.launch(Dispatchers.IO) {
-            var consecutiveFailures = 0
             while (isActive) {
                 delay(KEEP_ALIVE_INTERVAL_MS)
-                // 参考影犀日志: 心跳间隔 15s，走 keepAlive 命令（DeviceReady）而非 Probe。
-                // 经 commandMutex 串行发送，15s 间隔不会与业务命令争用。
-                val ok = try {
-                    val response = sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
-                    response.isOk || response.responseCode == PtpConstants.RESPONSE_DEVICE_BUSY
+                // 参考影犀日志: 保活心跳走 event 通道 Ping(packetType=13)，
+                // 相机回 Pong(type=14) 由 event 监听器处理并刷新 lastEventActivityAt；
+                // 影犀全程不发 DeviceReady 命令，命令通道完全留给业务。
+                val pingOk = try {
+                    eventOutput?.write(PingPacket.toBytes())
+                    eventOutput?.flush()
+                    true
                 } catch (e: Exception) {
-                    Timber.tag(TAG).w("keepAlive command failed: ${e.message}")
+                    Timber.tag(TAG).w("keepAlive ping write failed: ${e.message}")
                     false
                 }
-
-                if (ok) {
-                    consecutiveFailures = 0
-                } else {
-                    consecutiveFailures++
-                    Timber.tag(TAG).w("keepAlive failed ($consecutiveFailures)")
-                    if (consecutiveFailures >= 2) {
-                        markLinkError()
-                        break
-                    }
+                if (!pingOk) {
+                    markLinkError()
+                    break
+                }
+                // 参考影犀日志: 相机会在长时间空闲后主动断链（约3.5分钟）；
+                // event 通道 60 秒无任何活动即判定链路已死，交给上层恢复流程
+                if (System.currentTimeMillis() - lastEventActivityAt > 60_000) {
+                    Timber.tag(TAG).w("keepAlive: no event-channel activity for 60s, link dead")
+                    markLinkError()
+                    break
                 }
             }
         }
@@ -557,6 +573,7 @@ class PtpSessionManager @Inject constructor(
             try {
                 while (isActive) {
                     val packet = PtpPacket.fromStream(eventInput!!) ?: break
+                    lastEventActivityAt = System.currentTimeMillis()
                     when (packet) {
                         is EventResponsePacket -> {
                             val event = PtpEvent(

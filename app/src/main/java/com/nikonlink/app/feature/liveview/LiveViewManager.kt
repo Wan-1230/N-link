@@ -70,6 +70,9 @@ class LiveViewManager @Inject constructor(
     private var frameCount = 0
     private var lastFpsTime = 0L
 
+    /** 进入无线控制模式前的曝光程序模式，停止监看时恢复（参考影犀日志: wireless control mode exited） */
+    private var savedExposureMode: ByteArray? = null
+
     fun start(scope: CoroutineScope) {
         this.scope = scope
         Timber.tag(TAG).i("LiveViewManager started")
@@ -87,6 +90,7 @@ class LiveViewManager @Inject constructor(
     suspend fun startLiveView(): Boolean {
         if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) {
             Timber.tag(TAG).w("PTP not connected")
+            _liveViewState.value = LiveViewState.ERROR
             _errorMessage.value = "相机尚未连接，请先完成配对"
             return false
         }
@@ -95,6 +99,25 @@ class LiveViewManager @Inject constructor(
         _errorMessage.value = null
         return withContext(Dispatchers.IO) {
             try {
+                // 参考影犀日志: 监看依赖无线控制模式（相机随后上报 DevicePropChanged prop=0x500E）。
+                // 启动前先把曝光程序模式切到 Remote(0x8012)，失败不致命（相机可能已在遥控模式）
+                if (!usbPtpManager.isConnected()) {
+                    runCatching {
+                        // 先备份当前曝光程序模式，停止监看时恢复
+                        savedExposureMode = ptpSession.getDevicePropValue(
+                            PtpConstants.PROP_EXPOSURE_PROGRAM_MODE
+                        )
+                        val modeOk = ptpSession.setDevicePropValue(
+                            PtpConstants.PROP_EXPOSURE_PROGRAM_MODE,
+                            byteArrayOf(
+                                (PtpConstants.PROP_VALUE_REMOTE_MODE and 0xFF).toByte(),
+                                ((PtpConstants.PROP_VALUE_REMOTE_MODE shr 8) and 0xFF).toByte()
+                            )
+                        )
+                        Timber.tag(TAG).i("Wireless control mode 0x500E=0x8012 set: $modeOk")
+                    }
+                    delay(300)  // 等待相机完成模式切换
+                }
                 // 参考影犀日志: 启动 LiveView 前先设置 Nikon 图像配置 0xD1AC=3，
                 // 否则相机可能不输出 JPEG 帧
                 runCatching {
@@ -208,6 +231,17 @@ class LiveViewManager @Inject constructor(
         }
         _liveViewState.value = LiveViewState.STOPPED
         _fps.value = 0
+        // 参考影犀日志: 停止监看后退出无线控制模式，恢复原曝光程序模式
+        val restore = savedExposureMode
+        savedExposureMode = null
+        if (restore != null && !usbPtpManager.isConnected()) {
+            scope?.launch(Dispatchers.IO) {
+                runCatching {
+                    ptpSession.setDevicePropValue(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE, restore)
+                    Timber.tag(TAG).i("Wireless control mode exited, exposure mode restored")
+                }
+            }
+        }
         Timber.tag(TAG).i("Live View stopped")
     }
 

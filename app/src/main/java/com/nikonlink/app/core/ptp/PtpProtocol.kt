@@ -106,6 +106,11 @@ object PtpConstants {
     // Nikon 厂商属性: LiveView 图像配置 (参考影犀日志: image profile set size=0xd1ac:3)
     const val PROP_NIKON_LV_IMAGE_PROFILE = 0xD1AC
 
+    // 参考影犀日志: 监看启动后相机上报 DevicePropChanged prop=0x500E，
+    // 即进入无线控制(遥控)模式时曝光程序模式切到 Remote 值；
+    // 启动 LiveView 前先设定该值，否则相机可能拒绝 StartLiveView
+    const val PROP_VALUE_REMOTE_MODE = 0x8012
+
     // 参考影犀日志: 触摸对焦坐标范围约 x:0~4000, y:0~3000
     const val AF_COORD_MAX_X = 4000
     const val AF_COORD_MAX_Y = 3000

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 二级页面跳转：新页面从右侧水平推入，0.3s -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:duration="300"
+    android:interpolator="@android:anim/decelerate_interpolator">
+    <translate android:fromXDelta="100%" android:toXDelta="0" />
+</set>

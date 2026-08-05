@@ -321,6 +321,7 @@ class UsbPtpManager @Inject constructor(
                 var gotResponse = false
                 var receivedBytes = 0L
 
+                var responseCode = 0
                 while (!gotResponse) {
                     val buffer = ByteArray(65536)
                     val read = conn.bulkTransfer(inp, buffer, buffer.size, BULK_TIMEOUT_MS)
@@ -336,16 +337,24 @@ class UsbPtpManager @Inject constructor(
                             if (parsed != null) {
                                 chunks.add(parsed.payload)
                                 receivedBytes += parsed.payload.size
-                                onProgress?.invoke(receivedBytes, receivedBytes)
+                                // USB PTP 数据容器不携带总长度，未知总大小时进度交给上层按 0 处理
+                                onProgress?.invoke(receivedBytes, 0L)
                             }
                         }
                         UsbPtpProtocol.TYPE_RESPONSE -> {
+                            responseCode = UsbPtpProtocol.parseResponseContainer(data)?.responseCode ?: 0
                             gotResponse = true
                         }
                     }
                 }
 
-                if (chunks.isEmpty()) return@withContext null
+                if (responseCode != 0x2001) {
+                    Timber.tag(TAG).w(
+                        "sendCommandWithData rejected: op=0x${operationCode.toString(16)} code=0x${responseCode.toString(16)}"
+                    )
+                    return@withContext null
+                }
+                if (chunks.isEmpty()) return@withContext ByteArray(0)
 
                 // 合并所有数据块
                 val totalSize = chunks.sumOf { it.size }
@@ -548,6 +557,14 @@ class UsbPtpManager @Inject constructor(
             PtpConstants.OP_GET_PARTIAL_OBJECT,
             listOf(handle, offset, maxBytes)
         )
+    }
+
+    /**
+     * 删除相机存储卡中的对象。
+     */
+    suspend fun deleteObject(handle: Int): Boolean {
+        val response = sendCommand(PtpConstants.OP_DELETE_OBJECT, listOf(handle))
+        return response?.isOk == true
     }
 
     /**

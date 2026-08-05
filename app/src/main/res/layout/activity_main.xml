@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 主框架：内容区 + 极简底部 Tab 栏（图标+文字，顶部 1px 分割线） -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/background"
@@ -15,131 +15,119 @@
 
     <View
         android:layout_width="match_parent"
-        android:layout_height="1dp"
-        android:background="@color/outline" />
+        android:layout_height="@dimen/divider_height"
+        android:background="@color/divider" />
 
-    <!-- 任务7: 自定义底部 Tab 栏，药丸指示器+平滑动效 -->
-    <FrameLayout
+    <LinearLayout
         android:id="@+id/bottomBar"
         android:layout_width="match_parent"
-        android:layout_height="64dp"
-        android:background="@color/nav_background">
-
-        <!-- 药丸激活指示器（平移动画） -->
-        <View
-            android:id="@+id/tabPill"
-            android:layout_width="0dp"
-            android:layout_height="44dp"
-            android:layout_gravity="center_vertical"
-            android:layout_marginVertical="10dp"
-            android:background="@drawable/bg_tab_pill" />
+        android:layout_height="60dp"
+        android:background="@color/nav_background"
+        android:orientation="horizontal">
 
         <LinearLayout
-            android:id="@+id/tabRow"
-            android:layout_width="match_parent"
+            android:id="@+id/tabDashboard"
+            android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:orientation="horizontal">
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="vertical">
 
-            <LinearLayout
-                android:id="@+id/tabDashboard"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:gravity="center"
-                android:orientation="vertical">
-                <ImageView
-                    android:id="@+id/iconDashboard"
-                    android:layout_width="22dp"
-                    android:layout_height="22dp"
-                    android:contentDescription="连接"
-                    android:src="@drawable/ic_nav_dashboard" />
-                <TextView
-                    android:id="@+id/labelDashboard"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="3dp"
-                    android:maxLines="1"
-                    android:text="连接"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
+            <ImageView
+                android:id="@+id/iconDashboard"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:contentDescription="设备"
+                android:src="@drawable/ic_nav_home" />
 
-            <LinearLayout
-                android:id="@+id/tabTransfer"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:gravity="center"
-                android:orientation="vertical">
-                <ImageView
-                    android:id="@+id/iconTransfer"
-                    android:layout_width="22dp"
-                    android:layout_height="22dp"
-                    android:contentDescription="传输"
-                    android:src="@drawable/ic_nav_transfer" />
-                <TextView
-                    android:id="@+id/labelTransfer"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="3dp"
-                    android:maxLines="1"
-                    android:text="传输"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:id="@+id/tabRemote"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:gravity="center"
-                android:orientation="vertical">
-                <ImageView
-                    android:id="@+id/iconRemote"
-                    android:layout_width="22dp"
-                    android:layout_height="22dp"
-                    android:contentDescription="拍摄"
-                    android:src="@drawable/ic_nav_remote" />
-                <TextView
-                    android:id="@+id/labelRemote"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="3dp"
-                    android:maxLines="1"
-                    android:text="拍摄"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:id="@+id/tabSettings"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:gravity="center"
-                android:orientation="vertical">
-                <ImageView
-                    android:id="@+id/iconSettings"
-                    android:layout_width="22dp"
-                    android:layout_height="22dp"
-                    android:contentDescription="参数"
-                    android:src="@drawable/ic_nav_settings" />
-                <TextView
-                    android:id="@+id/labelSettings"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="3dp"
-                    android:maxLines="1"
-                    android:text="参数"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
+            <TextView
+                android:id="@+id/labelDashboard"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:maxLines="1"
+                android:text="设备"
+                android:textColor="@color/nav_inactive_icon"
+                android:textSize="10sp" />
         </LinearLayout>
-    </FrameLayout>
+
+        <LinearLayout
+            android:id="@+id/tabTransfer"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:id="@+id/iconTransfer"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:contentDescription="相册"
+                android:src="@drawable/ic_nav_album" />
+
+            <TextView
+                android:id="@+id/labelTransfer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:maxLines="1"
+                android:text="相册"
+                android:textColor="@color/nav_inactive_icon"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/tabRemote"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:id="@+id/iconRemote"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:contentDescription="拍摄"
+                android:src="@drawable/ic_nav_camera" />
+
+            <TextView
+                android:id="@+id/labelRemote"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:maxLines="1"
+                android:text="拍摄"
+                android:textColor="@color/nav_inactive_icon"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/tabSettings"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageView
+                android:id="@+id/iconSettings"
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:contentDescription="设置"
+                android:src="@drawable/ic_nav_settings" />
+
+            <TextView
+                android:id="@+id/labelSettings"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:maxLines="1"
+                android:text="设置"
+                android:textColor="@color/nav_inactive_icon"
+                android:textSize="10sp" />
+        </LinearLayout>
+    </LinearLayout>
 
 </LinearLayout>

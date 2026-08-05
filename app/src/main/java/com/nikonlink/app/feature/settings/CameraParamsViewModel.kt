@@ -94,6 +94,29 @@ class CameraParamsViewModel @Inject constructor(
         viewModelScope.launch { paramManager.setWhiteBalance(mode) }
     }
 
+    /** 滚轮选择器：直接按值设定光圈 / 快门 / ISO */
+    fun setApertureByValue(fStopX100: Int) {
+        viewModelScope.launch { paramManager.setAperture(fStopX100) }
+    }
+
+    fun setShutterByValue(exposureTime: Int) {
+        viewModelScope.launch { paramManager.setShutterSpeed(exposureTime) }
+    }
+
+    fun setIsoByValue(iso: Int) {
+        viewModelScope.launch { paramManager.setIso(iso) }
+    }
+
+    /** 测光模式循环：矩阵 → 中央重点 → 点测光 */
+    fun cycleMeteringMode() {
+        viewModelScope.launch {
+            val codes = listOf(5, 2, 3)
+            val current = paramManager.meteringMode.value.rawValue
+            val idx = codes.indexOf(current)
+            paramManager.setMeteringMode(codes[(idx + 1).coerceAtLeast(0) % codes.size])
+        }
+    }
+
     fun setFocusMode(mode: Int) {
         viewModelScope.launch { paramManager.setFocusMode(mode) }
     }

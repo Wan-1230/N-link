@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 黑白双色设计系统 · DayNight 主题（跟随系统自动切换深浅色） -->
 <resources>
-    <style name="Theme.NikonLink" parent="Theme.Material3.Light.NoActionBar">
+    <style name="Theme.NikonLink" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="colorPrimary">@color/primary</item>
         <item name="colorPrimaryVariant">@color/primary_variant</item>
         <item name="colorSecondary">@color/secondary</item>
@@ -18,12 +19,53 @@
         <item name="colorOutline">@color/outline</item>
         <item name="android:statusBarColor">@color/background</item>
         <item name="android:navigationBarColor">@color/nav_background</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowLightStatusBar">?attr/isLightTheme</item>
+        <item name="android:windowLightNavigationBar">?attr/isLightTheme</item>
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
         <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
         <item name="android:forceDarkAllowed">false</item>
         <item name="android:windowBackground">@color/background</item>
+        <!-- 全局字体：系统无衬线字体，仅字重区分层级 -->
+        <item name="android:fontFamily">sans-serif</item>
+        <!-- 弹窗统一 Material 黑白风格 -->
+        <item name="materialAlertDialogTheme">@style/NlDialog</item>
+        <item name="switchStyle">@style/Widget.NlSwitch</item>
+        <!-- 二级页面转场：右侧水平推入 -->
+        <item name="android:windowAnimationStyle">@style/NlWindowAnim</item>
+    </style>
+
+    <!-- 全屏预览页主题（纯黑沉浸） -->
+    <style name="Theme.NikonLink.Preview" parent="Theme.NikonLink">
+        <item name="android:windowBackground">@color/black</item>
+        <item name="android:statusBarColor">@color/black</item>
+        <item name="android:navigationBarColor">@color/black</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+
+    <!-- 二级页面跳转：右推入 / 左滑出，0.3s -->
+    <style name="NlWindowAnim" parent="@android:style/Animation.Activity">
+        <item name="android:activityOpenEnterAnimation">@anim/slide_in_right</item>
+        <item name="android:activityOpenExitAnimation">@anim/slide_out_left</item>
+        <item name="android:activityCloseEnterAnimation">@anim/slide_in_left</item>
+        <item name="android:activityCloseExitAnimation">@anim/slide_out_right</item>
+    </style>
+
+    <!-- 黑白 Material 弹窗 -->
+    <style name="NlDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="colorPrimary">@color/primary</item>
+        <item name="colorOnPrimary">@color/on_primary</item>
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorOnSurface">@color/on_surface</item>
+        <item name="colorSecondary">@color/primary</item>
+        <item name="colorOnSurfaceVariant">@color/on_surface_variant</item>
+        <item name="dialogCornerRadius">12dp</item>
+    </style>
+
+    <!-- 黑白开关：滑块顺滑平移，背景渐变 -->
+    <style name="Widget.NlSwitch" parent="Widget.Material3.CompoundButton.Switch">
+        <item name="thumbTint">@color/switch_thumb</item>
+        <item name="trackTint">@color/switch_track</item>
     </style>
 </resources>

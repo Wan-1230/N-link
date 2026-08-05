@@ -37,6 +37,23 @@ local.properties
 # Log files
 *.log
 
+# Local debugging screenshots / UI dumps
+/a3.xml
+/a4.xml
+/album.xml
+/album2.xml
+/lv.xml
+/lv2.xml
+/yingxi.xml
+/yx_album.xml
+/live_debug.log
+/yingxi_ops.log
+/yingxi_past.log
+/*_connection_log*.txt
+/*_wifi_connection_log*.txt
+screen-*.png
+screen_*.png
+
 # Signing files
 .signing/
 *.jks

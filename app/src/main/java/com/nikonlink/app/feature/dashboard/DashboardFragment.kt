@@ -1,18 +1,20 @@
 package com.nikonlink.app.feature.dashboard
 
 import android.os.Bundle
+import android.text.InputType
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.content.res.ColorStateList
-import android.text.InputType
 import android.widget.EditText
 import android.widget.LinearLayout
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
+import android.content.res.ColorStateList
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.nikonlink.app.MainActivity
 import com.nikonlink.app.R
 import com.nikonlink.app.core.common.CameraDevice
 import com.nikonlink.app.core.common.ConnectionState
@@ -20,13 +22,16 @@ import com.nikonlink.app.core.connection.ConnectionHintKind
 import com.nikonlink.app.core.usb.UsbConnectionState
 import com.nikonlink.app.core.wifi.WifiCameraCandidate
 import com.nikonlink.app.databinding.FragmentDashboardBinding
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.nikonlink.app.feature.settings.CameraParamsViewModel
+import com.nikonlink.app.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * 连接状态仪表盘 Fragment
- * PRD 3.4: BLE/WiFi 信号强度、通道状态、连接持续时长
+ * Tab1 设备首页
+ * 设备连接总览、相机基础信息、快捷功能入口、折叠详情
+ * 交互：下拉刷新状态，点击设备卡片快速重连，入口带缩放反馈
  */
 @AndroidEntryPoint
 class DashboardFragment : Fragment() {
@@ -34,9 +39,12 @@ class DashboardFragment : Fragment() {
     private var _binding: FragmentDashboardBinding? = null
     private val binding get() = _binding!!
     private val viewModel: DashboardViewModel by viewModels()
+    private val paramsViewModel: CameraParamsViewModel by viewModels()
+
     private var scannedDevices: List<CameraDevice> = emptyList()
     private var wifiDevices: List<WifiCameraCandidate> = emptyList()
     private var pairingDialog: AlertDialog? = null
+    private var detailExpanded = false
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentDashboardBinding.inflate(inflater, container, false)
@@ -45,50 +53,77 @@ class DashboardFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        setupUi()
+        setupObservers()
+        setupInteractions()
     }
 
-    private fun setupUi() {
+    private fun setupObservers() {
+        // 连接状态（灰度表达）
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.connectionState.collect { state ->
-                binding.tvConnectionStatus.text = when (state) {
-                    ConnectionState.FULLY_CONNECTED -> "已连接"
-                    ConnectionState.WIFI_UPGRADING -> "建立高速通道"
-                    ConnectionState.BLE_CONNECTED -> {
+                val (text, colorRes, loading) = when (state) {
+                    ConnectionState.FULLY_CONNECTED ->
+                        Triple("已连接", R.color.status_connected, false)
+                    ConnectionState.WIFI_UPGRADING ->
+                        Triple("建立高速通道", R.color.status_connecting, true)
+                    ConnectionState.BLE_CONNECTED ->
                         if (viewModel.statusMessage.value.contains("连接中断")) {
-                            "连接中断"
+                            Triple("连接中断", R.color.status_disconnected, false)
                         } else {
-                            "BLE 已连接"
+                            Triple("BLE 已连接", R.color.status_connecting, false)
                         }
-                    }
-                    ConnectionState.CONNECTING -> "正在连接"
-                    ConnectionState.ERROR_WAITING_RETRY -> "等待重连"
-                    ConnectionState.DISCONNECTED -> "未连接"
+                    ConnectionState.CONNECTING ->
+                        Triple("连接中", R.color.status_connecting, true)
+                    ConnectionState.ERROR_WAITING_RETRY ->
+                        Triple("等待重连", R.color.status_disconnected, false)
+                    ConnectionState.DISCONNECTED ->
+                        Triple("未连接", R.color.status_disconnected, false)
                 }
-                val colorRes = when (state) {
-                    ConnectionState.FULLY_CONNECTED -> R.color.status_connected
-                    ConnectionState.BLE_CONNECTED,
-                    ConnectionState.WIFI_UPGRADING,
-                    ConnectionState.CONNECTING -> R.color.status_connecting
-                    else -> R.color.status_disconnected
-                }
+                binding.tvConnectionStatus.text = text
                 binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
                     ContextCompat.getColor(requireContext(), colorRes)
                 )
+                binding.progressConnecting.visibility = if (loading) View.VISIBLE else View.GONE
+
+                // 已连接 → 显示断开按钮；否则显示连接按钮
+                val connected = state == ConnectionState.FULLY_CONNECTED ||
+                        state == ConnectionState.BLE_CONNECTED
+                binding.btnConnect.visibility = if (connected) View.GONE else View.VISIBLE
+                binding.btnDisconnect.visibility = if (connected) View.VISIBLE else View.GONE
+                binding.swipeRefresh.isRefreshing = false
             }
         }
 
         viewLifecycleOwner.lifecycleScope.launch {
-            viewModel.statusMessage.collect { msg ->
-                binding.tvStatusMessage.text = msg
+            viewModel.statusMessage.collect { msg -> binding.tvStatusMessage.text = msg }
+        }
+
+        // 相机信息：电量 / 存储 / 快门次数 / 固件 / 型号
+        viewLifecycleOwner.lifecycleScope.launch {
+            paramsViewModel.cameraInfo.collect { info ->
+                if (info.batteryLevel >= 0) binding.tvBattery.text = "${info.batteryLevel}%"
+                if (info.storageTotalMb > 0) {
+                    val usedPct =
+                        ((info.storageTotalMb - info.storageFreeMb) * 100 / info.storageTotalMb).toInt()
+                    binding.pbStorage.progress = usedPct.coerceIn(0, 100)
+                    binding.tvStorage.text =
+                        "${formatMb(info.storageTotalMb - info.storageFreeMb)} / ${formatMb(info.storageTotalMb)}"
+                    // 估算剩余可拍张数（按单张 ~25MB RAW 计）
+                    val shots = (info.storageFreeMb / 25).toInt()
+                    binding.tvShotsRemaining.text = "约 $shots 张"
+                }
+                if (info.modelName.isNotBlank()) binding.tvCameraName.text = info.modelName
+                if (info.shutterCount >= 0) binding.tvShutterCount.text = "${info.shutterCount} 次"
+                if (info.firmwareVersion.isNotBlank()) binding.tvFirmware.text = info.firmwareVersion
             }
         }
 
+        // 折叠详情：蓝牙信号 / 重连次数
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.metrics.collect { metrics ->
-                binding.tvBleRssi.text = "BLE RSSI: ${metrics.bleRssi} dBm"
-                binding.tvChannels.text = "活跃通道: ${metrics.activeChannels.joinToString(", ").ifEmpty { "无" }}"
-                binding.tvReconnectCount.text = "重连次数: ${metrics.reconnectCount}"
+                binding.tvBleSignal.text =
+                    if (metrics.bleRssi != 0) "${metrics.bleRssi} dBm" else "—"
+                binding.tvReconnectCount.text = "${metrics.reconnectCount} 次"
             }
         }
 
@@ -110,34 +145,21 @@ class DashboardFragment : Fragment() {
             }
         }
 
-        viewLifecycleOwner.lifecycleScope.launch {
-            viewModel.isWifiScanning.collect { scanning ->
-                binding.btnWifiScan.isEnabled = !scanning
-                binding.btnWifiScan.text = if (scanning) "WiFi 扫描中..." else "WiFi 扫描"
-            }
-        }
-
+        // 配对引导弹窗（单一流程，不叠加）
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.connectionHint.collect { hint ->
                 if (hint != null) {
                     val builder = MaterialAlertDialogBuilder(requireContext())
                         .setTitle(
-                            if (hint.kind == ConnectionHintKind.PAIRING_COMPLETE) {
-                                "配对完成"
-                            } else {
-                                "连接向导"
-                            }
+                            if (hint.kind == ConnectionHintKind.PAIRING_COMPLETE) "配对完成"
+                            else "连接向导"
                         )
                         .setMessage(hint.message)
                         .setCancelable(false)
                     if (hint.kind == ConnectionHintKind.PAIRING_COMPLETE) {
-                        builder.setPositiveButton("OK确定") { _, _ ->
-                            viewModel.confirmPairingComplete()
-                        }
+                        builder.setPositiveButton("确定") { _, _ -> viewModel.confirmPairingComplete() }
                     } else {
-                        builder.setNegativeButton("取消") { _, _ ->
-                            viewModel.cancelPairing()
-                        }
+                        builder.setNegativeButton("取消") { _, _ -> viewModel.cancelPairing() }
                     }
                     pairingDialog?.dismiss()
                     pairingDialog = builder.show()
@@ -148,92 +170,144 @@ class DashboardFragment : Fragment() {
             }
         }
 
-        binding.btnScan.setOnClickListener {
-            viewModel.startScan()
-            binding.btnScan.isEnabled = false
-            binding.btnScan.text = "扫描中..."
-            viewLifecycleOwner.lifecycleScope.launch {
-                kotlinx.coroutines.delay(15000)
-                if (_binding != null) {
-                    binding.btnScan.isEnabled = true
-                    binding.btnScan.text = "扫描设备"
-                }
-            }
-        }
-
-        binding.btnWifiScan.setOnClickListener {
-            viewModel.scanWifi()
-            binding.tvStatusMessage.text = "正在扫描 WiFi 相机..."
-        }
-
-        binding.btnConnect.setOnClickListener {
-            showDeviceDialog()
-        }
-
-        binding.btnDisconnect.setOnClickListener {
-            viewModel.disconnect()
-        }
-
-        // USB 有线连接按钮
-        binding.btnUsbConnect.setOnClickListener {
-            viewModel.connectUsb()
-            // Fix P2-5: 移除冗余 Toast，改用状态栏文字反馈
-            binding.tvUsbStatus.text = "检测 USB 相机..."
-        }
-
-        // 观察 USB 连接状态
+        // USB 状态合并进卡片状态文字
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.usbState.collect { usbState ->
-                binding.tvUsbStatus.text = when (usbState) {
-                    UsbConnectionState.CONNECTED -> "USB 已连接，相机确认成功"
-                    UsbConnectionState.CONNECTING -> "USB 连接中..."
-                    UsbConnectionState.REQUESTING_PERMISSION -> "等待 USB 授权..."
-                    UsbConnectionState.PERMISSION_DENIED -> "USB 权限被拒绝"
-                    UsbConnectionState.ERROR -> "USB 连接错误"
-                    UsbConnectionState.DISCONNECTED -> "USB 未连接"
-                }
-                binding.btnUsbConnect.text = when (usbState) {
-                    UsbConnectionState.CONNECTED -> "断开 USB"
-                    else -> "USB 连接"
-                }
-                binding.btnUsbConnect.setOnClickListener {
-                    if (usbState == UsbConnectionState.CONNECTED) {
-                        viewModel.disconnectUsb()
-                    } else {
-                        viewModel.connectUsb()
+                when (usbState) {
+                    UsbConnectionState.CONNECTED -> {
+                        binding.tvConnectionStatus.text = "USB 已连接"
+                        binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
+                            ContextCompat.getColor(requireContext(), R.color.status_connected)
+                        )
+                        binding.btnConnect.visibility = View.GONE
+                        binding.btnDisconnect.visibility = View.VISIBLE
                     }
+                    UsbConnectionState.DISCONNECTED -> {
+                        if (viewModel.connectionState.value == ConnectionState.DISCONNECTED) {
+                            binding.tvConnectionStatus.text = "未连接"
+                            binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
+                                ContextCompat.getColor(requireContext(), R.color.status_disconnected)
+                            )
+                            binding.btnConnect.visibility = View.VISIBLE
+                            binding.btnDisconnect.visibility = View.GONE
+                        }
+                    }
+                    else -> {}
                 }
             }
         }
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.usbDeviceInfo.collect { info ->
-                if (info != null) {
-                    binding.tvUsbStatus.text = "USB: ${info.cameraModel}"
-                }
+                if (info != null) binding.tvCameraName.text = info.cameraModel
             }
         }
     }
 
-    private fun showDeviceDialog() {
-        val entries = buildList {
-            scannedDevices.forEach { device -> add(DeviceDialogEntry(device.name, device, null)) }
-            wifiDevices.forEach { candidate -> add(DeviceDialogEntry(candidate.name, null, candidate)) }
+    private fun setupInteractions() {
+        // 顶部设置入口 → Tab4
+        binding.btnSettingsIcon.setOnClickListener {
+            (activity as? MainActivity)?.switchToTab(MainActivity.TAB_SETTINGS)
         }
-        val names = entries.map { it.label }.toTypedArray()
+
+        // 连接 / 断开
+        binding.btnConnect.pressEffect()
+        binding.btnConnect.setOnClickListener { showConnectDialog() }
+        binding.btnDisconnect.pressEffect()
+        binding.btnDisconnect.setOnClickListener {
+            viewModel.disconnect()
+            viewModel.disconnectUsb()
+        }
+
+        // 点击设备卡片快速重连
+        binding.cardDevice.setOnClickListener {
+            if (viewModel.connectionState.value == ConnectionState.DISCONNECTED) {
+                showConnectDialog()
+            }
+        }
+
+        // 下拉刷新连接状态
+        binding.swipeRefresh.setColorSchemeColors(
+            ContextCompat.getColor(requireContext(), R.color.text_primary)
+        )
+        binding.swipeRefresh.setOnRefreshListener {
+            paramsViewModel.readAll()
+            viewLifecycleOwner.lifecycleScope.launch {
+                delay(1200)
+                if (_binding != null) binding.swipeRefresh.isRefreshing = false
+            }
+        }
+
+        // 快捷功能网格（缩放反馈 + 跳转）
+        binding.cardQuickRemote.pressEffect()
+        binding.cardQuickRemote.setOnClickListener {
+            (activity as? MainActivity)?.switchToTab(MainActivity.TAB_REMOTE)
+        }
+        binding.cardQuickAlbum.pressEffect()
+        binding.cardQuickAlbum.setOnClickListener {
+            (activity as? MainActivity)?.switchToTab(MainActivity.TAB_ALBUM)
+        }
+        binding.cardQuickFirmware.pressEffect()
+        binding.cardQuickFirmware.setOnClickListener {
+            MaterialAlertDialogBuilder(requireContext())
+                .setTitle("固件更新")
+                .setMessage("当前已是最新版本，暂无可用固件更新。")
+                .setPositiveButton("确定", null)
+                .show()
+        }
+        binding.cardQuickLocation.pressEffect()
+        binding.cardQuickLocation.setOnClickListener {
+            MaterialAlertDialogBuilder(requireContext())
+                .setTitle("位置同步")
+                .setMessage("将手机 GPS 位置写入照片需要相机支持位置信息写入，Z 系列机型可通过蓝牙持续同步。功能即将开放。")
+                .setPositiveButton("确定", null)
+                .show()
+        }
+
+        // 相机详情折叠组（展开/收起 + 箭头旋转动画）
+        binding.rowDetailHeader.setOnClickListener {
+            detailExpanded = !detailExpanded
+            binding.layoutDetail.visibility = if (detailExpanded) View.VISIBLE else View.GONE
+            binding.iconDetailChevron.animate()
+                .rotation(if (detailExpanded) 180f else 0f)
+                .setDuration(200)
+                .start()
+        }
+    }
+
+    /** 连接方式选择：BLE / WiFi 扫描结果 / USB 有线 / 手动 IP */
+    private fun showConnectDialog() {
+        val entries = buildList {
+            scannedDevices.forEach { d -> add(DeviceDialogEntry("BLE · ${d.name}", d, null)) }
+            wifiDevices.forEach { c -> add(DeviceDialogEntry("WiFi · ${c.name} (${c.ipAddress})", null, c)) }
+        }
+        val items = entries.map { it.label }.toMutableList()
+        items.add("USB 有线连接")
+        items.add("手动输入 IP")
+
         MaterialAlertDialogBuilder(requireContext())
-            .setTitle("选择相机设备")
-            .setItems(names) { _, which ->
-                val entry = entries[which]
-                // Fix P2-5: 状态栏文字反馈，替代 Toast
-                binding.tvStatusMessage.text = "连接: ${entry.label}"
+            .setTitle("连接相机")
+            .setItems(items.toTypedArray()) { _, which ->
                 when {
-                    entry.bleDevice != null -> viewModel.connectToDevice(entry.bleDevice.address)
-                    entry.wifiDevice != null -> viewModel.connectToWifiCamera(entry.wifiDevice)
+                    which < entries.size -> {
+                        val entry = entries[which]
+                        binding.tvStatusMessage.text = "连接: ${entry.label}"
+                        when {
+                            entry.bleDevice != null -> viewModel.connectToDevice(entry.bleDevice.address)
+                            entry.wifiDevice != null -> viewModel.connectToWifiCamera(entry.wifiDevice)
+                        }
+                    }
+                    which == entries.size -> {
+                        binding.tvStatusMessage.text = "检测 USB 相机..."
+                        viewModel.connectUsb()
+                    }
+                    else -> showManualIpDialog()
                 }
             }
-            .setNeutralButton("手动输入 IP") { _, _ ->
-                showManualIpDialog()
+            .setNeutralButton("重新扫描") { _, _ ->
+                viewModel.startScan()
+                viewModel.scanWifi()
+                binding.tvStatusMessage.text = "正在扫描..."
             }
             .setNegativeButton("取消", null)
             .show()
@@ -248,7 +322,6 @@ class DashboardFragment : Fragment() {
             setPadding(56, 28, 56, 8)
             addView(input)
         }
-
         MaterialAlertDialogBuilder(requireContext())
             .setTitle("手动连接 WiFi 相机")
             .setMessage("STA 模式下请输入相机在局域网中的 IP 地址")
@@ -270,6 +343,9 @@ class DashboardFragment : Fragment() {
             .setNegativeButton("取消", null)
             .show()
     }
+
+    private fun formatMb(mb: Long): String =
+        if (mb >= 1024) String.format("%.1f GB", mb / 1024f) else "$mb MB"
 
     private data class DeviceDialogEntry(
         val label: String,

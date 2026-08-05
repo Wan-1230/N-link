@@ -177,6 +177,21 @@ class WifiManager @Inject constructor(
     fun getActiveNetwork(): Network? = activeNetwork
 
     /**
+     * STA 模式下手机和相机处于同一路由器 WiFi。
+     * 把进程默认网络绑定到当前 WiFi，确保 PTP/IP Socket 不会走到蜂窝网。
+     */
+    fun bindToActiveWifi(): Network? {
+        val network = connectivityManager.allNetworks.firstOrNull { candidate ->
+            connectivityManager.getNetworkCapabilities(candidate)
+                ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        } ?: return null
+        activeNetwork = network
+        connectivityManager.bindProcessToNetwork(network)
+        Timber.tag(TAG).i("Bound process to active WiFi network $network")
+        return network
+    }
+
+    /**
      * 注册全局网络状态监听
      * PRD 3.3: 网络感知 - 监听 ConnectivityManager，WiFi 恢复时立即触发重连
      */

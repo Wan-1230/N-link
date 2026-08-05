@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 多选未选中态：半透明底 + 白描边圆，保证深色缩略图上仍可见 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="#66000000" />
+    <stroke
+        android:width="1.5dp"
+        android:color="@color/surface" />
+</shape>
