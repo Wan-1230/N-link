@@ -145,6 +145,9 @@ class LiveViewManager @Inject constructor(
                     startFrameLoop()
                     Timber.tag(TAG).i("✓ Live View started")
                 } else {
+                    // 全链路优化: 启动失败时恢复原曝光模式，
+                    // 避免相机卡在无线控制模式导致后续下载被拒绝
+                    restoreExposureModeIfNeeded()
                     Timber.tag(TAG).e("Failed to start Live View")
                     _liveViewState.value = LiveViewState.ERROR
                     _errorMessage.value =
@@ -232,6 +235,12 @@ class LiveViewManager @Inject constructor(
         _liveViewState.value = LiveViewState.STOPPED
         _fps.value = 0
         // 参考影犀日志: 停止监看后退出无线控制模式，恢复原曝光程序模式
+        restoreExposureModeIfNeeded()
+        Timber.tag(TAG).i("Live View stopped")
+    }
+
+    /** 恢复进入无线控制模式前的曝光程序模式（停止/启动失败时调用） */
+    private fun restoreExposureModeIfNeeded() {
         val restore = savedExposureMode
         savedExposureMode = null
         if (restore != null && !usbPtpManager.isConnected()) {
@@ -242,7 +251,6 @@ class LiveViewManager @Inject constructor(
                 }
             }
         }
-        Timber.tag(TAG).i("Live View stopped")
     }
 
     /**

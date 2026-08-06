@@ -29,6 +29,13 @@ class RemoteShootingManager @Inject constructor(
 ) {
     companion object {
         private const val TAG = "RemoteShooting"
+
+        /** 快门前对焦等待时长：参考影犀日志点按对焦耗时约 1.2~1.5s，取 1200ms 保证合焦 */
+        private const val AF_SETTLE_MS = 1200L
+
+        /** 长按对焦重触发间隔：必须大于单次 AF Drive 对焦周期，
+         *  否则会打断相机正在进行的对焦（旧值 600ms 导致对焦反复中断） */
+        private const val AF_HOLD_INTERVAL_MS = 1200L
     }
 
     private var scope: CoroutineScope? = null
@@ -99,18 +106,24 @@ class RemoteShootingManager @Inject constructor(
 
     /**
      * 全按拍摄（单张）
-     * PRD 5.1: 遥控快门延迟 < 150ms
-     * 参考影犀日志: 拍照请求 autofocus=true 时先触发 AF 再释放快门
+     * PRD 5.1: 遥控快门延迟 < 150ms（指对焦完成后的快门响应）
+     * 参考影犀日志: 拍照请求 autofocus=true 时先触发 AF，对焦完成后再释放快门
+     * Fix: 旧版发完 AF_DRIVE 立即释放快门导致无法合焦；
+     * 现改为触发对焦 → 等待 AF_SETTLE_MS 对焦收敛 → 再释放快门
      */
-    suspend fun capture(autofocus: Boolean = true): Boolean {
+    suspend fun capture(autofocus: Boolean = true, focusWaitMs: Long = AF_SETTLE_MS): Boolean {
         if (!isRemoteReady()) return false
         return withContext(Dispatchers.IO) {
             try {
                 _shootingState.value = ShootingState.CAPTURING
-                // 参考影犀日志: 拍照前先自动对焦
                 if (autofocus) {
+                    // 第一步: 触发 AF 对焦
                     runCatching { halfPressFocus() }
+                    // 第二步: 等待对焦收敛（对焦未完成不释放快门，确保合焦拍摄）
+                    Timber.tag(TAG).d("Waiting ${focusWaitMs}ms for AF to settle")
+                    delay(focusWaitMs)
                 }
+                // 第三步: 释放快门
                 val success = if (usbPtpManager.isConnected()) {
                     usbPtpManager.capture()
                 } else {
@@ -131,20 +144,33 @@ class RemoteShootingManager @Inject constructor(
     }
 
     /**
-     * 任务6: 长按持续对焦（模拟实体对焦按键）。
-     * 循环触发 AF Drive，直到调用 stopContinuousFocus()。
+     * 长按持续对焦（模拟实体对焦按键：按住-对焦-松开-停止）。
+     * Fix: 旧版每 600ms 重发 AF_DRIVE，短于单次对焦周期，
+     * 会不断打断相机正在进行的对焦，表现为“对焦刚开始就停了”。
+     * 新版: 按下时触发一次对焦，之后每 AF_HOLD_INTERVAL_MS（一个完整对焦周期后）
+     * 才重新触发，保证按住期间对焦连续不中断；松开时发 AF_DRIVE_CANCEL 停止。
      */
     fun startContinuousFocus() {
         if (focusJob?.isActive == true) return
         focusJob = scope?.launch {
+            // 按下立即启动对焦
+            try {
+                if (usbPtpManager.isConnected()) usbPtpManager.afDrive()
+                else ptpSession.afDrive()
+                Timber.tag(TAG).i("Continuous AF: initial drive sent")
+            } catch (e: Exception) {
+                Timber.tag(TAG).w(e, "Continuous AF initial drive failed")
+            }
+            // 按住期间: 等上一轮对焦完成后再重新触发，保持对焦连续
             while (isActive && isRemoteReady()) {
+                delay(AF_HOLD_INTERVAL_MS)
+                if (!isActive) break
                 try {
                     if (usbPtpManager.isConnected()) usbPtpManager.afDrive()
                     else ptpSession.afDrive()
                 } catch (e: Exception) {
-                    Timber.tag(TAG).w(e, "Continuous AF drive failed")
+                    Timber.tag(TAG).w(e, "Continuous AF re-drive failed")
                 }
-                delay(600)
             }
         }
         Timber.tag(TAG).i("Continuous focus started")

@@ -55,6 +55,12 @@ class TransferViewModel @Inject constructor(
     private val _message = MutableStateFlow("")
     val message: StateFlow<String> = _message.asStateFlow()
 
+    /** 全链路优化: TransferManager 的用户消息流（下载成功/失败/通道切换反馈） */
+    val managerMessage: StateFlow<String> = transferManager.message
+
+    /** 当前数据通道（USB 优先，USB 断开回退 WiFi） */
+    fun activeChannel(): String = transferManager.activeChannel()
+
     /** 供 UI 层显示轻量状态消息 */
     fun showMessage(msg: String) {
         _message.value = msg

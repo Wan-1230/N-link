@@ -106,6 +106,17 @@ class PtpProtocolTest {
     }
 
     @Test
+    fun `end data packet larger than 64KB round trips through stream parser`() {
+        val data = ByteArray(PtpConstants.MAX_PACKET_SIZE.coerceAtMost(70 * 1024))
+        data.forEachIndexed { index, _ -> data[index] = (index % 251).toByte() }
+        val endBytes = EndDataPacket(transactionId = 42, data = data).toBytes()
+        val parsed = PtpPacket.fromStream(ByteArrayInputStream(endBytes)) as EndDataPacket
+
+        assertEquals(42, parsed.transactionId)
+        assertArrayEquals(data, parsed.data)
+    }
+
+    @Test
     fun `event packet parses code transaction and params`() {
         val payload = ByteBuffer.allocate(14)
             .order(ByteOrder.LITTLE_ENDIAN)

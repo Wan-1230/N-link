@@ -6,6 +6,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
@@ -32,6 +33,7 @@ class TransferFragment : Fragment() {
     private lateinit var adapter: PhotoGridAdapter
     private val chipViews = mutableMapOf<PhotoFilter, TextView>()
     private var multiSelectMode = false
+    private var lastToastMsg: String? = null
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentTransferBinding.inflate(inflater, container, false)
@@ -195,6 +197,25 @@ class TransferFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.message.collect { msg ->
                 if (msg.isNotBlank()) binding.tvMessage.text = msg
+            }
+        }
+
+        // 全链路优化: 下载成功/失败/通道切换均用 Toast 反馈，不再静默
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.managerMessage.collect { msg ->
+                if (msg.isNotBlank() && msg != lastToastMsg) {
+                    lastToastMsg = msg
+                    Toast.makeText(requireContext(), msg, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        // 通道状态变化时刷新空态文案，明确告知当前走 USB 还是 WiFi
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.usbState.collect {
+                if (viewModel.photoList.value.isEmpty()) {
+                    binding.tvMessage.text = "连接相机后查看相册 · 当前通道: ${viewModel.activeChannel()}"
+                }
             }
         }
 
