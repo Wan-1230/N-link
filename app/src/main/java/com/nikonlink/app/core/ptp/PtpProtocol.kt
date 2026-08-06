@@ -142,7 +142,9 @@ object PtpConstants {
 
     // Protocol constants
     const val PTP_IP_HEADER_SIZE = 8  // 4 bytes length + 4 bytes type
-    const val MAX_PACKET_SIZE = 65536
+    // 部分尼康机型会把较大的对象放在单个 EndData 包中返回，
+    // 不能用 64KB 之类的固定值截断，否则命令通道会失步。
+    const val MAX_PACKET_SIZE = Int.MAX_VALUE
     const val PROTOCOL_VERSION = 0x00000100  // v1.0
 }
 

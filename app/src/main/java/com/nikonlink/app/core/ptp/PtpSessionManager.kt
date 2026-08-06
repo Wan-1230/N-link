@@ -302,6 +302,12 @@ class PtpSessionManager @Inject constructor(
                         }
                         PtpDataResult.Success(combinedData, finalResponse)
                     } else {
+                        // 全链路优化: 数据命令被拒时必须记录响应码，
+                        // 否则下载失败静默无日志可查
+                        Timber.tag(TAG).w(
+                            "Data command rejected: op=0x${operationCode.toString(16)} " +
+                                "code=0x${finalResponse.responseCode.toString(16)} recv=$receivedSize"
+                        )
                         PtpDataResult.Failure(finalResponse)
                     }
                 } catch (e: Exception) {

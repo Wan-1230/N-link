@@ -58,6 +58,29 @@ class TransferManager @Inject constructor(
     private val _queue = MutableStateFlow<List<TransferTask>>(emptyList())
     val queue: StateFlow<List<TransferTask>> = _queue.asStateFlow()
 
+    /** 全链路优化: 面向用户的消息流（成功/失败/通道切换都有反馈，不再静默） */
+    private val _message = MutableStateFlow("")
+    val message: StateFlow<String> = _message.asStateFlow()
+
+    private fun postMessage(msg: String) {
+        _message.value = msg
+        Timber.tag(TAG).i("Msg: $msg")
+    }
+
+    /** 当前生效的数据通道（UI 展示用）：USB 优先，USB 断开回退 WiFi */
+    fun activeChannel(): String = when {
+        usbPtpManager.isConnected() -> "USB 有线"
+        ptpSession.isConnected() -> "WiFi"
+        else -> "未连接"
+    }
+
+    /** 主通道失败时的兑底通道（USB↔WiFi 互为兑底） */
+    private fun fallbackOf(primary: CameraTransport): CameraTransport? = when {
+        primary === usbTransport && ptpSession.isConnected() -> ptpTransport
+        primary === ptpTransport && usbPtpManager.isConnected() -> usbTransport
+        else -> null
+    }
+
     fun start(scope: CoroutineScope) {
         this.scope = scope
         Timber.tag(TAG).i("TransferManager started")
@@ -139,57 +162,93 @@ class TransferManager @Inject constructor(
     /**
      * 下载完整照片
      * PRD 2.1: 选择性下载原图
+     * 全链路优化: USB 优先 + 失败自动回退另一通道；失败原因中文化；状态不卡死
      */
     suspend fun downloadPhoto(
         file: CameraFile,
         onProgress: ((Long, Long) -> Unit)? = null,
         targetFile: File? = null
     ): TransferResult {
-        val transport = currentTransport()
-        if (!transport.isConnected) {
+        if (!hasActiveSession()) {
+            postMessage("相机未连接，无法下载")
+            _transferState.value = TransferState.Idle
             return TransferResult.Failed("相机未连接")
         }
 
         _transferState.value = TransferState.Downloading(file, 0L, file.size)
 
         return withContext(Dispatchers.IO) {
-            try {
-                val tempDir = File(context.cacheDir, "nikonlink_transfer").apply { mkdirs() }
-                val tempFile = targetFile ?: File(tempDir, "tmp_${file.handle}.bin")
-                if (tempFile.length() > file.size) {
-                    tempFile.delete()
-                }
+            val tempDir = File(context.cacheDir, "nikonlink_transfer").apply { mkdirs() }
+            val tempFile = targetFile ?: File(tempDir, "tmp_${file.handle}.bin")
 
-                val completed = downloadToFile(transport, file, tempFile) { received, total ->
-                    val resolvedTotal = resolveProgressTotal(file.size, total, received)
-                    onProgress?.invoke(received, resolvedTotal)
-                    _transferState.value = TransferState.Downloading(file, received, resolvedTotal)
-                }
+            // 主通道尝试
+            var result = downloadVia(currentTransport(), file, tempFile, onProgress)
 
-                if (!completed) {
-                    return@withContext TransferResult.Failed(
-                        "Incomplete transfer: ${tempFile.length()}/${file.size}"
-                    )
+            // 通道回退: 主通道失败且另一通道在线时自动切换（如 USB 拔出后回退 WiFi）
+            if (result !is TransferResult.Success) {
+                val fallback = fallbackOf(currentTransport())
+                if (fallback != null && fallback.isConnected) {
+                    postMessage("主通道传输失败，已自动切换到 ${if (fallback === usbTransport) "USB" else "WiFi"} 重试")
+                    delay(500)
+                    result = downloadVia(fallback, file, tempFile, onProgress)
                 }
-
-                val savedPath = saveFileToMediaStore(tempFile, file.fileName)
-                if (savedPath != null) {
-                    tempFile.delete()
-                    transferRepository.recordTransfer(file.handle, file.fileName, file.size, savedPath)
-                    _transferState.value = TransferState.Completed(file)
-                    TransferResult.Success(savedPath)
-                } else {
-                    TransferResult.Failed("Failed to save file")
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Timber.tag(TAG).e(e, "Download failed: ${file.fileName}")
-                _transferState.value = TransferState.Idle
-                TransferResult.Failed(e.message ?: "Unknown error")
             }
+
+            if (result !is TransferResult.Success) {
+                _transferState.value = TransferState.Idle
+            }
+            result
         }
     }
+
+    /** 单通道下载实现：传输 → 保存 MediaStore → 记录去重 */
+    private suspend fun downloadVia(
+        transport: CameraTransport,
+        file: CameraFile,
+        tempFile: File,
+        onProgress: ((Long, Long) -> Unit)?
+    ): TransferResult {
+        if (!transport.isConnected) {
+            return TransferResult.Failed("相机未连接")
+        }
+        return try {
+            if (tempFile.length() > file.size) {
+                tempFile.delete()
+            }
+
+            val completed = downloadToFile(transport, file, tempFile) { received, total ->
+                val resolvedTotal = resolveProgressTotal(file.size, total, received)
+                onProgress?.invoke(received, resolvedTotal)
+                _transferState.value = TransferState.Downloading(file, received, resolvedTotal)
+            }
+
+            if (!completed) {
+                Timber.tag(TAG).w("Incomplete transfer: ${tempFile.length()}/${file.size} via ${channelName(transport)}")
+                return TransferResult.Failed(
+                    "传输中断（${tempFile.length()}/${file.size}），请检查连接后重试"
+                )
+            }
+
+            val savedPath = saveFileToMediaStore(tempFile, file.fileName)
+            if (savedPath != null) {
+                tempFile.delete()
+                transferRepository.recordTransfer(file.handle, file.fileName, file.size, savedPath)
+                _transferState.value = TransferState.Completed(file)
+                postMessage("已保存: ${file.fileName}")
+                TransferResult.Success(savedPath)
+            } else {
+                TransferResult.Failed("保存失败：存储空间不足或无写入权限")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.tag(TAG).e(e, "Download failed: ${file.fileName}")
+            TransferResult.Failed(e.message ?: "未知错误")
+        }
+    }
+
+    private fun channelName(transport: CameraTransport): String =
+        if (transport === usbTransport) "USB" else "WiFi"
 
     /**
      * 流式下载到本地文件，支持从已有临时文件断点续传。
@@ -320,8 +379,13 @@ class TransferManager @Inject constructor(
     /**
      * 添加传输任务到队列
      * PRD 2.1: 传输队列管理 - 多任务排队
+     * 全链路优化: 已下载文件的去重在队列处理阶段异步执行（避免阻塞 UI 线程）
      */
     fun enqueue(files: List<CameraFile>) {
+        if (files.isEmpty()) {
+            postMessage("没有可下载的文件")
+            return
+        }
         val tasks = files.map { TransferTask(it, TransferTaskStatus.PENDING) }
         transferQueue.addAll(tasks)
         _queue.value = transferQueue.toList()
@@ -382,21 +446,43 @@ class TransferManager @Inject constructor(
         )
 
         currentJob = scope?.launch {
-            val result = try {
-                downloadPhoto(
-                    file = nextTask.file,
-                    onProgress = { received, total ->
-                        val resolvedTotal = resolveProgressTotal(nextTask.file.size, total, received)
-                        _transferState.value = TransferState.Downloading(
-                            nextTask.file,
-                            received,
-                            resolvedTotal
-                        )
-                    },
-                    targetFile = tempFile
-                )
-            } catch (e: CancellationException) {
-                TransferResult.Cancelled
+            // 全链路优化: 队列阶段去重，已下载过的文件直接跳过，不重复传输
+            val alreadyDone = runCatching {
+                transferRepository.isAlreadyTransferred(nextTask.file.handle)
+            }.getOrDefault(false)
+            if (alreadyDone) {
+                nextTask.status = TransferTaskStatus.COMPLETED
+                postMessage("${nextTask.file.fileName} 已下载过，自动跳过")
+                _queue.value = transferQueue.toList()
+                currentTask = null
+                currentJob = null
+                processQueue()
+                return@launch
+            }
+
+            var result: TransferResult = TransferResult.Cancelled
+            // 全链路优化: 失败自动重试 1 次（相机瞬时忙碌/通道切换场景）
+            repeat(2) { attempt ->
+                result = try {
+                    downloadPhoto(
+                        file = nextTask.file,
+                        onProgress = { received, total ->
+                            val resolvedTotal = resolveProgressTotal(nextTask.file.size, total, received)
+                            _transferState.value = TransferState.Downloading(
+                                nextTask.file,
+                                received,
+                                resolvedTotal
+                            )
+                        },
+                        targetFile = tempFile
+                    )
+                } catch (e: CancellationException) {
+                    TransferResult.Cancelled
+                }
+                if (result is TransferResult.Failed && attempt == 0) {
+                    Timber.tag(TAG).w("Task retry after failure: ${nextTask.file.fileName}")
+                    delay(1500)
+                }
             }
 
             nextTask.status = when (result) {
@@ -404,13 +490,22 @@ class TransferManager @Inject constructor(
                 is TransferResult.Failed -> TransferTaskStatus.FAILED
                 is TransferResult.Cancelled -> TransferTaskStatus.PENDING
             }
-            if (result is TransferResult.Failed) {
-                nextTask.tempFile?.delete()
-                nextTask.tempFile = null
+            when (result) {
+                is TransferResult.Failed -> {
+                    // 全链路优化: 失败原因上抛给用户，不静默
+                    postMessage("下载失败: ${nextTask.file.fileName}（${result.reason}）")
+                    nextTask.tempFile?.delete()
+                    nextTask.tempFile = null
+                }
+                is TransferResult.Success -> Unit
+                is TransferResult.Cancelled -> Unit
             }
             _queue.value = transferQueue.toList()
             currentTask = null
             currentJob = null
+            if (transferQueue.none { it.status == TransferTaskStatus.PENDING }) {
+                _transferState.value = TransferState.Idle
+            }
             processQueue() // 处理下一个
         }
     }
