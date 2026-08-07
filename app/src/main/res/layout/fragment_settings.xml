@@ -64,20 +64,17 @@
                     android:orientation="vertical">
 
                     <TextView
+                        style="@style/NlText.SectionTitle"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="尼康账号"
-                        android:textColor="@color/text_primary"
-                        android:textSize="15sp"
-                        android:textStyle="bold" />
+                        android:text="尼康账号" />
 
                     <TextView
+                        style="@style/NlText.Caption"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
-                        android:text="未登录 · 点击登录"
-                        android:textColor="@color/text_tertiary"
-                        android:textSize="12sp" />
+                        android:text="未登录 · 点击登录" />
                 </LinearLayout>
 
                 <ImageView
@@ -90,12 +87,11 @@
 
             <!-- 传输设置组 -->
             <TextView
+                style="@style/NlText.GroupTitle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="@dimen/module_gap_large"
-                android:text="传输设置"
-                android:textColor="@color/text_tertiary"
-                android:textSize="12sp" />
+                android:text="传输设置" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -245,12 +241,11 @@
 
             <!-- 相机设置组 -->
             <TextView
+                style="@style/NlText.GroupTitle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="@dimen/module_gap_large"
-                android:text="相机设置"
-                android:textColor="@color/text_tertiary"
-                android:textSize="12sp" />
+                android:text="相机设置" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -352,12 +347,11 @@
 
             <!-- 通用设置组 -->
             <TextView
+                style="@style/NlText.GroupTitle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="@dimen/module_gap_large"
-                android:text="通用设置"
-                android:textColor="@color/text_tertiary"
-                android:textSize="12sp" />
+                android:text="通用设置" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -501,12 +495,11 @@
 
             <!-- 帮助与反馈组 -->
             <TextView
+                style="@style/NlText.GroupTitle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="@dimen/module_gap_large"
-                android:text="帮助与反馈"
-                android:textColor="@color/text_tertiary"
-                android:textSize="12sp" />
+                android:text="帮助与反馈" />
 
             <LinearLayout
                 android:layout_width="match_parent"

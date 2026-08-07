@@ -1,34 +1,53 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 黑白双色设计系统 · 通用组件样式 -->
 <resources>
-    <!-- 排版：大标题 700 / 模块标题 600 / 正文 400 / 辅助 300 -->
+    <!-- 排版层级：大标题 700 / 模块标题 700 / 次级标题 700 / 正文 400 / 辅助 400 -->
     <style name="NlText.Title" parent="TextAppearance.Material3.TitleLarge">
         <item name="android:textColor">@color/text_primary</item>
-        <item name="android:textSize">22sp</item>
-        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textSize">24sp</item>
+        <item name="android:fontFamily">sans-serif</item>
         <item name="android:textStyle">bold</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:ellipsize">end</item>
     </style>
 
     <style name="NlText.SectionTitle">
         <item name="android:textColor">@color/text_primary</item>
-        <item name="android:textSize">15sp</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <style name="NlText.Subtitle">
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <style name="NlText.GroupTitle">
+        <item name="android:textColor">@color/text_secondary</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:fontFamily">sans-serif</item>
         <item name="android:textStyle">bold</item>
     </style>
 
     <style name="NlText.Body">
         <item name="android:textColor">@color/text_primary</item>
-        <item name="android:textSize">15sp</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:fontFamily">sans-serif</item>
     </style>
 
     <style name="NlText.Secondary">
         <item name="android:textColor">@color/text_secondary</item>
         <item name="android:textSize">13sp</item>
+        <item name="android:fontFamily">sans-serif</item>
     </style>
 
     <style name="NlText.Caption">
         <item name="android:textColor">@color/text_tertiary</item>
         <item name="android:textSize">12sp</item>
-        <item name="android:fontFamily">sans-serif-light</item>
+        <item name="android:fontFamily">sans-serif</item>
     </style>
 
     <style name="NlText" parent="TextAppearance.Material3.BodyMedium" />
@@ -63,6 +82,18 @@
         <item name="android:textSize">14sp</item>
         <item name="android:insetTop">0dp</item>
         <item name="android:insetBottom">0dp</item>
+    </style>
+
+    <!-- 高对比主面板按钮：面板内反色填充，深浅色自动跟随 -->
+    <style name="NlButton.Contrast" parent="NlButton.Primary">
+        <item name="backgroundTint">@color/dark_card_inner</item>
+        <item name="android:textColor">@color/on_dark_card</item>
+    </style>
+
+    <style name="NlButton.ContrastOutline" parent="NlButton.Outline">
+        <item name="android:textColor">@color/on_dark_card</item>
+        <item name="strokeColor">@color/on_dark_card_variant</item>
+        <item name="strokeWidth">1dp</item>
     </style>
 
     <!-- 内容卡片：1px 极细灰边框，无阴影，12px 圆角 -->

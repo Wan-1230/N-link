@@ -63,21 +63,21 @@ class DashboardFragment : Fragment() {
             viewModel.connectionState.collect { state ->
                 val (text, colorRes, loading) = when (state) {
                     ConnectionState.FULLY_CONNECTED ->
-                        Triple("已连接", R.color.status_connected, false)
+                        Triple("已连接", R.color.on_dark_card, false)
                     ConnectionState.WIFI_UPGRADING ->
-                        Triple("建立高速通道", R.color.status_connecting, true)
+                        Triple("建立高速通道", R.color.on_dark_card_variant, true)
                     ConnectionState.BLE_CONNECTED ->
                         if (viewModel.statusMessage.value.contains("连接中断")) {
-                            Triple("连接中断", R.color.status_disconnected, false)
+                            Triple("连接中断", R.color.on_dark_card_variant, false)
                         } else {
-                            Triple("BLE 已连接", R.color.status_connecting, false)
+                            Triple("BLE 已连接", R.color.on_dark_card_variant, false)
                         }
                     ConnectionState.CONNECTING ->
-                        Triple("连接中", R.color.status_connecting, true)
+                        Triple("连接中", R.color.on_dark_card_variant, true)
                     ConnectionState.ERROR_WAITING_RETRY ->
-                        Triple("等待重连", R.color.status_disconnected, false)
+                        Triple("等待重连", R.color.on_dark_card_variant, false)
                     ConnectionState.DISCONNECTED ->
-                        Triple("未连接", R.color.status_disconnected, false)
+                        Triple("未连接", R.color.on_dark_card_variant, false)
                 }
                 binding.tvConnectionStatus.text = text
                 binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
@@ -177,7 +177,7 @@ class DashboardFragment : Fragment() {
                     UsbConnectionState.CONNECTED -> {
                         binding.tvConnectionStatus.text = "USB 已连接"
                         binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
-                            ContextCompat.getColor(requireContext(), R.color.status_connected)
+                            ContextCompat.getColor(requireContext(), R.color.on_dark_card)
                         )
                         binding.btnConnect.visibility = View.GONE
                         binding.btnDisconnect.visibility = View.VISIBLE
@@ -186,7 +186,7 @@ class DashboardFragment : Fragment() {
                         if (viewModel.connectionState.value == ConnectionState.DISCONNECTED) {
                             binding.tvConnectionStatus.text = "未连接"
                             binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
-                                ContextCompat.getColor(requireContext(), R.color.status_disconnected)
+                                ContextCompat.getColor(requireContext(), R.color.on_dark_card_variant)
                             )
                             binding.btnConnect.visibility = View.VISIBLE
                             binding.btnDisconnect.visibility = View.GONE
