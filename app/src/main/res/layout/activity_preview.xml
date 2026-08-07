@@ -52,7 +52,8 @@
             android:gravity="center"
             android:maxLines="1"
             android:textColor="@color/white"
-            android:textSize="14sp" />
+            android:textSize="14sp"
+            android:textStyle="bold" />
 
         <ImageView
             android:id="@+id/btnMore"

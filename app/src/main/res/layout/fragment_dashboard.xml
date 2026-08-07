@@ -63,7 +63,9 @@
                     android:id="@+id/cardDevice"
                     style="@style/NlCard"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content">
+                    android:layout_height="wrap_content"
+                    app:cardBackgroundColor="@color/dark_card"
+                    app:strokeColor="@color/dark_card_surface">
 
                     <LinearLayout
                         android:layout_width="match_parent"
@@ -90,7 +92,7 @@
                                 android:layout_height="wrap_content"
                                 android:layout_marginStart="8dp"
                                 android:text="未连接"
-                                android:textColor="@color/text_secondary"
+                                android:textColor="@color/on_dark_card_variant"
                                 android:textSize="13sp" />
 
                             <ProgressBar
@@ -98,7 +100,7 @@
                                 android:layout_width="14dp"
                                 android:layout_height="14dp"
                                 android:layout_marginStart="8dp"
-                                android:indeterminateTint="@color/text_secondary"
+                                android:indeterminateTint="@color/on_dark_card_variant"
                                 android:visibility="gone" />
 
                             <View
@@ -113,18 +115,20 @@
                                 android:ellipsize="end"
                                 android:maxWidth="160dp"
                                 android:maxLines="1"
-                                android:textColor="@color/text_tertiary"
+                                android:textColor="@color/on_dark_card_variant"
                                 android:textSize="12sp" />
                         </LinearLayout>
 
                         <!-- 相机全称 -->
                         <TextView
                             android:id="@+id/tvCameraName"
-                            android:layout_width="wrap_content"
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="14dp"
+                            android:ellipsize="end"
+                            android:maxLines="1"
                             android:text="Nikon Z 50II"
-                            android:textColor="@color/text_primary"
+                            android:textColor="@color/on_dark_card"
                             android:textSize="24sp"
                             android:textStyle="bold" />
 
@@ -141,7 +145,7 @@
                                 android:layout_height="18dp"
                                 android:contentDescription="电池"
                                 android:src="@drawable/ic_battery"
-                                app:tint="@color/text_secondary" />
+                                app:tint="@color/on_dark_card_variant" />
 
                             <TextView
                                 android:layout_width="0dp"
@@ -149,7 +153,7 @@
                                 android:layout_marginStart="8dp"
                                 android:layout_weight="1"
                                 android:text="电池电量"
-                                android:textColor="@color/text_secondary"
+                                android:textColor="@color/on_dark_card_variant"
                                 android:textSize="13sp" />
 
                             <TextView
@@ -157,7 +161,7 @@
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
                                 android:text="—"
-                                android:textColor="@color/text_primary"
+                                android:textColor="@color/on_dark_card"
                                 android:textSize="13sp"
                                 android:textStyle="bold" />
                         </LinearLayout>
@@ -175,14 +179,14 @@
                                 android:layout_height="18dp"
                                 android:contentDescription="存储"
                                 android:src="@drawable/ic_sd_card"
-                                app:tint="@color/text_secondary" />
+                                app:tint="@color/on_dark_card_variant" />
 
                             <TextView
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
                                 android:layout_marginStart="8dp"
                                 android:text="存储卡"
-                                android:textColor="@color/text_secondary"
+                                android:textColor="@color/on_dark_card_variant"
                                 android:textSize="13sp" />
 
                             <ProgressBar
@@ -194,15 +198,15 @@
                                 android:layout_weight="1"
                                 android:max="100"
                                 android:progress="0"
-                                android:progressTint="@color/text_primary"
-                                android:progressBackgroundTint="@color/outline" />
+                                android:progressTint="@color/on_dark_card"
+                                android:progressBackgroundTint="@color/on_dark_card_variant" />
 
                             <TextView
                                 android:id="@+id/tvStorage"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
                                 android:text="—"
-                                android:textColor="@color/text_primary"
+                                android:textColor="@color/on_dark_card"
                                 android:textSize="13sp"
                                 android:textStyle="bold" />
                         </LinearLayout>
@@ -220,7 +224,7 @@
                                 android:layout_height="18dp"
                                 android:contentDescription="剩余可拍"
                                 android:src="@drawable/ic_nav_camera"
-                                app:tint="@color/text_secondary" />
+                                app:tint="@color/on_dark_card_variant" />
 
                             <TextView
                                 android:layout_width="0dp"
@@ -228,7 +232,7 @@
                                 android:layout_marginStart="8dp"
                                 android:layout_weight="1"
                                 android:text="剩余可拍摄"
-                                android:textColor="@color/text_secondary"
+                                android:textColor="@color/on_dark_card_variant"
                                 android:textSize="13sp" />
 
                             <TextView
@@ -236,7 +240,7 @@
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
                                 android:text="—"
-                                android:textColor="@color/text_primary"
+                                android:textColor="@color/on_dark_card"
                                 android:textSize="13sp"
                                 android:textStyle="bold" />
                         </LinearLayout>
@@ -254,7 +258,7 @@
                                 android:layout_height="18dp"
                                 android:contentDescription="镜头"
                                 android:src="@drawable/ic_lens"
-                                app:tint="@color/text_tertiary" />
+                                app:tint="@color/on_dark_card_variant" />
 
                             <TextView
                                 android:id="@+id/tvLens"
@@ -262,14 +266,14 @@
                                 android:layout_height="wrap_content"
                                 android:layout_marginStart="8dp"
                                 android:text="—"
-                                android:textColor="@color/text_tertiary"
+                                android:textColor="@color/on_dark_card_variant"
                                 android:textSize="12sp" />
                         </LinearLayout>
 
                         <!-- 连接 / 断开按钮 -->
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/btnConnect"
-                            style="@style/NlButton.Primary"
+                            style="@style/NlButton.Contrast"
                             android:layout_width="match_parent"
                             android:layout_height="48dp"
                             android:layout_marginTop="18dp"
@@ -277,7 +281,7 @@
 
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/btnDisconnect"
-                            style="@style/NlButton.Outline"
+                            style="@style/NlButton.ContrastOutline"
                             android:layout_width="match_parent"
                             android:layout_height="48dp"
                             android:layout_marginTop="18dp"
@@ -313,12 +317,11 @@
                             app:tint="@color/text_primary" />
 
                         <TextView
+                            style="@style/NlText.Subtitle"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="8dp"
-                            android:text="遥控拍摄"
-                            android:textColor="@color/text_primary"
-                            android:textSize="14sp" />
+                            android:text="遥控拍摄" />
                     </LinearLayout>
 
                     <LinearLayout
@@ -341,12 +344,11 @@
                             app:tint="@color/text_primary" />
 
                         <TextView
+                            style="@style/NlText.Subtitle"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="8dp"
-                            android:text="查看相册"
-                            android:textColor="@color/text_primary"
-                            android:textSize="14sp" />
+                            android:text="查看相册" />
                     </LinearLayout>
 
                     <LinearLayout
@@ -368,12 +370,11 @@
                             app:tint="@color/text_primary" />
 
                         <TextView
+                            style="@style/NlText.Subtitle"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="8dp"
-                            android:text="固件更新"
-                            android:textColor="@color/text_primary"
-                            android:textSize="14sp" />
+                            android:text="固件更新" />
                     </LinearLayout>
 
                     <LinearLayout
@@ -395,12 +396,11 @@
                             app:tint="@color/text_primary" />
 
                         <TextView
+                            style="@style/NlText.Subtitle"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="8dp"
-                            android:text="位置同步"
-                            android:textColor="@color/text_primary"
-                            android:textSize="14sp" />
+                            android:text="位置同步" />
                     </LinearLayout>
                 </GridLayout>
 
@@ -421,13 +421,11 @@
                         android:paddingHorizontal="20dp">
 
                         <TextView
+                            style="@style/NlText.SectionTitle"
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
-                            android:text="相机详情"
-                            android:textColor="@color/text_primary"
-                            android:textSize="15sp"
-                            android:textStyle="bold" />
+                            android:text="相机详情" />
 
                         <ImageView
                             android:id="@+id/iconDetailChevron"
