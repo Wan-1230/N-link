@@ -6,6 +6,7 @@ import com.nikonlink.app.core.ble.WifiCredential
 import com.nikonlink.app.core.common.*
 import com.nikonlink.app.core.ptp.PtpSessionManager
 import com.nikonlink.app.core.ptp.PtpSessionState
+import com.nikonlink.app.core.ptp.PtpIpProbe
 import com.nikonlink.app.core.usb.UsbConnectionState
 import com.nikonlink.app.core.usb.UsbPtpManager
 import com.nikonlink.app.core.wifi.WifiManager
@@ -238,9 +239,14 @@ class ConnectionManager @Inject constructor(
             val parts = last.address.removePrefix("wifi:").split(":")
             val ip = parts.firstOrNull().orEmpty()
             val port = parts.getOrNull(1)?.toIntOrNull() ?: 15740
-            if (ip.isNotEmpty() && candidates.none { it.ipAddress == ip }) {
+            // 参考影犀 rediscoverNikonStaHistoryByInitAckScan：
+            // 历史 IP 需要先通过 PTP/IP Init Ack 确认，避免把已失效地址展示给用户。
+            if (ip.isNotEmpty() &&
+                candidates.none { it.ipAddress == ip } &&
+                PtpIpProbe.probe(ip, port, 1000L)
+            ) {
                 candidates.add(
-                    WifiCameraCandidate(ip, port, last.deviceName.ifBlank { "尼康相机(历史)" }, "sta")
+                    WifiCameraCandidate(ip, port, last.deviceName.ifBlank { "尼康相机(历史)" }, "sta-history")
                 )
             }
         }
@@ -627,6 +633,19 @@ class ConnectionManager @Inject constructor(
 
     fun isFullyConnected(): Boolean = stateMachine.state.value == ConnectionState.FULLY_CONNECTED
     fun isBleConnected(): Boolean = bleManager.isConnected()
+
+    /**
+     * 连接状态机与底层会话是否一致。
+     * 用于健康检查，避免 UI 显示已连接但 PTP/IP 或 USB 会话实际已死亡。
+     */
+    fun isLinkHealthy(): Boolean {
+        return when (stateMachine.state.value) {
+            ConnectionState.FULLY_CONNECTED ->
+                ptpSession.isConnected() || usbPtpManager.isConnected()
+            ConnectionState.BLE_CONNECTED -> bleManager.isConnected()
+            else -> true
+        }
+    }
 }
 
 /**
