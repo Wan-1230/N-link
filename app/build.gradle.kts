@@ -14,7 +14,7 @@ android {
         minSdk = 29 // Android 10 - PRD requirement: BLE 5.0 full support
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0-alpha"
+        versionName = "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
