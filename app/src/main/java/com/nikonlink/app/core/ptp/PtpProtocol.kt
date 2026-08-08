@@ -136,6 +136,15 @@ object PtpConstants {
     const val PROP_STILL_CAPTURE_MODE = 0x5013
     const val PROP_FOCUS_METERING_MODE = 0x501C
 
+    // Nikon 厂商镜头属性（参考 libgphoto2 ptp.h）
+    const val PROP_NIKON_LENS_ID = 0xD0E0
+    const val PROP_NIKON_LENS_SORT = 0xD0E1
+    const val PROP_NIKON_LENS_TYPE = 0xD0E2
+    const val PROP_NIKON_FOCAL_LENGTH_MIN = 0xD0E3
+    const val PROP_NIKON_FOCAL_LENGTH_MAX = 0xD0E4
+    const val PROP_NIKON_MAX_AP_AT_MIN = 0xD0E5
+    const val PROP_NIKON_MAX_AP_AT_MAX = 0xD0E6
+
     // PTP/IP default port
     const val DEFAULT_PORT = 15740
     const val EVENT_PORT = 15740

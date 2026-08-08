@@ -205,6 +205,9 @@
                                 android:id="@+id/tvStorage"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
+                                android:ellipsize="end"
+                                android:maxLines="1"
+                                android:maxWidth="176dp"
                                 android:text="—"
                                 android:textColor="@color/on_dark_card"
                                 android:textSize="13sp"
@@ -265,6 +268,8 @@
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
                                 android:layout_marginStart="8dp"
+                                android:ellipsize="end"
+                                android:maxLines="1"
                                 android:text="—"
                                 android:textColor="@color/on_dark_card_variant"
                                 android:textSize="12sp" />

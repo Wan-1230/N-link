@@ -344,6 +344,14 @@ class PtpSessionManager @Inject constructor(
     }
 
     /**
+     * 获取单个存储卡的 PTP StorageInfo 原始数据。
+     */
+    suspend fun getStorageInfo(storageId: Int): ByteArray? {
+        val result = sendCommandWithData(PtpConstants.OP_GET_STORAGE_INFO, listOf(storageId))
+        return (result as? PtpDataResult.Success)?.data
+    }
+
+    /**
      * 获取对象句柄列表（照片列表）
      * PRD 2.1: 浏览相机存储卡照片列表
      */

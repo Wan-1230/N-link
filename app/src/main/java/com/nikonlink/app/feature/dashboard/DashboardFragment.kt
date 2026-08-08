@@ -45,6 +45,7 @@ class DashboardFragment : Fragment() {
     private var wifiDevices: List<WifiCameraCandidate> = emptyList()
     private var pairingDialog: AlertDialog? = null
     private var detailExpanded = false
+    private var cameraInfoRequested = false
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentDashboardBinding.inflate(inflater, container, false)
@@ -55,6 +56,7 @@ class DashboardFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         setupObservers()
         setupInteractions()
+        paramsViewModel.readAll()
     }
 
     private fun setupObservers() {
@@ -90,6 +92,12 @@ class DashboardFragment : Fragment() {
                         state == ConnectionState.BLE_CONNECTED
                 binding.btnConnect.visibility = if (connected) View.GONE else View.VISIBLE
                 binding.btnDisconnect.visibility = if (connected) View.VISIBLE else View.GONE
+                if (state == ConnectionState.FULLY_CONNECTED && !cameraInfoRequested) {
+                    cameraInfoRequested = true
+                    paramsViewModel.readAll()
+                } else if (state != ConnectionState.FULLY_CONNECTED) {
+                    cameraInfoRequested = false
+                }
                 binding.swipeRefresh.isRefreshing = false
             }
         }
@@ -107,12 +115,17 @@ class DashboardFragment : Fragment() {
                         ((info.storageTotalMb - info.storageFreeMb) * 100 / info.storageTotalMb).toInt()
                     binding.pbStorage.progress = usedPct.coerceIn(0, 100)
                     binding.tvStorage.text =
-                        "${formatMb(info.storageTotalMb - info.storageFreeMb)} / ${formatMb(info.storageTotalMb)}"
+                        if (info.storageDescription.isNotBlank()) {
+                            "${info.storageDescription} · ${formatMb(info.storageTotalMb - info.storageFreeMb)} / ${formatMb(info.storageTotalMb)}"
+                        } else {
+                            "${formatMb(info.storageTotalMb - info.storageFreeMb)} / ${formatMb(info.storageTotalMb)}"
+                        }
                     // 估算剩余可拍张数（按单张 ~25MB RAW 计）
                     val shots = (info.storageFreeMb / 25).toInt()
                     binding.tvShotsRemaining.text = "约 $shots 张"
                 }
                 if (info.modelName.isNotBlank()) binding.tvCameraName.text = info.modelName
+                if (info.lensName.isNotBlank()) binding.tvLens.text = info.lensName
                 if (info.shutterCount >= 0) binding.tvShutterCount.text = "${info.shutterCount} 次"
                 if (info.firmwareVersion.isNotBlank()) binding.tvFirmware.text = info.firmwareVersion
             }
@@ -181,6 +194,10 @@ class DashboardFragment : Fragment() {
                         )
                         binding.btnConnect.visibility = View.GONE
                         binding.btnDisconnect.visibility = View.VISIBLE
+                        if (!cameraInfoRequested) {
+                            cameraInfoRequested = true
+                            paramsViewModel.readAll()
+                        }
                     }
                     UsbConnectionState.DISCONNECTED -> {
                         if (viewModel.connectionState.value == ConnectionState.DISCONNECTED) {
