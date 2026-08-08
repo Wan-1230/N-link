@@ -18,6 +18,7 @@ import com.nikonlink.app.data.repository.TransferRepository
 import com.nikonlink.app.feature.liveview.LiveViewManager
 import com.nikonlink.app.feature.remote.RemoteShootingManager
 import com.nikonlink.app.feature.settings.CameraParameterManager
+import com.nikonlink.app.feature.settings.DigeekerShutterCountClient
 import com.nikonlink.app.feature.transfer.TransferManager
 import dagger.Module
 import dagger.Provides
@@ -92,9 +93,18 @@ object AppModule {
     @Provides
     @Singleton
     fun provideCameraParameterManager(
+        @ApplicationContext context: Context,
         ptpSessionManager: PtpSessionManager,
-        usbPtpManager: UsbPtpManager
-    ): CameraParameterManager = CameraParameterManager(ptpSessionManager, usbPtpManager)
+        usbPtpManager: UsbPtpManager,
+        transferManager: TransferManager,
+        digeekerShutterCountClient: DigeekerShutterCountClient
+    ): CameraParameterManager = CameraParameterManager(
+        context,
+        ptpSessionManager,
+        usbPtpManager,
+        transferManager,
+        digeekerShutterCountClient
+    )
 
     @Provides
     @Singleton

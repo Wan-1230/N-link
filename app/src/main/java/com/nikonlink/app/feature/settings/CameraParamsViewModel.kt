@@ -19,6 +19,7 @@ class CameraParamsViewModel @Inject constructor(
     val aperture: StateFlow<CameraParam> = paramManager.aperture
     val shutterSpeed: StateFlow<CameraParam> = paramManager.shutterSpeed
     val iso: StateFlow<CameraParam> = paramManager.iso
+    val evCompensation: StateFlow<CameraParam> = paramManager.evCompensation
     val whiteBalance: StateFlow<CameraParam> = paramManager.whiteBalance
     val focusMode: StateFlow<CameraParam> = paramManager.focusMode
     val exposureProgram: StateFlow<CameraParam> = paramManager.exposureProgram
@@ -40,6 +41,11 @@ class CameraParamsViewModel @Inject constructor(
 
     fun readAll() {
         viewModelScope.launch { paramManager.readAllParameters() }
+    }
+
+    /** 快门次数查询失败后手动重试 */
+    fun retryShutterCountQuery() {
+        paramManager.retryShutterCountQuery()
     }
 
     fun toggleLock() {
@@ -107,10 +113,10 @@ class CameraParamsViewModel @Inject constructor(
         viewModelScope.launch { paramManager.setIso(iso) }
     }
 
-    /** 测光模式循环：矩阵 → 中央重点 → 点测光 */
+    /** 测光模式循环：矩阵 → 中央重点 → 点测光 → 高光重点 */
     fun cycleMeteringMode() {
         viewModelScope.launch {
-            val codes = listOf(5, 2, 3)
+            val codes = listOf(3, 2, 4, 0x8010)
             val current = paramManager.meteringMode.value.rawValue
             val idx = codes.indexOf(current)
             paramManager.setMeteringMode(codes[(idx + 1).coerceAtLeast(0) % codes.size])
@@ -138,7 +144,7 @@ class CameraParamsViewModel @Inject constructor(
 
     fun cycleFocusMode() {
         viewModelScope.launch {
-            val modes = listOf(1, 2, 3)
+            val modes = listOf(0x8010, 0x8011, 1)
             val current = paramManager.focusMode.value.rawValue
             val idx = modes.indexOf(current)
             paramManager.setFocusMode(modes[(idx + 1).coerceAtLeast(0) % modes.size])

@@ -7,6 +7,8 @@ import com.nikonlink.app.core.common.ConnectionMetrics
 import com.nikonlink.app.core.common.ConnectionState
 import com.nikonlink.app.core.connection.ConnectionHint
 import com.nikonlink.app.core.connection.ConnectionManager
+import com.nikonlink.app.data.local.PairedDevice
+import com.nikonlink.app.data.repository.DeviceRepository
 import com.nikonlink.app.core.usb.UsbCameraInfo
 import com.nikonlink.app.core.usb.UsbConnectionState
 import com.nikonlink.app.core.usb.UsbPtpManager
@@ -29,7 +31,8 @@ import javax.inject.Inject
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
     private val connectionManager: ConnectionManager,
-    private val usbPtpManager: UsbPtpManager
+    private val usbPtpManager: UsbPtpManager,
+    private val deviceRepository: DeviceRepository
 ) : ViewModel() {
 
     val connectionState: StateFlow<ConnectionState> = connectionManager.connectionState
@@ -50,6 +53,10 @@ class DashboardViewModel @Inject constructor(
 
     private val _isWifiScanning = MutableStateFlow(false)
     val isWifiScanning: StateFlow<Boolean> = _isWifiScanning.asStateFlow()
+
+    /** 历史配对过的相机设备（STA 最近连接） */
+    val recentDevices: StateFlow<List<PairedDevice>> = deviceRepository.getPairedDevices()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private var lastSelectedAddress: String? = null
 
@@ -106,6 +113,24 @@ class DashboardViewModel @Inject constructor(
             port = candidate.port,
             deviceName = candidate.name
         )
+    }
+
+    /** 从最近连接列表快速重连 */
+    fun connectToRecentDevice(device: PairedDevice) {
+        if (device.address.startsWith("wifi:")) {
+            val parts = device.address.removePrefix("wifi:").split(":")
+            val ip = parts.firstOrNull().orEmpty()
+            val port = parts.getOrNull(1)?.toIntOrNull() ?: 15740
+            if (ip.isNotEmpty()) {
+                connectionManager.connectToWifiCamera(
+                    ipAddress = ip,
+                    port = port,
+                    deviceName = device.deviceName
+                )
+                return
+            }
+        }
+        connectToDevice(device.address)
     }
 
     fun cancelPairing() {

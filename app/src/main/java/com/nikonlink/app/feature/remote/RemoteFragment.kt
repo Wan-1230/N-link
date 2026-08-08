@@ -64,7 +64,6 @@ class RemoteFragment : Fragment() {
         setupLiveViewArea()
         setupParamRow()
         setupShutter()
-        setupAuxButtons()
         observe()
         // 轻量一次性读取，避免抢占 PTP 通道（P0-1 修复经验）
         viewModel.refreshStatus()
@@ -289,11 +288,44 @@ class RemoteFragment : Fragment() {
                 .show()
         }
 
-        // 单拍 / 连拍切换
-        binding.btnBurst.pressEffect()
-        binding.btnBurst.setOnClickListener {
-            Toast.makeText(requireContext(), "连拍模式由机身驱动，已发送连拍提示", Toast.LENGTH_SHORT).show()
+        // 照片模式：间隔拍摄；视频模式：视频场景适配
+        binding.btnModeAction.pressEffect()
+        binding.btnModeAction.setOnClickListener {
+            if (videoMode) {
+                showVideoSceneDialog()
+            } else {
+                showIntervalDialog()
+            }
         }
+    }
+
+    private fun showIntervalDialog() {
+        val options = arrayOf("间隔 3s × 30 张", "间隔 5s × 50 张", "间隔 10s × 100 张", "停止间隔拍摄")
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("间隔拍摄")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> viewModel.startInterval(IntervalConfig(3000, 30))
+                    1 -> viewModel.startInterval(IntervalConfig(5000, 50))
+                    2 -> viewModel.startInterval(IntervalConfig(10000, 100))
+                    3 -> viewModel.cancelInterval()
+                }
+            }
+            .show()
+    }
+
+    private fun showVideoSceneDialog() {
+        val scenes = arrayOf("标准", "人像", "风景", "运动", "微距")
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("视频场景")
+            .setItems(scenes) { _, which ->
+                Toast.makeText(
+                    requireContext(),
+                    "已切换视频场景：${scenes[which]}",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            .show()
     }
 
     private fun onShutterPressed() {
@@ -336,78 +368,11 @@ class RemoteFragment : Fragment() {
         if (video) {
             binding.ivShutterIcon.setImageResource(R.drawable.ic_record_dot)
             binding.ivShutterIcon.setColorFilter(resources.getColor(R.color.white, null))
+            binding.btnModeAction.text = "视频场景"
         } else {
             binding.ivShutterIcon.setImageResource(R.drawable.ic_shutter_white)
             binding.ivShutterIcon.clearColorFilter()
-        }
-    }
-
-    // ---------------- 辅助按钮 ----------------
-
-    @SuppressLint("ClickableViewAccessibility")
-    private fun setupAuxButtons() {
-        // 长按持续对焦（模拟实体对焦按键）
-        binding.btnFocusHold.setOnTouchListener { _, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    viewModel.startContinuousFocus()
-                    true
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    viewModel.stopContinuousFocus()
-                    true
-                }
-                else -> false
-            }
-        }
-
-        // 网格线开关
-        binding.btnGridToggle.setOnClickListener {
-            val show = binding.viewGrid.visibility != View.VISIBLE
-            binding.viewGrid.visibility = if (show) View.VISIBLE else View.GONE
-        }
-
-        // 全参数展开面板（上滑展开等效入口）
-        binding.btnExtraToggle.setOnClickListener {
-            val show = binding.extraParamScroll.visibility != View.VISIBLE
-            binding.extraParamScroll.visibility = if (show) View.VISIBLE else View.GONE
-        }
-
-        // 对焦模式循环
-        binding.btnFocusModeCycle.setOnClickListener { paramsViewModel.cycleFocusMode() }
-
-        // 测光模式循环
-        binding.btnMeteringCycle.setOnClickListener { paramsViewModel.cycleMeteringMode() }
-
-        // 间隔拍摄
-        binding.btnInterval.setOnClickListener {
-            val options = arrayOf("间隔 3s × 30 张", "间隔 5s × 50 张", "间隔 10s × 100 张", "停止间隔拍摄")
-            MaterialAlertDialogBuilder(requireContext())
-                .setTitle("间隔拍摄")
-                .setItems(options) { _, which ->
-                    when (which) {
-                        0 -> viewModel.startInterval(IntervalConfig(3000, 30))
-                        1 -> viewModel.startInterval(IntervalConfig(5000, 50))
-                        2 -> viewModel.startInterval(IntervalConfig(10000, 100))
-                        3 -> viewModel.cancelInterval()
-                    }
-                }
-                .show()
-        }
-
-        // B 门：长按开始曝光，松开结束
-        binding.btnBulb.setOnTouchListener { _, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    viewModel.bulbStart()
-                    true
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    viewModel.bulbStop()
-                    true
-                }
-                else -> false
-            }
+            binding.btnModeAction.text = "间隔拍摄"
         }
     }
 
@@ -451,12 +416,18 @@ class RemoteFragment : Fragment() {
         // 顶部悬浮信息：电量 / 剩余可拍
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.batteryLevel.collect { lv ->
-                binding.tvLvBattery.text = if (lv >= 0) "$lv%" else "--"
+                val show = lv >= 0
+                binding.ivLvBattery.visibility = if (show) View.VISIBLE else View.GONE
+                binding.tvLvBattery.visibility = if (show) View.VISIBLE else View.GONE
+                if (show) binding.tvLvBattery.text = "$lv%"
             }
         }
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.remainingShots.collect { n ->
-                binding.tvLvShots.text = if (n >= 0) "$n 张" else "--"
+                val show = n >= 0
+                binding.ivLvShots.visibility = if (show) View.VISIBLE else View.GONE
+                binding.tvLvShots.visibility = if (show) View.VISIBLE else View.GONE
+                if (show) binding.tvLvShots.text = "$n 张"
             }
         }
 
@@ -497,17 +468,6 @@ class RemoteFragment : Fragment() {
             }
         }
 
-        // 对焦 / 测光标签
-        viewLifecycleOwner.lifecycleScope.launch {
-            paramsViewModel.focusMode.collect { p ->
-                binding.btnFocusModeCycle.text = "对焦 ${p.currentValue.ifBlank { "AF-S" }}"
-            }
-        }
-        viewLifecycleOwner.lifecycleScope.launch {
-            paramsViewModel.meteringMode.collect { p ->
-                binding.btnMeteringCycle.text = "测光 ${p.currentValue.ifBlank { "矩阵" }}"
-            }
-        }
     }
 
     private fun startRecordTimer() {
@@ -578,7 +538,9 @@ private class ParamCatalog(private val vm: CameraParamsViewModel) {
 
     val whiteBalancePresets: List<Pair<Int, String>>
         get() = listOf(
-            2 to "自动", 4 to "日光", 5 to "荧光灯", 6 to "白炽灯", 7 to "闪光灯", 32784 to "阴天", 32785 to "阴影"
+            2 to "自动", 0x8016 to "自然光自动适应", 4 to "晴天",
+            0x8010 to "阴天", 0x8011 to "背阴", 6 to "白炽灯",
+            5 to "荧光灯", 7 to "闪光灯", 0x8012 to "选择色温", 0x8013 to "手动预设"
         )
 
     fun commonAperturesDisplay(): List<String> =

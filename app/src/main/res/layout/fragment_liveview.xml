@@ -9,178 +9,448 @@
         android:id="@+id/ivLiveView"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:contentDescription="Live View"
+        android:contentDescription="实时取景画面"
         android:scaleType="fitCenter" />
+
+    <com.nikonlink.app.feature.liveview.ViewfinderOverlayView
+        android:id="@+id/viewGridOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="visible" />
 
     <View
         android:id="@+id/viewFocusIndicator"
-        android:layout_width="60dp"
-        android:layout_height="60dp"
-        android:background="@android:drawable/ic_menu_crop"
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:background="@drawable/bg_focus_box"
         android:visibility="gone" />
 
-    <LinearLayout
-        android:id="@+id/liveTopBar"
+    <View
+        android:id="@+id/viewFlash"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:alpha="0"
+        android:background="@color/white"
+        android:visibility="gone" />
+
+    <!-- 顶部功能栏 -->
+    <HorizontalScrollView
+        android:id="@+id/topBarScroll"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top"
         android:background="@color/liveview_scrim"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingHorizontal="14dp"
-        android:paddingVertical="10dp">
+        android:clipToPadding="false"
+        android:scrollbars="none">
 
-        <TextView
-            android:id="@+id/tvLiveStatus"
+        <LinearLayout
+            android:id="@+id/topControls"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="8dp">
+
+            <ImageView
+                android:id="@+id/btnClose"
+                android:layout_width="38dp"
+                android:layout_height="38dp"
+                android:background="@drawable/bg_lv_icon"
+                android:contentDescription="关闭"
+                android:padding="9dp"
+                android:src="@drawable/ic_close"
+                app:tint="@color/white" />
+
+            <TextView
+                android:id="@+id/tvModeTag"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_lv_pill"
+                android:gravity="center"
+                android:minWidth="30dp"
+                android:paddingHorizontal="8dp"
+                android:paddingVertical="6dp"
+                android:text="P"
+                android:textColor="@color/white"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnAfMode"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_lv_pill"
+                android:gravity="center"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="6dp"
+                android:text="AF-C"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnAspect"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_lv_pill"
+                android:gravity="center"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="6dp"
+                android:text="3:2"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnFormat"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_lv_pill"
+                android:gravity="center"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="6dp"
+                android:text="RAW+JPG"
+                android:textColor="@color/white"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <ImageView
+                android:id="@+id/btnGridToggle"
+                android:layout_width="38dp"
+                android:layout_height="38dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_lv_icon"
+                android:contentDescription="网格线"
+                android:padding="8dp"
+                android:src="@drawable/ic_grid_toggle"
+                app:tint="@color/white" />
+
+            <ImageView
+                android:id="@+id/btnMore"
+                android:layout_width="38dp"
+                android:layout_height="38dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_lv_icon"
+                android:contentDescription="更多"
+                android:padding="9dp"
+                android:src="@drawable/ic_more"
+                app:tint="@color/white" />
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <!-- DISP 显示切换 -->
+    <TextView
+        android:id="@+id/btnDisp"
+        android:layout_width="52dp"
+        android:layout_height="52dp"
+        android:layout_gravity="start|center_vertical"
+        android:layout_marginStart="12dp"
+        android:background="@drawable/bg_lv_icon"
+        android:gravity="center"
+        android:text="DISP"
+        android:textColor="@color/white"
+        android:textSize="10sp"
+        android:textStyle="bold" />
+
+    <!-- 右侧辅助：画面旋转 + 水平仪 -->
+    <LinearLayout
+        android:id="@+id/rightControls"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end|center_vertical"
+        android:layout_marginEnd="12dp"
+        android:orientation="vertical">
+
+        <ImageView
+            android:id="@+id/btnRotate"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@drawable/bg_lv_icon"
+            android:contentDescription="旋转画面"
+            android:padding="11dp"
+            android:src="@drawable/ic_rotate_lv" />
+
+        <ImageView
+            android:id="@+id/btnLevel"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_lv_icon"
+            android:contentDescription="水平仪"
+            android:padding="11dp"
+            android:src="@drawable/ic_level_lv" />
+    </LinearLayout>
+
+    <!-- 底部参数信息栏 -->
+    <LinearLayout
+        android:id="@+id/paramsBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="82dp"
+        android:background="@color/liveview_scrim"
+        android:orientation="horizontal"
+        android:paddingHorizontal="8dp"
+        android:paddingVertical="7dp">
+
+        <LinearLayout
+            android:id="@+id/cellShutter"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="○ 已停止"
-            android:textColor="@color/white"
-            android:textSize="13sp" />
+            android:gravity="center"
+            android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/tvFps"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="14dp"
-            android:text="0 fps"
-            android:textColor="@color/liveview_text"
-            android:textSize="12sp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="S"
+                android:textColor="#99FFFFFF"
+                android:textSize="10sp" />
 
-        <TextView
-            android:id="@+id/tvLatency"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="14dp"
-            android:text="0ms"
-            android:textColor="@color/liveview_text"
-            android:textSize="12sp" />
+            <TextView
+                android:id="@+id/tvShutterValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingTop="2dp"
+                android:text="--"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
 
-        <TextView
-            android:id="@+id/tvZoom"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:id="@+id/cellAperture"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginEnd="14dp"
-            android:text="1.0x"
-            android:textColor="@color/liveview_text"
-            android:textSize="12sp" />
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="vertical">
 
-        <!-- 任务5: 全屏切换按钮 -->
-        <TextView
-            android:id="@+id/btnFullscreen"
-            android:layout_width="wrap_content"
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="A"
+                android:textColor="#99FFFFFF"
+                android:textSize="10sp" />
+
+            <TextView
+                android:id="@+id/tvApertureValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingTop="2dp"
+                android:text="--"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/cellIso"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:background="?attr/selectableItemBackground"
-            android:paddingHorizontal="8dp"
-            android:paddingVertical="4dp"
-            android:text=" 全屏"
-            android:textColor="@color/white"
-            android:textSize="13sp"
-            android:textStyle="bold" />
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="ISO"
+                android:textColor="#99FFFFFF"
+                android:textSize="10sp" />
+
+            <TextView
+                android:id="@+id/tvIsoValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingTop="2dp"
+                android:text="--"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/cellEv"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="EV"
+                android:textColor="#99FFFFFF"
+                android:textSize="10sp" />
+
+            <TextView
+                android:id="@+id/tvEvValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingTop="2dp"
+                android:text="--"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/cellWb"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="WB"
+                android:textColor="#99FFFFFF"
+                android:textSize="10sp" />
+
+            <TextView
+                android:id="@+id/tvWbValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingTop="2dp"
+                android:text="--"
+                android:textColor="@color/white"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </LinearLayout>
     </LinearLayout>
 
+    <!-- 底部操作区 -->
     <LinearLayout
-        android:id="@+id/liveBottomBar"
+        android:id="@+id/bottomControls"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
         android:background="@color/liveview_scrim"
-        android:orientation="vertical"
-        android:padding="12dp">
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="8dp"
+        android:paddingVertical="8dp">
 
         <LinearLayout
-            android:layout_width="match_parent"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
+            android:layout_weight="1"
             android:gravity="center"
             android:orientation="horizontal">
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnStartStop"
-                android:layout_width="0dp"
-                android:layout_height="42dp"
-                android:layout_marginEnd="8dp"
-                android:layout_weight="2"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="开始 Live View"
-                android:textSize="13sp"
-                app:backgroundTint="@color/accent"
-                app:cornerRadius="10dp" />
+            <LinearLayout
+                android:id="@+id/btnAlbum"
+                android:layout_width="56dp"
+                android:layout_height="52dp"
+                android:gravity="center"
+                android:orientation="vertical">
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnGrid"
-                style="@style/Widget.Material3.Button.TonalButton"
-                android:layout_width="0dp"
-                android:layout_height="42dp"
-                android:layout_marginEnd="8dp"
-                android:layout_weight="1"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="三分线"
-                android:textSize="12sp"
-                app:cornerRadius="10dp" />
+                <ImageView
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:contentDescription="相册"
+                    android:src="@drawable/ic_nav_album"
+                    app:tint="@color/white" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnAfCenter"
-                style="@style/Widget.Material3.Button.TonalButton"
-                android:layout_width="0dp"
-                android:layout_height="42dp"
-                android:layout_weight="1"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="对焦"
-                android:textSize="12sp"
-                app:cornerRadius="10dp" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="相册"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/btnFilter"
+                android:layout_width="56dp"
+                android:layout_height="52dp"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:contentDescription="滤镜"
+                    android:src="@drawable/ic_filter"
+                    app:tint="@color/white" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="滤镜"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/btnRecipe"
+                android:layout_width="56dp"
+                android:layout_height="52dp"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:contentDescription="配方"
+                    android:src="@drawable/ic_lens"
+                    app:tint="@color/white" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="配方"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="10sp" />
+            </LinearLayout>
         </LinearLayout>
 
+        <FrameLayout
+            android:id="@+id/btnShutter"
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:background="@drawable/bg_shutter_ring">
+
+            <ImageView
+                android:id="@+id/ivShutterIcon"
+                android:layout_width="34dp"
+                android:layout_height="34dp"
+                android:layout_gravity="center"
+                android:contentDescription="拍照"
+                android:src="@drawable/ic_shutter_white" />
+        </FrameLayout>
+
         <LinearLayout
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_gravity="center_horizontal"
-            android:layout_marginTop="8dp"
+            android:layout_weight="1"
+            android:gravity="center"
             android:orientation="horizontal">
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnZoomOut"
-                style="@style/Widget.Material3.Button.TonalButton"
+            <TextView
+                android:id="@+id/btnStartStop"
                 android:layout_width="wrap_content"
                 android:layout_height="38dp"
-                android:layout_marginEnd="8dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="− 缩小"
-                android:textSize="12sp"
-                app:cornerRadius="10dp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnZoomReset"
-                style="@style/Widget.Material3.Button.TonalButton"
-                android:layout_width="wrap_content"
-                android:layout_height="38dp"
-                android:layout_marginEnd="8dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="重置"
-                android:textSize="12sp"
-                app:cornerRadius="10dp" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnZoomIn"
-                style="@style/Widget.Material3.Button.TonalButton"
-                android:layout_width="wrap_content"
-                android:layout_height="38dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:minWidth="0dp"
-                android:text="＋ 放大"
-                android:textSize="12sp"
-                app:cornerRadius="10dp" />
+                android:background="@drawable/bg_lv_pill"
+                android:gravity="center"
+                android:paddingHorizontal="14dp"
+                android:text="开始监看"
+                android:textColor="@color/white"
+                android:textSize="11sp"
+                android:textStyle="bold" />
         </LinearLayout>
     </LinearLayout>
 </FrameLayout>

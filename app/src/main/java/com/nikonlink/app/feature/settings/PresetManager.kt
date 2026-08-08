@@ -72,9 +72,9 @@ class PresetManager @Inject constructor(
                 aperture = 180,       // f/1.8
                 shutterSpeed = 200,   // 1/200s
                 iso = 100,
-                whiteBalance = 1,     // Auto
-                focusMode = 1,        // AF-S
-                meteringMode = 2      // 矩阵
+                whiteBalance = 2,     // Auto
+                focusMode = 0x8010,   // AF-S
+                meteringMode = 3      // 矩阵测光
             ),
             ShootingPreset(
                 id = "landscape",
@@ -82,9 +82,9 @@ class PresetManager @Inject constructor(
                 aperture = 800,       // f/8.0
                 shutterSpeed = 125,   // 1/125s
                 iso = 100,
-                whiteBalance = 2,     // 日光
-                focusMode = 1,        // AF-S
-                meteringMode = 2      // 矩阵
+                whiteBalance = 4,     // 晴天
+                focusMode = 0x8010,   // AF-S
+                meteringMode = 3      // 矩阵测光
             ),
             ShootingPreset(
                 id = "night",
@@ -92,9 +92,9 @@ class PresetManager @Inject constructor(
                 aperture = 280,       // f/2.8
                 shutterSpeed = 10,    // 1s (10000/10000)
                 iso = 3200,
-                whiteBalance = 4,     // 白炽灯
-                focusMode = 3,        // MF
-                meteringMode = 3      // 点测光
+                whiteBalance = 6,     // 白炽灯
+                focusMode = 1,        // MF
+                meteringMode = 4      // 点测光
             ),
             ShootingPreset(
                 id = "sport",
@@ -102,9 +102,9 @@ class PresetManager @Inject constructor(
                 aperture = 400,       // f/4.0
                 shutterSpeed = 1000,  // 1/1000s
                 iso = 800,
-                whiteBalance = 1,     // Auto
-                focusMode = 2,        // AF-C
-                meteringMode = 2      // 矩阵
+                whiteBalance = 2,     // Auto
+                focusMode = 0x8011,   // AF-C
+                meteringMode = 3      // 矩阵测光
             )
         )
         savePresets()

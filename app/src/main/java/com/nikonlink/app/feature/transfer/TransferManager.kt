@@ -201,6 +201,25 @@ class TransferManager @Inject constructor(
         }
     }
 
+    /**
+     * 仅下载到 App 缓存目录，不写入系统相册。
+     * 用于后台快门次数查询等无感导出场景。
+     */
+    suspend fun downloadPhotoToCache(file: CameraFile, targetFile: File): Boolean {
+        if (!hasActiveSession()) return false
+        return withContext(Dispatchers.IO) {
+            try {
+                val transport = currentTransport()
+                if (!transport.isConnected) return@withContext false
+                targetFile.parentFile?.mkdirs()
+                downloadToFile(transport, file, targetFile)
+            } catch (e: Exception) {
+                Timber.tag(TAG).w(e, "Download photo to cache failed: ${file.fileName}")
+                false
+            }
+        }
+    }
+
     /** 单通道下载实现：传输 → 保存 MediaStore → 记录去重 */
     private suspend fun downloadVia(
         transport: CameraTransport,

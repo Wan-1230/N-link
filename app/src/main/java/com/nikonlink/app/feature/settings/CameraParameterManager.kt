@@ -1,13 +1,18 @@
 package com.nikonlink.app.feature.settings
 
+import android.content.Context
 import com.nikonlink.app.core.ptp.PtpConstants
 import com.nikonlink.app.core.ptp.PtpSessionManager
 import com.nikonlink.app.core.usb.UsbPtpManager
+import com.nikonlink.app.feature.transfer.CameraFileFormat
+import com.nikonlink.app.feature.transfer.TransferManager
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import timber.log.Timber
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.io.File
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
@@ -30,8 +35,11 @@ import javax.inject.Singleton
  */
 @Singleton
 class CameraParameterManager @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val ptpSession: PtpSessionManager,
-    private val usbPtpManager: UsbPtpManager
+    private val usbPtpManager: UsbPtpManager,
+    private val transferManager: TransferManager,
+    private val digeekerClient: DigeekerShutterCountClient
 ) {
     companion object {
         private const val TAG = "CameraParams"
@@ -40,6 +48,8 @@ class CameraParameterManager @Inject constructor(
     private var scope: CoroutineScope? = null
     private var pollingJob: Job? = null
     private val refreshInProgress = AtomicBoolean(false)
+    private var shutterQueryJob: Job? = null
+    private val shutterQueryInProgress = AtomicBoolean(false)
 
     // ==================== 曝光三要素 ====================
 
@@ -51,6 +61,9 @@ class CameraParameterManager @Inject constructor(
 
     private val _iso = MutableStateFlow(CameraParam("ISO", "--", emptyList()))
     val iso: StateFlow<CameraParam> = _iso.asStateFlow()
+
+    private val _evCompensation = MutableStateFlow(CameraParam("曝光补偿", "--", emptyList()))
+    val evCompensation: StateFlow<CameraParam> = _evCompensation.asStateFlow()
 
     // ==================== 白平衡 ====================
 
@@ -140,6 +153,7 @@ class CameraParameterManager @Inject constructor(
                 readAperture()
                 readShutterSpeed()
                 readIso()
+                readEvCompensation()
                 readWhiteBalance()
                 readFocusMode()
                 readExposureProgram()
@@ -159,6 +173,9 @@ class CameraParameterManager @Inject constructor(
     private suspend fun readCameraInfo() {
         readStorageInfo()
         readLensInfo()
+        readBatteryLevel()
+        readFirmwareAndModel()
+        ensureShutterCountQuery()
     }
 
     private suspend fun readStorageInfo() {
@@ -216,6 +233,158 @@ class CameraParameterManager @Inject constructor(
         val lensName = buildLensName(lensId, focalMin, focalMax, apMin, apMax)
         if (lensName.isNotBlank()) {
             _cameraInfo.value = _cameraInfo.value.copy(lensName = lensName)
+        }
+    }
+
+    /**
+     * 电池电量：优先读标准 PTP 0x5001，读不到保持 -1，UI 隐藏该行。
+     */
+    private suspend fun readBatteryLevel() {
+        val data = readDeviceProp(PtpConstants.PROP_BATTERY_LEVEL) ?: return
+        if (data.isNotEmpty()) {
+            val level = data[0].toInt() and 0xFF
+            _cameraInfo.value = _cameraInfo.value.copy(batteryLevel = level)
+        }
+    }
+
+    /**
+     * 固件版本 / 型号：从 GetDeviceInfo 的 DeviceVersion 与 Model 解析。
+     */
+    private suspend fun readFirmwareAndModel() {
+        val data = if (usbPtpManager.isConnected()) {
+            usbPtpManager.getDeviceInfo()
+        } else {
+            ptpSession.getDeviceInfo()
+        } ?: return
+        val info = parseDeviceInfo(data) ?: return
+        if (info.modelName.isNotBlank() || info.firmwareVersion.isNotBlank()) {
+            _cameraInfo.value = _cameraInfo.value.copy(
+                modelName = info.modelName.ifBlank { _cameraInfo.value.modelName },
+                firmwareVersion = info.firmwareVersion
+            )
+        }
+    }
+
+    /**
+     * 快门次数：机身属性普遍不提供，直接后台导出照片到缓存并走 digeeker 解析。
+     */
+    private fun ensureShutterCountQuery(force: Boolean = false) {
+        if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) return
+        val state = _cameraInfo.value.shutterQueryState
+        if (!force && state != ShutterCountState.NONE) return
+        if (!shutterQueryInProgress.compareAndSet(false, true)) return
+
+        _cameraInfo.value = _cameraInfo.value.copy(
+            shutterQueryState = ShutterCountState.QUERYING
+        )
+        val job = scope?.launch(Dispatchers.IO) {
+            try {
+                val photos = transferManager.fetchPhotoList()
+                val targetDir = File(context.cacheDir, "nikonlink_shutter").apply { mkdirs() }
+                val sample = photos.filter { it.format == CameraFileFormat.JPEG }
+                    .minByOrNull { it.size }
+                    ?: photos.minByOrNull { it.size }
+                if (sample == null) {
+                    markShutterQueryFailed()
+                    return@launch
+                }
+
+                val target = File(targetDir, "shutter_sample_${sample.handle}.jpg")
+                val downloaded = transferManager.downloadPhotoToCache(sample, target)
+                if (!downloaded) {
+                    markShutterQueryFailed()
+                    return@launch
+                }
+
+                val count = digeekerClient.queryShutterCount(target)
+                if (count != null && count >= 0) {
+                    _cameraInfo.value = _cameraInfo.value.copy(
+                        shutterCount = count,
+                        shutterQueryState = ShutterCountState.SUCCESS
+                    )
+                    Timber.tag(TAG).i("Shutter count resolved: $count")
+                } else {
+                    markShutterQueryFailed()
+                }
+                target.delete()
+            } catch (e: Exception) {
+                Timber.tag(TAG).w(e, "Shutter count query failed")
+                markShutterQueryFailed()
+            } finally {
+                shutterQueryInProgress.set(false)
+            }
+        }
+        if (job == null) {
+            shutterQueryInProgress.set(false)
+        } else {
+            shutterQueryJob = job
+        }
+    }
+
+    fun retryShutterCountQuery() {
+        ensureShutterCountQuery(force = true)
+    }
+
+    private fun markShutterQueryFailed() {
+        _cameraInfo.value = _cameraInfo.value.copy(
+            shutterQueryState = ShutterCountState.FAILED
+        )
+    }
+
+    private fun parseDeviceInfo(data: ByteArray): PtpDeviceInfo? {
+        return try {
+            val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+            buffer.short
+            buffer.int
+            buffer.short
+            readDeviceInfoString(buffer)
+            buffer.short // functional mode
+            skipU32Array(buffer) // operations supported
+            skipU32Array(buffer) // events supported
+            skipU32Array(buffer) // device properties supported
+            skipU16Array(buffer) // capture formats
+            skipU16Array(buffer) // image formats
+            val manufacturer = readDeviceInfoString(buffer)
+            val model = readDeviceInfoString(buffer)
+            val version = readDeviceInfoString(buffer)
+            val serial = readDeviceInfoString(buffer)
+            PtpDeviceInfo(
+                manufacturer = manufacturer,
+                modelName = model,
+                firmwareVersion = version,
+                serialNumber = serial
+            )
+        } catch (e: Exception) {
+            Timber.tag(TAG).w(e, "Failed to parse device info")
+            null
+        }
+    }
+
+    private fun readDeviceInfoString(buffer: ByteBuffer): String {
+        if (buffer.remaining() < 1) return ""
+        val length = buffer.get().toInt() and 0xFF
+        if (length == 0) return ""
+        val chars = CharArray(length)
+        for (i in 0 until length) {
+            if (buffer.remaining() < 2) break
+            val low = buffer.get().toInt() and 0xFF
+            val high = buffer.get().toInt() and 0xFF
+            chars[i] = ((high shl 8) or low).toChar()
+        }
+        return chars.joinToString("").trimEnd('\u0000')
+    }
+
+    private fun skipU32Array(buffer: ByteBuffer) {
+        val count = buffer.int.coerceIn(0, 4096)
+        repeat(count) {
+            if (buffer.remaining() >= 4) buffer.int
+        }
+    }
+
+    private fun skipU16Array(buffer: ByteBuffer) {
+        val count = (buffer.short.toInt() and 0xFFFF).coerceAtMost(4096)
+        repeat(count) {
+            if (buffer.remaining() >= 2) buffer.short
         }
     }
 
@@ -368,20 +537,35 @@ class CameraParameterManager @Inject constructor(
         }
     }
 
+    private suspend fun readEvCompensation() {
+        val data = readDeviceProp(PtpConstants.PROP_EXPOSURE_BIAS_COMPENSATION) ?: return
+        if (data.size >= 2) {
+            val value = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).short.toInt()
+            // Nikon 以 1/6 EV 为步进存储曝光补偿
+            val display = String.format(Locale.US, "%+.1f", value / 6.0)
+            _evCompensation.value = _evCompensation.value.copy(
+                currentValue = display,
+                rawValue = value
+            )
+        }
+    }
+
     private suspend fun readWhiteBalance() {
         val data = readDeviceProp(PtpConstants.PROP_WHITE_BALANCE) ?: return
         if (data.size >= 2) {
             val value = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+            // Nikon PTP 0x5005：标准值 2/4/5/6/7 + 厂商值 0x8010-0x8013、0x8016
             val display = when (value) {
-                1 -> "自动"
-                2 -> "日光"
-                3 -> "荧光灯"
-                4 -> "白炽灯"
-                5 -> "闪光灯"
-                6 -> "阴天"
-                7 -> "阴影"
-                0x8010 -> "色温"
-                0x8011 -> "预设"
+                2 -> "自动"
+                0x8016 -> "自然光自动适应"
+                4 -> "晴天"
+                0x8010 -> "阴天"
+                0x8011 -> "背阴"
+                6 -> "白炽灯"
+                5 -> "荧光灯"
+                7 -> "闪光灯"
+                0x8012 -> "选择色温"
+                0x8013 -> "手动预设"
                 else -> "未知($value)"
             }
             _whiteBalance.value = _whiteBalance.value.copy(
@@ -396,10 +580,11 @@ class CameraParameterManager @Inject constructor(
         if (data.size >= 2) {
             val value = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
             val display = when (value) {
-                1 -> "AF-S (单次)"
-                2 -> "AF-C (连续)"
-                3 -> "MF (手动)"
-                0x8010 -> "AF-F (全时)"
+                1 -> "MF (手动)"
+                0x8010 -> "AF-S (单次)"
+                0x8011 -> "AF-C (连续)"
+                0x8012 -> "AF-A (自动切换)"
+                0x8013 -> "AF-F (全时)"
                 else -> "未知($value)"
             }
             _focusMode.value = _focusMode.value.copy(
@@ -435,10 +620,11 @@ class CameraParameterManager @Inject constructor(
         val data = readDeviceProp(PtpConstants.PROP_EXPOSURE_METERING_MODE) ?: return
         if (data.size >= 2) {
             val value = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+            // Nikon PTP 0x500B：2=中央重点、3=矩阵、4=点测光、0x8010=高光重点
             val display = when (value) {
-                1 -> "中央重点"
-                2 -> "矩阵测光"
-                3 -> "点测光"
+                2 -> "中央重点"
+                3 -> "矩阵测光"
+                4 -> "点测光"
                 0x8010 -> "高光重点"
                 else -> "未知($value)"
             }
@@ -503,7 +689,7 @@ class CameraParameterManager @Inject constructor(
 
     /**
      * 设置对焦模式
-     * @param mode 1=AF-S, 2=AF-C, 3=MF
+     * @param mode 0x8010=AF-S, 0x8011=AF-C, 1=MF
      */
     suspend fun setFocusMode(mode: Int): Boolean {
         if (_paramsLocked.value) return false
@@ -532,8 +718,9 @@ class CameraParameterManager @Inject constructor(
     val commonShutterSpeeds = listOf(10, 13, 15, 20, 25, 30, 40, 50, 60, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000)
     val commonIsoValues = listOf(100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200)
     val whiteBalancePresets = listOf(
-        1 to "自动", 2 to "日光", 6 to "阴天", 7 to "阴影",
-        3 to "荧光灯", 4 to "白炽灯", 5 to "闪光灯"
+        2 to "自动", 0x8016 to "自然光自动适应", 4 to "晴天",
+        0x8010 to "阴天", 0x8011 to "背阴", 6 to "白炽灯",
+        5 to "荧光灯", 7 to "闪光灯", 0x8012 to "选择色温", 0x8013 to "手动预设"
     )
 
     private suspend fun readDeviceProp(propCode: Int): ByteArray? {
@@ -575,7 +762,25 @@ data class CameraInfo(
     val storageDescription: String = "",
     val lensName: String = "",
     val firmwareVersion: String = "",
-    val modelName: String = ""
+    val modelName: String = "",
+    val shutterQueryState: ShutterCountState = ShutterCountState.NONE
+)
+
+/**
+ * 快门次数查询状态：机身读不到时后台自动导出照片并查询。
+ */
+enum class ShutterCountState {
+    NONE,
+    QUERYING,
+    SUCCESS,
+    FAILED
+}
+
+private data class PtpDeviceInfo(
+    val manufacturer: String,
+    val modelName: String,
+    val firmwareVersion: String,
+    val serialNumber: String
 )
 
 /**

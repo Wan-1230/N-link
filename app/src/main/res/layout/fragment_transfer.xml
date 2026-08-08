@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Tab2 相机相册：顶部导航 + 分类标签 + 影像网格 + 多选悬浮操作栏 -->
+<!-- Tab2 相机照片：顶部导航 + 分类标签 + 相机/本地双标签 + 影像网格 + 多选悬浮操作栏 -->
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
@@ -23,7 +23,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="相机相册" />
+            android:text="相机照片" />
 
         <ImageView
             android:id="@+id/btnRefresh"
@@ -93,49 +93,104 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/chipScroll" />
 
-    <!-- 影像网格：3 列等宽方形 -->
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/gridPhotos"
+    <!-- 下拉刷新容器 + 影像网格：3 列等宽方形 -->
+    <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+        android:id="@+id/swipeRefresh"
         android:layout_width="0dp"
         android:layout_height="0dp"
         android:layout_marginTop="4dp"
-        android:clipToPadding="false"
-        android:paddingHorizontal="2dp"
-        android:paddingBottom="96dp"
-        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/albumTabRow"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/progressDownload" />
+        app:layout_constraintTop_toBottomOf="@id/progressDownload">
 
-    <!-- 空状态 / 加载提示 -->
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/gridPhotos"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:paddingHorizontal="2dp"
+                android:paddingBottom="12dp"
+                android:scrollbars="none" />
+
+            <!-- 空状态 / 加载提示 -->
+            <LinearLayout
+                android:id="@+id/layoutEmpty"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ProgressBar
+                    android:id="@+id/progressLoading"
+                    android:layout_width="28dp"
+                    android:layout_height="28dp"
+                    android:indeterminateTint="@color/text_secondary"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/tvMessage"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:gravity="center"
+                    android:paddingHorizontal="40dp"
+                    android:text="连接相机后查看相册"
+                    android:textColor="@color/text_tertiary"
+                    android:textSize="13sp" />
+            </LinearLayout>
+        </FrameLayout>
+    </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+
+    <!-- 底部标签栏：相机照片 / 本地照片 -->
     <LinearLayout
-        android:id="@+id/layoutEmpty"
-        android:layout_width="wrap_content"
+        android:id="@+id/albumTabRow"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
+        android:background="@color/background"
         android:gravity="center"
         android:orientation="vertical"
+        android:paddingHorizontal="20dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="10dp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/chipScroll">
+        app:layout_constraintStart_toStartOf="parent">
 
-        <ProgressBar
-            android:id="@+id/progressLoading"
-            android:layout_width="28dp"
-            android:layout_height="28dp"
-            android:indeterminateTint="@color/text_secondary"
-            android:visibility="gone" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:background="@drawable/bg_chip"
+            android:orientation="horizontal"
+            android:padding="3dp">
 
-        <TextView
-            android:id="@+id/tvMessage"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:gravity="center"
-            android:paddingHorizontal="40dp"
-            android:text="连接相机后查看相册"
-            android:textColor="@color/text_tertiary"
-            android:textSize="13sp" />
+            <TextView
+                android:id="@+id/tabCameraPhotos"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@drawable/bg_chip_selected"
+                android:gravity="center"
+                android:text="相机照片"
+                android:textColor="@color/on_primary"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tabLocalPhotos"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:text="本地照片"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- 底部悬浮操作栏（多选模式）：下载 / 删除 / 分享 / 全选 -->
@@ -144,12 +199,12 @@
         android:layout_width="0dp"
         android:layout_height="56dp"
         android:layout_marginHorizontal="20dp"
-        android:layout_marginBottom="16dp"
+        android:layout_marginBottom="12dp"
         android:background="@drawable/bg_floating_bar"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:visibility="gone"
-        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/albumTabRow"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent">
 

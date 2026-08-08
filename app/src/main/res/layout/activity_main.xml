@@ -63,7 +63,7 @@
                 android:id="@+id/iconTransfer"
                 android:layout_width="22dp"
                 android:layout_height="22dp"
-                android:contentDescription="相册"
+                android:contentDescription="相机照片"
                 android:src="@drawable/ic_nav_album" />
 
             <TextView
@@ -72,7 +72,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
                 android:maxLines="1"
-                android:text="相册"
+                android:text="相机照片"
                 android:textColor="@color/nav_inactive_icon"
                 android:textSize="10sp" />
         </LinearLayout>

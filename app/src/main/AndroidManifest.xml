@@ -39,6 +39,7 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
 
     <!-- Hardware Features -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
@@ -79,12 +80,12 @@
             android:exported="false"
             android:theme="@style/Theme.NikonLink.Preview" />
 
-        <!-- 横屏全屏监看页 -->
+        <!-- 全屏实时取景页：跟随重力感应横竖屏切换 -->
         <activity
             android:name=".feature.liveview.LiveViewActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:exported="false"
-            android:screenOrientation="sensorLandscape"
+            android:screenOrientation="sensor"
             android:theme="@style/Theme.NikonLink.Preview" />
 
         <!-- Connection Foreground Service -->
