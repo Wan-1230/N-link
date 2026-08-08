@@ -552,6 +552,13 @@ class UsbPtpManager @Inject constructor(
     }
 
     /**
+     * 获取单个存储卡的 PTP StorageInfo 原始数据。
+     */
+    suspend fun getStorageInfo(storageId: Int): ByteArray? {
+        return sendCommandWithData(PtpConstants.OP_GET_STORAGE_INFO, listOf(storageId))
+    }
+
+    /**
      * 获取对象信息（文件元数据）
      */
     suspend fun getObjectInfo(handle: Int): ByteArray? {

@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.*
 import timber.log.Timber
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -143,11 +144,164 @@ class CameraParameterManager @Inject constructor(
                 readFocusMode()
                 readExposureProgram()
                 readMeteringMode()
+                readCameraInfo()
                 Timber.tag(TAG).i("All parameters read")
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Read parameters failed")
             }
         }
+    }
+
+    /**
+     * 设备信息：镜头焦段/光圈、存储卡容量。
+     * 与曝光参数分开读取，避免频繁轮询时增加 PTP 通道压力。
+     */
+    private suspend fun readCameraInfo() {
+        readStorageInfo()
+        readLensInfo()
+    }
+
+    private suspend fun readStorageInfo() {
+        val storageIds = if (usbPtpManager.isConnected()) {
+            usbPtpManager.getStorageIds()
+        } else {
+            ptpSession.getStorageIds()
+        }
+        if (storageIds.isEmpty()) return
+
+        var totalBytes = 0L
+        var freeBytes = 0L
+        var description = ""
+        var cardCount = 0
+        storageIds.forEach { storageId ->
+            val raw = if (usbPtpManager.isConnected()) {
+                usbPtpManager.getStorageInfo(storageId)
+            } else {
+                ptpSession.getStorageInfo(storageId)
+            }
+            val info = raw?.let(::parseStorageInfo) ?: return@forEach
+            val max = info.maxCapacityBytes
+            if (max <= 0 || max == 0xFFFFFFFFL) return@forEach
+            totalBytes += max
+            freeBytes += info.freeSpaceBytes.coerceIn(0, max)
+            cardCount++
+            if (info.storageDescription.isNotBlank()) description = info.storageDescription
+        }
+        if (cardCount == 0) return
+
+        val storageLabel = when {
+            description.isNotBlank() && cardCount > 1 -> "$description ×$cardCount"
+            description.isNotBlank() -> description
+            cardCount > 1 -> "存储卡 ×$cardCount"
+            else -> "存储卡"
+        }
+        _cameraInfo.value = _cameraInfo.value.copy(
+            storageTotalMb = totalBytes / 1024 / 1024,
+            storageFreeMb = freeBytes / 1024 / 1024,
+            storageDescription = storageLabel
+        )
+    }
+
+    private suspend fun readLensInfo() {
+        val lensId = readDeviceProp(PtpConstants.PROP_NIKON_LENS_ID)?.let(::readUInt)
+        val focalMinData = readDeviceProp(PtpConstants.PROP_NIKON_FOCAL_LENGTH_MIN)
+        val focalMaxData = readDeviceProp(PtpConstants.PROP_NIKON_FOCAL_LENGTH_MAX)
+        val apMinData = readDeviceProp(PtpConstants.PROP_NIKON_MAX_AP_AT_MIN)
+        val apMaxData = readDeviceProp(PtpConstants.PROP_NIKON_MAX_AP_AT_MAX)
+
+        val focalMin = focalMinData?.let { readUInt(it).toDouble() / 100.0 }
+        val focalMax = focalMaxData?.let { readUInt(it).toDouble() / 100.0 }
+        val apMin = apMinData?.let(::readUInt)
+        val apMax = apMaxData?.let(::readUInt)
+        val lensName = buildLensName(lensId, focalMin, focalMax, apMin, apMax)
+        if (lensName.isNotBlank()) {
+            _cameraInfo.value = _cameraInfo.value.copy(lensName = lensName)
+        }
+    }
+
+    private fun readUInt(data: ByteArray): Int = when {
+        data.size >= 4 -> ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).int
+        data.size >= 2 -> ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+        data.size >= 1 -> data[0].toInt() and 0xFF
+        else -> 0
+    }
+
+    private fun buildLensName(
+        lensId: Int?,
+        focalMinMm: Double?,
+        focalMaxMm: Double?,
+        apMinX100: Int?,
+        apMaxX100: Int?
+    ): String {
+        val focalRange = when {
+            focalMinMm != null && focalMaxMm != null && focalMinMm != focalMaxMm ->
+                "${formatFocal(focalMinMm)}-${formatFocal(focalMaxMm)}mm"
+            focalMinMm != null -> "${formatFocal(focalMinMm)}mm"
+            else -> ""
+        }
+        val aperture = when {
+            apMinX100 != null && apMaxX100 != null && apMinX100 != apMaxX100 ->
+                "f/${formatAperture(apMinX100)}-${formatAperture(apMaxX100)}"
+            apMinX100 != null -> "f/${formatAperture(apMinX100)}"
+            else -> ""
+        }
+        val specs = listOf(focalRange, aperture).filter { it.isNotBlank() }.joinToString(" ")
+        return if (specs.isNotBlank()) {
+            "NIKKOR $specs"
+        } else if (lensId != null && lensId > 0) {
+            "镜头 ID $lensId"
+        } else {
+            ""
+        }
+    }
+
+    private fun formatFocal(value: Double): String =
+        String.format(Locale.US, "%.0f", value)
+
+    private fun formatAperture(valueX100: Int): String {
+        val formatted = String.format(Locale.US, "%.1f", valueX100 / 100.0)
+        return formatted.removeSuffix(".0")
+    }
+
+    private fun parseStorageInfo(data: ByteArray): PtpStorageInfo? {
+        if (data.size < 26) return null
+        val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        val storageType = buffer.short.toInt() and 0xFFFF
+        val filesystemType = buffer.short.toInt() and 0xFFFF
+        val accessCapability = buffer.short.toInt() and 0xFFFF
+        val maxCapacityBytes = buffer.long
+        val freeSpaceBytes = buffer.long
+        val freeSpaceImages = buffer.int
+
+        var offset = 26
+        val (description, nextOffset) = readPtpString(data, offset)
+        offset = nextOffset
+        val (volumeLabel, _) = readPtpString(data, offset)
+        return PtpStorageInfo(
+            storageType = storageType,
+            filesystemType = filesystemType,
+            accessCapability = accessCapability,
+            maxCapacityBytes = maxCapacityBytes,
+            freeSpaceBytes = freeSpaceBytes,
+            freeSpaceImages = freeSpaceImages,
+            storageDescription = description,
+            volumeLabel = volumeLabel
+        )
+    }
+
+    private fun readPtpString(data: ByteArray, start: Int): Pair<String, Int> {
+        if (start >= data.size) return "" to start
+        val length = data[start].toInt() and 0xFF
+        if (length == 0) return "" to (start + 1)
+        val bytesEnd = start + 1 + length * 2
+        if (bytesEnd > data.size) return "" to data.size
+        val chars = CharArray(length)
+        for (i in 0 until length) {
+            val low = data[start + 1 + i * 2].toInt() and 0xFF
+            val high = data[start + 1 + i * 2 + 1].toInt() and 0xFF
+            chars[i] = ((high shl 8) or low).toChar()
+        }
+        return chars.joinToString("").trimEnd('\u0000') to bytesEnd
     }
 
     /**
@@ -418,6 +572,22 @@ data class CameraInfo(
     val shutterCount: Int = -1,
     val storageFreeMb: Long = -1,
     val storageTotalMb: Long = -1,
+    val storageDescription: String = "",
+    val lensName: String = "",
     val firmwareVersion: String = "",
     val modelName: String = ""
+)
+
+/**
+ * PTP StorageInfo（ISO 15740 标准结构）
+ */
+data class PtpStorageInfo(
+    val storageType: Int,
+    val filesystemType: Int,
+    val accessCapability: Int,
+    val maxCapacityBytes: Long,
+    val freeSpaceBytes: Long,
+    val freeSpaceImages: Int,
+    val storageDescription: String,
+    val volumeLabel: String
 )
