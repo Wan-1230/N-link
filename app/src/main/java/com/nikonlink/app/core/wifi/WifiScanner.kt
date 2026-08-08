@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import dagger.hilt.android.qualifiers.ApplicationContext
+import com.nikonlink.app.core.ptp.PtpIpProbe
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -101,7 +102,7 @@ class WifiScanner @Inject constructor(
                         buffer.copyOf(packet.length),
                         sourceIp
                     ) ?: continue
-                    if (!tcpProbe(candidate.ip, candidate.port)) continue
+                    if (!PtpIpProbe.probe(candidate.ip, candidate.port, 1200L)) continue
                     results.add(
                         WifiCameraCandidate(
                             candidate.ip,
@@ -149,7 +150,7 @@ class WifiScanner @Inject constructor(
                     semaphore.acquire()
                     try {
                         if (System.currentTimeMillis() >= deadline) return@async
-                        if (tcpProbe(host)) {
+                        if (PtpIpProbe.probe(host, PTP_PORT, 900L)) {
                             results.add(WifiCameraCandidate(host, PTP_PORT, "尼康相机", "WiFi"))
                             Timber.tag(TAG).i("Port scan found camera at $host")
                         }

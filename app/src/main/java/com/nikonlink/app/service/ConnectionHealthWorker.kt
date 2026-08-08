@@ -71,7 +71,12 @@ class ConnectionHealthWorker @AssistedInject constructor(
                 }
                 // 完全连接 → 健康
                 state == com.nikonlink.app.core.common.ConnectionState.FULLY_CONNECTED -> {
-                    Timber.tag(TAG).d("Fully connected - healthy")
+                    if (!connectionManager.isLinkHealthy()) {
+                        Timber.tag(TAG).w("State says connected but link is dead, recovering")
+                        connectionManager.reconnectLastDevice()
+                    } else {
+                        Timber.tag(TAG).d("Fully connected - healthy")
+                    }
                     Result.success()
                 }
                 // 错误等待重试 → 触发重连
