@@ -38,6 +38,70 @@
         android:layout_height="@dimen/divider_height"
         android:background="@color/divider" />
 
+    <!-- 顶部连接模式选择：药丸滑动 Tab -->
+    <LinearLayout
+        android:id="@+id/modeTabSection"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingHorizontal="@dimen/page_margin"
+        android:paddingTop="14dp"
+        android:paddingBottom="10dp">
+
+        <FrameLayout
+            android:id="@+id/modeTabContainer"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:background="@drawable/bg_chip"
+            android:padding="3dp">
+
+            <View
+                android:id="@+id/modeTabIndicator"
+                android:layout_width="112dp"
+                android:layout_height="match_parent"
+                android:layout_gravity="start|center_vertical"
+                android:background="@drawable/bg_chip_selected" />
+
+            <LinearLayout
+                android:id="@+id/modeTabs"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/tabWifiAp"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="WiFi AP 连接"
+                    android:textColor="@color/on_primary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tabWifiSta"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="WiFi STA 连接"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/tabUsb"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="USB 有线连接"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </FrameLayout>
+    </LinearLayout>
+
     <!-- 下拉刷新连接状态 -->
     <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
         android:id="@+id/swipeRefresh"
@@ -45,6 +109,7 @@
         android:layout_height="match_parent">
 
         <ScrollView
+            android:id="@+id/scrollContent"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:fillViewport="true"
@@ -57,6 +122,238 @@
                 android:paddingHorizontal="@dimen/page_margin"
                 android:paddingTop="@dimen/module_gap_large"
                 android:paddingBottom="@dimen/module_gap_large">
+
+                <!-- 模式专属内容：连接教程 + 设备列表 -->
+                <LinearLayout
+                    android:id="@+id/modePanel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <!-- WiFi AP 模式 -->
+                    <LinearLayout
+                        android:id="@+id/panelWifiAp"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:background="@drawable/bg_card"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <ImageView
+                                    android:layout_width="24dp"
+                                    android:layout_height="24dp"
+                                    android:contentDescription="WiFi AP"
+                                    android:src="@drawable/ic_wifi_ap"
+                                    app:tint="@color/text_primary" />
+
+                                <TextView
+                                    style="@style/NlText.SectionTitle"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginStart="10dp"
+                                    android:text="WiFi AP 直连教程" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/tvApGuide"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="10dp"
+                                android:lineSpacingExtra="3dp"
+                                android:text="1. 手机连接相机发出的 WiFi 热点\n2. 返回本页点「扫描相机」发现设备\n3. 点「连接相机」，在相机配对画面按 OK"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="13sp" />
+                        </LinearLayout>
+
+                        <TextView
+                            android:id="@+id/tvApCandidatesHeader"
+                            style="@style/NlText.GroupTitle"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="14dp"
+                            android:layout_marginBottom="8dp"
+                            android:text="已发现相机" />
+
+                        <LinearLayout
+                            android:id="@+id/apCandidateList"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical" />
+                    </LinearLayout>
+
+                    <!-- WiFi STA 模式 -->
+                    <LinearLayout
+                        android:id="@+id/panelWifiSta"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:visibility="gone">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:background="@drawable/bg_card"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <ImageView
+                                    android:layout_width="24dp"
+                                    android:layout_height="24dp"
+                                    android:contentDescription="WiFi STA"
+                                    android:src="@drawable/ic_wifi_sta"
+                                    app:tint="@color/text_primary" />
+
+                                <TextView
+                                    style="@style/NlText.SectionTitle"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginStart="10dp"
+                                    android:text="WiFi STA 连接教程" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/tvStaGuide"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="10dp"
+                                android:lineSpacingExtra="3dp"
+                                android:text="1. 相机与手机连接同一个路由器 / 局域网\n2. 点「扫描相机」自动发现相机\n3. 点「连接相机」完成 PTP/IP 配对"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="13sp" />
+                        </LinearLayout>
+
+                        <TextView
+                            style="@style/NlText.GroupTitle"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="14dp"
+                            android:layout_marginBottom="8dp"
+                            android:text="最近连接设备" />
+
+                        <LinearLayout
+                            android:id="@+id/recentDeviceList"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical" />
+
+                        <TextView
+                            style="@style/NlText.GroupTitle"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="14dp"
+                            android:layout_marginBottom="8dp"
+                            android:text="已发现相机" />
+
+                        <LinearLayout
+                            android:id="@+id/staCandidateList"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical" />
+                    </LinearLayout>
+
+                    <!-- USB 有线模式 -->
+                    <LinearLayout
+                        android:id="@+id/panelUsb"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:visibility="gone">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:background="@drawable/bg_card"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <ImageView
+                                    android:layout_width="24dp"
+                                    android:layout_height="24dp"
+                                    android:contentDescription="USB"
+                                    android:src="@drawable/ic_usb"
+                                    app:tint="@color/text_primary" />
+
+                                <TextView
+                                    style="@style/NlText.SectionTitle"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginStart="10dp"
+                                    android:text="USB 有线连接教程" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/tvUsbGuide"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="10dp"
+                                android:lineSpacingExtra="3dp"
+                                android:text="1. 使用 C to C 数据线连接手机与相机\n2. 相机 USB 模式选择 MTP / PTP\n3. 点「连接相机」，授权 USB 访问权限"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="13sp" />
+
+                            <TextView
+                                android:id="@+id/tvUsbDevice"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="10dp"
+                                android:text="未检测到 USB 相机"
+                                android:textColor="@color/text_tertiary"
+                                android:textSize="12sp" />
+                        </LinearLayout>
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- 扫描 / 连接 并列操作容器 -->
+                <LinearLayout
+                    android:id="@+id/actionContainer"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/group_gap"
+                    android:background="@drawable/bg_card"
+                    android:orientation="horizontal"
+                    android:padding="10dp">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnModeScan"
+                        style="@style/NlButton.Outline"
+                        android:layout_width="0dp"
+                        android:layout_height="46dp"
+                        android:layout_weight="1"
+                        android:layout_marginEnd="6dp"
+                        android:text="扫描相机" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnModeConnect"
+                        style="@style/NlButton.Primary"
+                        android:layout_width="0dp"
+                        android:layout_height="46dp"
+                        android:layout_weight="1"
+                        android:layout_marginStart="6dp"
+                        android:text="连接相机" />
+                </LinearLayout>
 
                 <!-- 设备核心卡片（页面视觉中心） -->
                 <com.google.android.material.card.MaterialCardView
@@ -126,19 +423,21 @@
                             android:layout_height="wrap_content"
                             android:layout_marginTop="14dp"
                             android:ellipsize="end"
+                            android:fontFamily="sans-serif-black"
                             android:maxLines="1"
-                            android:text="Nikon Z 50II"
+                            android:text="Nikon"
                             android:textColor="@color/on_dark_card"
-                            android:textSize="24sp"
-                            android:textStyle="bold" />
+                            android:textSize="24sp" />
 
                         <!-- 电池 -->
                         <LinearLayout
+                            android:id="@+id/rowBattery"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="18dp"
                             android:gravity="center_vertical"
-                            android:orientation="horizontal">
+                            android:orientation="horizontal"
+                            android:visibility="gone">
 
                             <ImageView
                                 android:layout_width="18dp"
@@ -160,7 +459,7 @@
                                 android:id="@+id/tvBattery"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="—"
+                                android:text=""
                                 android:textColor="@color/on_dark_card"
                                 android:textSize="13sp"
                                 android:textStyle="bold" />
@@ -168,11 +467,13 @@
 
                         <!-- 存储卡 -->
                         <LinearLayout
+                            android:id="@+id/rowStorage"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="10dp"
                             android:gravity="center_vertical"
-                            android:orientation="horizontal">
+                            android:orientation="horizontal"
+                            android:visibility="gone">
 
                             <ImageView
                                 android:layout_width="18dp"
@@ -208,7 +509,7 @@
                                 android:ellipsize="end"
                                 android:maxLines="1"
                                 android:maxWidth="176dp"
-                                android:text="—"
+                                android:text=""
                                 android:textColor="@color/on_dark_card"
                                 android:textSize="13sp"
                                 android:textStyle="bold" />
@@ -216,11 +517,13 @@
 
                         <!-- 剩余可拍 -->
                         <LinearLayout
+                            android:id="@+id/rowShotsRemaining"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="10dp"
                             android:gravity="center_vertical"
-                            android:orientation="horizontal">
+                            android:orientation="horizontal"
+                            android:visibility="gone">
 
                             <ImageView
                                 android:layout_width="18dp"
@@ -242,7 +545,7 @@
                                 android:id="@+id/tvShotsRemaining"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="—"
+                                android:text=""
                                 android:textColor="@color/on_dark_card"
                                 android:textSize="13sp"
                                 android:textStyle="bold" />
@@ -250,11 +553,13 @@
 
                         <!-- 镜头信息 -->
                         <LinearLayout
+                            android:id="@+id/rowLens"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="14dp"
                             android:gravity="center_vertical"
-                            android:orientation="horizontal">
+                            android:orientation="horizontal"
+                            android:visibility="gone">
 
                             <ImageView
                                 android:layout_width="18dp"
@@ -270,7 +575,7 @@
                                 android:layout_marginStart="8dp"
                                 android:ellipsize="end"
                                 android:maxLines="1"
-                                android:text="—"
+                                android:text=""
                                 android:textColor="@color/on_dark_card_variant"
                                 android:textSize="12sp" />
                         </LinearLayout>
@@ -282,7 +587,8 @@
                             android:layout_width="match_parent"
                             android:layout_height="48dp"
                             android:layout_marginTop="18dp"
-                            android:text="连接相机" />
+                            android:text="连接相机"
+                            android:visibility="gone" />
 
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/btnDisconnect"
@@ -456,10 +762,12 @@
                             android:background="@color/divider" />
 
                         <LinearLayout
+                            android:id="@+id/rowShutterCount"
                             android:layout_width="match_parent"
                             android:layout_height="40dp"
                             android:gravity="center_vertical"
-                            android:orientation="horizontal">
+                            android:orientation="horizontal"
+                            android:visibility="gone">
 
                             <TextView
                                 android:layout_width="0dp"
@@ -473,16 +781,18 @@
                                 android:id="@+id/tvShutterCount"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="—"
+                                android:text=""
                                 android:textColor="@color/text_primary"
                                 android:textSize="13sp" />
                         </LinearLayout>
 
                         <LinearLayout
+                            android:id="@+id/rowFirmware"
                             android:layout_width="match_parent"
                             android:layout_height="40dp"
                             android:gravity="center_vertical"
-                            android:orientation="horizontal">
+                            android:orientation="horizontal"
+                            android:visibility="gone">
 
                             <TextView
                                 android:layout_width="0dp"
@@ -496,16 +806,18 @@
                                 android:id="@+id/tvFirmware"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="—"
+                                android:text=""
                                 android:textColor="@color/text_primary"
                                 android:textSize="13sp" />
                         </LinearLayout>
 
                         <LinearLayout
+                            android:id="@+id/rowBleSignal"
                             android:layout_width="match_parent"
                             android:layout_height="40dp"
                             android:gravity="center_vertical"
-                            android:orientation="horizontal">
+                            android:orientation="horizontal"
+                            android:visibility="gone">
 
                             <TextView
                                 android:layout_width="0dp"
@@ -519,7 +831,7 @@
                                 android:id="@+id/tvBleSignal"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="—"
+                                android:text=""
                                 android:textColor="@color/text_primary"
                                 android:textSize="13sp" />
                         </LinearLayout>
@@ -542,7 +854,7 @@
                                 android:id="@+id/tvReconnectCount"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="—"
+                                android:text="0 次"
                                 android:textColor="@color/text_primary"
                                 android:textSize="13sp" />
                         </LinearLayout>

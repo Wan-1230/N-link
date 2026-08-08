@@ -41,6 +41,7 @@ class MainActivity : AppCompatActivity() {
         const val TAB_ALBUM = 1
         const val TAB_REMOTE = 2
         const val TAB_SETTINGS = 3
+        const val EXTRA_OPEN_TAB = "open_tab"
     }
 
     private lateinit var binding: ActivityMainBinding
@@ -89,7 +90,19 @@ class MainActivity : AppCompatActivity() {
 
         setupFragments()
         setupBottomNav()
+        handleOpenTab(intent)
         checkPermissionsAndStart()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleOpenTab(intent)
+    }
+
+    private fun handleOpenTab(intent: Intent?) {
+        val tab = intent?.getIntExtra(EXTRA_OPEN_TAB, -1) ?: return
+        if (tab in 0..3) switchToTab(tab)
     }
 
     private fun setupFragments() {

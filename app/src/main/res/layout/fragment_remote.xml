@@ -96,6 +96,7 @@
             android:paddingVertical="8dp">
 
             <ImageView
+                android:id="@+id/ivLvBattery"
                 android:layout_width="14dp"
                 android:layout_height="14dp"
                 android:contentDescription="电量"
@@ -107,11 +108,12 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="4dp"
-                android:text="--"
+                android:text=""
                 android:textColor="@color/liveview_text"
                 android:textSize="11sp" />
 
             <ImageView
+                android:id="@+id/ivLvShots"
                 android:layout_width="14dp"
                 android:layout_height="14dp"
                 android:layout_marginStart="14dp"
@@ -124,7 +126,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="4dp"
-                android:text="--"
+                android:text=""
                 android:textColor="@color/liveview_text"
                 android:textSize="11sp" />
 
@@ -241,72 +243,7 @@
                 android:orientation="horizontal" />
         </HorizontalScrollView>
 
-        <!-- 全参数展开面板：对焦/测光/间隔/B门 -->
-        <HorizontalScrollView
-            android:id="@+id/extraParamScroll"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:clipToPadding="false"
-            android:paddingHorizontal="@dimen/page_margin"
-            android:scrollbars="none"
-            android:visibility="gone">
-
-            <LinearLayout
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:id="@+id/btnFocusModeCycle"
-                    android:layout_width="wrap_content"
-                    android:layout_height="34dp"
-                    android:layout_marginEnd="8dp"
-                    android:background="@drawable/bg_chip"
-                    android:gravity="center"
-                    android:paddingHorizontal="14dp"
-                    android:text="对焦 AF-S"
-                    android:textColor="@color/text_primary"
-                    android:textSize="12sp" />
-
-                <TextView
-                    android:id="@+id/btnMeteringCycle"
-                    android:layout_width="wrap_content"
-                    android:layout_height="34dp"
-                    android:layout_marginEnd="8dp"
-                    android:background="@drawable/bg_chip"
-                    android:gravity="center"
-                    android:paddingHorizontal="14dp"
-                    android:text="测光 矩阵"
-                    android:textColor="@color/text_primary"
-                    android:textSize="12sp" />
-
-                <TextView
-                    android:id="@+id/btnInterval"
-                    android:layout_width="wrap_content"
-                    android:layout_height="34dp"
-                    android:layout_marginEnd="8dp"
-                    android:background="@drawable/bg_chip"
-                    android:gravity="center"
-                    android:paddingHorizontal="14dp"
-                    android:text="间隔拍摄"
-                    android:textColor="@color/text_primary"
-                    android:textSize="12sp" />
-
-                <TextView
-                    android:id="@+id/btnBulb"
-                    android:layout_width="wrap_content"
-                    android:layout_height="34dp"
-                    android:background="@drawable/bg_chip"
-                    android:gravity="center"
-                    android:paddingHorizontal="14dp"
-                    android:text="B门 长按曝光"
-                    android:textColor="@color/text_primary"
-                    android:textSize="12sp" />
-            </LinearLayout>
-        </HorizontalScrollView>
-
-        <!-- 快门区：定时 | 快门 | 连拍 -->
+        <!-- 快门区：定时 | 快门 | 间隔/场景 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
@@ -346,70 +283,26 @@
                     android:src="@drawable/ic_shutter_white" />
             </FrameLayout>
 
-            <FrameLayout
-                android:id="@+id/btnBurst"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:background="@drawable/bg_icon_circle">
-
-                <ImageView
-                    android:layout_width="22dp"
-                    android:layout_height="22dp"
-                    android:layout_gravity="center"
-                    android:contentDescription="连拍"
-                    android:src="@drawable/ic_burst"
-                    app:tint="@color/text_primary" />
-            </FrameLayout>
+            <TextView
+                android:id="@+id/btnModeAction"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:background="@drawable/bg_chip"
+                android:gravity="center"
+                android:paddingHorizontal="16dp"
+                android:text="间隔拍摄"
+                android:textColor="@color/text_primary"
+                android:textSize="12sp"
+                android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- 功能辅助行：长按对焦 / 网格线 / 更多参数 / 张数 -->
+        <!-- 底部信息行：拍摄计数 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center"
-            android:orientation="horizontal"
+            android:gravity="end"
             android:paddingHorizontal="@dimen/page_margin"
             android:paddingBottom="12dp">
-
-            <TextView
-                android:id="@+id/btnFocusHold"
-                android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:background="@drawable/bg_chip"
-                android:gravity="center"
-                android:paddingHorizontal="14dp"
-                android:text="长按对焦"
-                android:textColor="@color/text_primary"
-                android:textSize="12sp" />
-
-            <TextView
-                android:id="@+id/btnGridToggle"
-                android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:layout_marginStart="8dp"
-                android:background="@drawable/bg_chip"
-                android:gravity="center"
-                android:paddingHorizontal="14dp"
-                android:text="网格线"
-                android:textColor="@color/text_primary"
-                android:textSize="12sp" />
-
-            <TextView
-                android:id="@+id/btnExtraToggle"
-                android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:layout_marginStart="8dp"
-                android:background="@drawable/bg_chip"
-                android:gravity="center"
-                android:paddingHorizontal="14dp"
-                android:text="更多参数"
-                android:textColor="@color/text_primary"
-                android:textSize="12sp" />
-
-            <View
-                android:layout_width="0dp"
-                android:layout_height="0dp"
-                android:layout_weight="1" />
 
             <TextView
                 android:id="@+id/tvShotCount"

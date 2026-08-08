@@ -11,8 +11,8 @@ import com.nikonlink.app.databinding.ActivityLiveviewBinding
 import dagger.hilt.android.AndroidEntryPoint
 
 /**
- * 横屏全屏监看页。
- * 由遥控页的「全屏监看」入口打开，进入后自动启动 LiveView。
+ * 全屏实时取景页。
+ * 由遥控页的「全屏监看」入口打开，支持横竖屏跟随重力感应，进入后自动启动 LiveView。
  */
 @AndroidEntryPoint
 class LiveViewActivity : AppCompatActivity() {

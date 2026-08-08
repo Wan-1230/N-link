@@ -1,7 +1,9 @@
 package com.nikonlink.app.feature.dashboard
 
+import android.graphics.Typeface
 import android.os.Bundle
 import android.text.InputType
+import android.view.animation.DecelerateInterpolator
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -10,19 +12,23 @@ import android.widget.LinearLayout
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
 import android.content.res.ColorStateList
+import androidx.core.view.doOnLayout
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.nikonlink.app.MainActivity
 import com.nikonlink.app.R
-import com.nikonlink.app.core.common.CameraDevice
 import com.nikonlink.app.core.common.ConnectionState
 import com.nikonlink.app.core.connection.ConnectionHintKind
 import com.nikonlink.app.core.usb.UsbConnectionState
 import com.nikonlink.app.core.wifi.WifiCameraCandidate
+import com.nikonlink.app.data.local.PairedDevice
+import com.nikonlink.app.databinding.ItemRecentDeviceBinding
+import com.nikonlink.app.databinding.ItemWifiCandidateBinding
 import com.nikonlink.app.databinding.FragmentDashboardBinding
 import com.nikonlink.app.feature.settings.CameraParamsViewModel
+import com.nikonlink.app.feature.settings.ShutterCountState
 import com.nikonlink.app.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
@@ -41,11 +47,18 @@ class DashboardFragment : Fragment() {
     private val viewModel: DashboardViewModel by viewModels()
     private val paramsViewModel: CameraParamsViewModel by viewModels()
 
-    private var scannedDevices: List<CameraDevice> = emptyList()
     private var wifiDevices: List<WifiCameraCandidate> = emptyList()
     private var pairingDialog: AlertDialog? = null
     private var detailExpanded = false
     private var cameraInfoRequested = false
+    private var currentMode = ConnectMode.WIFI_AP
+    private var modeTabWidth = 0
+
+    private val modeTabsViews: List<android.widget.TextView>
+        get() = listOf(binding.tabWifiAp, binding.tabWifiSta, binding.tabUsb)
+
+    private val modePanels: List<View>
+        get() = listOf(binding.panelWifiAp, binding.panelWifiSta, binding.panelUsb)
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentDashboardBinding.inflate(inflater, container, false)
@@ -56,6 +69,8 @@ class DashboardFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         setupObservers()
         setupInteractions()
+        setupModeTabs()
+        setupModeActions()
         paramsViewModel.readAll()
     }
 
@@ -90,7 +105,7 @@ class DashboardFragment : Fragment() {
                 // 已连接 → 显示断开按钮；否则显示连接按钮
                 val connected = state == ConnectionState.FULLY_CONNECTED ||
                         state == ConnectionState.BLE_CONNECTED
-                binding.btnConnect.visibility = if (connected) View.GONE else View.VISIBLE
+                binding.btnConnect.visibility = View.GONE
                 binding.btnDisconnect.visibility = if (connected) View.VISIBLE else View.GONE
                 if (state == ConnectionState.FULLY_CONNECTED && !cameraInfoRequested) {
                     cameraInfoRequested = true
@@ -106,10 +121,17 @@ class DashboardFragment : Fragment() {
             viewModel.statusMessage.collect { msg -> binding.tvStatusMessage.text = msg }
         }
 
-        // 相机信息：电量 / 存储 / 快门次数 / 固件 / 型号
+        // 相机信息：有真实数据才展示对应行，读不到时整行隐藏，不遗留横杠占位
         viewLifecycleOwner.lifecycleScope.launch {
             paramsViewModel.cameraInfo.collect { info ->
-                if (info.batteryLevel >= 0) binding.tvBattery.text = "${info.batteryLevel}%"
+                binding.rowBattery.visibility =
+                    if (info.batteryLevel >= 0) View.VISIBLE else View.GONE
+                if (info.batteryLevel >= 0) {
+                    binding.tvBattery.text = "${info.batteryLevel}%"
+                }
+
+                binding.rowStorage.visibility =
+                    if (info.storageTotalMb > 0) View.VISIBLE else View.GONE
                 if (info.storageTotalMb > 0) {
                     val usedPct =
                         ((info.storageTotalMb - info.storageFreeMb) * 100 / info.storageTotalMb).toInt()
@@ -124,37 +146,72 @@ class DashboardFragment : Fragment() {
                     val shots = (info.storageFreeMb / 25).toInt()
                     binding.tvShotsRemaining.text = "约 $shots 张"
                 }
+                binding.rowShotsRemaining.visibility =
+                    if (info.storageTotalMb > 0) View.VISIBLE else View.GONE
+
+                binding.rowLens.visibility =
+                    if (info.lensName.isNotBlank()) View.VISIBLE else View.GONE
                 if (info.modelName.isNotBlank()) binding.tvCameraName.text = info.modelName
                 if (info.lensName.isNotBlank()) binding.tvLens.text = info.lensName
-                if (info.shutterCount >= 0) binding.tvShutterCount.text = "${info.shutterCount} 次"
-                if (info.firmwareVersion.isNotBlank()) binding.tvFirmware.text = info.firmwareVersion
+
+                binding.rowShutterCount.visibility =
+                    if (info.shutterQueryState == ShutterCountState.NONE) View.GONE else View.VISIBLE
+                binding.tvShutterCount.text = when (info.shutterQueryState) {
+                    ShutterCountState.QUERYING -> "查询中"
+                    ShutterCountState.SUCCESS -> "${info.shutterCount} 次"
+                    ShutterCountState.FAILED -> "查询失败，点击重试"
+                    ShutterCountState.NONE -> ""
+                }
+                binding.tvShutterCount.setOnClickListener {
+                    if (info.shutterQueryState == ShutterCountState.FAILED) {
+                        paramsViewModel.retryShutterCountQuery()
+                    }
+                }
+
+                binding.rowFirmware.visibility =
+                    if (info.firmwareVersion.isNotBlank()) View.VISIBLE else View.GONE
+                if (info.firmwareVersion.isNotBlank()) {
+                    binding.tvFirmware.text = info.firmwareVersion
+                }
             }
         }
 
-        // 折叠详情：蓝牙信号 / 重连次数
+        // 折叠详情：蓝牙信号只在有效时显示，无信号整行隐藏
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.metrics.collect { metrics ->
-                binding.tvBleSignal.text =
-                    if (metrics.bleRssi != 0) "${metrics.bleRssi} dBm" else "—"
-                binding.tvReconnectCount.text = "${metrics.reconnectCount} 次"
-            }
-        }
-
-        viewLifecycleOwner.lifecycleScope.launch {
-            viewModel.deviceList.collect { devices ->
-                scannedDevices = devices
-                if (devices.isNotEmpty()) {
-                    binding.tvStatusMessage.text = "发现 ${devices.size} 个设备"
+                binding.rowBleSignal.visibility =
+                    if (metrics.bleRssi != 0) View.VISIBLE else View.GONE
+                if (metrics.bleRssi != 0) {
+                    binding.tvBleSignal.text = "${metrics.bleRssi} dBm"
                 }
+                binding.tvReconnectCount.text = "${metrics.reconnectCount} 次"
             }
         }
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.wifiDeviceList.collect { devices ->
                 wifiDevices = devices
+                renderWifiCandidates(binding.apCandidateList, devices, ConnectMode.WIFI_AP)
+                renderWifiCandidates(binding.staCandidateList, devices, ConnectMode.WIFI_STA)
                 if (devices.isNotEmpty()) {
                     binding.tvStatusMessage.text = "发现 ${devices.size} 个 WiFi 相机"
                 }
+            }
+        }
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.isWifiScanning.collect { scanning ->
+                binding.btnModeScan.isEnabled = !scanning
+                binding.btnModeScan.text = if (scanning) "扫描中..." else "扫描相机"
+                if (!scanning && wifiDevices.isEmpty()) {
+                    binding.tvStatusMessage.text = "未发现 WiFi 相机"
+                }
+            }
+        }
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.recentDevices.collect { devices ->
+                renderRecentDevices(devices)
             }
         }
 
@@ -189,6 +246,7 @@ class DashboardFragment : Fragment() {
                 when (usbState) {
                     UsbConnectionState.CONNECTED -> {
                         binding.tvConnectionStatus.text = "USB 已连接"
+                        binding.tvUsbDevice.text = "USB 相机已连接，可直接传输照片"
                         binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
                             ContextCompat.getColor(requireContext(), R.color.on_dark_card)
                         )
@@ -200,12 +258,13 @@ class DashboardFragment : Fragment() {
                         }
                     }
                     UsbConnectionState.DISCONNECTED -> {
+                        binding.tvUsbDevice.text = "未检测到 USB 相机"
                         if (viewModel.connectionState.value == ConnectionState.DISCONNECTED) {
                             binding.tvConnectionStatus.text = "未连接"
                             binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
                                 ContextCompat.getColor(requireContext(), R.color.on_dark_card_variant)
                             )
-                            binding.btnConnect.visibility = View.VISIBLE
+                            binding.btnConnect.visibility = View.GONE
                             binding.btnDisconnect.visibility = View.GONE
                         }
                     }
@@ -216,7 +275,10 @@ class DashboardFragment : Fragment() {
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.usbDeviceInfo.collect { info ->
-                if (info != null) binding.tvCameraName.text = info.cameraModel
+                if (info != null) {
+                    binding.tvCameraName.text = info.cameraModel
+                    binding.tvUsbDevice.text = "${info.cameraModel} · 已连接 USB"
+                }
             }
         }
     }
@@ -227,9 +289,7 @@ class DashboardFragment : Fragment() {
             (activity as? MainActivity)?.switchToTab(MainActivity.TAB_SETTINGS)
         }
 
-        // 连接 / 断开
-        binding.btnConnect.pressEffect()
-        binding.btnConnect.setOnClickListener { showConnectDialog() }
+        // 断开连接（顶部模式区负责发起连接）
         binding.btnDisconnect.pressEffect()
         binding.btnDisconnect.setOnClickListener {
             viewModel.disconnect()
@@ -239,7 +299,7 @@ class DashboardFragment : Fragment() {
         // 点击设备卡片快速重连
         binding.cardDevice.setOnClickListener {
             if (viewModel.connectionState.value == ConnectionState.DISCONNECTED) {
-                showConnectDialog()
+                connectForCurrentMode()
             }
         }
 
@@ -292,47 +352,219 @@ class DashboardFragment : Fragment() {
         }
     }
 
-    /** 连接方式选择：BLE / WiFi 扫描结果 / USB 有线 / 手动 IP */
-    private fun showConnectDialog() {
-        val entries = buildList {
-            scannedDevices.forEach { d -> add(DeviceDialogEntry("BLE · ${d.name}", d, null)) }
-            wifiDevices.forEach { c -> add(DeviceDialogEntry("WiFi · ${c.name} (${c.ipAddress})", null, c)) }
-        }
-        val items = entries.map { it.label }.toMutableList()
-        items.add("USB 有线连接")
-        items.add("手动输入 IP")
+    // ---------------- 连接模式 Tab ----------------
 
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle("连接相机")
-            .setItems(items.toTypedArray()) { _, which ->
-                when {
-                    which < entries.size -> {
-                        val entry = entries[which]
-                        binding.tvStatusMessage.text = "连接: ${entry.label}"
-                        when {
-                            entry.bleDevice != null -> viewModel.connectToDevice(entry.bleDevice.address)
-                            entry.wifiDevice != null -> viewModel.connectToWifiCamera(entry.wifiDevice)
-                        }
-                    }
-                    which == entries.size -> {
-                        binding.tvStatusMessage.text = "检测 USB 相机..."
-                        viewModel.connectUsb()
-                    }
-                    else -> showManualIpDialog()
+    private fun setupModeTabs() {
+        binding.tabWifiAp.pressEffect()
+        binding.tabWifiAp.setOnClickListener { selectMode(ConnectMode.WIFI_AP) }
+        binding.tabWifiSta.pressEffect()
+        binding.tabWifiSta.setOnClickListener { selectMode(ConnectMode.WIFI_STA) }
+        binding.tabUsb.pressEffect()
+        binding.tabUsb.setOnClickListener { selectMode(ConnectMode.USB) }
+
+        binding.modeTabContainer.doOnLayout {
+            modeTabWidth = binding.modeTabs.width / 3
+            if (modeTabWidth > 0) {
+                binding.modeTabIndicator.layoutParams = binding.modeTabIndicator.layoutParams.apply {
+                    width = modeTabWidth
                 }
+                updateModeTabs(animate = false)
             }
-            .setNeutralButton("重新扫描") { _, _ ->
-                viewModel.startScan()
-                viewModel.scanWifi()
-                binding.tvStatusMessage.text = "正在扫描..."
-            }
-            .setNegativeButton("取消", null)
-            .show()
+        }
+        updateModePanels()
     }
 
-    private fun showManualIpDialog() {
+    private fun selectMode(mode: ConnectMode) {
+        if (currentMode == mode) return
+        currentMode = mode
+        binding.scrollContent.smoothScrollTo(0, 0)
+        updateModeTabs(animate = true)
+        updateModePanels()
+    }
+
+    private fun updateModeTabs(animate: Boolean) {
+        if (modeTabWidth > 0) {
+            val targetX = currentMode.ordinal * modeTabWidth
+            binding.modeTabIndicator.animate().cancel()
+            if (animate) {
+                binding.modeTabIndicator.animate()
+                    .translationX(targetX.toFloat())
+                    .setDuration(220)
+                    .setInterpolator(DecelerateInterpolator())
+                    .start()
+            } else {
+                binding.modeTabIndicator.translationX = targetX.toFloat()
+            }
+        }
+        modeTabsViews.forEachIndexed { index, tab ->
+            val selected = index == currentMode.ordinal
+            tab.setTextColor(
+                ContextCompat.getColor(
+                    requireContext(),
+                    if (selected) R.color.on_primary else R.color.text_primary
+                )
+            )
+            tab.typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        }
+    }
+
+    private fun updateModePanels() {
+        modePanels.forEach { panel ->
+            if (panel == panelFor(currentMode)) {
+                panel.alpha = 0f
+                panel.translationY = dpF(8f)
+                panel.visibility = View.VISIBLE
+                panel.animate().cancel()
+                panel.animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .setDuration(180)
+                    .start()
+            } else {
+                panel.visibility = View.GONE
+            }
+        }
+    }
+
+    private fun panelFor(mode: ConnectMode): View {
+        return when (mode) {
+            ConnectMode.WIFI_AP -> binding.panelWifiAp
+            ConnectMode.WIFI_STA -> binding.panelWifiSta
+            ConnectMode.USB -> binding.panelUsb
+        }
+    }
+
+    // ---------------- 扫描 / 连接 ----------------
+
+    private fun setupModeActions() {
+        binding.btnModeScan.pressEffect()
+        binding.btnModeScan.setOnClickListener { scanForCurrentMode() }
+        binding.btnModeConnect.pressEffect()
+        binding.btnModeConnect.setOnClickListener { connectForCurrentMode() }
+    }
+
+    private fun scanForCurrentMode() {
+        when (currentMode) {
+            ConnectMode.WIFI_AP, ConnectMode.WIFI_STA -> {
+                binding.tvStatusMessage.text = "正在扫描 WiFi 相机..."
+                viewModel.scanWifi()
+            }
+            ConnectMode.USB -> {
+                binding.tvStatusMessage.text = "正在检测 USB 相机..."
+                viewModel.connectUsb()
+            }
+        }
+    }
+
+    private fun connectForCurrentMode() {
+        when (currentMode) {
+            ConnectMode.WIFI_AP, ConnectMode.WIFI_STA -> {
+                val target = wifiDevices.firstOrNull()
+                if (target != null) {
+                    connectWifiCandidate(target)
+                } else {
+                    showManualIpDialog(currentMode)
+                }
+            }
+            ConnectMode.USB -> {
+                binding.tvStatusMessage.text = "正在建立 USB 通道..."
+                viewModel.connectUsb()
+            }
+        }
+    }
+
+    private fun connectWifiCandidate(candidate: WifiCameraCandidate) {
+        binding.tvStatusMessage.text = "连接: ${candidate.name} (${candidate.ipAddress})"
+        viewModel.connectToWifiCamera(candidate)
+    }
+
+    private fun connectRecentDevice(device: PairedDevice) {
+        val display = device.deviceName.ifBlank { "尼康相机" }
+        binding.tvStatusMessage.text = "快速连接: $display"
+        viewModel.connectToRecentDevice(device)
+    }
+
+    private fun renderWifiCandidates(
+        container: LinearLayout,
+        devices: List<WifiCameraCandidate>,
+        mode: ConnectMode
+    ) {
+        container.removeAllViews()
+        if (devices.isEmpty()) {
+            container.addView(
+                emptyHint(
+                    if (mode == ConnectMode.WIFI_AP) {
+                        "未发现相机，请先连接相机 WiFi 后再扫描"
+                    } else {
+                        "未发现相机，请确认相机与手机在同一网络"
+                    }
+                )
+            )
+            return
+        }
+        devices.forEach { candidate ->
+            val item = ItemWifiCandidateBinding.inflate(layoutInflater, container, false)
+            item.tvCandidateName.text = candidate.name.ifBlank { "尼康相机" }
+            item.tvCandidateInfo.text = "${candidate.ipAddress}:${candidate.port}"
+            item.root.pressEffect()
+            item.btnCandidateConnect.pressEffect()
+            item.btnCandidateConnect.setOnClickListener { connectWifiCandidate(candidate) }
+            container.addView(item.root)
+        }
+    }
+
+    private fun renderRecentDevices(devices: List<PairedDevice>) {
+        binding.recentDeviceList.removeAllViews()
+        if (devices.isEmpty()) {
+            binding.recentDeviceList.addView(emptyHint("暂无最近连接设备"))
+            return
+        }
+        devices.forEach { device ->
+            val item = ItemRecentDeviceBinding.inflate(
+                layoutInflater,
+                binding.recentDeviceList,
+                false
+            )
+            item.tvRecentName.text = device.deviceName.ifBlank { "尼康相机" }
+            item.tvRecentInfo.text = buildString {
+                if (device.address.startsWith("wifi:")) {
+                    val ip = device.address.removePrefix("wifi:").split(":").firstOrNull().orEmpty()
+                    append("WiFi · ").append(ip)
+                } else {
+                    append("BLE · ").append(device.address)
+                }
+                append(" · ").append(formatRecentTime(device.lastConnected))
+            }
+            item.root.pressEffect()
+            item.btnRecentConnect.pressEffect()
+            item.btnRecentConnect.setOnClickListener { connectRecentDevice(device) }
+            binding.recentDeviceList.addView(item.root)
+        }
+    }
+
+    private fun emptyHint(text: String): android.widget.TextView {
+        return android.widget.TextView(requireContext()).apply {
+            this.text = text
+            setTextColor(ContextCompat.getColor(requireContext(), R.color.text_tertiary))
+            textSize = 12f
+            setPadding(0, dp(6), 0, dp(6))
+        }
+    }
+
+    private fun formatRecentTime(time: Long): String {
+        if (time <= 0) return "很久前"
+        val diff = System.currentTimeMillis() - time
+        return when {
+            diff < 60_000 -> "刚刚"
+            diff < 60 * 60_000 -> "${diff / 60_000} 分钟前"
+            diff < 24 * 60 * 60_000 -> "${diff / (60 * 60_000)} 小时前"
+            else -> "${diff / (24 * 60 * 60_000)} 天前"
+        }
+    }
+
+    private fun showManualIpDialog(mode: ConnectMode) {
         val input = EditText(requireContext()).apply {
-            hint = "192.168.1.1 或 192.168.1.1:15740"
+            hint = if (mode == ConnectMode.WIFI_AP) "192.168.1.1" else "192.168.1.1 或 192.168.1.1:15740"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
         val container = LinearLayout(requireContext()).apply {
@@ -341,7 +573,13 @@ class DashboardFragment : Fragment() {
         }
         MaterialAlertDialogBuilder(requireContext())
             .setTitle("手动连接 WiFi 相机")
-            .setMessage("STA 模式下请输入相机在局域网中的 IP 地址")
+            .setMessage(
+                if (mode == ConnectMode.WIFI_AP) {
+                    "请确认手机已连接相机发出的 WiFi，输入相机默认地址"
+                } else {
+                    "STA 模式下请输入相机在同一局域网中的 IP 地址"
+                }
+            )
             .setView(container)
             .setPositiveButton("连接") { _, _ ->
                 val raw = input.text.toString().trim()
@@ -364,11 +602,9 @@ class DashboardFragment : Fragment() {
     private fun formatMb(mb: Long): String =
         if (mb >= 1024) String.format("%.1f GB", mb / 1024f) else "$mb MB"
 
-    private data class DeviceDialogEntry(
-        val label: String,
-        val bleDevice: CameraDevice?,
-        val wifiDevice: WifiCameraCandidate?
-    )
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun dpF(value: Float): Float = value * resources.displayMetrics.density
 
     override fun onDestroyView() {
         super.onDestroyView()
@@ -376,4 +612,13 @@ class DashboardFragment : Fragment() {
         pairingDialog = null
         _binding = null
     }
+}
+
+/**
+ * 设备页顶部连接模式。
+ */
+private enum class ConnectMode {
+    WIFI_AP,
+    WIFI_STA,
+    USB
 }

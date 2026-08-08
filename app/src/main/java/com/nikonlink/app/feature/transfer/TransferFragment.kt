@@ -1,5 +1,9 @@
 package com.nikonlink.app.feature.transfer
 
+import android.Manifest
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.LayoutInflater
@@ -8,6 +12,7 @@ import android.view.ViewGroup
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
@@ -35,6 +40,16 @@ class TransferFragment : Fragment() {
     private var multiSelectMode = false
     private var lastToastMsg: String? = null
 
+    private val mediaPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        if (grants.values.all { it }) {
+            viewModel.setAlbum(AlbumSource.LOCAL)
+        } else {
+            viewModel.showMessage("未授予照片访问权限，无法显示本地照片")
+        }
+    }
+
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentTransferBinding.inflate(inflater, container, false)
         return binding.root
@@ -44,6 +59,8 @@ class TransferFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         setupGrid()
         setupChips()
+        setupAlbumTabs()
+        setupPullRefresh()
         setupActions()
         observe()
         viewModel.fetchPhotos()
@@ -54,6 +71,8 @@ class TransferFragment : Fragment() {
             onItemClick = { file, position ->
                 if (multiSelectMode) {
                     viewModel.toggleSelection(file.handle)
+                } else if (viewModel.activeAlbum.value == AlbumSource.LOCAL) {
+                    openLocalFile(file)
                 } else {
                     // 进入全屏预览页（右推入转场，由主题 windowAnimationStyle 提供）
                     PreviewActivity.start(requireContext(), file)
@@ -66,6 +85,23 @@ class TransferFragment : Fragment() {
         )
         binding.gridPhotos.layoutManager = GridLayoutManager(requireContext(), 3)
         binding.gridPhotos.adapter = adapter
+    }
+
+    private fun openLocalFile(file: CameraFile) {
+        val uri = viewModel.localContentUri(file.handle)
+        val mime = when (file.format) {
+            CameraFileFormat.VIDEO -> "video/*"
+            CameraFileFormat.RAW -> "image/x-nikon-nef"
+            else -> "image/*"
+        }
+        val intent = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, mime)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        runCatching {
+            startActivity(Intent.createChooser(intent, "查看本地文件"))
+        }.onFailure {
+            viewModel.showMessage("没有可打开该文件的应用")
+        }
     }
 
     /** 分类标签：黑底白字胶囊（选中） / 灰底黑字（未选中） */
@@ -102,8 +138,95 @@ class TransferFragment : Fragment() {
         }
     }
 
+    private fun setupAlbumTabs() {
+        binding.tabCameraPhotos.pressEffect()
+        binding.tabCameraPhotos.setOnClickListener {
+            viewModel.setAlbum(AlbumSource.CAMERA)
+        }
+        binding.tabLocalPhotos.pressEffect()
+        binding.tabLocalPhotos.setOnClickListener {
+            if (hasMediaPermission()) {
+                viewModel.setAlbum(AlbumSource.LOCAL)
+            } else {
+                requestMediaPermission()
+            }
+        }
+    }
+
+    private fun renderAlbumTabs(source: AlbumSource) {
+        val cameraSelected = source == AlbumSource.CAMERA
+        binding.tabCameraPhotos.setBackgroundResource(
+            if (cameraSelected) R.drawable.bg_chip_selected else 0
+        )
+        binding.tabLocalPhotos.setBackgroundResource(
+            if (cameraSelected) 0 else R.drawable.bg_chip_selected
+        )
+        binding.tabCameraPhotos.setTextColor(
+            ContextCompat.getColor(
+                requireContext(),
+                if (cameraSelected) R.color.on_primary else R.color.text_primary
+            )
+        )
+        binding.tabLocalPhotos.setTextColor(
+            ContextCompat.getColor(
+                requireContext(),
+                if (cameraSelected) R.color.text_primary else R.color.on_primary
+            )
+        )
+        binding.tabCameraPhotos.typeface =
+            if (cameraSelected) android.graphics.Typeface.DEFAULT_BOLD
+            else android.graphics.Typeface.DEFAULT
+        binding.tabLocalPhotos.typeface =
+            if (cameraSelected) android.graphics.Typeface.DEFAULT
+            else android.graphics.Typeface.DEFAULT_BOLD
+    }
+
+    private fun setupPullRefresh() {
+        binding.swipeRefresh.setColorSchemeColors(
+            ContextCompat.getColor(requireContext(), R.color.text_primary)
+        )
+        // SwipeRefreshLayout 的直接子 View 是 FrameLayout，需要让网格自己决定能否向上滚动
+        binding.swipeRefresh.setOnChildScrollUpCallback { _, _ ->
+            binding.gridPhotos.canScrollVertically(-1)
+        }
+        binding.swipeRefresh.setOnRefreshListener {
+            viewModel.refreshActiveAlbum()
+        }
+    }
+
+    private fun hasMediaPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.READ_MEDIA_IMAGES) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED &&
+                ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.READ_MEDIA_VIDEO) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.READ_EXTERNAL_STORAGE) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun requestMediaPermission() {
+        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(
+                Manifest.permission.READ_MEDIA_IMAGES,
+                Manifest.permission.READ_MEDIA_VIDEO
+            )
+        } else {
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+        mediaPermissionLauncher.launch(permissions)
+    }
+
     private fun setupActions() {
-        binding.btnRefresh.setOnClickListener { viewModel.fetchPhotos() }
+        binding.btnRefresh.pressEffect()
+        binding.btnRefresh.setOnClickListener {
+            if (viewModel.activeAlbum.value == AlbumSource.LOCAL && !hasMediaPermission()) {
+                requestMediaPermission()
+            } else {
+                viewModel.refreshActiveAlbum()
+            }
+        }
 
         binding.btnMultiSelect.setOnClickListener {
             // Fix 真机反馈: 长按已选中照片后再点「多选」，旧逻辑会直接退出多选并清空选中，
@@ -130,10 +253,14 @@ class TransferFragment : Fragment() {
 
         binding.btnDelete.setOnClickListener {
             val count = viewModel.selectedHandles.value.size
+            val isLocal = viewModel.activeAlbum.value == AlbumSource.LOCAL
             MaterialAlertDialogBuilder(requireContext())
                 .setTitle("删除")
-                .setMessage("确定要从相机存储卡删除 $count 个文件吗？此操作不可恢复。")
-                .setPositiveButton("删除") { _, _ ->
+                .setMessage(
+                    if (isLocal) "确定要删除手机中的 $count 个本地文件吗？此操作不可恢复。"
+                    else "确定要从相机存储卡删除 $count 个文件吗？此操作不可恢复。"
+                )
+                .setPositiveButton(if (isLocal) "删除本地" else "删除") { _, _ ->
                     viewModel.deleteSelected()
                 }
                 .setNegativeButton("取消", null)
@@ -141,8 +268,32 @@ class TransferFragment : Fragment() {
         }
 
         binding.btnShare.setOnClickListener {
-            viewModel.showMessage("请先下载到手机，再从系统相册分享")
+            if (viewModel.activeAlbum.value == AlbumSource.LOCAL) {
+                shareLocalSelected()
+            } else {
+                viewModel.showMessage("请先下载到手机，再从系统相册分享")
+            }
         }
+    }
+
+    private fun shareLocalSelected() {
+        val uris = viewModel.selectedLocalUris()
+        if (uris.isEmpty()) {
+            viewModel.showMessage("请先选择要分享的本地文件")
+            return
+        }
+        val intent = Intent(
+            if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE
+        ).apply {
+            type = "*/*"
+            if (uris.size == 1) {
+                putExtra(Intent.EXTRA_STREAM, uris.first())
+            } else {
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+            }
+        }
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        startActivity(Intent.createChooser(intent, "分享本地文件"))
     }
 
     private fun setMultiSelectMode(enabled: Boolean) {
@@ -152,13 +303,33 @@ class TransferFragment : Fragment() {
         if (!enabled) {
             binding.bottomBar.visibility = View.GONE
             viewModel.clearSelection()
+        } else {
+            renderActionButtons()
         }
         adapter.notifyDataSetChanged()
+    }
+
+    private fun renderActionButtons() {
+        val isLocal = viewModel.activeAlbum.value == AlbumSource.LOCAL
+        binding.btnDownload.visibility = if (isLocal) View.GONE else View.VISIBLE
+        binding.btnShare.visibility = if (isLocal) View.VISIBLE else View.VISIBLE
+        binding.btnDelete.text = if (isLocal) "删除本地" else "删除"
     }
 
     private fun observe() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.photoFilter.collect { renderChips(it) }
+        }
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.activeAlbum.collect { source ->
+                renderAlbumTabs(source)
+                if (multiSelectMode) renderActionButtons()
+                binding.tvMessage.text = when (source) {
+                    AlbumSource.CAMERA -> "连接相机后查看相册"
+                    AlbumSource.LOCAL -> "尚未下载照片到手机"
+                }
+            }
         }
 
         // 网格数据：列表 + 选中 + 缩略图
@@ -191,6 +362,7 @@ class TransferFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.isLoading.collect { loading ->
                 binding.progressLoading.visibility = if (loading) View.VISIBLE else View.GONE
+                if (!loading) binding.swipeRefresh.isRefreshing = false
             }
         }
 
@@ -213,7 +385,9 @@ class TransferFragment : Fragment() {
         // 通道状态变化时刷新空态文案，明确告知当前走 USB 还是 WiFi
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.usbState.collect {
-                if (viewModel.photoList.value.isEmpty()) {
+                if (viewModel.activeAlbum.value == AlbumSource.CAMERA &&
+                    viewModel.photoList.value.isEmpty()
+                ) {
                     binding.tvMessage.text = "连接相机后查看相册 · 当前通道: ${viewModel.activeChannel()}"
                 }
             }
