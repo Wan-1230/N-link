@@ -115,6 +115,9 @@ class PhotoGridAdapter(
                 CameraFileFormat.VIDEO -> "视频"
                 else -> "文件"
             }
+            // 「已修」角标：导出命名恒含 _EDITED_（PRD-AI修图 4.7/7）
+            binding.tvEditedBadge.visibility =
+                if (file.fileName.contains("_EDITED_")) View.VISIBLE else View.GONE
             applySelection(file.handle in selected, animate)
             applyThumb(file.handle)
 

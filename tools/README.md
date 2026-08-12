@@ -7,7 +7,9 @@ Android emulator or a second phone.
 ## 1. Unit/integration tests (no hardware)
 
 ```powershell
-& "$env:TEMP\gradle-8.11.1\bin\gradle.bat" :app:testDebugUnitTest --console=plain --no-daemon
+# gradlew.bat 的 wrapper jar 已损坏，用本地发行版构建（GRADLE_USER_HOME 指向 D:\gradle-home）
+$env:GRADLE_USER_HOME="D:\gradle-home"; $env:JAVA_HOME="C:\Program Files\Microsoft\jdk-17.0.20.8-hotspot"
+& "D:\Android\gradle-8.11.1\bin\gradle.bat" -p d:\N-Link :app:testDebugUnitTest --console=plain
 ```
 
 The tests start an in-process mock camera and run the app's real
@@ -48,3 +50,18 @@ D:\Android\Sdk\platform-tools\adb.exe logcat -s BleManager:* PtpSession:* Connec
 
 The log tags above cover the BLE pairing stages, PTP/IP handshake, connection
 state machine and USB keepalive.
+
+## 5. AI 修图工具（PRD-AI修图）
+
+M5 真机验收一键脚本（安装 APK → 推送测试照片 → 启动编辑器 → 采集耗时打点 → 截屏取证）：
+
+```powershell
+.\tools\m5_acceptance.ps1                              # 单设备，默认测试图
+.\tools\m5_acceptance.ps1 -Device <序列号> -Image D:\photos\test_24mp.jpg
+```
+
+模型发布门槛校验（models.json 回填 url/sha256 后，发布前运行）：
+
+```powershell
+python tools\check_models.py
+```

@@ -96,10 +96,22 @@ dependencies {
     // Logging
     implementation(libs.timber)
 
+    // EXIF: AI 修图导出时复制原图拍摄参数（PRD-AI修图 4.7）
+    implementation(libs.exifinterface)
+
+    // LiteRT: 端侧 AI 推理框架（PRD-AI修图 8.2，GPU Delegate 优先，CPU 兜底）
+    implementation(libs.tensorflow.lite)
+    implementation(libs.tensorflow.lite.gpu)
+
     // Testing
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.mockk)
+
+    // Instrumented testing（PRD-AI修图 §10.1 功能验收自动化）
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.espresso.core)
 }
 
 
