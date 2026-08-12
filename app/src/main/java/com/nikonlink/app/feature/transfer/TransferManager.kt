@@ -12,6 +12,7 @@ import timber.log.Timber
 import com.nikonlink.app.core.ptp.PtpSessionManager
 import com.nikonlink.app.core.usb.UsbPtpManager
 import com.nikonlink.app.data.repository.TransferRepository
+import com.nikonlink.app.feature.edit.EditNotification
 import java.io.File
 import java.io.FileOutputStream
 import javax.inject.Inject
@@ -254,6 +255,10 @@ class TransferManager @Inject constructor(
                 transferRepository.recordTransfer(file.handle, file.fileName, file.size, savedPath)
                 _transferState.value = TransferState.Completed(file)
                 postMessage("已保存: ${file.fileName}")
+                // PRD(AI修图) 入口③: 传输完成通知带「修图」 Action 直达编辑器（仅照片）
+                if (file.isPhoto) {
+                    EditNotification.postTransferComplete(context, savedPath, file.fileName, file.handle)
+                }
                 TransferResult.Success(savedPath)
             } else {
                 TransferResult.Failed("保存失败：存储空间不足或无写入权限")

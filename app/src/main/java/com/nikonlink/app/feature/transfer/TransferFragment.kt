@@ -88,6 +88,11 @@ class TransferFragment : Fragment() {
     }
 
     private fun openLocalFile(file: CameraFile) {
+        // PRD(AI修图) 入口①：本地图片走应用内预览页，可直达 AI 修图；视频仍用系统播放器
+        if (file.format == CameraFileFormat.JPEG) {
+            PreviewActivity.start(requireContext(), file, isLocal = true)
+            return
+        }
         val uri = viewModel.localContentUri(file.handle)
         val mime = when (file.format) {
             CameraFileFormat.VIDEO -> "video/*"

@@ -10,6 +10,7 @@ import com.nikonlink.app.core.ptp.PtpIdentityStore
 import com.nikonlink.app.core.usb.UsbPtpManager
 import com.nikonlink.app.core.wifi.WifiManager
 import com.nikonlink.app.core.wifi.WifiScanner
+import com.nikonlink.app.data.local.EditPresetDao
 import com.nikonlink.app.data.local.NikonLinkDatabase
 import com.nikonlink.app.data.local.PairedDeviceDao
 import com.nikonlink.app.data.local.TransferHistoryDao
@@ -135,7 +136,10 @@ object AppModule {
         context,
         NikonLinkDatabase::class.java,
         "nikonlink.db"
-    ).build()
+    )
+        // 应用未发布阶段：库表变更直接破坏式迁移（v2 新增修图预设表）
+        .fallbackToDestructiveMigration()
+        .build()
 
     @Provides
     @Singleton
@@ -144,6 +148,10 @@ object AppModule {
     @Provides
     @Singleton
     fun providePairedDeviceDao(db: NikonLinkDatabase): PairedDeviceDao = db.pairedDeviceDao()
+
+    @Provides
+    @Singleton
+    fun provideEditPresetDao(db: NikonLinkDatabase): EditPresetDao = db.editPresetDao()
 
     @Provides
     @Singleton
