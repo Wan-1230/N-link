@@ -1,0 +1,11 @@
+{
+  "provider": "kokoro",
+  "speed": 1,
+  "lines": [],
+  "bgm": {
+    "mode": "retrieve",
+    "query": "light minimal-tech electronic underscore, ~120 BPM, sparse plucks and soft pulse, no vocals",
+    "blob": "一次配对、永不断联——尼康相机的手机伴侣，就该这么稳",
+    "arc": "痛点钩子 → 痛点共鸣 → 品牌亮相 → 连接演示 → 传图演示 → 遥控演示 → 数据信任 → 引流 CTA"
+  }
+}

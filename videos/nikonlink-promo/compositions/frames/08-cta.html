@@ -1,0 +1,204 @@
+<template>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+
+  <style>
+    @font-face { font-family: "Inter Tight"; font-weight: 800; font-style: normal; font-display: block; src: url("assets/fonts/InterTight-ExtraBold.woff2") format("woff2"); }
+    @font-face { font-family: "IBM Plex Mono"; font-weight: 500; font-style: normal; font-display: block; src: url("assets/fonts/IBMPlexMono-Medium.woff2") format("woff2"); }
+    @font-face { font-family: "Noto Sans SC"; font-weight: 500; font-style: normal; font-display: block; src: url("assets/fonts/NotoSansSC-Medium.woff2") format("woff2"); }
+    @font-face { font-family: "Noto Sans SC"; font-weight: 700; font-style: normal; font-display: block; src: url("assets/fonts/NotoSansSC-Bold.woff2") format("woff2"); }
+
+    /* frame root — styled by #root, never by a class on the composition element */
+    #root {
+      position: relative;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      container-type: size;
+      font-family: "Noto Sans SC", sans-serif;
+    }
+    #root * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── morph stage · one shared center (960, 440) ────────────────────────── */
+    .c08-stage {
+      position: absolute;
+      left: 0; right: 0; top: 336px;
+      height: 208px;
+      display: flex; align-items: center; justify-content: center;
+    }
+
+    /* wordmark — the TEXT "NikonLink", display face 800, pure black */
+    .c08-wordmark {
+      font-family: "Inter Tight", "Noto Sans SC", sans-serif;
+      font-size: 132px; font-weight: 800;
+      letter-spacing: -0.02em; line-height: 1;
+      color: #000000; white-space: nowrap;
+      will-change: transform, opacity;
+    }
+
+    /* CTA pill — absolute so it never shoves the wordmark during the overlap */
+    .c08-pill {
+      position: absolute; inset: 0; margin: auto;
+      width: fit-content; height: fit-content;
+      background: #000000; border-radius: 999px;
+      padding: 32px 96px;
+      display: flex; align-items: center; justify-content: center;
+      will-change: transform, opacity;
+    }
+    .c08-pill-text {
+      font-family: "Noto Sans SC", sans-serif;
+      font-size: 56px; font-weight: 700; line-height: 1;
+      letter-spacing: 0.06em; color: #FFFFFF; white-space: nowrap;
+      will-change: transform, opacity;
+    }
+
+    /* hairline ripple ring — 1px #EBEBEB, expands on release */
+    .c08-ripple {
+      position: absolute; inset: 0; margin: auto;
+      width: 452px; height: 156px;
+      border: 1px solid #EBEBEB; border-radius: 999px;
+      opacity: 0;
+      will-change: transform, opacity;
+    }
+
+    /* ── mono gray repo line · typed below the pill ────────────────────────── */
+    .c08-line {
+      position: absolute; left: 0; right: 0; top: 596px;
+      text-align: center;
+      font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
+      font-size: 24px; font-weight: 500;
+      letter-spacing: 0.14em; color: #8C8C8C;
+      white-space: nowrap;
+    }
+    .c08-line span { opacity: 0; }
+
+    /* ── 12px black cursor dot ─────────────────────────────────────────────── */
+    .c08-cursor {
+      position: absolute; left: 0; top: 0;
+      width: 12px; height: 12px; border-radius: 50%;
+      background: #000000;
+      box-shadow: 0 0 0 2px #FFFFFF, 0 0 0 3px rgba(0, 0, 0, 0.2);
+      opacity: 0;
+      will-change: transform, opacity;
+    }
+
+    /* ── inline caption pill · bottom ~12% band ────────────────────────────── */
+    .c08-capband {
+      position: absolute; left: 0; right: 0; top: 950px; height: 130px;
+      display: flex; align-items: center; justify-content: center;
+      pointer-events: none;
+    }
+    .c08-cap {
+      position: absolute;
+      background: #000000; border-radius: 999px;
+      padding: 16px 44px;
+      font-family: "Noto Sans SC", sans-serif;
+      font-size: 30px; font-weight: 500; color: #FFFFFF;
+      letter-spacing: 0.02em; white-space: nowrap;
+    }
+  </style>
+
+  <div id="root" data-composition-id="08-cta" data-width="1920" data-height="1080" data-duration="6">
+    <!-- full-bleed white ground — rides on a clip layer, never on #root -->
+    <div class="clip" data-start="0" data-duration="6" data-track-index="0"
+         style="position: absolute; inset: 0; background: #FFFFFF;"></div>
+
+    <div class="clip" data-start="0" data-duration="6" data-track-index="1"
+         style="position: absolute; inset: 0;">
+
+      <!-- ══ morph stage · wordmark → pill at one shared center ══ -->
+      <div class="c08-stage">
+        <div id="c08-wordmark" class="c08-wordmark" style="opacity: 0;">NikonLink</div>
+        <div id="c08-ripple" class="c08-ripple"></div>
+        <div id="c08-pill" class="c08-pill" style="opacity: 0;">
+          <span id="c08-pill-text" class="c08-pill-text" style="opacity: 0;">下载体验</span>
+        </div>
+      </div>
+
+      <!-- ══ mono gray repo line · typed in Scene 2 ══ -->
+      <div id="c08-line" class="c08-line"></div>
+
+      <!-- ══ 12px black cursor dot ══ -->
+      <div id="c08-cursor" class="c08-cursor"></div>
+
+      <!-- ══ inline captions · bottom ~12% band ══ -->
+      <div class="c08-capband">
+        <div id="c08-cap-1" class="c08-cap" style="opacity: 0;">NikonLink——让你的相机，永远在线。</div>
+        <div id="c08-cap-2" class="c08-cap" style="opacity: 0;">现在下载体验。</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var $ = function (id) { return document.getElementById(id); };
+      var tl = gsap.timeline({ paused: true });
+
+      var wordmark = $("c08-wordmark");
+      var pill     = $("c08-pill");
+      var pillText = $("c08-pill-text");
+      var ripple   = $("c08-ripple");
+      var cursor   = $("c08-cursor");
+      var line     = $("c08-line");
+      var cap1 = $("c08-cap-1"), cap2 = $("c08-cap-2");
+
+      // ── typed repo line · one span per char, revealed stepwise ──
+      var lineText = "GitHub 搜索 Wan-1230/N-link";
+      var chars = [];
+      for (var i = 0; i < lineText.length; i++) {
+        var ch = document.createElement("span");
+        ch.textContent = lineText[i];
+        line.appendChild(ch);
+        chars.push(ch);
+      }
+
+      // ── Scene 1 (0.0–2.5) — wordmark presence, then condense-morph into the pill ──
+      tl.fromTo(wordmark, { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }, 0.05);
+      tl.fromTo(cap1, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 0.1);
+
+      // the morph (signature move) — letters condense toward the shared center and shrink-fade
+      var MORPH_AT = 1.35;
+      tl.to(wordmark, { scale: 0.55, duration: 0.5, ease: "power3.out" }, MORPH_AT);
+      tl.to(wordmark, { opacity: 0, duration: 0.15, ease: "power2.out" }, MORPH_AT);
+      tl.set(wordmark, { x: -4000 }, MORPH_AT + 0.15);
+
+      // pill pops in at the same center as the wordmark shrinks away
+      tl.fromTo(pill,
+        { scale: 0, opacity: 0 },
+        { scale: 1, opacity: 1, duration: 0.5, ease: "back.out(2)" }, MORPH_AT);
+      tl.fromTo(pillText,
+        { opacity: 0, y: 10 },
+        { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, MORPH_AT + 0.17);
+
+      // ── Scene 2 (2.5–4.5) — caption cue 2 · cursor decel-arrival · press · typed line ──
+      tl.set(cap1, { opacity: 0 }, 2.5);
+      tl.fromTo(cap2, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 2.5);
+
+      // cursor hard-cuts in off-stage right, decelerates to a human off-center aim on the pill
+      tl.fromTo(cursor, { opacity: 0 }, { opacity: 1, duration: 0.001, ease: "none" }, 2.55);
+      tl.fromTo(cursor,
+        { x: 2020, y: 700 },
+        { x: 970, y: 446, duration: 0.7, ease: "power2.out" }, 2.55);
+
+      // lockstep press — 4% recoil on pill + cursor together
+      tl.to([pill, cursor], { scale: 0.96, duration: 0.12, ease: "power3.out" }, 3.4);
+      tl.to([pill, cursor], { scale: 1.0, duration: 0.25, ease: "back.out(2.5)" }, 3.62);
+
+      // one 1px #EBEBEB hairline ripple ring on release
+      tl.fromTo(ripple,
+        { scale: 1, opacity: 0.9 },
+        { scale: 1.45, opacity: 0, duration: 0.55, ease: "power2.out" }, 3.62);
+
+      // mono gray line types out below the pill
+      var TYPE_AT = 3.5, STEP = 0.036;
+      for (var c = 0; c < chars.length; c++) {
+        tl.set(chars[c], { opacity: 1 }, TYPE_AT + c * STEP);
+      }
+
+      // ── Scene 3 (4.5–6.0) — held end card · everything perfectly still ──
+      tl.to({}, { duration: 0.01 }, 5.99);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["08-cta"] = tl;
+    })();
+  </script>
+</template>

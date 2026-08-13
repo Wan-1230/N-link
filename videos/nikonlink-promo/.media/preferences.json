@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "preferences": {
+    "destination": {
+      "value": "youtube",
+      "confirmed_in": [
+        "nikonlink-promo"
+      ],
+      "updated_at": "2026-08-12T16:22:46.623Z"
+    },
+    "aspect": {
+      "value": "1920x1080",
+      "confirmed_in": [
+        "nikonlink-promo"
+      ],
+      "updated_at": "2026-08-12T16:22:46.730Z"
+    },
+    "language": {
+      "value": "zh",
+      "confirmed_in": [
+        "nikonlink-promo"
+      ],
+      "updated_at": "2026-08-12T16:22:46.841Z"
+    },
+    "flow": {
+      "value": "automation",
+      "confirmed_in": [
+        "nikonlink-promo"
+      ],
+      "updated_at": "2026-08-12T16:22:46.950Z"
+    },
+    "storyboard": {
+      "value": "yes",
+      "confirmed_in": [
+        "nikonlink-promo"
+      ],
+      "updated_at": "2026-08-12T16:22:47.059Z"
+    },
+    "style_preset.product-launch-video": {
+      "value": "broadside",
+      "confirmed_in": [
+        "nikonlink-promo"
+      ],
+      "updated_at": "2026-08-12T16:24:12.795Z"
+    }
+  },
+  "sightings": {}
+}

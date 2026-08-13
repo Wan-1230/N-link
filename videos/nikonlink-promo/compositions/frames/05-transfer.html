@@ -1,0 +1,480 @@
+<template>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+
+  <style>
+    @font-face { font-family: "Inter Tight"; font-weight: 600; font-style: normal; font-display: block; src: url("assets/fonts/InterTight-SemiBold.woff2") format("woff2"); }
+    @font-face { font-family: "Inter Tight"; font-weight: 800; font-style: normal; font-display: block; src: url("assets/fonts/InterTight-ExtraBold.woff2") format("woff2"); }
+    @font-face { font-family: "IBM Plex Mono"; font-weight: 500; font-style: normal; font-display: block; src: url("assets/fonts/IBMPlexMono-Medium.woff2") format("woff2"); }
+    @font-face { font-family: "Noto Sans SC"; font-weight: 400; font-style: normal; font-display: block; src: url("assets/fonts/NotoSansSC-Regular.woff2") format("woff2"); }
+    @font-face { font-family: "Noto Sans SC"; font-weight: 500; font-style: normal; font-display: block; src: url("assets/fonts/NotoSansSC-Medium.woff2") format("woff2"); }
+    @font-face { font-family: "Noto Sans SC"; font-weight: 700; font-style: normal; font-display: block; src: url("assets/fonts/NotoSansSC-Bold.woff2") format("woff2"); }
+
+    /* frame root — styled by #root, never by a class on the composition element */
+    #root {
+      position: relative;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      container-type: size;
+      font-family: "Noto Sans SC", sans-serif;
+    }
+    #root * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── phone mock · left 44% column ─────────────────────────────────────── */
+    .c05-phone {
+      position: absolute;
+      left: 220px; top: 40px;
+      width: 400px; height: 828px;
+      border: 1px solid #262626;
+      border-radius: 40px;
+      background: #FFFFFF;
+      overflow: hidden;
+    }
+    .c05-scr { position: absolute; inset: 0; }
+
+    /* status bar */
+    .c05-clock {
+      position: absolute; left: 26px; top: 16px;
+      font-family: "Inter Tight", "Noto Sans SC", sans-serif;
+      font-size: 12px; font-weight: 600; color: #000000;
+    }
+    .c05-sigbar { position: absolute; background: #000000; border-radius: 1px; }
+    .c05-batt {
+      position: absolute; right: 24px; top: 18px;
+      width: 17px; height: 9px;
+      border: 1px solid #000000; border-radius: 2px;
+    }
+    .c05-batt-fill { position: absolute; left: 1px; top: 1px; bottom: 1px; width: 11px; background: #000000; border-radius: 1px; }
+    .c05-batt-nub { position: absolute; right: 21px; top: 21px; width: 2px; height: 4px; background: #000000; border-radius: 1px; }
+
+    /* top bar · 相机照片 + 多选 chip */
+    .c05-title {
+      position: absolute; left: 24px; top: 50px;
+      font-size: 20px; font-weight: 700; color: #000000; letter-spacing: 0.01em;
+    }
+    .c05-multi {
+      position: absolute; right: 16px; top: 50px;
+      width: 60px; height: 30px;
+      background: #F5F5F5; border-radius: 999px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 500; color: #000000;
+    }
+    .c05-divider { position: absolute; left: 0; top: 96px; width: 100%; height: 1px; background: #EBEBEB; }
+
+    /* category chip row · 全部 selected */
+    .c05-chips { position: absolute; left: 24px; top: 112px; width: 352px; height: 34px; }
+    .c05-chip {
+      position: absolute; top: 0; height: 34px;
+      border-radius: 999px; background: #F0F0F0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 400; color: #525252; white-space: nowrap;
+    }
+    .c05-chip.is-on { background: #000000; color: #FFFFFF; font-weight: 500; }
+
+    /* 3px transfer progress bar · sweeps above the grid */
+    .c05-progress {
+      position: absolute; left: 0; top: 154px;
+      width: 400px; height: 3px;
+      background: #000000;
+      transform-origin: left center;
+    }
+
+    /* 3-col square grid · monochrome silhouette tiles */
+    .c05-tile { position: absolute; width: 132px; height: 132px; background: #F5F5F5; overflow: hidden; }
+    .c05-tile svg { display: block; width: 132px; height: 132px; }
+
+    /* multi-select checkmark · top-left (Scene 2) */
+    .c05-ms { position: absolute; left: 8px; top: 8px; width: 22px; height: 22px; }
+    /* completion corner check · top-right (Scene 4) */
+    .c05-corner { position: absolute; right: 8px; top: 8px; width: 20px; height: 20px; }
+
+    /* bottom segmented control */
+    .c05-seg {
+      position: absolute; left: 16px; top: 764px;
+      width: 368px; height: 48px;
+      background: #F5F5F5; border-radius: 999px; padding: 3px;
+      display: flex;
+    }
+    .c05-seg-on, .c05-seg-off {
+      flex: 1; border-radius: 999px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; white-space: nowrap;
+    }
+    .c05-seg-on  { background: #000000; color: #FFFFFF; font-weight: 500; }
+    .c05-seg-off { color: #525252; font-weight: 400; }
+
+    /* floating action bar · slides up on multi-select */
+    .c05-bar {
+      position: absolute; left: 0; top: 690px;
+      width: 400px; height: 62px;
+      background: #FFFFFF; border-top: 1px solid #EBEBEB;
+      display: flex;
+    }
+    .c05-act {
+      flex: 1;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 3px;
+      font-size: 10px; font-weight: 400; color: #525252;
+    }
+    .c05-act svg { display: block; width: 20px; height: 20px; }
+
+    /* ── right 56% · mono transfer readout ────────────────────────────────── */
+    .c05-kicker {
+      position: absolute; left: 1160px; top: 344px;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 22px; font-weight: 500; letter-spacing: 0.14em;
+      color: #8C8C8C; text-transform: uppercase;
+    }
+    .c05-readout {
+      position: absolute; left: 1160px; top: 386px;
+      display: flex; align-items: baseline; gap: 16px;
+    }
+    .c05-num {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 108px; font-weight: 500; color: #000000;
+      line-height: 1; letter-spacing: -0.02em;
+      min-width: 260px;
+    }
+    .c05-unit {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 34px; font-weight: 500; color: #8C8C8C;
+      letter-spacing: 0.06em;
+    }
+    .c05-hairline {
+      position: absolute; left: 1160px; top: 534px;
+      width: 520px; height: 1px;
+      background: #000000;
+      transform-origin: left center;
+    }
+    .c05-axis {
+      position: absolute; left: 1160px; top: 550px;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 16px; font-weight: 500; letter-spacing: 0.14em;
+      color: #A3A3A3; text-transform: uppercase;
+    }
+
+    /* ── 12px black cursor dot ─────────────────────────────────────────────── */
+    .c05-cursor {
+      position: absolute; left: 0; top: 0;
+      width: 12px; height: 12px; border-radius: 50%;
+      background: #000000;
+      box-shadow: 0 0 0 2px #FFFFFF, 0 0 0 3px rgba(0, 0, 0, 0.2);
+    }
+
+    /* ── inline caption pill · bottom ~12% band ────────────────────────────── */
+    .c05-capband {
+      position: absolute; left: 0; right: 0; top: 950px; height: 130px;
+      display: flex; align-items: center; justify-content: center;
+      pointer-events: none;
+    }
+    .c05-cap {
+      position: absolute;
+      background: #000000; border-radius: 999px;
+      padding: 16px 44px;
+      font-family: "Noto Sans SC", sans-serif;
+      font-size: 30px; font-weight: 500; color: #FFFFFF;
+      letter-spacing: 0.02em; white-space: nowrap;
+    }
+  </style>
+
+  <div id="root" data-composition-id="05-transfer" data-width="1920" data-height="1080" data-duration="10.5">
+    <!-- full-bleed white ground — rides on a clip layer, never on #root -->
+    <div class="clip" data-start="0" data-duration="10.5" data-track-index="0"
+         style="position: absolute; inset: 0; background: #FFFFFF;"></div>
+
+    <div class="clip" data-start="0" data-duration="10.5" data-track-index="1"
+         style="position: absolute; inset: 0;">
+
+      <!-- ══ phone mock · left 44% column · Tab2 相机照片 ══ -->
+      <div id="c05-phone" class="c05-phone">
+        <div class="c05-scr">
+          <!-- status bar -->
+          <div class="c05-clock">10:00</div>
+          <div class="c05-sigbar" style="right: 78px; top: 24px; width: 3px; height: 4px;"></div>
+          <div class="c05-sigbar" style="right: 72px; top: 22px; width: 3px; height: 6px;"></div>
+          <div class="c05-sigbar" style="right: 66px; top: 20px; width: 3px; height: 8px;"></div>
+          <div class="c05-batt-nub"></div>
+          <div class="c05-batt"><div class="c05-batt-fill"></div></div>
+
+          <!-- top bar -->
+          <div id="c05-title" class="c05-title">相机照片</div>
+          <div id="c05-multi" class="c05-multi">多选</div>
+          <div class="c05-divider"></div>
+
+          <!-- category chips -->
+          <div class="c05-chips">
+            <div id="c05-chip-0" class="c05-chip is-on" style="left: 0;   width: 64px;">全部</div>
+            <div id="c05-chip-1" class="c05-chip"        style="left: 74px;  width: 72px;">JPEG</div>
+            <div id="c05-chip-2" class="c05-chip"        style="left: 156px; width: 68px;">RAW</div>
+            <div id="c05-chip-3" class="c05-chip"        style="left: 234px; width: 68px;">视频</div>
+          </div>
+
+          <!-- 3px transfer progress bar (Scene 3) -->
+          <div id="c05-progress" class="c05-progress" style="transform: scaleX(0);"></div>
+
+          <!-- 3-col grid · 9 monochrome silhouette tiles -->
+          <div id="c05-t0" class="c05-tile" style="left: 0;   top: 162px;">
+            <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice">
+              <rect width="100" height="100" fill="#F5F5F5"></rect>
+              <polygon points="0,64 26,38 46,60 70,32 100,58 100,100 0,100" fill="#A3A3A3"></polygon>
+              <polygon points="0,80 30,54 56,76 80,58 100,78 100,100 0,100" fill="#525252"></polygon>
+            </svg>
+            <div id="c05-ms-0" class="c05-ms" style="opacity: 0;">
+              <svg viewBox="0 0 22 22"><circle cx="11" cy="11" r="11" fill="#000000"></circle>
+                <polyline points="6.5,11.5 9.5,14.5 15.5,8" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
+            </div>
+            <div id="c05-ck-0" class="c05-corner" style="opacity: 0;">
+              <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="10" fill="#000000"></circle>
+                <polyline points="5.8,10.5 8.6,13.2 14.2,7" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
+            </div>
+          </div>
+          <div id="c05-t1" class="c05-tile" style="left: 134px; top: 162px;">
+            <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice">
+              <rect width="100" height="100" fill="#F5F5F5"></rect>
+              <polygon points="0,100 58,0 100,0 42,100" fill="#8C8C8C"></polygon>
+              <polygon points="66,0 84,0 26,100 8,100" fill="#525252"></polygon>
+              <rect x="0" y="72" width="100" height="3" fill="#262626"></rect>
+            </svg>
+          </div>
+          <div id="c05-t2" class="c05-tile" style="left: 268px; top: 162px;">
+            <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice">
+              <rect width="100" height="100" fill="#F5F5F5"></rect>
+              <path d="M30,100 L30,74 C30,62 25,56 25,44 C25,27 38,16 53,16 C68,16 78,27 78,42 C78,51 74,57 71,61 C80,67 86,78 86,100 Z" fill="#262626"></path>
+            </svg>
+          </div>
+          <div id="c05-t3" class="c05-tile" style="left: 0;   top: 296px;">
+            <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice">
+              <rect width="100" height="100" fill="#F5F5F5"></rect>
+              <rect x="8"  y="14" width="9" height="72" fill="#262626"></rect>
+              <rect x="28" y="14" width="9" height="72" fill="#525252"></rect>
+              <rect x="48" y="14" width="9" height="72" fill="#8C8C8C"></rect>
+              <rect x="68" y="14" width="9" height="72" fill="#525252"></rect>
+              <rect x="88" y="14" width="9" height="72" fill="#A3A3A3"></rect>
+            </svg>
+          </div>
+          <div id="c05-t4" class="c05-tile" style="left: 134px; top: 296px;">
+            <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice">
+              <rect width="100" height="100" fill="#F5F5F5"></rect>
+              <polygon points="0,70 34,30 60,62 100,40 100,100 0,100" fill="#8C8C8C"></polygon>
+              <polygon points="20,100 52,58 84,96 84,100" fill="#262626"></polygon>
+            </svg>
+            <div id="c05-ms-1" class="c05-ms" style="opacity: 0;">
+              <svg viewBox="0 0 22 22"><circle cx="11" cy="11" r="11" fill="#000000"></circle>
+                <polyline points="6.5,11.5 9.5,14.5 15.5,8" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
+            </div>
+            <div id="c05-ck-1" class="c05-corner" style="opacity: 0;">
+              <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="10" fill="#000000"></circle>
+                <polyline points="5.8,10.5 8.6,13.2 14.2,7" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
+            </div>
+          </div>
+          <div id="c05-t5" class="c05-tile" style="left: 268px; top: 296px;">
+            <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice">
+              <rect width="100" height="100" fill="#F5F5F5"></rect>
+              <rect x="0" y="16" width="100" height="8" fill="#262626"></rect>
+              <rect x="0" y="34" width="100" height="8" fill="#525252"></rect>
+              <rect x="0" y="52" width="100" height="8" fill="#8C8C8C"></rect>
+              <rect x="0" y="70" width="100" height="8" fill="#A3A3A3"></rect>
+            </svg>
+          </div>
+          <div id="c05-t6" class="c05-tile" style="left: 0;   top: 430px;">
+            <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice">
+              <rect width="100" height="100" fill="#F5F5F5"></rect>
+              <path d="M40,100 L40,78 C40,68 36,63 36,54 C36,41 45,33 56,33 C67,33 75,41 75,52 C75,59 72,64 70,67 C77,72 81,81 81,100 Z" fill="#8C8C8C"></path>
+              <path d="M12,100 L12,84 C12,77 9,73 9,66 C9,57 15,51 23,51 C31,51 37,57 37,65 C37,70 35,74 33,76 C38,80 41,87 41,100 Z" fill="#262626"></path>
+            </svg>
+          </div>
+          <div id="c05-t7" class="c05-tile" style="left: 134px; top: 430px;">
+            <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice">
+              <rect width="100" height="100" fill="#F5F5F5"></rect>
+              <polygon points="0,100 30,0 52,0 22,100" fill="#525252"></polygon>
+              <polygon points="44,100 74,0 100,0 74,100" fill="#A3A3A3"></polygon>
+              <rect x="0" y="64" width="100" height="36" fill="#262626" opacity="0.16"></rect>
+            </svg>
+          </div>
+          <div id="c05-t8" class="c05-tile" style="left: 268px; top: 430px;">
+            <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice">
+              <rect width="100" height="100" fill="#F5F5F5"></rect>
+              <polygon points="0,52 24,34 48,50 74,28 100,48 100,66 0,66" fill="#A3A3A3"></polygon>
+              <polygon points="0,72 30,52 58,70 100,54 100,86 0,86" fill="#525252"></polygon>
+              <polygon points="0,90 40,70 72,88 100,78 100,100 0,100" fill="#262626"></polygon>
+            </svg>
+          </div>
+
+          <!-- floating action bar (Scene 2 slide-up · Scene 4 slide-down) -->
+          <div id="c05-bar" class="c05-bar" style="opacity: 0;">
+            <div id="c05-act-dl" class="c05-act">
+              <svg viewBox="0 0 20 20" fill="none" stroke="#262626" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10,3 L10,12"></path><path d="M6,8.5 L10,12.5 L14,8.5"></path><path d="M4,17 L16,17"></path>
+              </svg>
+              <span>下载</span>
+            </div>
+            <div class="c05-act">
+              <svg viewBox="0 0 20 20" fill="none" stroke="#262626" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4,6 L16,6"></path><path d="M8,6 L8,3.5 L12,3.5 L12,6"></path><path d="M5.5,6 L6.5,17 L13.5,17 L14.5,6"></path><path d="M8.5,9 L8.5,14"></path><path d="M11.5,9 L11.5,14"></path>
+              </svg>
+              <span>删除</span>
+            </div>
+            <div class="c05-act">
+              <svg viewBox="0 0 20 20" fill="none" stroke="#262626" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="14.5" cy="4.5" r="2.4"></circle><circle cx="5" cy="10" r="2.4"></circle><circle cx="14.5" cy="15.5" r="2.4"></circle>
+                <path d="M7.2,8.8 L12.4,5.8"></path><path d="M7.2,11.2 L12.4,14.2"></path>
+              </svg>
+              <span>分享</span>
+            </div>
+            <div class="c05-act">
+              <svg viewBox="0 0 20 20" fill="none" stroke="#262626" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="14" height="14" rx="3"></rect><path d="M6.5,10.5 L9,13 L13.5,7.5"></path>
+              </svg>
+              <span>全选</span>
+            </div>
+          </div>
+
+          <!-- bottom segmented control -->
+          <div id="c05-seg" class="c05-seg">
+            <div class="c05-seg-on">相机照片</div>
+            <div class="c05-seg-off">本地照片</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ right 56% · mono transfer readout ══ -->
+      <div id="c05-kicker" class="c05-kicker" style="opacity: 0;">Transfer / WiFi 5GHz</div>
+      <div id="c05-readout" class="c05-readout" style="opacity: 0;">
+        <span id="c05-num" class="c05-num">0.0</span>
+        <span class="c05-unit">MB/s</span>
+      </div>
+      <div id="c05-hairline" class="c05-hairline" style="transform: scaleX(0);"></div>
+      <div id="c05-axis" class="c05-axis" style="opacity: 0;">0 ——— 10.4</div>
+
+      <!-- ══ 12px black cursor dot ══ -->
+      <div id="c05-cursor" class="c05-cursor" style="opacity: 0;"></div>
+
+      <!-- ══ inline captions · bottom ~12% band ══ -->
+      <div class="c05-capband">
+        <div id="c05-cap-1" class="c05-cap" style="opacity: 0;">整卡照片，缩略图秒级加载。</div>
+        <div id="c05-cap-2" class="c05-cap" style="opacity: 0;">勾选，下载——</div>
+        <div id="c05-cap-3" class="c05-cap" style="opacity: 0;">WiFi 5GHz，10MB/s 直达手机。</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var $ = function (id) { return document.getElementById(id); };
+      var tl = gsap.timeline({ paused: true });
+
+      var phone    = $("c05-phone");
+      var cursor   = $("c05-cursor");
+      var title    = $("c05-title");
+      var multi    = $("c05-multi");
+      var seg      = $("c05-seg");
+      var progress = $("c05-progress");
+      var bar      = $("c05-bar");
+      var actDl    = $("c05-act-dl");
+      var ms0      = $("c05-ms-0");
+      var ms1      = $("c05-ms-1");
+      var ck0      = $("c05-ck-0");
+      var ck1      = $("c05-ck-1");
+      var kicker   = $("c05-kicker");
+      var readout  = $("c05-readout");
+      var num      = $("c05-num");
+      var hairline = $("c05-hairline");
+      var axis     = $("c05-axis");
+      var chips = [$("c05-chip-0"), $("c05-chip-1"), $("c05-chip-2"), $("c05-chip-3")];
+      var tiles = [];
+      for (var i = 0; i < 9; i++) tiles.push($("c05-t" + i));
+      var cap1 = $("c05-cap-1"), cap2 = $("c05-cap-2"), cap3 = $("c05-cap-3");
+
+      // ── Scene 1 (0.0–3.0) — Tab2 lands · chrome drops · grid ladder-fills ──
+      tl.fromTo(phone, { y: 26, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 0.05);
+
+      tl.fromTo(cap1, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 0.1);
+
+      // top bar + multi chip + segmented control drop first
+      tl.fromTo(title, { opacity: 0, y: -10 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 0.3);
+      tl.fromTo(multi, { opacity: 0, y: -10 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 0.38);
+      tl.fromTo(seg,   { opacity: 0, y: 12 },  { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 0.46);
+
+      // category chips stagger in
+      for (var c = 0; c < chips.length; c++) {
+        tl.fromTo(chips[c], { opacity: 0, y: 10, scale: 0.9 },
+          { opacity: 1, y: 0, scale: 1, duration: 0.4, ease: "back.out(2)" }, 0.5 + c * 0.08);
+      }
+
+      // 9 monochrome tiles — 60ms ladder, spring-pop
+      for (var t = 0; t < 9; t++) {
+        tl.fromTo(tiles[t], { opacity: 0, scale: 0.8 },
+          { opacity: 1, scale: 1, duration: 0.5, ease: "back.out(2)" }, 0.85 + t * 0.06);
+      }
+
+      // cursor enters from the right, glides to 多选 (center 574,105 → dot origin −6)
+      tl.fromTo(cursor,
+        { x: 1970, y: 240, opacity: 0 },
+        { x: 568, y: 99, opacity: 1, duration: 1.5, ease: "power2.inOut" }, 1.2);
+
+      // ── Scene 2 (3.0–6.0) — press 多选 · checks pop · bar slides up · press 下载 ──
+      tl.set(cap1, { opacity: 0 }, 3.0);
+      tl.fromTo(cap2, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 3.0);
+
+      // press-release recoil — 4% on cursor + 多选 chip
+      tl.fromTo(cursor, { scale: 1 }, { scale: 0.96, duration: 0.12, ease: "power2.out" }, 3.1);
+      tl.fromTo(multi, { scale: 1 }, { scale: 0.96, duration: 0.12, ease: "power2.out" }, 3.1);
+      tl.to(cursor, { scale: 1, duration: 0.18, ease: "back.out(3)" }, 3.24);
+      tl.to(multi, { scale: 1, duration: 0.22, ease: "back.out(3)" }, 3.24);
+
+      // multi-select checks spring-pop on tiles 1 & 5
+      tl.fromTo(ms0, { opacity: 0, scale: 0.4 }, { opacity: 1, scale: 1, duration: 0.5, ease: "back.out(2.6)" }, 3.5);
+      tl.fromTo(ms1, { opacity: 0, scale: 0.4 }, { opacity: 1, scale: 1, duration: 0.5, ease: "back.out(2.6)" }, 3.64);
+
+      // floating action bar slides up from below
+      tl.fromTo(bar, { opacity: 0, y: 90 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 4.1);
+
+      // cursor glides to 下载 (bar action 1 center 270,761 → dot origin −6)
+      tl.to(cursor, { x: 264, y: 755, duration: 0.8, ease: "power2.inOut" }, 4.7);
+
+      // press 下载 — 4% recoil on cursor + action
+      tl.fromTo(cursor, { scale: 1 }, { scale: 0.96, duration: 0.12, ease: "power2.out" }, 5.5);
+      tl.fromTo(actDl, { scale: 1 }, { scale: 0.96, duration: 0.12, ease: "power2.out" }, 5.5);
+      tl.to(cursor, { scale: 1, duration: 0.18, ease: "back.out(3)" }, 5.64);
+      tl.to(actDl, { scale: 1, duration: 0.22, ease: "back.out(3)" }, 5.64);
+
+      // ── Scene 3 (6.0–8.5) — progress sweeps · mono readout counts up ──
+      tl.set(cap2, { opacity: 0 }, 6.0);
+      tl.fromTo(cap3, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 6.0);
+
+      // 3px ink progress bar 0→100% (2.2s, linear→power2)
+      tl.fromTo(progress, { scaleX: 0 }, { scaleX: 1, duration: 2.2, ease: "power2.inOut" }, 6.0);
+
+      // right stage · kicker + readout + hairline
+      tl.fromTo(kicker, { opacity: 0, y: -12 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 5.7);
+      tl.fromTo(readout, { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 5.85);
+      tl.fromTo(axis, { opacity: 0 }, { opacity: 1, duration: 0.4 }, 6.1);
+
+      // count-up 0.0 → 10.4 MB/s, synced to the sweep
+      var cnt = { v: 0 };
+      tl.to(cnt, {
+        v: 10.4, duration: 2.2, ease: "power2.inOut",
+        onUpdate: function () { num.textContent = cnt.v.toFixed(1); }
+      }, 6.0);
+
+      tl.fromTo(hairline, { scaleX: 0 }, { scaleX: 1, duration: 2.2, ease: "power2.inOut" }, 6.0);
+
+      // cursor drifts off toward the readout
+      tl.to(cursor, { x: 980, y: 470, duration: 1.2, ease: "power2.inOut" }, 6.3);
+      tl.to(cursor, { opacity: 0, duration: 0.3 }, 7.5);
+
+      // ── Scene 4 (8.5–10.0) — corner checks flip · bar recesses · settle ──
+      tl.fromTo(ck0, { opacity: 0, rotationY: -90 }, { opacity: 1, rotationY: 0, duration: 0.45, ease: "back.out(2)" }, 8.55);
+      tl.fromTo(ck1, { opacity: 0, rotationY: -90 }, { opacity: 1, rotationY: 0, duration: 0.45, ease: "back.out(2)" }, 8.7);
+
+      // floating bar slides back down
+      tl.to(bar, { y: 90, opacity: 0, duration: 0.45, ease: "power2.in" }, 8.75);
+
+      // hold the landed full grid to the cut
+      tl.to({}, { duration: 0.01 }, 9.99);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["05-transfer"] = tl;
+    })();
+  </script>
+</template>

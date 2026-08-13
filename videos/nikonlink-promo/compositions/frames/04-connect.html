@@ -1,0 +1,407 @@
+<template>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+
+  <style>
+    @font-face { font-family: "Inter Tight"; font-weight: 600; font-style: normal; font-display: block; src: url("assets/fonts/InterTight-SemiBold.woff2") format("woff2"); }
+    @font-face { font-family: "Inter Tight"; font-weight: 800; font-style: normal; font-display: block; src: url("assets/fonts/InterTight-ExtraBold.woff2") format("woff2"); }
+    @font-face { font-family: "IBM Plex Mono"; font-weight: 500; font-style: normal; font-display: block; src: url("assets/fonts/IBMPlexMono-Medium.woff2") format("woff2"); }
+    @font-face { font-family: "Noto Sans SC"; font-weight: 400; font-style: normal; font-display: block; src: url("assets/fonts/NotoSansSC-Regular.woff2") format("woff2"); }
+    @font-face { font-family: "Noto Sans SC"; font-weight: 500; font-style: normal; font-display: block; src: url("assets/fonts/NotoSansSC-Medium.woff2") format("woff2"); }
+    @font-face { font-family: "Noto Sans SC"; font-weight: 700; font-style: normal; font-display: block; src: url("assets/fonts/NotoSansSC-Bold.woff2") format("woff2"); }
+
+    /* frame root — styled by #root, never by a class on the composition element */
+    #root {
+      position: relative;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      container-type: size;
+      font-family: "Noto Sans SC", sans-serif;
+    }
+    #root * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── phone mock · left 44% column ─────────────────────────────────────── */
+    .c04-phone {
+      position: absolute;
+      left: 220px; top: 40px;
+      width: 400px; height: 828px;
+      border: 1px solid #262626;
+      border-radius: 40px;
+      background: #FFFFFF;
+      overflow: hidden;
+    }
+    .c04-scr { position: absolute; inset: 0; }
+
+    /* status bar */
+    .c04-clock {
+      position: absolute; left: 26px; top: 16px;
+      font-family: "Inter Tight", "Noto Sans SC", sans-serif;
+      font-size: 12px; font-weight: 600; color: #000000;
+    }
+    .c04-sigbar { position: absolute; background: #000000; border-radius: 1px; }
+    .c04-batt {
+      position: absolute; right: 24px; top: 18px;
+      width: 17px; height: 9px;
+      border: 1px solid #000000; border-radius: 2px;
+    }
+    .c04-batt-fill { position: absolute; left: 1px; top: 1px; bottom: 1px; width: 11px; background: #000000; border-radius: 1px; }
+    .c04-batt-nub { position: absolute; right: 21px; top: 21px; width: 2px; height: 4px; background: #000000; border-radius: 1px; }
+
+    /* top bar */
+    .c04-title {
+      position: absolute; left: 24px; top: 50px;
+      font-size: 20px; font-weight: 700; color: #000000; letter-spacing: 0.01em;
+    }
+    .c04-divider { position: absolute; left: 0; top: 96px; width: 100%; height: 1px; background: #EBEBEB; }
+
+    /* pill tab container */
+    .c04-tabs {
+      position: absolute; left: 24px; top: 114px;
+      width: 350px; height: 44px;
+      background: #F5F5F5; border-radius: 999px; padding: 3px;
+      display: flex;
+    }
+    .c04-tab {
+      flex: 1; border-radius: 999px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 400; color: #525252; white-space: nowrap;
+    }
+    .c04-tab.is-on { background: #000000; color: #FFFFFF; font-weight: 500; }
+
+    /* tutorial card */
+    .c04-tut {
+      position: absolute; left: 24px; top: 176px;
+      width: 350px; height: 112px;
+      background: #FFFFFF; border: 1px solid #E4E4E4; border-radius: 12px;
+    }
+    .c04-tut-title {
+      position: absolute; left: 16px; top: 14px;
+      font-size: 14px; font-weight: 600; color: #000000;
+    }
+    .c04-tut-line { position: absolute; left: 16px; height: 7px; border-radius: 4px; background: #EBEBEB; }
+
+    /* discovered row — spring-pop in Scene 2 */
+    .c04-found {
+      position: absolute; left: 24px; top: 304px;
+      width: 350px; height: 54px;
+      background: #FFFFFF; border: 1px solid #EBEBEB; border-radius: 12px;
+    }
+    .c04-found-dot { position: absolute; left: 16px; top: 23px; width: 8px; height: 8px; border-radius: 50%; background: #000000; }
+    .c04-found-name {
+      position: absolute; left: 34px; top: 17px;
+      font-family: "Inter Tight", "Noto Sans SC", sans-serif;
+      font-size: 15px; font-weight: 600; color: #000000;
+    }
+    .c04-found-tag {
+      position: absolute; right: 16px; top: 19px;
+      font-size: 12px; font-weight: 400; color: #8C8C8C;
+    }
+
+    /* action card buttons */
+    .c04-btn {
+      position: absolute; top: 374px;
+      width: 169px; height: 46px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; font-weight: 500;
+    }
+    .c04-btn-scan { left: 24px; background: #FFFFFF; border: 1px solid #000000; color: #000000; }
+    .c04-btn-link { left: 205px; background: #000000; color: #FFFFFF; }
+
+    /* black device card */
+    .c04-card {
+      position: absolute; left: 24px; top: 438px;
+      width: 350px; height: 340px;
+      background: #000000; border-radius: 12px;
+    }
+    .c04-dot { position: absolute; left: 18px; top: 23px; width: 8px; height: 8px; border-radius: 50%; background: #BFBFBF; }
+    .c04-st {
+      position: absolute; left: 34px; top: 18px;
+      font-size: 13px; font-weight: 400;
+    }
+    .c04-st-off { color: #A3A3A3; }
+    .c04-st-mid { color: #A3A3A3; }
+    .c04-st-on  { color: #FFFFFF; }
+    .c04-name {
+      position: absolute; left: 18px; top: 46px;
+      font-family: "Inter Tight", sans-serif;
+      font-size: 24px; font-weight: 800; letter-spacing: -0.02em;
+      white-space: nowrap;
+    }
+    .c04-name-dim { color: rgba(255, 255, 255, 0.45); }
+    .c04-name-full { color: #FFFFFF; }
+    .c04-ring { position: absolute; left: 157px; top: 128px; width: 36px; height: 36px; }
+    .c04-card-rule { position: absolute; left: 18px; top: 108px; width: 314px; height: 1px; background: rgba(255, 255, 255, 0.12); }
+
+    .c04-row { position: absolute; left: 18px; width: 314px; }
+    .c04-row-label { position: absolute; left: 0; top: 0; font-size: 13px; font-weight: 400; color: #A3A3A3; }
+    .c04-row-val {
+      position: absolute; right: 0; top: -1px;
+      font-family: "Inter Tight", sans-serif;
+      font-size: 14px; font-weight: 600; color: #FFFFFF;
+    }
+    .c04-track { position: absolute; left: 0; top: 26px; width: 314px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.18); }
+    .c04-fill { position: absolute; left: 0; top: 26px; width: 314px; height: 4px; border-radius: 2px; background: #FFFFFF; }
+
+    /* ── right 56% · mono gray STEP markers ────────────────────────────────── */
+    .c04-step {
+      position: absolute;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 24px; font-weight: 500; letter-spacing: 0.14em;
+      color: #8C8C8C; text-transform: uppercase;
+      display: flex; align-items: center; gap: 14px;
+    }
+
+    /* ── 12px black cursor dot ─────────────────────────────────────────────── */
+    .c04-cursor {
+      position: absolute; left: 0; top: 0;
+      width: 12px; height: 12px; border-radius: 50%;
+      background: #000000;
+      box-shadow: 0 0 0 2px #FFFFFF, 0 0 0 3px rgba(0, 0, 0, 0.2);
+    }
+
+    /* ── inline caption pill · bottom ~12% band ────────────────────────────── */
+    .c04-capband {
+      position: absolute; left: 0; right: 0; top: 950px; height: 130px;
+      display: flex; align-items: center; justify-content: center;
+      pointer-events: none;
+    }
+    .c04-cap {
+      position: absolute;
+      background: #000000; border-radius: 999px;
+      padding: 16px 44px;
+      font-family: "Noto Sans SC", sans-serif;
+      font-size: 30px; font-weight: 500; color: #FFFFFF;
+      letter-spacing: 0.02em; white-space: nowrap;
+    }
+  </style>
+
+  <div id="root" data-composition-id="04-connect" data-width="1920" data-height="1080" data-duration="10.5">
+    <!-- full-bleed white ground — rides on a clip layer, never on #root -->
+    <div class="clip" data-start="0" data-duration="10.5" data-track-index="0"
+         style="position: absolute; inset: 0; background: #FFFFFF;"></div>
+
+    <div class="clip" data-start="0" data-duration="10.5" data-track-index="1"
+         style="position: absolute; inset: 0;">
+
+      <!-- ══ phone mock · left 44% column ══ -->
+      <div id="c04-phone" class="c04-phone">
+        <div class="c04-scr">
+          <!-- status bar -->
+          <div class="c04-clock">10:00</div>
+          <div class="c04-sigbar" style="right: 78px; top: 24px; width: 3px; height: 4px;"></div>
+          <div class="c04-sigbar" style="right: 72px; top: 22px; width: 3px; height: 6px;"></div>
+          <div class="c04-sigbar" style="right: 66px; top: 20px; width: 3px; height: 8px;"></div>
+          <div class="c04-batt-nub"></div>
+          <div class="c04-batt"><div class="c04-batt-fill"></div></div>
+
+          <!-- top bar -->
+          <div class="c04-title">我的设备</div>
+          <div class="c04-divider"></div>
+
+          <!-- pill tabs · WiFi AP selected -->
+          <div class="c04-tabs">
+            <div class="c04-tab is-on">WiFi AP 连接</div>
+            <div class="c04-tab">WiFi STA 连接</div>
+            <div class="c04-tab">USB 有线连接</div>
+          </div>
+
+          <!-- tutorial card -->
+          <div class="c04-tut">
+            <div class="c04-tut-title">WiFi AP 直连教程</div>
+            <div class="c04-tut-line" style="top: 48px; width: 318px;"></div>
+            <div class="c04-tut-line" style="top: 66px; width: 262px;"></div>
+            <div class="c04-tut-line" style="top: 84px; width: 200px;"></div>
+          </div>
+
+          <!-- discovered row (Scene 2 spring-pop) -->
+          <div id="c04-found" class="c04-found" style="opacity: 0;">
+            <div class="c04-found-dot"></div>
+            <div class="c04-found-name">Z50II</div>
+            <div class="c04-found-tag">已发现</div>
+          </div>
+
+          <!-- action buttons -->
+          <div id="c04-scan" class="c04-btn c04-btn-scan">扫描相机</div>
+          <div id="c04-link" class="c04-btn c04-btn-link">连接相机</div>
+
+          <!-- black device card -->
+          <div class="c04-card">
+            <div id="c04-dot" class="c04-dot"></div>
+            <div id="c04-st-off" class="c04-st c04-st-off">未连接</div>
+            <div id="c04-st-mid" class="c04-st c04-st-mid" style="opacity: 0;">连接中…</div>
+            <div id="c04-st-on" class="c04-st c04-st-on" style="opacity: 0;">已连接</div>
+
+            <div id="c04-name-dim" class="c04-name c04-name-dim">Nikon</div>
+            <div id="c04-name-full" class="c04-name c04-name-full" style="opacity: 0;">Nikon Z50II</div>
+
+            <!-- progress ring (Scene 3) -->
+            <svg id="c04-ring" class="c04-ring" viewBox="0 0 36 36" style="opacity: 0;">
+              <circle cx="18" cy="18" r="14" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="3"></circle>
+              <circle cx="18" cy="18" r="14" fill="none" stroke="#FFFFFF" stroke-width="3"
+                      stroke-dasharray="55 33" stroke-linecap="round"></circle>
+            </svg>
+
+            <div class="c04-card-rule"></div>
+
+            <!-- revealed stat rows (Scene 4, 120ms stagger) -->
+            <div id="c04-row-1" class="c04-row" style="top: 126px; opacity: 0;">
+              <div class="c04-row-label">电池电量</div>
+              <div class="c04-row-val">82%</div>
+              <div class="c04-track"></div>
+              <div id="c04-fill-1" class="c04-fill" style="transform-origin: left center;"></div>
+            </div>
+            <div id="c04-row-2" class="c04-row" style="top: 184px; opacity: 0;">
+              <div class="c04-row-label">存储卡</div>
+              <div class="c04-row-val">64%</div>
+              <div class="c04-track"></div>
+              <div id="c04-fill-2" class="c04-fill" style="transform-origin: left center;"></div>
+            </div>
+            <div id="c04-row-3" class="c04-row" style="top: 242px; opacity: 0;">
+              <div class="c04-row-label">剩余可拍摄</div>
+              <div class="c04-row-val">1284</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ right 56% · mono gray STEP markers ══ -->
+      <div id="c04-step-1" class="c04-step" style="left: 1330px; top: 390px; opacity: 0;">Step 1</div>
+      <div id="c04-step-2" class="c04-step" style="left: 1330px; top: 458px; opacity: 0;">Step 2</div>
+      <div id="c04-step-3" class="c04-step" style="left: 1330px; top: 526px; opacity: 0;">
+        <span id="c04-step-3-label">Step 3</span>
+        <svg id="c04-check" width="30" height="30" viewBox="0 0 30 30" style="opacity: 0;">
+          <polyline points="5,16 12,23 25,8" fill="none" stroke="#000000" stroke-width="3"
+                    stroke-linecap="round" stroke-linejoin="round"
+                    stroke-dasharray="34" stroke-dashoffset="34"></polyline>
+        </svg>
+      </div>
+
+      <!-- ══ 12px black cursor dot ══ -->
+      <div id="c04-cursor" class="c04-cursor"></div>
+
+      <!-- ══ inline captions · bottom ~12% band ══ -->
+      <div class="c04-capband">
+        <div id="c04-cap-1" class="c04-cap" style="opacity: 0;">打开 App，选连接方式。</div>
+        <div id="c04-cap-2" class="c04-cap" style="opacity: 0;">扫描，发现你的相机。</div>
+        <div id="c04-cap-3" class="c04-cap" style="opacity: 0;">点连接——</div>
+        <div id="c04-cap-4" class="c04-cap" style="opacity: 0;">十秒，稳了。</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var $ = function (id) { return document.getElementById(id); };
+      var tl = gsap.timeline({ paused: true });
+
+      var phone    = $("c04-phone");
+      var cursor   = $("c04-cursor");
+      var scanBtn  = $("c04-scan");
+      var linkBtn  = $("c04-link");
+      var found    = $("c04-found");
+      var dot      = $("c04-dot");
+      var ring     = $("c04-ring");
+      var stOff    = $("c04-st-off");
+      var stMid    = $("c04-st-mid");
+      var stOn     = $("c04-st-on");
+      var nameDim  = $("c04-name-dim");
+      var nameFull = $("c04-name-full");
+      var row1     = $("c04-row-1");
+      var row2     = $("c04-row-2");
+      var row3     = $("c04-row-3");
+      var fill1    = $("c04-fill-1");
+      var fill2    = $("c04-fill-2");
+      var step1    = $("c04-step-1");
+      var step2    = $("c04-step-2");
+      var step3    = $("c04-step-3");
+      var step3Lab = $("c04-step-3-label");
+      var check    = $("c04-check");
+      var checkPl  = check.querySelector("polyline");
+      var cap1 = $("c04-cap-1"), cap2 = $("c04-cap-2"), cap3 = $("c04-cap-3"), cap4 = $("c04-cap-4");
+
+      // ── Scene 1 (0.0–3.0) — phone settled, STEP 1, cursor glides to 扫描相机 ──
+      tl.fromTo(phone, { y: 26, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 0.05);
+
+      tl.fromTo(cap1, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 0.1);
+
+      tl.fromTo(step1, { opacity: 0, y: -18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 0.9);
+
+      // cursor enters from the right, hovers 扫描相机 (stage 330.5,439 → dot origin -6)
+      tl.fromTo(cursor,
+        { x: 1970, y: 600, opacity: 0 },
+        { x: 324.5, y: 433, opacity: 1, duration: 1.3, ease: "power2.inOut" }, 0.6);
+
+      // ── Scene 2 (3.0–5.5) — press 扫描相机, Z50II spring-pop, STEP 2 ──
+      tl.set(cap1, { opacity: 0 }, 3.0);
+      tl.fromTo(cap2, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 3.0);
+
+      // press-release recoil — 4% on cursor + button
+      tl.fromTo(cursor, { scale: 1 }, { scale: 0.96, duration: 0.12, ease: "power2.out" }, 3.1);
+      tl.fromTo(scanBtn, { scale: 1 }, { scale: 0.96, duration: 0.12, ease: "power2.out" }, 3.1);
+      tl.to(cursor, { scale: 1, duration: 0.18, ease: "back.out(3)" }, 3.24);
+      tl.to(scanBtn, { scale: 1, duration: 0.22, ease: "back.out(3)" }, 3.24);
+
+      // discovered row spring-pop
+      tl.fromTo(found,
+        { opacity: 0, y: 16, scale: 0.88 },
+        { opacity: 1, y: 0, scale: 1, duration: 0.6, ease: "back.out(2.2)" }, 3.5);
+
+      tl.fromTo(step2, { opacity: 0, y: -18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 3.2);
+
+      // ── Scene 3 (5.5–8.0) — press 连接相机, ring spin 0.8s, dot solidifies ──
+      tl.to(cursor, { x: 505.5, y: 433, duration: 0.9, ease: "power2.inOut" }, 4.5);
+
+      tl.set(cap2, { opacity: 0 }, 5.5);
+      tl.fromTo(cap3, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 5.5);
+
+      tl.fromTo(cursor, { scale: 1 }, { scale: 0.96, duration: 0.12, ease: "power2.out" }, 5.62);
+      tl.fromTo(linkBtn, { scale: 1 }, { scale: 0.96, duration: 0.12, ease: "power2.out" }, 5.62);
+      tl.to(cursor, { scale: 1, duration: 0.18, ease: "back.out(3)" }, 5.76);
+      tl.to(linkBtn, { scale: 1, duration: 0.22, ease: "back.out(3)" }, 5.76);
+
+      tl.fromTo(step3, { opacity: 0, y: -18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 5.75);
+
+      // progress ring — spin 0.8s then clear
+      tl.fromTo(ring, { opacity: 0 }, { opacity: 1, duration: 0.15 }, 5.85);
+      tl.fromTo(ring, { rotation: 0 }, { rotation: 720, duration: 0.8, ease: "power2.inOut" }, 5.85);
+      tl.to(ring, { opacity: 0, duration: 0.2 }, 6.7);
+
+      // status dot gray → solid · 未连接 → 连接中…
+      tl.fromTo(dot, { backgroundColor: "#BFBFBF" }, { backgroundColor: "#FFFFFF", duration: 0.3 }, 6.5);
+      tl.set(stOff, { opacity: 0 }, 6.5);
+      tl.set(stMid, { opacity: 1 }, 6.5);
+
+      // cursor drifts to rest
+      tl.to(cursor, { x: 540, y: 520, duration: 0.9, ease: "power2.inOut" }, 6.9);
+
+      // ── Scene 4 (8.0–10.0) — connected · rows ladder in · STEP 3 → check ──
+      tl.set(cap3, { opacity: 0 }, 8.0);
+      tl.fromTo(cap4, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 8.0);
+
+      tl.set(stMid, { opacity: 0 }, 8.0);
+      tl.fromTo(stOn, { opacity: 0 }, { opacity: 1, duration: 0.25 }, 8.0);
+      tl.to(nameDim, { opacity: 0, duration: 0.25 }, 8.0);
+      tl.fromTo(nameFull, { opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: 0.35, ease: "power3.out" }, 8.0);
+
+      // 120ms ladder — 电量 / 存储 / 剩余可拍
+      tl.fromTo(row1, { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.45, ease: "power3.out" }, 8.12);
+      tl.fromTo(row2, { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.45, ease: "power3.out" }, 8.24);
+      tl.fromTo(row3, { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.45, ease: "power3.out" }, 8.36);
+      tl.fromTo(fill1, { scaleX: 0 }, { scaleX: 0.82, duration: 0.5, ease: "power2.out" }, 8.2);
+      tl.fromTo(fill2, { scaleX: 0 }, { scaleX: 0.64, duration: 0.5, ease: "power2.out" }, 8.32);
+
+      // STEP 3 flips to a check · STEP 1/2 recess
+      tl.to(step1, { opacity: 0.4, duration: 0.4 }, 8.1);
+      tl.to(step2, { opacity: 0.4, duration: 0.4 }, 8.1);
+      tl.to(step3Lab, { opacity: 0, duration: 0.25 }, 8.1);
+      tl.fromTo(check, { opacity: 0 }, { opacity: 1, duration: 0.2 }, 8.15);
+      tl.fromTo(checkPl, { strokeDashoffset: 34 }, { strokeDashoffset: 0, duration: 0.4, ease: "power2.out" }, 8.2);
+
+      // hold the landed state to the cut
+      tl.to({}, { duration: 0.01 }, 9.99);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["04-connect"] = tl;
+    })();
+  </script>
+</template>

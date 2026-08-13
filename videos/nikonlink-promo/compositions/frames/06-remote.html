@@ -1,0 +1,437 @@
+<template>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+
+  <style>
+    @font-face { font-family: "Inter Tight"; font-weight: 600; font-style: normal; font-display: block; src: url("assets/fonts/InterTight-SemiBold.woff2") format("woff2"); }
+    @font-face { font-family: "Inter Tight"; font-weight: 800; font-style: normal; font-display: block; src: url("assets/fonts/InterTight-ExtraBold.woff2") format("woff2"); }
+    @font-face { font-family: "IBM Plex Mono"; font-weight: 500; font-style: normal; font-display: block; src: url("assets/fonts/IBMPlexMono-Medium.woff2") format("woff2"); }
+    @font-face { font-family: "Noto Sans SC"; font-weight: 400; font-style: normal; font-display: block; src: url("assets/fonts/NotoSansSC-Regular.woff2") format("woff2"); }
+    @font-face { font-family: "Noto Sans SC"; font-weight: 500; font-style: normal; font-display: block; src: url("assets/fonts/NotoSansSC-Medium.woff2") format("woff2"); }
+    @font-face { font-family: "Noto Sans SC"; font-weight: 700; font-style: normal; font-display: block; src: url("assets/fonts/NotoSansSC-Bold.woff2") format("woff2"); }
+
+    /* frame root — styled by #root, never by a class on the composition element */
+    #root {
+      position: relative;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      container-type: size;
+      font-family: "Noto Sans SC", sans-serif;
+    }
+    #root * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── phone mock · left 44% column ─────────────────────────────────────── */
+    .c06-phone {
+      position: absolute;
+      left: 220px; top: 40px;
+      width: 400px; height: 828px;
+      border: 1px solid #262626;
+      border-radius: 40px;
+      background: #FFFFFF;
+      overflow: hidden;
+    }
+    .c06-scr { position: absolute; inset: 0; }
+
+    /* status bar */
+    .c06-clock {
+      position: absolute; left: 26px; top: 16px;
+      font-family: "Inter Tight", "Noto Sans SC", sans-serif;
+      font-size: 12px; font-weight: 600; color: #000000;
+    }
+    .c06-sigbar { position: absolute; background: #000000; border-radius: 1px; }
+    .c06-batt {
+      position: absolute; right: 24px; top: 18px;
+      width: 17px; height: 9px;
+      border: 1px solid #000000; border-radius: 2px;
+    }
+    .c06-batt-fill { position: absolute; left: 1px; top: 1px; bottom: 1px; width: 11px; background: #000000; border-radius: 1px; }
+    .c06-batt-nub { position: absolute; right: 21px; top: 21px; width: 2px; height: 4px; background: #000000; border-radius: 1px; }
+
+    /* mode pill · 照片 selected + gray 已连接 */
+    .c06-tabs {
+      position: absolute; left: 24px; top: 50px;
+      width: 240px; height: 42px;
+      background: #F5F5F5; border-radius: 999px; padding: 3px;
+      display: flex;
+    }
+    .c06-tab {
+      flex: 1; border-radius: 999px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 400; color: #525252; white-space: nowrap;
+    }
+    .c06-tab.is-on { background: #000000; color: #FFFFFF; font-weight: 500; }
+    .c06-linkst {
+      position: absolute; right: 24px; top: 63px;
+      font-size: 12px; font-weight: 400; color: #8C8C8C;
+    }
+
+    /* live-view area — black, rounded 12 */
+    .c06-live {
+      position: absolute; left: 16px; top: 108px;
+      width: 368px; height: 492px;
+      background: #000000; border-radius: 12px;
+      overflow: hidden;
+    }
+    .c06-scene-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+    /* top scrim bar #99000000 */
+    .c06-scrim {
+      position: absolute; left: 0; top: 0; right: 0; height: 40px;
+      background: rgba(0, 0, 0, 0.6);
+      color: #FFFFFF; font-size: 10px; font-weight: 400;
+    }
+    .c06-scrim-item { position: absolute; top: 0; height: 40px; line-height: 40px; white-space: nowrap; }
+    .c06-scrim-batt { left: 12px; display: flex; align-items: center; gap: 5px; }
+    .c06-scrim-batt svg { display: block; }
+    .c06-scrim-remain { left: 92px; }
+    .c06-scrim-link { right: 12px; color: rgba(255, 255, 255, 0.85); }
+    .c06-count { position: absolute; right: 66px; top: 0; height: 40px; line-height: 40px; white-space: nowrap; }
+    .c06-count span { display: inline-block; }
+
+    /* 56px white focus box */
+    .c06-focus {
+      position: absolute; left: 217px; top: 164px;
+      width: 56px; height: 56px;
+      border: 1px solid #FFFFFF;
+    }
+    .c06-focus-dot {
+      position: absolute; left: 26px; top: 26px;
+      width: 4px; height: 4px; border-radius: 50%; background: #FFFFFF;
+    }
+
+    /* 120ms full-white flash over the live area */
+    .c06-flash { position: absolute; inset: 0; background: #FFFFFF; opacity: 0; }
+
+    /* parameter strip — three dial groups */
+    .c06-strip-rule { position: absolute; left: 16px; top: 612px; width: 368px; height: 1px; background: #EBEBEB; }
+    .c06-hair { position: absolute; top: 624px; width: 1px; height: 52px; background: #EBEBEB; }
+    .c06-dial-label {
+      position: absolute; top: 626px;
+      font-size: 11px; font-weight: 400; color: #8C8C8C;
+    }
+    .c06-dial-val {
+      position: absolute; top: 646px;
+      font-family: "Inter Tight", sans-serif;
+      font-size: 18px; font-weight: 800; color: #000000; letter-spacing: -0.01em;
+      white-space: nowrap;
+    }
+    .c06-chev { position: absolute; top: 648px; width: 10px; height: 16px; }
+    .c06-iso-window {
+      position: absolute; left: 276px; top: 644px;
+      width: 48px; height: 24px; overflow: hidden;
+    }
+    .c06-iso-num {
+      position: absolute; left: 0; top: 0;
+      font-family: "Inter Tight", sans-serif;
+      font-size: 18px; font-weight: 800; color: #000000; line-height: 24px;
+    }
+
+    /* shutter — solid black 56dp + hairline outer ring */
+    .c06-shutter-ring {
+      position: absolute; left: 160px; top: 714px;
+      width: 80px; height: 80px; border-radius: 50%;
+      border: 1px solid #EBEBEB;
+    }
+    .c06-shutter {
+      position: absolute; left: 172px; top: 726px;
+      width: 56px; height: 56px; border-radius: 50%;
+      background: #000000;
+    }
+
+    /* ── right 56% stage · big mono stat ──────────────────────────────────── */
+    .c06-hero {
+      position: absolute; left: 1112px; top: 424px;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 130px; font-weight: 500; letter-spacing: -0.03em;
+      color: #000000; white-space: nowrap;
+    }
+
+    /* ── 12px black cursor dot ─────────────────────────────────────────────── */
+    .c06-cursor {
+      position: absolute; left: 0; top: 0;
+      width: 12px; height: 12px; border-radius: 50%;
+      background: #000000;
+      box-shadow: 0 0 0 2px #FFFFFF, 0 0 0 3px rgba(0, 0, 0, 0.2);
+    }
+
+    /* ── inline caption pill · bottom ~12% band ────────────────────────────── */
+    .c06-capband {
+      position: absolute; left: 0; right: 0; top: 950px; height: 130px;
+      display: flex; align-items: center; justify-content: center;
+      pointer-events: none;
+    }
+    .c06-cap {
+      position: absolute;
+      background: #000000; border-radius: 999px;
+      padding: 16px 44px;
+      font-family: "Noto Sans SC", sans-serif;
+      font-size: 30px; font-weight: 500; color: #FFFFFF;
+      letter-spacing: 0.02em; white-space: nowrap;
+    }
+  </style>
+
+  <div id="root" data-composition-id="06-remote" data-width="1920" data-height="1080" data-duration="10.4">
+    <!-- full-bleed white ground — rides on a clip layer, never on #root -->
+    <div class="clip" data-start="0" data-duration="10.4" data-track-index="0"
+         style="position: absolute; inset: 0; background: #FFFFFF;"></div>
+
+    <div class="clip" data-start="0" data-duration="10.4" data-track-index="1"
+         style="position: absolute; inset: 0;">
+
+      <div id="c06-stage" style="position: absolute; inset: 0;">
+
+        <!-- ══ phone mock · left 44% column ══ -->
+        <div id="c06-phone" class="c06-phone">
+          <div class="c06-scr">
+            <!-- status bar -->
+            <div class="c06-clock">10:00</div>
+            <div class="c06-sigbar" style="right: 78px; top: 24px; width: 3px; height: 4px;"></div>
+            <div class="c06-sigbar" style="right: 72px; top: 22px; width: 3px; height: 6px;"></div>
+            <div class="c06-sigbar" style="right: 66px; top: 20px; width: 3px; height: 8px;"></div>
+            <div class="c06-batt-nub"></div>
+            <div class="c06-batt"><div class="c06-batt-fill"></div></div>
+
+            <!-- mode pill · Tab3 -->
+            <div id="c06-tabs" class="c06-tabs" style="opacity: 0;">
+              <div class="c06-tab is-on">照片</div>
+              <div class="c06-tab">视频</div>
+            </div>
+            <div id="c06-linkst" class="c06-linkst" style="opacity: 0;">已连接</div>
+
+            <!-- live-view area -->
+            <div id="c06-live" class="c06-live" style="opacity: 0;">
+              <!-- monochrome mountain scene · grayscale silhouettes + gray gradient sky -->
+              <svg class="c06-scene-svg" viewBox="0 0 368 492" preserveAspectRatio="xMidYMid slice">
+                <defs>
+                  <linearGradient id="c06-sky" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0" stop-color="#CFCFCF"></stop>
+                    <stop offset="0.62" stop-color="#9A9A9A"></stop>
+                    <stop offset="1" stop-color="#7E7E7E"></stop>
+                  </linearGradient>
+                </defs>
+                <rect x="0" y="0" width="368" height="492" fill="url(#c06-sky)"></rect>
+                <g id="c06-ridge-far">
+                  <path d="M-20,252 L28,214 L72,242 L118,192 L162,230 L208,186 L254,226 L300,198 L346,232 L388,212 L388,492 L-20,492 Z"
+                        fill="#A6A6A6"></path>
+                </g>
+                <g id="c06-ridge-mid">
+                  <path d="M-20,326 L44,272 L96,308 L158,254 L222,302 L284,262 L348,310 L388,290 L388,492 L-20,492 Z"
+                        fill="#6B6B6B"></path>
+                </g>
+                <g id="c06-ridge-near">
+                  <path d="M-20,404 L64,352 L138,394 L232,344 L318,390 L388,362 L388,492 L-20,492 Z"
+                        fill="#333333"></path>
+                </g>
+                <rect x="-20" y="452" width="408" height="40" fill="#1C1C1C"></rect>
+              </svg>
+
+              <!-- top scrim info bar (drips in) -->
+              <div id="c06-scrim" class="c06-scrim" style="opacity: 0;">
+                <div class="c06-scrim-item c06-scrim-batt">
+                  <svg width="15" height="9" viewBox="0 0 15 9">
+                    <rect x="0.5" y="0.5" width="12" height="8" rx="1.5" fill="none" stroke="#FFFFFF"></rect>
+                    <rect x="2" y="2" width="8" height="5" fill="#FFFFFF"></rect>
+                    <rect x="13.5" y="2.5" width="1.5" height="4" rx="0.75" fill="#FFFFFF"></rect>
+                  </svg>
+                  <span>82%</span>
+                </div>
+                <div class="c06-scrim-item c06-scrim-remain">剩余 1284</div>
+                <div id="c06-count" class="c06-count">
+                  <span id="c06-cnt-0">已拍 0</span>
+                  <span id="c06-cnt-1" style="opacity: 0;">已拍 1</span>
+                </div>
+                <div class="c06-scrim-item c06-scrim-link">已连接</div>
+              </div>
+
+              <!-- focus box · lands + contracts once on tap -->
+              <div id="c06-focus" class="c06-focus" style="opacity: 0;">
+                <div class="c06-focus-dot"></div>
+              </div>
+
+              <!-- 120ms full-white flash -->
+              <div id="c06-flash" class="c06-flash"></div>
+            </div>
+
+            <!-- parameter strip · 光圈 / 快门 / ISO -->
+            <div class="c06-strip-rule"></div>
+            <div id="c06-dial-1" style="position: absolute; inset: 0; opacity: 0;">
+              <div class="c06-dial-label" style="left: 32px;">光圈</div>
+              <div class="c06-dial-val" style="left: 32px;">f/5.6</div>
+              <svg class="c06-chev" style="left: 114px;" viewBox="0 0 10 16">
+                <path d="M1,5.5 L5,1.5 L9,5.5" fill="none" stroke="#A3A3A3" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+                <path d="M1,10.5 L5,14.5 L9,10.5" fill="none" stroke="#A3A3A3" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+              </svg>
+            </div>
+            <div class="c06-hair" style="left: 144px;"></div>
+            <div id="c06-dial-2" style="position: absolute; inset: 0; opacity: 0;">
+              <div class="c06-dial-label" style="left: 160px;">快门</div>
+              <div class="c06-dial-val" style="left: 160px;">1/250</div>
+              <svg class="c06-chev" style="left: 234px;" viewBox="0 0 10 16">
+                <path d="M1,5.5 L5,1.5 L9,5.5" fill="none" stroke="#A3A3A3" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+                <path d="M1,10.5 L5,14.5 L9,10.5" fill="none" stroke="#A3A3A3" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+              </svg>
+            </div>
+            <div class="c06-hair" style="left: 260px;"></div>
+            <div id="c06-dial-3" style="position: absolute; inset: 0; opacity: 0;">
+              <div class="c06-dial-label" style="left: 276px;">ISO</div>
+              <div class="c06-iso-window">
+                <span id="c06-iso-400" class="c06-iso-num">400</span>
+                <span id="c06-iso-800" class="c06-iso-num" style="opacity: 0;">800</span>
+              </div>
+              <svg id="c06-iso-chev" class="c06-chev" style="left: 330px;" viewBox="0 0 10 16">
+                <path d="M1,5.5 L5,1.5 L9,5.5" fill="none" stroke="#A3A3A3" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+                <path d="M1,10.5 L5,14.5 L9,10.5" fill="none" stroke="#A3A3A3" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path>
+              </svg>
+            </div>
+
+            <!-- shutter -->
+            <div id="c06-shutter-ring" class="c06-shutter-ring" style="opacity: 0;"></div>
+            <div id="c06-shutter" class="c06-shutter" style="opacity: 0;"></div>
+          </div>
+        </div>
+
+        <!-- ══ right 56% stage · mono stat ══ -->
+        <div id="c06-hero" class="c06-hero" style="opacity: 0;">&lt;200ms</div>
+
+        <!-- ══ 12px black cursor dot ══ -->
+        <div id="c06-cursor" class="c06-cursor" style="opacity: 0;"></div>
+      </div>
+
+      <!-- ══ inline captions · bottom ~12% band ══ -->
+      <div class="c06-capband">
+        <div id="c06-cap-1" class="c06-cap" style="opacity: 0;">手机就是你的取景器。</div>
+        <div id="c06-cap-2" class="c06-cap" style="opacity: 0;">触摸对焦，远程快门，</div>
+        <div id="c06-cap-3" class="c06-cap" style="opacity: 0;">参数指尖直调——</div>
+        <div id="c06-cap-4" class="c06-cap" style="opacity: 0;">延迟低于 0.2 秒。</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var $ = function (id) { return document.getElementById(id); };
+      var tl = gsap.timeline({ paused: true });
+
+      var stage   = $("c06-stage");
+      var phone   = $("c06-phone");
+      var cursor  = $("c06-cursor");
+      var tabs    = $("c06-tabs");
+      var linkst  = $("c06-linkst");
+      var live    = $("c06-live");
+      var scrim   = $("c06-scrim");
+      var focus   = $("c06-focus");
+      var flash   = $("c06-flash");
+      var dial1   = $("c06-dial-1");
+      var dial2   = $("c06-dial-2");
+      var dial3   = $("c06-dial-3");
+      var isoChev = $("c06-iso-chev");
+      var iso400  = $("c06-iso-400");
+      var iso800  = $("c06-iso-800");
+      var ring    = $("c06-shutter-ring");
+      var shutter = $("c06-shutter");
+      var cnt0    = $("c06-cnt-0");
+      var cnt1    = $("c06-cnt-1");
+      var hero    = $("c06-hero");
+      var ridgeFar  = $("c06-ridge-far");
+      var ridgeMid  = $("c06-ridge-mid");
+      var ridgeNear = $("c06-ridge-near");
+      var cap1 = $("c06-cap-1"), cap2 = $("c06-cap-2"), cap3 = $("c06-cap-3"), cap4 = $("c06-cap-4");
+
+      // slow macro drift under everything (seek-safe)
+      tl.fromTo(stage, { scale: 1.025 }, { scale: 1, duration: 10, ease: "none" }, 0);
+
+      // ── Scene 1 (0.0–3.0) — Tab3 lands: pill, live view, scrim drip ──
+      tl.fromTo(phone, { y: 26, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5, ease: "power3.out" }, 0.05);
+      tl.fromTo(cap1, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 0.1);
+
+      // mode pill drops in + 已连接
+      tl.fromTo(tabs, { opacity: 0, y: -16 }, { opacity: 1, y: 0, duration: 0.5, ease: "back.out(2)" }, 0.35);
+      tl.fromTo(linkst, { opacity: 0 }, { opacity: 1, duration: 0.35 }, 0.7);
+
+      // live view fades up · layered-depth ridge settle
+      tl.fromTo(live, { opacity: 0 }, { opacity: 1, duration: 0.7, ease: "power2.out" }, 0.55);
+      tl.fromTo(ridgeFar,  { x: -10 }, { x: 0, duration: 1.8, ease: "power2.out" }, 0.6);
+      tl.fromTo(ridgeMid,  { x: -18 }, { x: 0, duration: 1.8, ease: "power2.out" }, 0.6);
+      tl.fromTo(ridgeNear, { x: -28 }, { x: 0, duration: 1.8, ease: "power2.out" }, 0.6);
+
+      // scrim info bar drips down
+      tl.fromTo(scrim, { opacity: 0, y: -44 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 1.0);
+
+      // parameter strip ladder + shutter
+      tl.fromTo(dial1, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 1.3);
+      tl.fromTo(dial2, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 1.42);
+      tl.fromTo(dial3, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 1.54);
+      tl.fromTo(ring,    { opacity: 0, scale: 0.85 }, { opacity: 1, scale: 1, duration: 0.45, ease: "back.out(2.4)" }, 1.7);
+      tl.fromTo(shutter, { opacity: 0, scale: 0.85 }, { opacity: 1, scale: 1, duration: 0.45, ease: "back.out(2.4)" }, 1.7);
+
+      // cursor enters, glides to the right-third focus point (root 481,340 → dot -6)
+      tl.fromTo(cursor,
+        { x: 1080, y: 720, opacity: 0 },
+        { x: 475, y: 334, opacity: 1, duration: 1.55, ease: "power2.inOut" }, 1.7);
+
+      // ── Scene 2 (3.0–5.5) — tap → focus box lands + contracts once ──
+      tl.set(cap1, { opacity: 0 }, 3.0);
+      tl.fromTo(cap2, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 3.0);
+
+      // press-release recoil — 4% on the cursor
+      tl.fromTo(cursor, { scale: 1 }, { scale: 0.96, duration: 0.12, ease: "power2.out" }, 3.42);
+      tl.to(cursor, { scale: 1, duration: 0.18, ease: "back.out(3)" }, 3.56);
+
+      // 56px focus box · lands oversized, contracts once to lock
+      tl.fromTo(focus,
+        { opacity: 0, scale: 1.55 },
+        { opacity: 1, scale: 1, duration: 0.5, ease: "back.out(2.2)" }, 3.5);
+
+      // glide down to the ISO dial (ISO up chevron center ≈ root 555,696)
+      tl.to(cursor, { x: 549, y: 690, duration: 0.85, ease: "power2.inOut" }, 4.6);
+
+      // ── Scene 3 (5.5–8.0) — ISO flip 400→800 · shutter · flash · 已拍 1 ──
+      tl.set(cap2, { opacity: 0 }, 5.5);
+      tl.fromTo(cap3, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 5.5);
+
+      // press the up chevron — recoil on cursor + chevron nudge
+      tl.fromTo(cursor, { scale: 1 }, { scale: 0.96, duration: 0.12, ease: "power2.out" }, 5.9);
+      tl.to(cursor, { scale: 1, duration: 0.18, ease: "back.out(3)" }, 6.04);
+      tl.fromTo(isoChev, { y: 0 }, { y: -2, duration: 0.12, ease: "power2.out" }, 5.9);
+      tl.to(isoChev, { y: 0, duration: 0.18, ease: "power2.out" }, 6.04);
+
+      // reading flips on the same beat — 400 out, 800 in
+      tl.to(iso400, { y: -24, opacity: 0, duration: 0.3, ease: "power2.in" }, 5.98);
+      tl.fromTo(iso800, { y: 24, opacity: 0 }, { y: 0, opacity: 1, duration: 0.35, ease: "back.out(2)" }, 5.98);
+
+      // glide to the shutter (center root 420,794)
+      tl.to(cursor, { x: 414, y: 788, duration: 0.7, ease: "power2.inOut" }, 6.3);
+
+      // press the shutter — recoil on cursor + button
+      tl.fromTo(cursor, { scale: 1 }, { scale: 0.96, duration: 0.12, ease: "power2.out" }, 7.05);
+      tl.fromTo(shutter, { scale: 1 }, { scale: 0.94, duration: 0.12, ease: "power2.out" }, 7.05);
+      tl.to(cursor, { scale: 1, duration: 0.18, ease: "back.out(3)" }, 7.2);
+      tl.to(shutter, { scale: 1, duration: 0.22, ease: "back.out(3)" }, 7.2);
+
+      // 120ms full-white flash over the live area
+      tl.fromTo(flash, { opacity: 0 }, { opacity: 1, duration: 0.06, ease: "none" }, 7.12);
+      tl.to(flash, { opacity: 0, duration: 0.06, ease: "none" }, 7.18);
+
+      // 已拍 counter +1 bounce
+      tl.set(cnt0, { opacity: 0 }, 7.2);
+      tl.fromTo(cnt1, { opacity: 0, scale: 0.5 }, { opacity: 1, scale: 1, duration: 0.45, ease: "back.out(3)" }, 7.2);
+
+      // cursor drifts off to rest
+      tl.to(cursor, { x: 340, y: 700, duration: 0.8, ease: "power2.inOut" }, 7.5);
+
+      // ── Scene 4 (8.0–10.0) — right stage: <200ms spring-pops once, holds ──
+      tl.set(cap3, { opacity: 0 }, 8.0);
+      tl.fromTo(cap4, { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.3, ease: "power2.out" }, 8.0);
+
+      tl.fromTo(hero,
+        { opacity: 0, scale: 0.6, y: 30 },
+        { opacity: 1, scale: 1, y: 0, duration: 0.7, ease: "back.out(1.8)" }, 8.1);
+
+      // hold the landed state to the cut
+      tl.to({}, { duration: 0.01 }, 9.99);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["06-remote"] = tl;
+    })();
+  </script>
+</template>

@@ -1,0 +1,437 @@
+<template>
+  <!--
+    Frame 03-intro — 品牌亮相：NikonLink 登场 (6s, 1920×1080, silent)
+    Scene 1 (0.0–2.0s): black field, 1px hairline grid converges from all four edges;
+                        "NikonLink" white display 800 letters cascade into place.
+    Scene 2 (2.0–3.5s): signature black→white sweep flip; letters flip to ink on the
+                        same beat; tagline slides up beneath the wordmark.
+    Scene 3 (3.5–6.0s): wordmark shrinks to a top-left lockup; phone frame (Tab1 device
+                        page, dim stand-by prop) slides in from the right edge into the
+                        left 44% column; stillness hold.
+    Captions: INLINE — [0–2.5s] "NikonLink" inverted pill (white pill / black text) on the
+    black half; [2.5–6s] "一次配对，永不断联。" normal pill (black pill / white text).
+    Brand: pure monochrome, text wordmark only — no Nikon trademark.
+  -->
+  <div id="root" data-composition-id="03-intro" data-width="1920" data-height="1080" data-duration="6.5">
+  <style>
+    @font-face {
+      font-family: "Inter Tight";
+      font-weight: 500;
+      font-style: normal;
+      font-display: block;
+      src: url("assets/fonts/InterTight-Medium.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Inter Tight";
+      font-weight: 800;
+      font-style: normal;
+      font-display: block;
+      src: url("assets/fonts/InterTight-ExtraBold.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Noto Sans SC";
+      font-weight: 400;
+      font-style: normal;
+      font-display: block;
+      src: url("assets/fonts/NotoSansSC-Regular.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Noto Sans SC";
+      font-weight: 500;
+      font-style: normal;
+      font-display: block;
+      src: url("assets/fonts/NotoSansSC-Medium.woff2") format("woff2");
+    }
+    @font-face {
+      font-family: "Noto Sans SC";
+      font-weight: 700;
+      font-style: normal;
+      font-display: block;
+      src: url("assets/fonts/NotoSansSC-Bold.woff2") format("woff2");
+    }
+
+    #root {
+      position: absolute;
+      inset: 0;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      font-family: "Noto Sans SC", "Inter Tight", sans-serif;
+    }
+
+    /* ── full-bleed grounds (clip layers, never #root) ─────────────────── */
+    #f03-ground-black {
+      position: absolute;
+      inset: 0;
+      background: #000000;
+    }
+    #f03-ground-white {
+      position: absolute;
+      inset: 0;
+      background: #ffffff;
+    }
+
+    /* ── Scene 1 · converging hairline grid (#262626 on black) ─────────── */
+    #f03-grid {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+    #f03-grid .gl {
+      position: absolute;
+      background: #262626;
+    }
+    #f03-grid .glv {
+      top: 0;
+      width: 1px;
+      height: 100%;
+    }
+    #f03-grid .glh {
+      left: 0;
+      width: 100%;
+      height: 1px;
+    }
+
+    /* ── wordmark lockup (wordmark + tagline travel together) ──────────── */
+    #f03-lockup {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1920px;
+      text-align: center;
+    }
+    #f03-wordmark {
+      margin-top: 400px;
+      font-family: "Inter Tight", "Noto Sans SC", sans-serif;
+      font-weight: 800;
+      font-size: 150px;
+      line-height: 1;
+      letter-spacing: -0.03em;
+      white-space: nowrap;
+    }
+    #f03-wordmark .ltr {
+      display: inline-block;
+      color: #ffffff;
+    }
+    #f03-tagline {
+      margin-top: 48px;
+      font-family: "Noto Sans SC", "Inter Tight", sans-serif;
+      font-weight: 500;
+      font-size: 34px;
+      line-height: 1.4;
+      letter-spacing: 0.12em;
+      color: #000000;
+    }
+
+    /* ── Scene 3 · phone stand-by prop (Tab1 device page) ──────────────── */
+    #f03-phone {
+      position: absolute;
+      left: 645px;
+      top: 110px;
+      width: 400px;
+      height: 770px;
+      border-radius: 40px;
+      border: 1px solid #262626;
+      background: #ffffff;
+      opacity: 0.9; /* dim 10% — quiet stand-by prop */
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    #f03-phone .ph-inner {
+      position: absolute;
+      inset: 0;
+      padding: 26px 24px;
+      display: flex;
+      flex-direction: column;
+      box-sizing: border-box;
+    }
+    #f03-phone .ph-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 40px;
+    }
+    #f03-phone .ph-title {
+      font-size: 26px;
+      font-weight: 700;
+      color: #000000;
+      letter-spacing: 0.02em;
+    }
+    #f03-phone .ph-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #a3a3a3;
+    }
+    #f03-phone .ph-divider {
+      height: 1px;
+      background: #ebebeb;
+      margin-top: 14px;
+    }
+    #f03-phone .ph-tabs {
+      margin-top: 20px;
+      display: flex;
+      gap: 6px;
+      background: #ebebeb;
+      border-radius: 999px;
+      padding: 4px;
+    }
+    #f03-phone .ph-tab {
+      flex: 1;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      font-size: 20px;
+      font-weight: 500;
+      color: #8c8c8c;
+    }
+    #f03-phone .ph-tab.is-on {
+      background: #000000;
+      color: #ffffff;
+    }
+    #f03-phone .ph-card {
+      margin-top: 22px;
+      border: 1px solid #ebebeb;
+      border-radius: 16px;
+      padding: 20px;
+      background: #ffffff;
+      text-align: left;
+    }
+    #f03-phone .ph-card-t {
+      font-size: 22px;
+      font-weight: 500;
+      color: #000000;
+    }
+    #f03-phone .ph-card-s {
+      margin-top: 8px;
+      font-size: 18px;
+      font-weight: 400;
+      color: #8c8c8c;
+      line-height: 1.4;
+    }
+    #f03-phone .ph-btn {
+      margin-top: 16px;
+      height: 56px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      font-weight: 500;
+      box-sizing: border-box;
+    }
+    #f03-phone .ph-btn.outline {
+      border: 1px solid #262626;
+      color: #000000;
+      background: #ffffff;
+    }
+    #f03-phone .ph-btn.solid {
+      background: #000000;
+      color: #ffffff;
+    }
+    #f03-phone .ph-device {
+      margin-top: auto;
+      background: #000000;
+      border-radius: 16px;
+      padding: 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    #f03-phone .ph-dev-ico {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 1px solid #525252;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+    }
+    #f03-phone .ph-dev-ico::after {
+      content: "";
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 1px solid #a3a3a3;
+    }
+    #f03-phone .ph-dev-name {
+      font-size: 21px;
+      font-weight: 500;
+      color: #ffffff;
+    }
+    #f03-phone .ph-dev-status {
+      margin-top: 4px;
+      font-size: 18px;
+      font-weight: 400;
+      color: #a3a3a3;
+    }
+
+    /* ── inline caption pills (bottom ~12% band) ───────────────────────── */
+    .cap-row {
+      position: absolute;
+      left: 0;
+      top: 978px;
+      width: 1920px;
+      text-align: center;
+      pointer-events: none;
+    }
+    .cap-row .pill {
+      display: inline-block;
+      padding: 12px 44px;
+      border-radius: 999px;
+      font-family: "Noto Sans SC", "Inter Tight", sans-serif;
+      font-size: 30px;
+      font-weight: 500;
+      line-height: 1.3;
+      letter-spacing: 0.06em;
+    }
+    #f03-cap1 .pill {
+      background: #ffffff;
+      color: #000000;
+    }
+    #f03-cap2 .pill {
+      background: #000000;
+      color: #ffffff;
+    }
+  </style>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+
+  <!-- track 0 · black ground (Scene 1 half) -->
+  <div id="f03-ground-black" class="clip" data-start="0" data-duration="6.5" data-track-index="0"></div>
+
+  <!-- track 1 · converging hairline grid -->
+  <div id="f03-grid" class="clip" data-start="0" data-duration="2.6" data-track-index="1">
+    <div class="gl glv" style="left: 600px" data-ox="-1920"></div>
+    <div class="gl glv" style="left: 690px" data-ox="-1440"></div>
+    <div class="gl glv" style="left: 780px" data-ox="-960"></div>
+    <div class="gl glv" style="left: 870px" data-ox="-480"></div>
+    <div class="gl glv" style="left: 960px" data-ox="0"></div>
+    <div class="gl glv" style="left: 1050px" data-ox="480"></div>
+    <div class="gl glv" style="left: 1140px" data-ox="960"></div>
+    <div class="gl glv" style="left: 1230px" data-ox="1440"></div>
+    <div class="gl glv" style="left: 1320px" data-ox="1920"></div>
+    <div class="gl glh" style="top: 300px" data-oy="-1080"></div>
+    <div class="gl glh" style="top: 380px" data-oy="-720"></div>
+    <div class="gl glh" style="top: 460px" data-oy="-360"></div>
+    <div class="gl glh" style="top: 540px" data-oy="0"></div>
+    <div class="gl glh" style="top: 620px" data-oy="360"></div>
+    <div class="gl glh" style="top: 700px" data-oy="720"></div>
+    <div class="gl glh" style="top: 780px" data-oy="1080"></div>
+  </div>
+
+  <!-- track 2 · white ground sweeps in (the black→white flip) -->
+  <div id="f03-ground-white" class="clip" data-start="2" data-duration="4.5" data-track-index="2"></div>
+
+  <!-- track 3 · wordmark + tagline lockup -->
+  <div id="f03-lockup" class="clip" data-start="0" data-duration="6.5" data-track-index="3">
+    <div id="f03-wordmark"><span class="ltr">N</span><span class="ltr">i</span><span class="ltr">k</span><span class="ltr">o</span><span class="ltr">n</span><span class="ltr">L</span><span class="ltr">i</span><span class="ltr">n</span><span class="ltr">k</span></div>
+    <div id="f03-tagline">一次配对，永不断联。</div>
+  </div>
+
+  <!-- track 4 · phone frame stand-by prop -->
+  <div id="f03-phone" class="clip" data-start="3.6" data-duration="2.9" data-track-index="4">
+    <div class="ph-inner">
+      <div class="ph-topbar">
+        <div class="ph-title">我的设备</div>
+        <div class="ph-dot"></div>
+      </div>
+      <div class="ph-divider"></div>
+      <div class="ph-tabs">
+        <div class="ph-tab is-on">WiFi AP</div>
+        <div class="ph-tab">蓝牙</div>
+        <div class="ph-tab">USB</div>
+      </div>
+      <div class="ph-card">
+        <div class="ph-card-t">配对引导</div>
+        <div class="ph-card-s">跟随三步，完成相机首次连接</div>
+      </div>
+      <div class="ph-btn outline">扫描相机</div>
+      <div class="ph-btn solid">连接相机</div>
+      <div class="ph-device">
+        <div class="ph-dev-ico"></div>
+        <div>
+          <div class="ph-dev-name">NikonLink Camera</div>
+          <div class="ph-dev-status">未连接</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- track 5/6 · inline caption pills (bottom band, cues from packet) -->
+  <div id="f03-cap1" class="cap-row clip" data-start="0" data-duration="2.55" data-track-index="5">
+    <span class="pill">NikonLink</span>
+  </div>
+  <div id="f03-cap2" class="cap-row clip" data-start="2.45" data-duration="4.05" data-track-index="6">
+    <span class="pill">一次配对，永不断联。</span>
+  </div>
+
+  <script>
+    (function () {
+      window.__timelines = window.__timelines || {};
+      var tl = gsap.timeline({ paused: true });
+
+      /* Scene 1 (0.0–2.0s) — hairline grid converges from all four edges */
+      document.querySelectorAll("#f03-grid .gl").forEach(function (el) {
+        var ox = parseFloat(el.getAttribute("data-ox") || "0");
+        var oy = parseFloat(el.getAttribute("data-oy") || "0");
+        if (ox) tl.fromTo(el, { x: ox }, { x: 0, duration: 1.9, ease: "power2.inOut" }, 0);
+        if (oy) tl.fromTo(el, { y: oy }, { y: 0, duration: 1.9, ease: "power2.inOut" }, 0);
+      });
+
+      /* Scene 1 — wordmark letters cascade into place (signature assemble) */
+      tl.fromTo(
+        "#f03-wordmark .ltr",
+        { y: -90, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.5, ease: "back.out(1.8)", stagger: 0.06 },
+        0.25
+      );
+
+      /* caption cue 1 [0–2.5s] — inverted pill on the black half */
+      tl.fromTo(
+        "#f03-cap1 .pill",
+        { y: 18, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.35, ease: "power2.out" },
+        0.08
+      );
+
+      /* Scene 2 (2.0–3.5s) — the signature black→white sweep flip */
+      tl.fromTo("#f03-ground-white", { x: 1920 }, { x: 0, duration: 0.55, ease: "power3.inOut" }, 2.0);
+      tl.to("#f03-grid", { opacity: 0, duration: 0.25 }, 2.05);
+      /* letters flip to ink on the same beat */
+      tl.to("#f03-wordmark .ltr", { color: "#000000", duration: 0.3, stagger: 0.012 }, 2.15);
+      /* caption pill hands over: white pill out, black pill in */
+      tl.to("#f03-cap1 .pill", { opacity: 0, duration: 0.15 }, 2.5);
+      /* tagline slides up beneath the wordmark */
+      tl.fromTo(
+        "#f03-tagline",
+        { y: 46, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.6, ease: "power3.out" },
+        2.6
+      );
+      /* caption cue 2 [2.5–6s] — normal black pill / white text */
+      tl.fromTo(
+        "#f03-cap2 .pill",
+        { y: 18, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.35, ease: "power2.out" },
+        2.6
+      );
+
+      /* Scene 3 (3.5–6.0s) — wordmark shrinks to a top-left lockup */
+      tl.to(
+        "#f03-lockup",
+        { scale: 0.3, x: -192, y: -56, transformOrigin: "0 0", duration: 0.85, ease: "power3.inOut" },
+        3.5
+      );
+      /* phone frame slides in from the right edge into the left 44% column */
+      tl.fromTo("#f03-phone", { x: 1290 }, { x: 0, duration: 0.95, ease: "power3.out" }, 3.75);
+      /* 4.7–6.0s — stillness hold (no exits: root transition owns the cut) */
+
+      window.__timelines["03-intro"] = tl;
+    })();
+  </script>
+  </div>
+</template>
