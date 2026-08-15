@@ -71,7 +71,6 @@ NikonLink 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf �
 ### 构建
 
 ```bash
-git clone https://github.com/Wan-1230/N-link.git
 cd N-Link
 ./gradlew :app:assembleDebug
 ```
@@ -155,12 +154,11 @@ app/src/main/java/com/nikonlink/app/
 
 ## 🤝 贡献
 
-欢迎提交 Issue 与 PR：
+欢迎参与共建：
 
-1. Fork 本仓库并创建特性分支
-2. 遵循现有代码风格（Kotlin 官方风格、中文注释、统一 `Timber` 日志 Tag）
-3. 核心协议改动请附带单元测试，真机行为变更请在 PR 中说明
-4. 提交 PR 前确保 `:app:testDebugUnitTest` 通过
+1. 遵循现有代码风格（Kotlin 官方风格、中文注释、统一 `Timber` 日志 Tag）
+2. 核心协议改动请附带单元测试，真机行为变更请补充说明
+3. 提交前确保 `:app:testDebugUnitTest` 通过
 
 ## 📄 许可与声明
 
@@ -168,4 +166,4 @@ app/src/main/java/com/nikonlink/app/
 
 > ⚠️ 仓库当前尚未附带开源许可证文件。在明确授权之前，请勿用于商业分发或二次发布，如需授权请联系作者。
 
-*如果这个项目对你有帮助，欢迎 Star ⭐ / Fork，也欢迎通过 Issue 反馈连接稳定性问题。*
+*如果这个项目对你有帮助，欢迎反馈连接稳定性问题，帮助我们一起改进。*
