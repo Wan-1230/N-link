@@ -2,6 +2,7 @@ package com.nikonlink.app.core.wifi
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -28,7 +29,7 @@ import javax.inject.Singleton
 /**
  * WiFi 相机发现器
  *
- * 尼康相机的无线连接流程（影控台/B 站教程实测）：
+ * 尼康相机的无线连接流程（实测确认）：
  * - STA 模式：相机与手机连接同一 WiFi，相机通过 UDP 5353 广播配置文件名称
  * - AP 模式：相机开启热点，手机连接热点后同样通过 UDP 5353 广播
  * 发现候选后通过 TCP 15740 探测 PTP/IP 端口，确认相机可连接。
@@ -54,11 +55,14 @@ class WifiScanner @Inject constructor(
     /**
      * 同时监听 mDNS 广播并扫描当前网段的 15740 端口。
      */
-    suspend fun scan(timeoutMs: Long = DEFAULT_SCAN_TIMEOUT_MS): List<WifiCameraCandidate> {
+    suspend fun scan(
+        timeoutMs: Long = DEFAULT_SCAN_TIMEOUT_MS,
+        network: Network? = null
+    ): List<WifiCameraCandidate> {
         val results = ConcurrentHashMap.newKeySet<WifiCameraCandidate>()
         withContext(Dispatchers.IO) {
-            val mdnsJob = async { collectMdns(timeoutMs, results) }
-            val subnetJob = async { scanSubnet(timeoutMs, results) }
+            val mdnsJob = async { collectMdns(timeoutMs, results, network) }
+            val subnetJob = async { scanSubnet(timeoutMs, results, network) }
             awaitAll(mdnsJob, subnetJob)
         }
         // 任务2: 同一台相机会产生多个同名/异名条目（mDNS+网段扫描），按 IP 去重，
@@ -73,7 +77,8 @@ class WifiScanner @Inject constructor(
 
     private suspend fun collectMdns(
         timeoutMs: Long,
-        results: MutableSet<WifiCameraCandidate>
+        results: MutableSet<WifiCameraCandidate>,
+        network: Network?
     ) {
         val multicastLock = runCatching {
             wifiManager.createMulticastLock("NikonLinkWifiScan")
@@ -87,6 +92,9 @@ class WifiScanner @Inject constructor(
                 reuseAddress = true
                 soTimeout = 1000
             }
+            // STA 模式下必须显式把组播 Socket 绑定到 WiFi 网络，
+            // 否则默认路由可能被蜂窝网抢走，导致收不到相机的 mDNS 广播。
+            network?.bindSocket(socket)
             socket.joinGroup(InetAddress.getByName(MDNS_ADDRESS))
             sendMdnsProbe(socket)
 
@@ -102,7 +110,7 @@ class WifiScanner @Inject constructor(
                         buffer.copyOf(packet.length),
                         sourceIp
                     ) ?: continue
-                    if (!PtpIpProbe.probe(candidate.ip, candidate.port, 1200L)) continue
+                    if (!PtpIpProbe.probe(candidate.ip, candidate.port, 1200L, network)) continue
                     results.add(
                         WifiCameraCandidate(
                             candidate.ip,
@@ -129,7 +137,8 @@ class WifiScanner @Inject constructor(
 
     private suspend fun scanSubnet(
         timeoutMs: Long,
-        results: MutableSet<WifiCameraCandidate>
+        results: MutableSet<WifiCameraCandidate>,
+        network: Network?
     ) {
         val networks = currentIpv4Addresses()
         if (networks.isEmpty()) return
@@ -150,7 +159,7 @@ class WifiScanner @Inject constructor(
                     semaphore.acquire()
                     try {
                         if (System.currentTimeMillis() >= deadline) return@async
-                        if (PtpIpProbe.probe(host, PTP_PORT, 900L)) {
+                        if (PtpIpProbe.probe(host, PTP_PORT, 900L, network)) {
                             results.add(WifiCameraCandidate(host, PTP_PORT, "尼康相机", "WiFi"))
                             Timber.tag(TAG).i("Port scan found camera at $host")
                         }

@@ -17,7 +17,7 @@ import timber.log.Timber
  * - OPPO: 后台冻结
  * - 引导用户手动设置，确保后台存活率 > 99%
  *
- * PRD 1.4: SnapBridge 未针对厂商激进后台策略做特殊处理（根因之一）
+ * PRD 1.4: 官方相机连接客户端未针对厂商激进后台策略做特殊处理（断联根因之一）
  */
 object OemBatteryHelper {
 

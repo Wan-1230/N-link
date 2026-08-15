@@ -177,6 +177,18 @@ class WifiManager @Inject constructor(
     fun getActiveNetwork(): Network? = activeNetwork
 
     /**
+     * 只读地返回当前 WiFi 网络，不改变进程默认网络。
+     * STA 扫描阶段需要把 mDNS/探测 Socket 显式绑定到 WiFi，
+     * 但不应在纯扫描时副作用式地修改 bindProcessToNetwork。
+     */
+    fun currentWifiNetwork(): Network? {
+        return connectivityManager.allNetworks.firstOrNull { candidate ->
+            connectivityManager.getNetworkCapabilities(candidate)
+                ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        }
+    }
+
+    /**
      * STA 模式下手机和相机处于同一路由器 WiFi。
      * 把进程默认网络绑定到当前 WiFi，确保 PTP/IP Socket 不会走到蜂窝网。
      */

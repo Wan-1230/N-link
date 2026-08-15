@@ -160,7 +160,7 @@ class TransferViewModel @Inject constructor(
     private fun loadPhotos() {
         _isLoading.value = true
         viewModelScope.launch {
-            // 参考影犀日志: 媒体列表按 limit=18 分页，每页完成后立即刷新网格，
+            // 媒体列表按 limit=18 分页，每页完成后立即刷新网格，
             // 避免照片多时等待整份列表返回才看到内容。
             val photos = transferManager.fetchPhotoList(
                 onPage = { page -> _photoList.value = page }

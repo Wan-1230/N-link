@@ -70,7 +70,7 @@ class LiveViewManager @Inject constructor(
     private var frameCount = 0
     private var lastFpsTime = 0L
 
-    /** 进入无线控制模式前的曝光程序模式，停止监看时恢复（参考影犀日志: wireless control mode exited） */
+    /** 进入无线控制模式前的曝光程序模式，停止监看时恢复（wireless control mode exited） */
     private var savedExposureMode: ByteArray? = null
 
     fun start(scope: CoroutineScope) {
@@ -99,7 +99,7 @@ class LiveViewManager @Inject constructor(
         _errorMessage.value = null
         return withContext(Dispatchers.IO) {
             try {
-                // 参考影犀日志: 监看依赖无线控制模式（相机随后上报 DevicePropChanged prop=0x500E）。
+                // 监看依赖无线控制模式（相机随后上报 DevicePropChanged prop=0x500E）。
                 // 启动前先把曝光程序模式切到 Remote(0x8012)，失败不致命（相机可能已在遥控模式）
                 if (!usbPtpManager.isConnected()) {
                     runCatching {
@@ -118,7 +118,7 @@ class LiveViewManager @Inject constructor(
                     }
                     delay(300)  // 等待相机完成模式切换
                 }
-                // 参考影犀日志: 启动 LiveView 前先设置 Nikon 图像配置 0xD1AC=3，
+                // 启动 LiveView 前先设置 Nikon 图像配置 0xD1AC=3，
                 // 否则相机可能不输出 JPEG 帧
                 runCatching {
                     val profileOk = if (usbPtpManager.isConnected()) {
@@ -164,7 +164,7 @@ class LiveViewManager @Inject constructor(
     }
 
     /**
-     * 参考 NikonStartLiveViewAction / 影犀日志：StartLiveView 返回 DeviceBusy 时，
+     * StartLiveView 返回 DeviceBusy 时，
      * 等待相机就绪（DeviceReady）而不是立即报错。
      */
     private suspend fun startLiveViewCommand(): Boolean {
@@ -234,7 +234,7 @@ class LiveViewManager @Inject constructor(
         }
         _liveViewState.value = LiveViewState.STOPPED
         _fps.value = 0
-        // 参考影犀日志: 停止监看后退出无线控制模式，恢复原曝光程序模式
+        // 停止监看后退出无线控制模式，恢复原曝光程序模式
         restoreExposureModeIfNeeded()
         Timber.tag(TAG).i("Live View stopped")
     }
@@ -335,7 +335,7 @@ class LiveViewManager @Inject constructor(
         if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) return false
         return withContext(Dispatchers.IO) {
             try {
-                // 参考影犀日志: 触摸对焦坐标范围约 x:0~4000, y:0~3000，
+                // 触摸对焦坐标范围约 x:0~4000, y:0~3000，
                 // 将归一化坐标映射到该范围
                 val afX = (x * PtpConstants.AF_COORD_MAX_X).toInt()
                     .coerceIn(0, PtpConstants.AF_COORD_MAX_X)

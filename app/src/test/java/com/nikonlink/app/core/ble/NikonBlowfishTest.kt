@@ -5,12 +5,12 @@ import org.junit.Test
 
 /**
  * Verifies the Nikon smart-device Blowfish hash against a real captured
- * handshake vector from the NSG project (verified on Nikon Z50II and Z8).
+ * handshake vector (verified on Nikon Z50II and Z8).
  */
 class NikonBlowfishTest {
 
     @Test
-    fun `captured camera hash matches furble and nsg reference`() {
+    fun `captured camera hash matches reference vector`() {
         val blocks = intArrayOf(
             0xcd32687f.toInt(), 0xa9e28a30.toInt(),
             0x29fa2680.toInt(), 0x5e3d94b9.toInt(),

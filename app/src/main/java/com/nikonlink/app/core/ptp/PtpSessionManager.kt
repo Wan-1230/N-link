@@ -1,5 +1,6 @@
 package com.nikonlink.app.core.ptp
 
+import android.net.Network
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -66,12 +67,20 @@ class PtpSessionManager @Inject constructor(
     }
 
     /**
+     * 根据网络类型创建 Socket。STA 模式下传入 WiFi Network，
+     * 让 Socket 显式绑定到 WiFi 网络，避免进程默认路由被蜂窝网抢走。
+     */
+    private fun createSocket(network: Network?): Socket =
+        if (network != null) network.socketFactory.createSocket() else Socket()
+
+    /**
      * 建立 PTP/IP 连接（双 Socket：Command + Event）
      */
     suspend fun connect(
         host: String,
         port: Int,
         pairingMode: Boolean = false,
+        network: Network? = null,
         onWifiConnected: (() -> Unit)? = null
     ): Boolean = withContext(Dispatchers.IO) {
         if (isConnected()) return@withContext true
@@ -87,12 +96,12 @@ class PtpSessionManager @Inject constructor(
             }
 
             // 建立 Command 通道
-            commandSocket = Socket().apply {
+            commandSocket = createSocket(network).apply {
                 connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
                 soTimeout = readTimeout
                 tcpNoDelay = true
                 keepAlive = true
-                receiveBufferSize = 4 * 1024 * 1024  // mirror WMU's enlarged TCP window
+                receiveBufferSize = 4 * 1024 * 1024  // 放大 TCP 接收窗口，提升大文件传输吞吐
                 sendBufferSize = 1024 * 1024
             }
             // WiFi 到相机端口的 TCP 连接已建立，此时相机端会进入配对确认界面
@@ -118,7 +127,7 @@ class PtpSessionManager @Inject constructor(
             Timber.tag(TAG).i("Init response: server=${response.serverName}, session=${response.sessionId}")
 
             // 建立 Event 通道
-            eventSocket = Socket().apply {
+            eventSocket = createSocket(network).apply {
                 connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
                 // 配对模式下相机可能等待用户按 OK，超时后由上层重试
                 soTimeout = if (pairingMode) readTimeout else 0
@@ -140,7 +149,7 @@ class PtpSessionManager @Inject constructor(
                 return@withContext false
             }
 
-            // 参考影犀日志: EventAck 后客户端主动发送 PING，收到 PONG 才继续。
+            // EventAck 后客户端主动发送 PING，收到 PONG 才继续。
             // 部分相机在缺少这一握手时会把连接判定为失败，并在数秒后断开。
             eventSocket?.soTimeout = EVENT_PING_TIMEOUT_MS
             runCatching {
@@ -156,7 +165,7 @@ class PtpSessionManager @Inject constructor(
                 Timber.tag(TAG).w("Event ping timed out: ${it.message}")
             }
 
-            // Fix P0-2: 与 Nikon_connect 一致，OpenSession 前先 GetDeviceInfo，
+            // Fix P0-2: OpenSession 前先 GetDeviceInfo，
             // 让相机识别客户端并在屏幕显示连接状态
             val deviceInfo = sendCommandWithData(PtpConstants.OP_GET_DEVICE_INFO)
             if (deviceInfo is PtpDataResult.Success) {
@@ -174,7 +183,7 @@ class PtpSessionManager @Inject constructor(
             }
             sessionId = response.sessionId
 
-            // 参考影犀日志: OpenSession 后先排空 Nikon GetEventEx (0x90C7)，
+            // OpenSession 后先排空 Nikon GetEventEx (0x90C7)，
             // 清除相机缓存的旧事件，避免干扰后续异步事件监听
             runCatching {
                 sendCommand(PtpConstants.OP_NIKON_CHECK_EVENT, listOf(0xFFFFFFFF.toInt(), 0, 0))
@@ -424,7 +433,7 @@ class PtpSessionManager @Inject constructor(
     }
 
     /**
-     * Nikon AF drive. 0x90C1 is a no-parameter toggle (mirrors libgphoto2).
+     * Nikon AF drive. 0x90C1 is a no-parameter toggle (Nikon PTP extension).
      */
     suspend fun afDrive(): Boolean {
         val response = sendCommand(PtpConstants.OP_NIKON_AF_DRIVE)
@@ -548,9 +557,9 @@ class PtpSessionManager @Inject constructor(
         keepAliveJob = scope?.launch(Dispatchers.IO) {
             while (isActive) {
                 delay(KEEP_ALIVE_INTERVAL_MS)
-                // 参考影犀日志: 保活心跳走 event 通道 Ping(packetType=13)，
+                // 保活心跳走 event 通道 Ping(packetType=13)，
                 // 相机回 Pong(type=14) 由 event 监听器处理并刷新 lastEventActivityAt；
-                // 影犀全程不发 DeviceReady 命令，命令通道完全留给业务。
+                // 全程不发 DeviceReady 命令，命令通道完全留给业务。
                 val pingOk = try {
                     eventOutput?.write(PingPacket.toBytes())
                     eventOutput?.flush()
@@ -563,7 +572,7 @@ class PtpSessionManager @Inject constructor(
                     markLinkError()
                     break
                 }
-                // 参考影犀日志: 相机会在长时间空闲后主动断链（约3.5分钟）；
+                // 相机会在长时间空闲后主动断链（约 3.5 分钟）；
                 // event 通道 60 秒无任何活动即判定链路已死，交给上层恢复流程
                 if (System.currentTimeMillis() - lastEventActivityAt > 60_000) {
                     Timber.tag(TAG).w("keepAlive: no event-channel activity for 60s, link dead")

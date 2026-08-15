@@ -18,7 +18,7 @@ import org.junit.Test
 /**
  * Full PTP/IP handshake integration test against an in-process mock camera.
  *
- * The mock follows the same packet sequence as libgphoto2's ptpip client:
+ * The mock follows the standard PTP/IP client sequence:
  * init command -> init ack -> event init -> event ack -> OpenSession ->
  * DeviceReady, then regular command/data transactions.
  */

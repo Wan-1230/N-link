@@ -20,7 +20,7 @@ import javax.inject.Singleton
 /**
  * USB PTP 有线连接管理器
  *
- * 参考"影控台"连接方式：通过 USB OTG 线直连相机，使用 PTP over USB 协议通信。
+ * 通过 USB OTG 线直连相机，使用 PTP over USB 协议通信。
  * 相比 BLE/WiFi 无线连接，USB 有线连接具有：
  * - 零配对：即插即用，无需 BLE 扫描/配对流程
  * - 高带宽：USB 2.0/3.0 传输速率远超 WiFi
