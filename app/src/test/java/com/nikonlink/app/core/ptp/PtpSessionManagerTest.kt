@@ -82,7 +82,7 @@ class PtpSessionManagerTest {
 
     private class TestIdentity : PtpClientIdentity {
         override val clientGuid: ByteArray = ByteArray(16) { 0x42 }
-        override val clientName: String = "NikonLink-Test"
+        override val clientName: String = "N-Link-Test"
     }
 }
 

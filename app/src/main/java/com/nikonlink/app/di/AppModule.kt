@@ -10,7 +10,7 @@ import com.nikonlink.app.core.ptp.PtpIdentityStore
 import com.nikonlink.app.core.usb.UsbPtpManager
 import com.nikonlink.app.core.wifi.WifiManager
 import com.nikonlink.app.core.wifi.WifiScanner
-import com.nikonlink.app.data.local.NikonLinkDatabase
+import com.nikonlink.app.data.local.NLinkDatabase
 import com.nikonlink.app.data.local.PairedDeviceDao
 import com.nikonlink.app.data.local.TransferHistoryDao
 import com.nikonlink.app.data.repository.DeviceRepository
@@ -131,19 +131,19 @@ object AppModule {
     @Singleton
     fun provideDatabase(
         @ApplicationContext context: Context
-    ): NikonLinkDatabase = Room.databaseBuilder(
+    ): NLinkDatabase = Room.databaseBuilder(
         context,
-        NikonLinkDatabase::class.java,
-        "nikonlink.db"
+        NLinkDatabase::class.java,
+        "n-link.db"
     ).build()
 
     @Provides
     @Singleton
-    fun provideTransferHistoryDao(db: NikonLinkDatabase): TransferHistoryDao = db.transferHistoryDao()
+    fun provideTransferHistoryDao(db: NLinkDatabase): TransferHistoryDao = db.transferHistoryDao()
 
     @Provides
     @Singleton
-    fun providePairedDeviceDao(db: NikonLinkDatabase): PairedDeviceDao = db.pairedDeviceDao()
+    fun providePairedDeviceDao(db: NLinkDatabase): PairedDeviceDao = db.pairedDeviceDao()
 
     @Provides
     @Singleton

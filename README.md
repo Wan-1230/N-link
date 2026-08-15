@@ -1,4 +1,4 @@
-# NikonLink
+# N-Link
 
 > 为尼康 Z 系列微单打造的 Android 连接与遥控伴侣 —— 稳定连接 · 极速传图 · 全功能遥控。
 
@@ -8,7 +8,7 @@
 ![targetSdk](https://img.shields.io/badge/targetSdk-35-00897B?style=flat-square)
 ![Version](https://img.shields.io/badge/version-0.1.0-546E7A?style=flat-square)
 
-NikonLink 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等）的开源 Android 应用，打通 **连接 → 浏览 → 传输 → 遥控 → 监看** 的完整链路，以「永不断联」为核心卖点：
+N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等）的开源 Android 应用，打通 **连接 → 浏览 → 传输 → 遥控 → 监看** 的完整链路，以「永不断联」为核心卖点：
 
 - **稳**：BLE 心跳保活 + 前台服务常驻，断线自动重连（< 3s）
 - **快**：USB / WiFi 双高速通道，智能调度与自动回退
@@ -33,7 +33,7 @@ NikonLink 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf �
 - 格式筛选（全部 / 照片 / 视频 / RAW / JPG）
 - 单张 / 批量 / 筛选 / 全部下载，传输队列支持暂停、恢复、取消
 - **断点续传**：中断自动从断点恢复，失败自动重试并回退备用通道，传输去重
-- 归档至 `DCIM/NikonLink`（MediaStore / Scoped Storage），「本地照片」Tab 随时回看
+- 归档至 `DCIM/N-Link`（MediaStore / Scoped Storage），「本地照片」Tab 随时回看
 
 ### 远程遥控拍摄
 

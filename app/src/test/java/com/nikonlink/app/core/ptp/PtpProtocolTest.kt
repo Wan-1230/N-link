@@ -18,15 +18,15 @@ class PtpProtocolTest {
     @Test
     fun `init command request packet layout`() {
         val guid = ByteArray(16) { it.toByte() }
-        val packet = InitCommandPacket(clientGuid = guid, clientName = "NikonLink")
+        val packet = InitCommandPacket(clientGuid = guid, clientName = "N-Link")
 
         val bytes = packet.toBytes()
-        assertEquals(48, bytes.size)
-        assertEquals(48, intLE(bytes, 0))
+        assertEquals(42, bytes.size)
+        assertEquals(42, intLE(bytes, 0))
         assertEquals(PtpConstants.PACKET_TYPE_INIT_COMMAND, intLE(bytes, 4))
         assertArrayEquals(guid, bytes.copyOfRange(8, 24))
 
-        val name = "NikonLink"
+        val name = "N-Link"
         name.forEachIndexed { index, char ->
             assertEquals(char.code, shortLE(bytes, 24 + index * 2))
         }

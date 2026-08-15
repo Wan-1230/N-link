@@ -230,7 +230,7 @@ sealed class PtpPacket {
 data class InitCommandPacket(
     val protocolVersion: Int = PtpConstants.PROTOCOL_VERSION,
     val clientGuid: ByteArray = generateGuid(),
-    val clientName: String = "NikonLink"
+    val clientName: String = "N-Link"
 ) : PtpPacket() {
     override val type = PtpConstants.PACKET_TYPE_INIT_COMMAND
 

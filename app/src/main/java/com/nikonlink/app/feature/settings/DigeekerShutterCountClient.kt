@@ -141,7 +141,7 @@ class DigeekerShutterCountClient @Inject constructor() {
         totalChunks: Int,
         chunkFile: File
     ): String {
-        val boundary = "----NikonLink${UUID.randomUUID()}"
+        val boundary = "----N-Link${UUID.randomUUID()}"
         val connection = openConnection(path)
         connection.requestMethod = "POST"
         connection.doOutput = true
@@ -188,7 +188,7 @@ class DigeekerShutterCountClient @Inject constructor() {
             useCaches = false
             setRequestProperty("Accept", "application/json")
             setRequestProperty("X-Request-Id", "req-${UUID.randomUUID()}")
-            setRequestProperty("X-User-Id", "nikonlink-android")
+            setRequestProperty("X-User-Id", "n-link-android")
         }
     }
 

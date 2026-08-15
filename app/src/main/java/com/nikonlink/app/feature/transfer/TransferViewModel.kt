@@ -199,7 +199,7 @@ class TransferViewModel @Inject constructor(
     }
 
     /**
-     * 拉取已下载到手机 NikonLink 目录的本地照片 / 视频。
+     * 拉取已下载到手机 N-Link 目录的本地照片 / 视频。
      */
     fun fetchLocalPhotos() {
         if (!hasMediaPermission()) {
@@ -231,7 +231,7 @@ class TransferViewModel @Inject constructor(
             "${MediaStore.Files.FileColumns.MEDIA_TYPE} = ? OR " +
             "${MediaStore.Files.FileColumns.MEDIA_TYPE} = ?)"
         val selectionArgs = arrayOf(
-            "%NikonLink%",
+            "%N-Link%",
             MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(),
             MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString()
         )

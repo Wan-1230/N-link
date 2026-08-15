@@ -9,7 +9,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 连接状态机 - NikonLink 核心差异化组件
+ * 连接状态机 - N-Link 核心差异化组件
  *
  * PRD 3.3 智能重连策略:
  * - 指数退避：初始 1s，倍增因子 2，上限 30s

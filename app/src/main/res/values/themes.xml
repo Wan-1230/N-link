@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 黑白双色设计系统 · DayNight 主题（跟随系统自动切换深浅色） -->
 <resources>
-    <style name="Theme.NikonLink" parent="Theme.Material3.DayNight.NoActionBar">
+    <style name="Theme.NLink" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="colorPrimary">@color/primary</item>
         <item name="colorPrimaryVariant">@color/primary_variant</item>
         <item name="colorSecondary">@color/secondary</item>
@@ -36,7 +36,7 @@
     </style>
 
     <!-- 全屏预览页主题（纯黑沉浸） -->
-    <style name="Theme.NikonLink.Preview" parent="Theme.NikonLink">
+    <style name="Theme.NLink.Preview" parent="Theme.NLink">
         <item name="android:windowBackground">@color/black</item>
         <item name="android:statusBarColor">@color/black</item>
         <item name="android:navigationBarColor">@color/black</item>

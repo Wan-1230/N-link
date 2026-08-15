@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "NikonLink"
+rootProject.name = "N-Link"
 include(":app")

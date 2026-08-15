@@ -280,7 +280,7 @@ class CameraParameterManager @Inject constructor(
         val job = scope?.launch(Dispatchers.IO) {
             try {
                 val photos = transferManager.fetchPhotoList()
-                val targetDir = File(context.cacheDir, "nikonlink_shutter").apply { mkdirs() }
+                val targetDir = File(context.cacheDir, "n-link_shutter").apply { mkdirs() }
                 val sample = photos.filter { it.format == CameraFileFormat.JPEG }
                     .minByOrNull { it.size }
                     ?: photos.minByOrNull { it.size }

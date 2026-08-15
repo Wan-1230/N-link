@@ -68,7 +68,7 @@ interface PairedDeviceDao {
 }
 
 /**
- * NikonLink 数据库
+ * N-Link 数据库
  * PRD 4.2: Room + MediaStore（传输记录 + 照片归档）
  */
 @Database(
@@ -76,7 +76,7 @@ interface PairedDeviceDao {
     version = 1,
     exportSchema = false
 )
-abstract class NikonLinkDatabase : RoomDatabase() {
+abstract class NLinkDatabase : RoomDatabase() {
     abstract fun transferHistoryDao(): TransferHistoryDao
     abstract fun pairedDeviceDao(): PairedDeviceDao
 }

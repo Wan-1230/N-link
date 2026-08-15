@@ -178,7 +178,7 @@ class TransferManager @Inject constructor(
         _transferState.value = TransferState.Downloading(file, 0L, file.size)
 
         return withContext(Dispatchers.IO) {
-            val tempDir = File(context.cacheDir, "nikonlink_transfer").apply { mkdirs() }
+            val tempDir = File(context.cacheDir, "n-link_transfer").apply { mkdirs() }
             val tempFile = targetFile ?: File(tempDir, "tmp_${file.handle}.bin")
 
             // 主通道尝试
@@ -440,7 +440,7 @@ class TransferManager @Inject constructor(
         currentTask = null
         _queue.value = emptyList()
         _transferState.value = TransferState.Idle
-        File(context.cacheDir, "nikonlink_transfer").listFiles()?.forEach { it.delete() }
+        File(context.cacheDir, "n-link_transfer").listFiles()?.forEach { it.delete() }
     }
 
     private fun processQueue() {
@@ -454,7 +454,7 @@ class TransferManager @Inject constructor(
 
         currentTask = nextTask
         nextTask.status = TransferTaskStatus.DOWNLOADING
-        val tempDir = File(context.cacheDir, "nikonlink_transfer").apply { mkdirs() }
+        val tempDir = File(context.cacheDir, "n-link_transfer").apply { mkdirs() }
         val tempFile = File(tempDir, "tmp_${nextTask.file.handle}.bin")
         nextTask.tempFile = tempFile
         _queue.value = transferQueue.toList()
@@ -537,7 +537,7 @@ class TransferManager @Inject constructor(
             val contentValues = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
                 put(MediaStore.Images.Media.MIME_TYPE, getMimeType(fileName))
-                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_DCIM + "/NikonLink")
+                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_DCIM + "/N-Link")
                 put(MediaStore.Images.Media.IS_PENDING, 1)
             }
 

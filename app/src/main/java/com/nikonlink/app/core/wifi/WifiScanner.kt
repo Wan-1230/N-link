@@ -81,7 +81,7 @@ class WifiScanner @Inject constructor(
         network: Network?
     ) {
         val multicastLock = runCatching {
-            wifiManager.createMulticastLock("NikonLinkWifiScan")
+            wifiManager.createMulticastLock("N-LinkWifiScan")
         }.getOrNull()
         multicastLock?.setReferenceCounted(false)
         multicastLock?.acquire()
