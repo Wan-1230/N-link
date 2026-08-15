@@ -47,12 +47,12 @@
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
     <application
-        android:name=".NikonLinkApp"
+        android:name=".NLinkApp"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.NikonLink"
+        android:theme="@style/Theme.NLink"
         tools:targetApi="35">
 
         <!-- Main Activity -->
@@ -60,7 +60,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:theme="@style/Theme.NikonLink">
+            android:theme="@style/Theme.NLink">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -78,7 +78,7 @@
         <activity
             android:name=".feature.transfer.PreviewActivity"
             android:exported="false"
-            android:theme="@style/Theme.NikonLink.Preview" />
+            android:theme="@style/Theme.NLink.Preview" />
 
         <!-- 全屏实时取景页：跟随重力感应横竖屏切换 -->
         <activity
@@ -86,7 +86,7 @@
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:exported="false"
             android:screenOrientation="sensor"
-            android:theme="@style/Theme.NikonLink.Preview" />
+            android:theme="@style/Theme.NLink.Preview" />
 
         <!-- Connection Foreground Service -->
         <service

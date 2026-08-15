@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mock Nikon PTP/IP camera used to debug NikonLink's WiFi connection path.
+"""Mock Nikon PTP/IP camera used to debug N-Link's WiFi connection path.
 
 Run on a PC that is on the same WiFi/LAN as the phone, then point the app at
 the PC (or let the built-in mDNS advertisement expose it as

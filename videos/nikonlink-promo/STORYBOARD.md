@@ -67,10 +67,10 @@ Scene 1 (0.0–2.0s): 白底；左侧 mono 灰编号 01 钉住，句一 display 
 Scene 2 (2.0–4.0s): 硬切；编号 02 + 句二同式落版静持。
 Scene 3 (4.0–6.0s): 硬切；编号 03 + 句三落版；左侧编号列 01/02/03 累积成小轨（grid 深度层），全画面静持收束。
 
-## Frame 3 — 品牌亮相：NikonLink 登场
+## Frame 3 — 品牌亮相：N-Link 登场
 
-- scene: 黑色画布上发丝线网格收敛，"NikonLink" 字标自组装，翻转为白底黑字并落出标语；手机框从右侧滑入承载下一幕
-- voiceover: "NikonLink。一次配对，永不断联。"
+- scene: 黑色画布上发丝线网格收敛，"N-Link" 字标自组装，翻转为白底黑字并落出标语；手机框从右侧滑入承载下一幕
+- voiceover: "N-Link。一次配对，永不断联。"
 - duration: 6s
 - poster: 4.5s
 - transition_in: zoom-through
@@ -83,11 +83,11 @@ Scene 3 (4.0–6.0s): 硬切；编号 03 + 句三落版；左侧编号列 01/02/
 - asset_candidates: 
 
 narrativeRole: 痛点之后给出答案与品牌名，黑白反转制造「新世界」的仪式感。
-keyMessage: NikonLink = 一次配对、永不断联。
-字幕 cues: [0-2.5s] NikonLink / [2.5-6s] 一次配对，永不断联。
+keyMessage: N-Link = 一次配对、永不断联。
+字幕 cues: [0-2.5s] N-Link / [2.5-6s] 一次配对，永不断联。
 画面: 黑底（#000）上 1px 灰线网格向中心收敛 → 字标 Inter Tight 800 白色逐字母 cascade 落位 → 整屏黑白反转（zoom-through 进入白底）→ 标语黑字滑入；右侧手机框（圆角 40px、1px 描边）携 Tab1 设备页滑入待命。合规：仅文字字标，无尼康商标。
 Shot:
-Scene 1 (0.0–2.0s): 黑场（layered-depth：1px 灰发丝网格自四边向中心收敛）；「NikonLink」白 display 800 逐字母 cascade 落位（签名动作：字标自组装）。
+Scene 1 (0.0–2.0s): 黑场（layered-depth：1px 灰发丝网格自四边向中心收敛）；「N-Link」白 display 800 逐字母 cascade 落位（签名动作：字标自组装）。
 Scene 2 (2.0–3.5s): 签名反转：整屏黑白一次扫换（黑→白），字母同拍翻为 ink；标语「一次配对，永不断联。」body 500 自下滑入字标下方；字幕药丸反转为白底黑字再回黑药丸。
 Scene 3 (3.5–6.0s): 字标缩为左上角 lockup；手机框（圆角 40px、1px ink 描边）自右缘滑入左 44% 列，屏内 Tab1 设备页静态待命（dim 10%）；静止持守。
 
@@ -193,7 +193,7 @@ Scene 3 (5.0–7.0s): 四卡整体极轻 zoom-out 收进版心；字幕 cue 3 �
 ## Frame 8 — CTA：永远在线
 
 - scene: 字标居中凝缩为一枚纯黑药丸按钮「下载体验」，光标落点按下回弹；下方落出下载指引行，画面静止收尾
-- voiceover: "NikonLink——让你的相机，永远在线。现在下载体验。"
+- voiceover: "N-Link——让你的相机，永远在线。现在下载体验。"
 - duration: 6s
 - poster: 4.5s
 - transition_in: crossfade
@@ -206,10 +206,10 @@ Scene 3 (5.0–7.0s): 四卡整体极轻 zoom-out 收进版心；字幕 cue 3 �
 - asset_candidates: 
 
 narrativeRole: 品牌收束 + 明确行动指令，完成种草闭环。
-keyMessage: 现在下载 NikonLink，让相机永远在线。
-字幕 cues: [0-2.5s] NikonLink——让你的相机，永远在线。 / [2.5-6s] 现在下载体验。
-画面: 白底；「NikonLink」字标居中 → 字母向中心凝缩 morph 为纯黑药丸按钮「下载体验」（cta-morph-press 签名动作）→ 光标圆点移入按下（按钮 4% 缩回 + 发丝涟漪）→ 按钮下方 Mono 灰字落出「搜索 NikonLink」；最后 1.5s 全画面静止持守至尾帧。
+keyMessage: 现在下载 N-Link，让相机永远在线。
+字幕 cues: [0-2.5s] N-Link——让你的相机，永远在线。 / [2.5-6s] 现在下载体验。
+画面: 白底；「N-Link」字标居中 → 字母向中心凝缩 morph 为纯黑药丸按钮「下载体验」（cta-morph-press 签名动作）→ 光标圆点移入按下（按钮 4% 缩回 + 发丝涟漪）→ 按钮下方 Mono 灰字落出「搜索 N-Link」；最后 1.5s 全画面静止持守至尾帧。
 Shot:
-Scene 1 (0.0–2.5s): 白底；「NikonLink」字标居中；字母向中心凝缩 morph 为纯黑药丸按钮「下载体验」（签名动作）；字幕 cue 1。
-Scene 2 (2.5–4.5s): 光标黑圆移入按压（4% 缩回 + 1px 发丝涟漪）；按钮下 mono 灰字「搜索 NikonLink」打字落出；字幕 cue 2。
+Scene 1 (0.0–2.5s): 白底；「N-Link」字标居中；字母向中心凝缩 morph 为纯黑药丸按钮「下载体验」（签名动作）；字幕 cue 1。
+Scene 2 (2.5–4.5s): 光标黑圆移入按压（4% 缩回 + 1px 发丝涟漪）；按钮下 mono 灰字「搜索 N-Link」打字落出；字幕 cue 2。
 Scene 3 (4.5–6.0s): 全画面静止持守至尾帧（held end card）。

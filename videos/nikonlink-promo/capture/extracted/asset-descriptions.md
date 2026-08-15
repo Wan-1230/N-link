@@ -1,4 +1,4 @@
-# Asset inventory — NikonLink promo
+# Asset inventory — N-Link promo
 
 No web capture was performed (no-capture path: the product is a local Android app, not a website).
 All on-screen product visuals are high-fidelity HTML mocks rebuilt 1:1 from the app's real layout XML
@@ -14,7 +14,7 @@ rendered inside a phone frame on the 1920x1080 stage.
 
 ## Graphic assets
 
-- Brand wordmark: text "NikonLink" set in Inter Tight 800 (no Nikon trademark/logo used)
+- Brand wordmark: text "N-Link" set in Inter Tight 800 (no Nikon trademark/logo used)
 - Generic camera glyph: simple stroke camera icon (matches app ic_nav_camera style)
 - Photo grid stand-ins: monochrome gradient/duotone placeholder "photos" (landscape/street/portrait silhouettes) generated as CSS/SVG, not stock photos
 

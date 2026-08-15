@@ -82,7 +82,7 @@ class BleManager @Inject constructor(
         private const val PAIRING_STAGE_TIMEOUT_MS = 60000L
         private const val RSSI_HEARTBEAT_MS = 5000L
         private const val RSSI_FAIL_LIMIT = 3
-        private const val CLIENT_NAME_PREFIX = "NikonLink"
+        private const val CLIENT_NAME_PREFIX = "N-Link"
     }
 
     private val bluetoothManager = context.getSystemService(BluetoothManager::class.java)

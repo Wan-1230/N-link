@@ -138,24 +138,24 @@ object OemBatteryHelper {
     fun getGuidanceText(): String {
         return when (getManufacturer()) {
             Manufacturer.XIAOMI -> "小米设备：请开启「自启动」权限\n" +
-                    "设置 → 应用管理 → NikonLink → 自启动 → 开启\n" +
-                    "设置 → 电池 → 应用省电策略 → NikonLink → 无限制"
+                    "设置 → 应用管理 → N-Link → 自启动 → 开启\n" +
+                    "设置 → 电池 → 应用省电策略 → N-Link → 无限制"
             Manufacturer.HUAWEI -> "华为设备：请开启「后台保护」\n" +
-                    "设置 → 电池 → 启动管理 → NikonLink → 手动管理 → 全部开启\n" +
-                    "最近任务 → 下拉 NikonLink → 点击锁定图标"
+                    "设置 → 电池 → 启动管理 → N-Link → 手动管理 → 全部开启\n" +
+                    "最近任务 → 下拉 N-Link → 点击锁定图标"
             Manufacturer.OPPO -> "OPPO设备：请关闭「后台冻结」\n" +
-                    "设置 → 电池 → 应用耗电管理 → NikonLink → 允许后台运行\n" +
-                    "设置 → 权限隐私 → 自启动管理 → NikonLink → 开启"
+                    "设置 → 电池 → 应用耗电管理 → N-Link → 允许后台运行\n" +
+                    "设置 → 权限隐私 → 自启动管理 → N-Link → 开启"
             Manufacturer.VIVO -> "vivo设备：请开启「后台弹出」\n" +
-                    "设置 → 电池 → 后台高耗电 → NikonLink → 开启\n" +
-                    "i管家 → 应用管理 → 权限管理 → 自启动 → NikonLink → 开启"
+                    "设置 → 电池 → 后台高耗电 → N-Link → 开启\n" +
+                    "i管家 → 应用管理 → 权限管理 → 自启动 → N-Link → 开启"
             Manufacturer.SAMSUNG -> "三星设备：请取消「后台限制」\n" +
-                    "设置 → 电池 → 后台使用限制 → 将 NikonLink 从列表中移除\n" +
-                    "设置 → 电池 → 从不自动休眠的应用 → 添加 NikonLink"
+                    "设置 → 电池 → 后台使用限制 → 将 N-Link 从列表中移除\n" +
+                    "设置 → 电池 → 从不自动休眠的应用 → 添加 N-Link"
             Manufacturer.ONEPLUS -> "一加设备：请开启「自启动」\n" +
-                    "设置 → 电池 → 应用省电管理 → NikonLink → 不优化"
-            Manufacturer.OTHER -> "请确保 NikonLink 不受电池优化限制\n" +
-                    "设置 → 电池 → 电池优化 → NikonLink → 不优化"
+                    "设置 → 电池 → 应用省电管理 → N-Link → 不优化"
+            Manufacturer.OTHER -> "请确保 N-Link 不受电池优化限制\n" +
+                    "设置 → 电池 → 电池优化 → N-Link → 不优化"
         }
     }
 

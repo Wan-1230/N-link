@@ -1,4 +1,4 @@
-# NikonLink ProGuard Rules
+# N-Link ProGuard Rules
 
 # Keep PTP protocol classes (reflection-free but keep for safety)
 -keep class com.nikonlink.app.core.ptp.** { *; }

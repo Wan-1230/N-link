@@ -33,7 +33,7 @@ object PtpIpProbe {
                 it.tcpNoDelay = true
 
                 val output = it.getOutputStream()
-                output.write(InitCommandPacket(clientName = "NikonLinkProbe").toBytes())
+                output.write(InitCommandPacket(clientName = "N-LinkProbe").toBytes())
                 output.flush()
 
                 val response = PtpPacket.fromStream(it.getInputStream())

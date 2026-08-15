@@ -32,7 +32,7 @@ class PtpIdentityStore @Inject constructor(
 
     // clientName 直接使用手机型号（如 V2509A），与相机配对界面显示一致
     override val clientName: String
-        get() = android.os.Build.MODEL.ifBlank { "NikonLink" }
+        get() = android.os.Build.MODEL.ifBlank { "N-Link" }
 
     private fun generateGuid(): ByteArray {
         val uuid = UUID.randomUUID()

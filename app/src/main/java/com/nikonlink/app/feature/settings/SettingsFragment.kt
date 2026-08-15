@@ -144,7 +144,7 @@ class SettingsFragment : Fragment() {
 
         binding.rowAbout.pressEffect()
         binding.rowAbout.setOnClickListener {
-            placeholderDialog("关于 NikonLink",
+            placeholderDialog("关于 N-Link",
                 "版本 ${BuildConfig.VERSION_NAME}\n\n为尼康 Z 系列微单打造的第三方连接应用：永不断联的双通道连接、高速传输、遥控拍摄与实时监看。")
         }
 
@@ -159,7 +159,7 @@ class SettingsFragment : Fragment() {
         }
         binding.rowFeedback.pressEffect()
         binding.rowFeedback.setOnClickListener {
-            placeholderDialog("意见反馈", "感谢使用 NikonLink，反馈渠道即将开放。")
+            placeholderDialog("意见反馈", "感谢使用 N-Link，反馈渠道即将开放。")
         }
     }
 

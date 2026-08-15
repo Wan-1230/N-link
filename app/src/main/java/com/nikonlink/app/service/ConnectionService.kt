@@ -10,7 +10,7 @@ import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.nikonlink.app.MainActivity
-import com.nikonlink.app.NikonLinkApp
+import com.nikonlink.app.NLinkApp
 import com.nikonlink.app.R
 import com.nikonlink.app.core.common.ConnectionState
 import com.nikonlink.app.core.connection.ConnectionManager
@@ -21,7 +21,7 @@ import timber.log.Timber
 import javax.inject.Inject
 
 /**
- * 连接前台服务 - NikonLink 保活核心
+ * 连接前台服务 - N-Link 保活核心
  *
  * PRD 3.2 Android 保活策略:
  * - Foreground Service + 持久通知（显示连接状态）
@@ -36,7 +36,7 @@ class ConnectionService : LifecycleService() {
     companion object {
         private const val TAG = "ConnectionService"
         private const val NOTIFICATION_ID = 1001
-        private const val WAKELOCK_TAG = "NikonLink::ConnectionWakeLock"
+        private const val WAKELOCK_TAG = "N-Link::ConnectionWakeLock"
     }
 
     @Inject
@@ -169,7 +169,7 @@ class ConnectionService : LifecycleService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        return NotificationCompat.Builder(this, NikonLinkApp.CHANNEL_CONNECTION)
+        return NotificationCompat.Builder(this, NLinkApp.CHANNEL_CONNECTION)
             .setContentTitle(title)
             .setContentText(text)
             .setSmallIcon(R.drawable.ic_notification)

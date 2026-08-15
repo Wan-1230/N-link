@@ -1,4 +1,4 @@
-# NikonLink connection verification tools
+# N-Link connection verification tools
 
 The app's WiFi channel speaks PTP/IP (ISO 15740 over TCP port 15740). These
 tools give you a repeatable way to verify the wire protocol without needing an

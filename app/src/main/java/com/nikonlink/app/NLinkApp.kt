@@ -12,11 +12,11 @@ import timber.log.Timber
 import javax.inject.Inject
 
 /**
- * NikonLink Application 入口
+ * N-Link Application 入口
  * PRD 4.2: Hilt DI, Timber logging
  */
 @HiltAndroidApp
-class NikonLinkApp : Application(), Configuration.Provider {
+class NLinkApp : Application(), Configuration.Provider {
 
     @Inject
     lateinit var workerFactory: HiltWorkerFactory

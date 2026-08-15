@@ -166,7 +166,7 @@ def main():
     parser.add_argument("--host", required=True)
     parser.add_argument("--port", type=int, default=15740)
     parser.add_argument("--guid", default="00112233445566778899aabbccddeeff")
-    parser.add_argument("--name", default="NikonLink-Probe")
+    parser.add_argument("--name", default="N-Link-Probe")
     parser.add_argument("--keepalive", type=int, default=0)
     args = parser.parse_args()
 

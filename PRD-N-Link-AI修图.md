@@ -1,10 +1,10 @@
-# NikonLink AI 修图功能 产品需求文档（PRD）
+# N-Link AI 修图功能 产品需求文档（PRD）
 
 > 版本：v1.0
 > 日期：2026-08-08
 > 状态：Draft
 > 平台：Android（API 29+）
-> 上游文档：《PRD-NikonLink.md v1.0》（本 PRD 为其 Phase 4「体验优化与扩展」的子需求）
+> 上游文档：《PRD-N-Link.md v1.0》（本 PRD 为其 Phase 4「体验优化与扩展」的子需求）
 
 ---
 
@@ -12,25 +12,25 @@
 
 ### 1.1 背景
 
-NikonLink 目前已完成「连接 → 浏览 → 传输 → 归档」的完整链路：
+N-Link 目前已完成「连接 → 浏览 → 传输 → 归档」的完整链路：
 
 | 现有能力 | 现状 |
 |---------|------|
 | 相机连接 | BLE 保活 + WiFi PTP/IP + USB 有线三通道，USB 优先、互为兜底 |
 | 照片浏览 | 相机存储卡列表（18/页分页加载）+ 缩略图实时预览 + 格式筛选（全部/照片/视频/RAW/JPG） |
 | 照片传输 | 单张/批量下载、队列管理、断点续传、失败自动重试与通道回退、传输去重 |
-| 本地归档 | 保存至 `DCIM/NikonLink`（MediaStore / Scoped Storage），「本地照片」Tab 可直接查询 |
+| 本地归档 | 保存至 `DCIM/N-Link`（MediaStore / Scoped Storage），「本地照片」Tab 可直接查询 |
 | 图片浏览 | 全屏预览页 PreviewActivity（下载原图 / 拍摄信息 / 分享） |
 
 **问题**：照片下载到手机后，用户链路到此中断——想要润色必须跳出 App，使用系统相册或第三方修图软件（Snapseed / Lightroom / 醒图等）。这带来三个损失：
 
-1. **体验断层**：拍 → 传 → 修 → 发是摄影用户的一体化诉求，NikonLink 目前只覆盖前两步；
+1. **体验断层**：拍 → 传 → 修 → 发是摄影用户的一体化诉求，N-Link 目前只覆盖前两步；
 2. **留存损失**：传输完成后用户即离开 App，缺少高频二次使用场景；
 3. **竞品差距**：官方客户端仅提供基础滤镜，其他第三方工具已内置 AI 修图入口，用户对「传完即可修」有明确预期。
 
 ### 1.2 目标
 
-在 NikonLink 内新增 **AI 修图**能力，打通「拍摄 → 传输 → 修图 → 导出」的完整闭环：
+在 N-Link 内新增 **AI 修图**能力，打通「拍摄 → 传输 → 修图 → 导出」的完整闭环：
 
 1. 用户从**已下载照片 / 传输完成照片 / 本地相册**任一路径，一键进入 AI 修图页；
 2. 提供**一键式 AI 增强**为核心卖点（零学习成本），辅以场景化优化（人像/风光）与精细调节（降噪/清晰度/色彩）；
@@ -164,10 +164,10 @@ NikonLink 目前已完成「连接 → 浏览 → 传输 → 归档」的完整�
 
 | 需求项 | 优先级 | 说明 |
 |--------|--------|------|
-| 另存为新图 | P0（默认） | 输出至 `DCIM/NikonLink/Edited/`，文件名 `{原名}_EDITED_{yyyyMMdd_HHmmss}.jpg`，不触碰原图 |
+| 另存为新图 | P0（默认） | 输出至 `DCIM/N-Link/Edited/`，文件名 `{原名}_EDITED_{yyyyMMdd_HHmmss}.jpg`，不触碰原图 |
 | 导出画质选择 | P0 | 高质量 JPEG（q=95）/ 原始尺寸 PNG 二选一，默认高质量 JPEG |
-| EXIF 保留 | P0 | 复制原图 EXIF（拍摄参数、时间、GPS），追加 `Software=NikonLink Edit vX` 标记；GPS 信息遵循原图，不新增采集 |
-| 覆盖保存 | P1 | 直接替换原文件；仅对本 App 创建的文件可直接覆盖，其他来源文件触发系统 SAF 授权（`MediaStore.createWriteRequest`），用户拒绝时降级为另存；覆盖前系统自动备份原图至 `DCIM/NikonLink/.backup/`（隐藏目录，保留 30 天） |
+| EXIF 保留 | P0 | 复制原图 EXIF（拍摄参数、时间、GPS），追加 `Software=N-Link Edit vX` 标记；GPS 信息遵循原图，不新增采集 |
+| 覆盖保存 | P1 | 直接替换原文件；仅对本 App 创建的文件可直接覆盖，其他来源文件触发系统 SAF 授权（`MediaStore.createWriteRequest`），用户拒绝时降级为另存；覆盖前系统自动备份原图至 `DCIM/N-Link/.backup/`（隐藏目录，保留 30 天） |
 | 保存后反馈 | P0 | Toast「已保存」+ 提供「去相册查看」快捷跳转；返回相册页自动刷新列表 |
 | 未保存退出拦截 | P0 | 有未保存修改时返回键弹出确认对话框：保存 / 不保存退出 / 取消 |
 
@@ -240,7 +240,7 @@ NikonLink 目前已完成「连接 → 浏览 → 传输 → 归档」的完整�
 ┌─────────────────────────┐
 │        保存修图结果        │
 │  ○ 另存为新图（推荐）      │
-│     DCIM/NikonLink/Edited│
+│     DCIM/N-Link/Edited│
 │  ○ 覆盖原图               │
 │     (原图将备份至隐藏目录)  │
 │  画质: [高质量JPEG ▾]     │
@@ -279,7 +279,7 @@ app/src/main/java/com/nikonlink/app/
 
 ### 6.3 与相册/浏览模块集成
 
-- 导出后通过 `MediaStore` 写入即自动出现在系统相册；App 内「本地照片」Tab 查询条件为 `RELATIVE_PATH LIKE '%NikonLink%'`，`DCIM/NikonLink/Edited/` 天然命中，返回列表后调用 `fetchLocalPhotos()` 刷新即可
+- 导出后通过 `MediaStore` 写入即自动出现在系统相册；App 内「本地照片」Tab 查询条件为 `RELATIVE_PATH LIKE '%N-Link%'`，`DCIM/N-Link/Edited/` 天然命中，返回列表后调用 `fetchLocalPhotos()` 刷新即可
 - PreviewActivity 底部操作栏新增「AI 修图」按钮（与下载/EXIF/分享并列）；`btnMore` 菜单同步增加该条目
 - 网格页 `item_photo_grid.xml` 上编辑产物缩略图右下角加单色小角标「已修」（P1，灰度图标，符合黑白规范）
 
@@ -411,7 +411,7 @@ app/src/main/java/com/nikonlink/app/
 - [ ] 10 款滤镜全部可用，缩略图实时渲染 < 1.5s
 - [ ] 长按对比与分屏对比正常，缩放位置保持
 - [ ] 撤销/重做 ≥ 20 步，重置一键还原
-- [ ] 另存文件出现在 `DCIM/NikonLink/Edited/`，出现在系统相册与 App「本地照片」Tab
+- [ ] 另存文件出现在 `DCIM/N-Link/Edited/`，出现在系统相册与 App「本地照片」Tab
 - [ ] 导出图 EXIF 含原拍摄参数，分辨率与原图一致
 - [ ] 有未保存修改时返回必弹确认框；「不保存」后原图逐字节不变（md5 校验）
 
@@ -449,7 +449,7 @@ P2 功能（批量编辑、会话恢复、HEIC、RAW 评估）进入下一迭代
 | Q3 | NEF/RAW 的处理策略：本期入口完全隐藏，还是置灰并引导「先转 JPEG（依赖相机内 JPEG）」？ | 用户预期管理 | 产品 |
 | Q4 | 云端增强是否立项？若立项，隐私授权页、数据留存策略、服务商选型均需前置 | 架构与合规 | 产品 + 法务 |
 | Q5 | 模型随 APK 内置 vs 首次使用时下载？后者破坏「完全离线」承诺但省 30MB 体积 | 分发策略 | 产品 + 技术 |
-| Q6 | 导出目录 `DCIM/NikonLink/Edited/` 是否会被「本地照片」查询（`RELATIVE_PATH LIKE '%NikonLink%'`）命中已验证可行，但备份目录 `.backup` 需确认不被 MediaStore 索引展示 | 体验细节 | 开发验证 |
+| Q6 | 导出目录 `DCIM/N-Link/Edited/` 是否会被「本地照片」查询（`RELATIVE_PATH LIKE '%N-Link%'`）命中已验证可行，但备份目录 `.backup` 需确认不被 MediaStore 索引展示 | 体验细节 | 开发验证 |
 
 ### 11.2 风险与缓解
 
