@@ -30,7 +30,7 @@ class RemoteShootingManager @Inject constructor(
     companion object {
         private const val TAG = "RemoteShooting"
 
-        /** 快门前对焦等待时长：参考影犀日志点按对焦耗时约 1.2~1.5s，取 1200ms 保证合焦 */
+        /** 快门前对焦等待时长：点按对焦耗时约 1.2~1.5s，取 1200ms 保证合焦 */
         private const val AF_SETTLE_MS = 1200L
 
         /** 长按对焦重触发间隔：必须大于单次 AF Drive 对焦周期，
@@ -107,7 +107,7 @@ class RemoteShootingManager @Inject constructor(
     /**
      * 全按拍摄（单张）
      * PRD 5.1: 遥控快门延迟 < 150ms（指对焦完成后的快门响应）
-     * 参考影犀日志: 拍照请求 autofocus=true 时先触发 AF，对焦完成后再释放快门
+     * 拍照请求 autofocus=true 时先触发 AF，对焦完成后再释放快门
      * Fix: 旧版发完 AF_DRIVE 立即释放快门导致无法合焦；
      * 现改为触发对焦 → 等待 AF_SETTLE_MS 对焦收敛 → 再释放快门
      */

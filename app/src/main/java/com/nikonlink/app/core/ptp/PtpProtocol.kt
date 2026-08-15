@@ -98,20 +98,20 @@ object PtpConstants {
     const val RESPONSE_NIKON_NOT_LIVE_VIEW = 0xA00B
 
     // PTP Event Codes
-    // 参考影犀日志: event code=0x4002 (ObjectAdded) / 0x4006 (DevicePropChanged) / 0x400d
+    // event code=0x4002 (ObjectAdded) / 0x4006 (DevicePropChanged) / 0x400d
     const val EVENT_OBJECT_ADDED = 0x4002
     const val EVENT_DEVICE_PROP_CHANGED = 0x4006
     const val EVENT_CAPTURE_COMPLETE = 0x400D
 
-    // Nikon 厂商属性: LiveView 图像配置 (参考影犀日志: image profile set size=0xd1ac:3)
+    // Nikon 厂商属性: LiveView 图像配置 (image profile set size=0xd1ac:3)
     const val PROP_NIKON_LV_IMAGE_PROFILE = 0xD1AC
 
-    // 参考影犀日志: 监看启动后相机上报 DevicePropChanged prop=0x500E，
+    // 监看启动后相机上报 DevicePropChanged prop=0x500E，
     // 即进入无线控制(遥控)模式时曝光程序模式切到 Remote 值；
     // 启动 LiveView 前先设定该值，否则相机可能拒绝 StartLiveView
     const val PROP_VALUE_REMOTE_MODE = 0x8012
 
-    // 参考影犀日志: 触摸对焦坐标范围约 x:0~4000, y:0~3000
+    // 触摸对焦坐标范围约 x:0~4000, y:0~3000
     const val AF_COORD_MAX_X = 4000
     const val AF_COORD_MAX_Y = 3000
 
@@ -136,7 +136,7 @@ object PtpConstants {
     const val PROP_STILL_CAPTURE_MODE = 0x5013
     const val PROP_FOCUS_METERING_MODE = 0x501C
 
-    // Nikon 厂商镜头属性（参考 libgphoto2 ptp.h）
+    // Nikon 厂商镜头属性（PTP 扩展定义）
     const val PROP_NIKON_LENS_ID = 0xD0E0
     const val PROP_NIKON_LENS_SORT = 0xD0E1
     const val PROP_NIKON_LENS_TYPE = 0xD0E2

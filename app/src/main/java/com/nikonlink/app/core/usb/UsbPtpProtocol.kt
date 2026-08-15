@@ -14,7 +14,7 @@ import java.nio.ByteOrder
  *   [4 bytes] Transaction ID
  *   [N bytes] Payload
  *
- * 参考: ISO 15740 / gphoto2 libptp USB 实现
+ * 参考: ISO 15740 / PTP over USB 实现
  */
 object UsbPtpProtocol {
 

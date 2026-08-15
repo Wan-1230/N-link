@@ -18,7 +18,7 @@ import javax.inject.Singleton
  *
  * 机身 PTP 不提供快门次数时，App 自动把相机照片导出到缓存，
  * 通过 https://nikon.digeeker.com/ 的 EXIF 解析接口读取 MakerNotes.ShutterCount。
- * 协议已按 digeeker 前端混淆脚本逆向确认：check -> chunk -> merge -> view。
+ * 接口约定（实测确认）：check -> chunk -> merge -> view。
  */
 @Singleton
 class DigeekerShutterCountClient @Inject constructor() {

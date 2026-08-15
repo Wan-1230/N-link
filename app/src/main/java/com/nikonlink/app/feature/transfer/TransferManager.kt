@@ -39,7 +39,7 @@ class TransferManager @Inject constructor(
     companion object {
         private const val TAG = "TransferMgr"
         private const val PARTIAL_CHUNK_SIZE = 1024 * 1024  // 1MB chunks for partial transfer
-        // 参考影犀日志: 媒体列表分页 limit=18，逐页加载避免一次性阻塞
+        // 媒体列表分页 limit=18，逐页加载避免一次性阻塞
         private const val PAGE_SIZE = 18
     }
 
@@ -122,7 +122,7 @@ class TransferManager @Inject constructor(
                 }
                 Timber.tag(TAG).i("Found ${handles.size} objects on camera")
 
-                // 参考影犀日志: 按 PAGE_SIZE=18 分页读取 ObjectInfo，逐页回调
+                // 按 PAGE_SIZE=18 分页读取 ObjectInfo，逐页回调
                 val result = mutableListOf<CameraFile>()
                 handles.chunked(PAGE_SIZE).forEach { page ->
                     val pageFiles = page.mapNotNull { handle ->

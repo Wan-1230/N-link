@@ -10,14 +10,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Byte-level conformance tests against the PTP/IP layout used by libgphoto2
- * (camlibs/ptp2/ptpip.c), which is the reference implementation for Nikon
- * PTP/IP cameras.
+ * Byte-level conformance tests of the PTP/IP packet layout, following the
+ * ISO 15740 PTP/IP framing used by Nikon cameras.
  */
 class PtpProtocolTest {
 
     @Test
-    fun `init command request matches libgphoto2 layout`() {
+    fun `init command request packet layout`() {
         val guid = ByteArray(16) { it.toByte() }
         val packet = InitCommandPacket(clientGuid = guid, clientName = "NikonLink")
 

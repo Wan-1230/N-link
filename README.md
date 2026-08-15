@@ -1,6 +1,6 @@
 # NikonLink
 
-> 为尼康 Z 系列微单打造的 Android 连接与遥控伴侣 —— 稳定连接 · 极速传图 · 全功能遥控，目标替代 SnapBridge 的不稳定体验。
+> 为尼康 Z 系列微单打造的 Android 连接与遥控伴侣 —— 稳定连接 · 极速传图 · 全功能遥控。
 
 ![Android](https://img.shields.io/badge/Android-10%2B-3DDC84?style=flat-square&logo=android)
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.1.0-7F52FF?style=flat-square&logo=kotlin)
@@ -23,7 +23,7 @@ NikonLink 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf �
 
 | 通道 | 能力 |
 |------|------|
-| **BLE** | 配对与心跳保活，兼容 SnapBridge 风格 GATT 服务，支持尼康吹鱼（Blowfish）加密 |
+| **BLE** | 配对与心跳保活，采用尼康 BLE 配对协议，支持尼康吹鱼（Blowfish）加密 |
 | **WiFi** | 相机发现（mDNS `_ptp._tcp` / `_nikon._tcp` + 子网扫描），PTP/IP（ISO 15740）全量会话 |
 | **USB** | 有线优先通道，相机插入自动唤起，keepalive 保活，支持 USB Live View 与遥控 |
 

@@ -140,13 +140,13 @@ class ConnectionManager @Inject constructor(
 
     /**
      * 通过 WiFi 直连相机（AP/STA 均适用）。
-     * 视频中的影控台流程：手机与相机在同一 WiFi 后扫描发现相机，再建立 PTP/IP。
+     * 手机与相机在同一 WiFi 后扫描发现相机，再建立 PTP/IP。
      */
     fun connectToWifiCamera(ipAddress: String, port: Int = 15740, deviceName: String? = null) {
         pairingJob?.cancel()
         pairedDeviceAddress = "wifi:$ipAddress:$port"
         userDisconnectRequested = false
-        wifiManager.bindToActiveWifi()
+        val network = wifiManager.bindToActiveWifi()
         stateMachine.dispatch(ConnectionEvent.StartConnect)
         _connectionHint.value = null
 
@@ -159,7 +159,8 @@ class ConnectionManager @Inject constructor(
                     ok = ptpSession.connect(
                         ipAddress,
                         port,
-                        pairingMode = true
+                        pairingMode = true,
+                        network = network
                     ) {
                         if (_connectionHint.value == null) {
                             _connectionHint.value =
@@ -232,18 +233,20 @@ class ConnectionManager @Inject constructor(
      * 扫描当前 WiFi 网络中的尼康相机（UDP 5353 + TCP 15740 探测）。
      */
     suspend fun scanWifiCameras(timeoutMs: Long = 12000L): List<WifiCameraCandidate> {
-        val candidates = wifiScanner.scan(timeoutMs).toMutableList()
-        // 参考影犀 STA 日志: 扫描失败时直接复用历史 IP 发起 PTP/IP，避免每次都全段盲扫。
+        // STA: 显式拿到 WiFi Network，让 scan() 内部的 mDNS/探测 Socket 绑定到 WiFi，
+        // 避免手机蜂窝数据等其它网络抢走默认路由导致扫描失败。
+        val network = wifiManager.currentWifiNetwork()
+        val candidates = wifiScanner.scan(timeoutMs, network).toMutableList()
+        // 扫描失败时直接复用历史 IP 发起 PTP/IP，避免每次都全段盲扫。
         val last = runCatching { deviceRepository.getLastAutoConnectDevice() }.getOrNull()
         if (last != null && last.address.startsWith("wifi:")) {
             val parts = last.address.removePrefix("wifi:").split(":")
             val ip = parts.firstOrNull().orEmpty()
             val port = parts.getOrNull(1)?.toIntOrNull() ?: 15740
-            // 参考影犀 rediscoverNikonStaHistoryByInitAckScan：
             // 历史 IP 需要先通过 PTP/IP Init Ack 确认，避免把已失效地址展示给用户。
             if (ip.isNotEmpty() &&
                 candidates.none { it.ipAddress == ip } &&
-                PtpIpProbe.probe(ip, port, 1000L)
+                PtpIpProbe.probe(ip, port, 1000L, network)
             ) {
                 candidates.add(
                     WifiCameraCandidate(ip, port, last.deviceName.ifBlank { "尼康相机(历史)" }, "sta-history")
@@ -496,7 +499,7 @@ class ConnectionManager @Inject constructor(
         if (ip.isEmpty()) return
 
         recoveryJob = scope?.launch(Dispatchers.IO) {
-            wifiManager.bindToActiveWifi()
+            val network = wifiManager.bindToActiveWifi()
             // Fix 真机日志: 首次恢复时相机可能还在清理旧会话，返回异常包导致握手失败；
             // 改为最多重试 3 次（间隔递增），只有全部失败才判定不可恢复
             var ok = false
@@ -504,7 +507,7 @@ class ConnectionManager @Inject constructor(
             while (!ok && attempt < 3) {
                 attempt++
                 delay(2000L * attempt)
-                ok = ptpSession.connect(ip, port, pairingMode = true)
+                ok = ptpSession.connect(ip, port, pairingMode = true, network = network)
                 if (!ok) Timber.tag(TAG).w("PTP recovery attempt $attempt failed")
             }
             if (ok) {

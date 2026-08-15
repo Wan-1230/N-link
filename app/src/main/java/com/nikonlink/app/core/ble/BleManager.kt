@@ -21,9 +21,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Nikon SnapBridge BLE profile.
+ * Nikon BLE profile.
  *
- * UUID 来自 Nikon 官方 SnapBridge 360/170 APK 与公开的 Nikon BLE 逆向项目：
+ * UUID 来自 Nikon 公开 BLE 服务定义（真机实测确认）：
  * - 服务：0000DE00/0000DE01-3DD4-4255-8D62-6DC7B9BD5561
  * - 2000 认证（4 阶段配对）
  * - 2004 连接配置（SSID/密码）
@@ -65,7 +65,7 @@ object NikonBleProfile {
 /**
  * BLE 管理器 - Nikon 原生 GATT 适配层。
  *
- * 连接流程不再使用推断 UUID，而是执行 Nikon SnapBridge 的 4 阶段配对：
+ * 连接流程不再使用推断 UUID，而是执行 Nikon BLE 标准 4 阶段配对：
  * 1. 写入 0x01 阶段消息到 2000
  * 2. 收到 0x00 回执后写入 0x03 阶段消息
  * 3. 收到 0x02 阶段消息（盐值校验）后写入 0x03 阶段消息
@@ -541,7 +541,7 @@ class BleManager @Inject constructor(
         clientId[0] = 0x01
 
         val session = if (service.getCharacteristic(NikonBleProfile.AUTHENTICATION) != null) {
-            NikonSmartPairing(timestamp, clientId)
+            NikonAuthPairing(timestamp, clientId)
         } else {
             NikonRemotePairing(timestamp, clientId)
         }
@@ -686,7 +686,7 @@ class BleManager @Inject constructor(
             ?: gatt?.getService(NikonBleProfile.LSS_SERVICE)
         val characteristic = service?.getCharacteristic(NikonBleProfile.CONNECTION_ESTABLISHMENT)
             ?: return
-        // SnapBridge 在手机端连接相机 WiFi 后向相机写 0x01/0x02 建立连接。
+        // 手机端连接相机 WiFi 后向相机写 0x01/0x02 建立连接。
         writeCharacteristic(characteristic, byteArrayOf(0x01))
         Timber.tag(TAG).i("WiFi establishment requested via BLE")
     }
@@ -762,12 +762,12 @@ private interface NikonPairingSession {
 }
 
 /**
- * Nikon smart-device（SnapBridge）配对。
+ * Nikon smart-device（2000 认证）配对。
  *
- * 密钥与盐值来自公开逆向项目 furble（NikonSmart.cpp），Blowfish 使用标准
+ * 密钥与盐值来自公开 BLE 配对资料，Blowfish 使用标准
  * Blowfish/ECB/NoPadding 完成，避免依赖尼康私有 LsSec 原生库。
  */
-private class NikonSmartPairing(
+private class NikonAuthPairing(
     private val timestamp: ByteArray,
     private val clientId: ByteArray
 ) : NikonPairingSession {
@@ -848,7 +848,7 @@ private class NikonSmartPairing(
             error = true
             return null
         }
-        // NSG/Z50II+Z8: smart-device pairing stops at stage 4; there is no stage 5.
+        // 真机实测（Z50II/Z8）: smart-device pairing stops at stage 4; there is no stage 5.
         complete = true
         return null
     }
@@ -866,7 +866,7 @@ private class NikonSmartPairing(
     }
 
     companion object {
-        private const val TAG = "NikonSmartPairing"
+        private const val TAG = "NikonAuthPairing"
         private val SALT = arrayOf(
             intArrayOf(0x704066e4.toInt(), 0x0433d552.toInt()),
             intArrayOf(0xed4b8fac.toInt(), 0x15f7e47b.toInt()),
@@ -881,7 +881,7 @@ private class NikonSmartPairing(
 }
 
 /**
- * Nikon ML-L7 remote 配对（部分机型不提供 SnapBridge 2000 特征时使用）。
+ * Nikon ML-L7 remote 配对（部分机型不提供 2000 认证特征时使用）。
  */
 private class NikonRemotePairing(
     private val timestamp: ByteArray,
@@ -934,7 +934,7 @@ private class NikonRemotePairing(
 }
 
 /**
- * 仅使用 Blowfish ECB 加密 8 字节块，模拟 furble 中的 NikonSmart hash。
+ * 仅使用 Blowfish ECB 加密 8 字节块，模拟 Nikon smart-device hash。
  */
 internal class NikonBlowfish {
     private val cipher: Cipher?

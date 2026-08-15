@@ -10,7 +10,7 @@ import javax.inject.Singleton
 /**
  * PTP/IP 客户端身份持久化。
  *
- * 影犀等成熟相机应用会复用同一个 client GUID；随机变化会导致部分尼康相机
+ * 成熟相机应用通常会复用同一个 client GUID；随机变化会导致部分尼康相机
  * 认为这是新设备并要求重新确认。这里把 GUID 固化，重连时保持同一身份。
  */
 @Singleton
@@ -30,7 +30,7 @@ class PtpIdentityStore @Inject constructor(
             return guid
         }
 
-    // 参考影犀日志: clientName 直接使用手机型号（如 V2509A），与相机配对界面显示一致
+    // clientName 直接使用手机型号（如 V2509A），与相机配对界面显示一致
     override val clientName: String
         get() = android.os.Build.MODEL.ifBlank { "NikonLink" }
 
