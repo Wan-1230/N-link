@@ -5,6 +5,14 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// 本机签名配置（local.properties，不入库；缺失时回退 debug 签名便于开发构建）
+import java.util.Properties
+
+val signingProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
 android {
     namespace = "com.nikonlink.app"
     compileSdk = 35
@@ -13,16 +21,32 @@ android {
         applicationId = "com.nikonlink.app"
         minSdk = 29 // Android 10 - PRD requirement: BLE 5.0 full support
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        create("release") {
+            if (signingProps.containsKey("RELEASE_STORE_FILE")) {
+                storeFile = rootProject.file(signingProps.getProperty("RELEASE_STORE_FILE"))
+                storePassword = signingProps.getProperty("RELEASE_STORE_PASSWORD")
+                keyAlias = signingProps.getProperty("RELEASE_KEY_ALIAS")
+                keyPassword = signingProps.getProperty("RELEASE_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            signingConfig = if (signingProps.containsKey("RELEASE_STORE_FILE")) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
