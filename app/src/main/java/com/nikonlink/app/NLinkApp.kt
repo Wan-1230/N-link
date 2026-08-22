@@ -5,7 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
-import com.nikonlink.app.service.ConnectionHealthWorker
+import com.nikonlink.app.device.service.ConnectionHealthWorker
 import androidx.work.WorkManager
 import dagger.hilt.android.HiltAndroidApp
 import timber.log.Timber

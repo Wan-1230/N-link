@@ -18,6 +18,10 @@
     <!-- WiFi Permissions -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="33" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
@@ -76,13 +80,13 @@
 
         <!-- 全屏预览页（纯黑沉浸主题，右推入转场） -->
         <activity
-            android:name=".feature.transfer.PreviewActivity"
+            android:name=".camera.gallery.PreviewActivity"
             android:exported="false"
             android:theme="@style/Theme.NLink.Preview" />
 
         <!-- 全屏实时取景页：跟随重力感应横竖屏切换 -->
         <activity
-            android:name=".feature.liveview.LiveViewActivity"
+            android:name=".camera.liveview.LiveViewActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:exported="false"
             android:screenOrientation="sensor"
@@ -90,13 +94,13 @@
 
         <!-- Connection Foreground Service -->
         <service
-            android:name=".service.ConnectionService"
+            android:name=".device.service.ConnectionService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice|dataSync" />
 
         <!-- Boot Receiver for auto-reconnect -->
         <receiver
-            android:name=".service.BootReceiver"
+            android:name=".device.service.BootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

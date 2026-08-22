@@ -18,12 +18,12 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import com.nikonlink.app.databinding.ActivityMainBinding
-import com.nikonlink.app.feature.dashboard.DashboardFragment
-import com.nikonlink.app.feature.remote.RemoteFragment
-import com.nikonlink.app.feature.settings.SettingsFragment
-import com.nikonlink.app.feature.transfer.TransferFragment
-import com.nikonlink.app.service.ConnectionService
-import com.nikonlink.app.ui.pressEffect
+import com.nikonlink.app.device.DashboardFragment
+import com.nikonlink.app.capture.RemoteFragment
+import com.nikonlink.app.settings.SettingsFragment
+import com.nikonlink.app.camera.gallery.TransferFragment
+import com.nikonlink.app.device.service.ConnectionService
+import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import timber.log.Timber
 
