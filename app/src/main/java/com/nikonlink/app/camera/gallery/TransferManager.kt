@@ -2,6 +2,7 @@ package com.nikonlink.app.camera.gallery
 
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -11,10 +12,15 @@ import kotlinx.coroutines.flow.*
 import timber.log.Timber
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.usb.UsbPtpManager
+import com.nikonlink.app.device.wifi_ap.WifiManager
 import com.nikonlink.app.camera.data.TransferRepository
+import com.nikonlink.app.shared.common.AppEventLogger
+import com.nikonlink.app.shared.common.AppSettings
 import java.io.File
 import java.io.FileOutputStream
+import java.io.OutputStream
 import java.util.ArrayDeque
+import java.util.concurrent.Semaphore
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -35,14 +41,28 @@ class TransferManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val ptpSession: PtpSessionManager,
     private val usbPtpManager: UsbPtpManager,
-    private val transferRepository: TransferRepository
+    private val transferRepository: TransferRepository,
+    private val wifiManager: WifiManager,
+    private val settings: AppSettings,
+    private val eventLogger: AppEventLogger
 ) {
     companion object {
         private const val TAG = "TransferMgr"
-        private const val PARTIAL_CHUNK_SIZE = 1024 * 1024  // 1MB chunks for partial transfer
+        // 大分块降低每字节往返开销（4MB/RTT），失败时减半降级到 1MB，
+        // 兼容只支持小分块的老相机（部分机型 GetPartialObject 上限 ~1MB）
+        private const val PARTIAL_CHUNK_SIZE = 4 * 1024 * 1024
+        private const val MIN_PARTIAL_CHUNK_SIZE = 1024 * 1024
         // 媒体列表分页 limit=18，逐页加载避免一次性阻塞
         private const val PAGE_SIZE = 18
+        /** ObjectInfo 读取并发窗口（PTP 命令通道本身串行，窗口用于 USB 多段与响应叠加） */
+        private const val OBJECT_INFO_CONCURRENCY = 4
         private const val SPEED_WINDOW_MS = 2000L
+        /** 自动下载：单次同步上限与去抖间隔（防止相机连拍时涌进大量任务） */
+        private const val AUTO_SYNC_MAX_FILES = 20
+        private const val AUTO_SYNC_DEBOUNCE_MS = 60_000L
+        /** 压缩画质：长边上限与 JPEG 质量 */
+        private const val COMPRESS_MAX_EDGE = 3200
+        private const val COMPRESS_JPEG_QUALITY = 90
     }
 
     private var scope: CoroutineScope? = null
@@ -50,6 +70,9 @@ class TransferManager @Inject constructor(
     private var currentTask: TransferTask? = null
     private var currentJob: Job? = null
     private var isPaused = false
+
+    private var autoSyncJob: Job? = null
+    private var lastAutoSyncAt = 0L
 
     private val ptpTransport: CameraTransport = PtpTransport(ptpSession)
     private val usbTransport: CameraTransport = UsbTransport(usbPtpManager)
@@ -102,8 +125,10 @@ class TransferManager @Inject constructor(
         _transferSpeedBps.value = 0
     }
 
-    /** 当前生效的数据通道（UI 展示用）：USB 优先，USB 断开回退 WiFi */
+    /** 当前生效的数据通道（UI 展示用）：按连接偏好选择，断线自动回退另一通道 */
     fun activeChannel(): String = when {
+        usbPtpManager.isConnected() && ptpSession.isConnected() ->
+            if (settings.connectionPreference == AppSettings.CONN_PREF_WIFI) "WiFi" else "USB 有线"
         usbPtpManager.isConnected() -> "USB 有线"
         ptpSession.isConnected() -> "WiFi"
         else -> "未连接"
@@ -119,6 +144,47 @@ class TransferManager @Inject constructor(
     fun start(scope: CoroutineScope) {
         this.scope = scope
         Timber.tag(TAG).i("TransferManager started")
+    }
+
+    /**
+     * 自动下载（设置「自动下载新照片」开启时由连接层触发）：
+     * 连接就绪后同步最新照片列表，过滤已下载的并限幅入队，60s 去抖。
+     */
+    fun scheduleAutoSync() {
+        if (!settings.autoDownload) return
+        if (!hasActiveSession()) return
+        val now = System.currentTimeMillis()
+        if (now - lastAutoSyncAt < AUTO_SYNC_DEBOUNCE_MS) return
+        if (autoSyncJob?.isActive == true) return
+        autoSyncJob = scope?.launch {
+            try {
+                lastAutoSyncAt = System.currentTimeMillis()
+                if (isPaused) return@launch
+                val photos = fetchPhotoList()
+                if (photos.isEmpty()) return@launch
+                // 按 handle 倒序取最新照片，过滤掉已传输过的
+                val newestFirst = photos.sortedByDescending { it.handle }
+                val newFiles = mutableListOf<CameraFile>()
+                for (photo in newestFirst) {
+                    if (newFiles.size >= AUTO_SYNC_MAX_FILES) break
+                    val done = runCatching {
+                        transferRepository.isAlreadyTransferred(photo.handle)
+                    }.getOrDefault(false)
+                    if (!done) newFiles.add(photo)
+                }
+                if (newFiles.isNotEmpty()) {
+                    Timber.tag(TAG).i("Auto sync: ${newFiles.size} new photos")
+                    enqueue(newFiles)
+                    postMessage("自动下载：同步 ${newFiles.size} 张新照片")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.tag(TAG).w(e, "Auto sync failed")
+            } finally {
+                autoSyncJob = null
+            }
+        }
     }
 
     fun stop() {
@@ -157,12 +223,23 @@ class TransferManager @Inject constructor(
                 }
                 Timber.tag(TAG).i("Found ${handles.size} objects on camera")
 
-                // 按 PAGE_SIZE=18 分页读取 ObjectInfo，逐页回调
+                // 按 PAGE_SIZE=18 分页读取 ObjectInfo，逐页回调；
+                // 页内并发窗口 4，缩短大列表元数据读取时间
                 val result = mutableListOf<CameraFile>()
                 handles.chunked(PAGE_SIZE).forEach { page ->
-                    val pageFiles = page.mapNotNull { handle ->
-                        val infoBytes = transport.objectInfo(handle)
-                        if (infoBytes != null) parseObjectInfo(handle, infoBytes) else null
+                    val semaphore = Semaphore(OBJECT_INFO_CONCURRENCY)
+                    val pageFiles = coroutineScope {
+                        page.map { handle ->
+                            async(Dispatchers.IO) {
+                                semaphore.acquire()
+                                try {
+                                    val infoBytes = transport.objectInfo(handle)
+                                    if (infoBytes != null) parseObjectInfo(handle, infoBytes) else null
+                                } finally {
+                                    semaphore.release()
+                                }
+                            }
+                        }.awaitAll().filterNotNull()
                     }.filter {
                         it.format == CameraFileFormat.JPEG ||
                                 it.format == CameraFileFormat.RAW ||
@@ -226,6 +303,12 @@ class TransferManager @Inject constructor(
                 val fallback = fallbackOf(currentTransport())
                 if (fallback != null && fallback.isConnected) {
                     postMessage("主通道传输失败，已自动切换到 ${if (fallback === usbTransport) "USB" else "WiFi"} 重试")
+                    eventLogger.event(
+                        "channel_fallback",
+                        "from" to channelName(currentTransport()),
+                        "to" to channelName(fallback),
+                        "handle" to file.handle
+                    )
                     delay(500)
                     result = downloadVia(fallback, file, tempFile, onProgress)
                 }
@@ -268,6 +351,13 @@ class TransferManager @Inject constructor(
         if (!transport.isConnected) {
             return TransferResult.Failed("相机未连接")
         }
+        eventLogger.event(
+            "download_start",
+            "handle" to file.handle,
+            "name" to file.fileName,
+            "size" to file.size,
+            "channel" to channelName(transport)
+        )
         return try {
             if (tempFile.length() > file.size) {
                 tempFile.delete()
@@ -282,18 +372,32 @@ class TransferManager @Inject constructor(
 
             if (!completed) {
                 Timber.tag(TAG).w("Incomplete transfer: ${tempFile.length()}/${file.size} via ${channelName(transport)}")
+                eventLogger.event("download_fail", "handle" to file.handle, "reason" to "incomplete")
                 return TransferResult.Failed(
                     "传输中断（${tempFile.length()}/${file.size}），请检查连接后重试"
                 )
             }
 
-            val savedPath = saveFileToMediaStore(tempFile, file.fileName)
+            val savedPath = saveFileToMediaStore(prepareFileToSave(tempFile, file), file.fileName)
             if (savedPath != null) {
                 tempFile.delete()
                 transferRepository.recordTransfer(file.handle, file.fileName, file.size, savedPath)
                 _transferState.value = TransferState.Completed(file)
                 resetTransferSpeed()
-                postMessage("已保存: ${file.fileName}")
+                var msg = "已保存: ${file.fileName}"
+                eventLogger.event(
+                    "download_done",
+                    "handle" to file.handle,
+                    "name" to file.fileName,
+                    "size" to file.size,
+                    "path" to savedPath
+                )
+                // 2.4GHz 链路下的速度提示：大文件传输在 5GHz 可提升 2-5 倍
+                val freq = wifiManager.wifiFrequencyMhz.value
+                if (ptpTransport.isConnected && freq in 2400..2495) {
+                    msg += "\n当前 2.4GHz 链路，可在设置开启 5GHz 优先提升下载速度"
+                }
+                postMessage(msg)
                 TransferResult.Success(savedPath)
             } else {
                 TransferResult.Failed("保存失败：存储空间不足或无写入权限")
@@ -302,6 +406,7 @@ class TransferManager @Inject constructor(
             throw e
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Download failed: ${file.fileName}")
+            eventLogger.event("download_fail", "handle" to file.handle, "reason" to (e.message ?: "unknown"))
             TransferResult.Failed(e.message ?: "未知错误")
         }
     }
@@ -311,6 +416,8 @@ class TransferManager @Inject constructor(
 
     /**
      * 流式下载到本地文件，支持从已有临时文件断点续传。
+     * WiFi PTP 走 sink 流式写盘（内存 O(网络包)），USB 走分块缓冲；
+     * 分块请求失败时 chunk 减半降级，兼容只支持小分块的相机。
      */
     private suspend fun downloadToFile(
         transport: CameraTransport,
@@ -327,29 +434,46 @@ class TransferManager @Inject constructor(
 
         // 相机未返回可靠文件大小时直接整文件下载，避免循环条件把文件当作空文件。
         if (file.size <= 0) {
-            val full = transport.getObject(file.handle) { received, declared ->
-                val total = resolveProgressTotal(file.size, declared, received)
-                onProgress?.invoke(received, total)
-            } ?: return false
-            FileOutputStream(target, false).use { output -> output.write(full) }
-            totalReceived = full.size.toLong()
-            onProgress?.invoke(totalReceived, totalReceived)
-            return full.isNotEmpty()
+            return downloadWhole(transport, file, target, onProgress)
         }
 
         val startOffset = totalReceived
+        var chunkSize = PARTIAL_CHUNK_SIZE
         while (totalReceived < file.size) {
             val remaining = (file.size - totalReceived).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-            val chunkSize = minOf(PARTIAL_CHUNK_SIZE, remaining)
-            val partial = transport.partialObject(
-                file.handle,
-                totalReceived.toInt(),
-                chunkSize
-            )
-            if (partial == null || partial.isEmpty()) break
+            val size = minOf(chunkSize, remaining)
 
-            FileOutputStream(target, true).use { output -> output.write(partial) }
-            totalReceived += partial.size
+            if (transport === ptpTransport) {
+                // WiFi PTP：sink 流式写盘，分块失败减半降级重试
+                val before = target.length()
+                var wrote = -1L
+                FileOutputStream(target, true).use { out ->
+                    val result = transport.partialObject(file.handle, totalReceived.toInt(), size, out)
+                    wrote = if (result == null) -1L else (target.length() - before)
+                }
+                if (wrote < 0L) {
+                    if (chunkSize > MIN_PARTIAL_CHUNK_SIZE) {
+                        chunkSize /= 2
+                        Timber.tag(TAG).w("Partial chunk degraded to ${chunkSize / 1024}KB for ${file.fileName}")
+                        continue
+                    }
+                    break
+                }
+                if (wrote == 0L) break  // 相机返回 OK 但无新数据，视为文件尾
+            } else {
+                // USB：分块缓冲写入；失败同样减半重试一次
+                val partial = transport.partialObject(file.handle, totalReceived.toInt(), size, null)
+                if (partial == null || partial.isEmpty()) {
+                    if (partial == null && chunkSize > MIN_PARTIAL_CHUNK_SIZE) {
+                        chunkSize /= 2
+                        continue
+                    }
+                    break
+                }
+                FileOutputStream(target, true).use { output -> output.write(partial) }
+            }
+
+            totalReceived = target.length()
             onProgress?.invoke(totalReceived, file.size)
         }
 
@@ -358,15 +482,37 @@ class TransferManager @Inject constructor(
         // 部分传输完全不支持时，清掉占位文件后整文件下载并带进度。
         if (startOffset == 0L && totalReceived == 0L) {
             target.delete()
-            val full = transport.getObject(file.handle) { received, _ ->
-                onProgress?.invoke(received, file.size)
-            } ?: return false
-            FileOutputStream(target, false).use { output -> output.write(full) }
-            totalReceived = full.size.toLong()
-            onProgress?.invoke(totalReceived, file.size)
-            return totalReceived >= file.size
+            return downloadWhole(transport, file, target, onProgress)
         }
         return false
+    }
+
+    /** 整文件下载（不支持部分传输时的兑底路径，WiFi PTP 同样走流式写盘） */
+    private suspend fun downloadWhole(
+        transport: CameraTransport,
+        file: CameraFile,
+        target: File,
+        onProgress: ((Long, Long) -> Unit)?
+    ): Boolean {
+        if (transport === ptpTransport) {
+            FileOutputStream(target, false).use { out ->
+                val result = transport.getObject(file.handle, { received, _ ->
+                    onProgress?.invoke(received, file.size)
+                }, out)
+                if (result == null) return false
+            }
+            onProgress?.invoke(target.length(), file.size)
+            return target.length() > 0
+        }
+        val full = transport.getObject(
+            file.handle,
+            onProgress = { received, _ ->
+                onProgress?.invoke(received, file.size)
+            }
+        ) ?: return false
+        FileOutputStream(target, false).use { output -> output.write(full) }
+        onProgress?.invoke(target.length(), file.size)
+        return full.isNotEmpty()
     }
 
     /**
@@ -432,6 +578,14 @@ class TransferManager @Inject constructor(
     }
 
     private fun currentTransport(): CameraTransport {
+        // 连接偏好决定双通道在线时的优先级；单通道在线时自然回退另一通道
+        if (usbPtpManager.isConnected() && ptpSession.isConnected()) {
+            return if (settings.connectionPreference == AppSettings.CONN_PREF_WIFI) {
+                ptpTransport
+            } else {
+                usbTransport
+            }
+        }
         return if (usbPtpManager.isConnected()) usbTransport else ptpTransport
     }
 
@@ -575,14 +729,52 @@ class TransferManager @Inject constructor(
     }
 
     /**
+     * 按设置「下载画质」预处理待保存文件：
+     * 压缩模式仅对 JPG 重编码（长边 ≤ 3200、质量 90），RAW 与其它格式原样保存。
+     */
+    private fun prepareFileToSave(source: File, file: CameraFile): File {
+        if (settings.downloadQuality != AppSettings.QUALITY_COMPRESSED ||
+            file.format != CameraFileFormat.JPEG
+        ) {
+            return source
+        }
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(source.absolutePath, bounds)
+            var sample = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) > COMPRESS_MAX_EDGE) {
+                sample *= 2
+            }
+            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+            val bitmap = BitmapFactory.decodeFile(source.absolutePath, opts)
+                ?: return source
+            val target = File(source.parentFile, source.nameWithoutExtension + "_compressed.jpg")
+            target.outputStream().use { out ->
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, COMPRESS_JPEG_QUALITY, out)
+            }
+            bitmap.recycle()
+            if (target.length() > 0) target else source
+        } catch (e: Exception) {
+            Timber.tag(TAG).w(e, "JPEG re-encode failed, saving original")
+            source
+        }
+    }
+
+    /**
      * 将下载完成的临时文件保存到 MediaStore（Android Scoped Storage）。
+     * 保存路径按设置「save_path」选择 DCIM/N-Link 或 Download/N-Link。
      */
     private fun saveFileToMediaStore(file: File, fileName: String): String? {
         return try {
+            val relativePath = if (settings.savePath == AppSettings.SAVE_PATH_DOWNLOAD) {
+                Environment.DIRECTORY_DOWNLOADS + "/N-Link"
+            } else {
+                Environment.DIRECTORY_DCIM + "/N-Link"
+            }
             val contentValues = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
                 put(MediaStore.Images.Media.MIME_TYPE, getMimeType(fileName))
-                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_DCIM + "/N-Link")
+                put(MediaStore.Images.Media.RELATIVE_PATH, relativePath)
                 put(MediaStore.Images.Media.IS_PENDING, 1)
             }
 
@@ -706,9 +898,18 @@ private interface CameraTransport {
     suspend fun storageIds(): List<Int>
     suspend fun objectHandles(storageId: Int): List<Int>
     suspend fun objectInfo(handle: Int): ByteArray?
-    suspend fun getObject(handle: Int, onProgress: ((Long, Long) -> Unit)? = null): ByteArray?
+    suspend fun getObject(
+        handle: Int,
+        onProgress: ((Long, Long) -> Unit)? = null,
+        sink: OutputStream? = null
+    ): ByteArray?
     suspend fun thumbnail(handle: Int): ByteArray?
-    suspend fun partialObject(handle: Int, offset: Int, size: Int): ByteArray?
+    suspend fun partialObject(
+        handle: Int,
+        offset: Int,
+        size: Int,
+        sink: OutputStream? = null
+    ): ByteArray?
     suspend fun deleteObject(handle: Int): Boolean
 }
 
@@ -720,11 +921,11 @@ private class PtpTransport(
     override suspend fun objectHandles(storageId: Int): List<Int> =
         ptp.getObjectHandles(storageId)
     override suspend fun objectInfo(handle: Int): ByteArray? = ptp.getObjectInfo(handle)
-    override suspend fun getObject(handle: Int, onProgress: ((Long, Long) -> Unit)?): ByteArray? =
-        ptp.getObject(handle, onProgress)
+    override suspend fun getObject(handle: Int, onProgress: ((Long, Long) -> Unit)?, sink: OutputStream?): ByteArray? =
+        ptp.getObject(handle, onProgress, sink)
     override suspend fun thumbnail(handle: Int): ByteArray? = ptp.getThumbnail(handle)
-    override suspend fun partialObject(handle: Int, offset: Int, size: Int): ByteArray? =
-        ptp.getPartialObject(handle, offset, size)
+    override suspend fun partialObject(handle: Int, offset: Int, size: Int, sink: OutputStream?): ByteArray? =
+        ptp.getPartialObject(handle, offset, size, sink)
     override suspend fun deleteObject(handle: Int): Boolean = ptp.deleteObject(handle)
 }
 
@@ -736,10 +937,11 @@ private class UsbTransport(
     override suspend fun objectHandles(storageId: Int): List<Int> =
         usb.getObjectHandles(storageId)
     override suspend fun objectInfo(handle: Int): ByteArray? = usb.getObjectInfo(handle)
-    override suspend fun getObject(handle: Int, onProgress: ((Long, Long) -> Unit)?): ByteArray? =
+    // USB 通道暂用分块缓冲（单块 ≤ 4MB，内存可控），sink 参数预留不生效
+    override suspend fun getObject(handle: Int, onProgress: ((Long, Long) -> Unit)?, sink: OutputStream?): ByteArray? =
         usb.getObject(handle, onProgress)
     override suspend fun thumbnail(handle: Int): ByteArray? = usb.getThumbnail(handle)
-    override suspend fun partialObject(handle: Int, offset: Int, size: Int): ByteArray? =
+    override suspend fun partialObject(handle: Int, offset: Int, size: Int, sink: OutputStream?): ByteArray? =
         usb.getPartialObject(handle, offset, size)
     override suspend fun deleteObject(handle: Int): Boolean = usb.deleteObject(handle)
 }

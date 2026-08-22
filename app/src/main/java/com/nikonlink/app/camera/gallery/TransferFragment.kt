@@ -24,6 +24,7 @@ import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import java.util.Locale
+import javax.inject.Inject
 
 /**
  * Tab2 相机相册（黑白极简）
@@ -35,6 +36,9 @@ class TransferFragment : Fragment() {
     private var _binding: FragmentTransferBinding? = null
     private val binding get() = _binding!!
     private val viewModel: TransferViewModel by viewModels()
+
+    @Inject
+    lateinit var thumbnailCache: ThumbnailCache
 
     private lateinit var adapter: PhotoGridAdapter
     private val chipViews = mutableMapOf<PhotoFilter, TextView>()
@@ -69,6 +73,7 @@ class TransferFragment : Fragment() {
 
     private fun setupGrid() {
         adapter = PhotoGridAdapter(
+            cache = thumbnailCache,
             onItemClick = { file, position ->
                 if (multiSelectMode) {
                     viewModel.toggleSelection(file.handle)
@@ -82,7 +87,8 @@ class TransferFragment : Fragment() {
             onItemLongClick = { file ->
                 if (!multiSelectMode) setMultiSelectMode(true)
                 viewModel.toggleSelection(file.handle)
-            }
+            },
+            onRequestThumb = { file -> viewModel.requestThumbnail(file.handle) }
         )
         binding.gridPhotos.layoutManager = GridLayoutManager(requireContext(), 3)
         binding.gridPhotos.adapter = adapter
@@ -269,11 +275,7 @@ class TransferFragment : Fragment() {
         }
 
         binding.btnShare.setOnClickListener {
-            if (viewModel.activeAlbum.value == AlbumSource.LOCAL) {
-                shareLocalSelected()
-            } else {
-                viewModel.showMessage("请先下载到手机，再从系统相册分享")
-            }
+            shareLocalSelected()
         }
     }
 
@@ -313,7 +315,8 @@ class TransferFragment : Fragment() {
     private fun renderActionButtons() {
         val isLocal = viewModel.activeAlbum.value == AlbumSource.LOCAL
         binding.btnDownload.visibility = if (isLocal) View.GONE else View.VISIBLE
-        binding.btnShare.visibility = if (isLocal) View.VISIBLE else View.VISIBLE
+        // 相机端照片未下载前无法直接分享，仅本地相册展示分享入口
+        binding.btnShare.visibility = if (isLocal) View.VISIBLE else View.GONE
         binding.btnDelete.text = if (isLocal) "删除本地" else "删除"
     }
 

@@ -22,10 +22,12 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.io.ByteArrayOutputStream
 import javax.inject.Inject
 
 /**
@@ -38,7 +40,8 @@ class TransferViewModel @Inject constructor(
     private val transferManager: TransferManager,
     private val ptpSession: PtpSessionManager,
     private val connectionManager: ConnectionManager,
-    private val usbPtpManager: UsbPtpManager
+    private val usbPtpManager: UsbPtpManager,
+    private val thumbnailCache: ThumbnailCache
 ) : ViewModel() {
 
     private val _photoList = MutableStateFlow<List<CameraFile>>(emptyList())
@@ -79,8 +82,14 @@ class TransferViewModel @Inject constructor(
     val queue: StateFlow<List<TransferTask>> = transferManager.queue
     val transferSpeedBps: StateFlow<Long> = transferManager.transferSpeedBps
 
-    private val _thumbnails = MutableStateFlow<Map<Int, ByteArray>>(emptyMap())
-    val thumbnails: StateFlow<Map<Int, ByteArray>> = _thumbnails.asStateFlow()
+    /** 已完成缩略图加载的 handle 集合（只用于局部刷新负载），Bitmap 统一由 ThumbnailCache 管理 */
+    private val _thumbnails = MutableStateFlow<Set<Int>>(emptySet())
+    val thumbnails: StateFlow<Set<Int>> = _thumbnails.asStateFlow()
+
+    /** 缩略图按需加载并发控制（可见项优先，最多 3 个并发 PTP 请求） */
+    private val thumbSemaphore = Semaphore(3)
+    private val pendingThumbs = mutableSetOf<Int>()
+    private var prewarmJob: Job? = null
 
     private val _message = MutableStateFlow("")
     val message: StateFlow<String> = _message.asStateFlow()
@@ -100,9 +109,7 @@ class TransferViewModel @Inject constructor(
     val statusMessage: StateFlow<String> = connectionManager.statusMessage
     val usbState: StateFlow<UsbConnectionState> = usbPtpManager.usbState
 
-    init {
-        transferManager.start(viewModelScope)
-    }
+    // 注：TransferManager 由 ConnectionManager 以应用级 scope 启动（支撑后台自动下载）
 
     /**
      * 获取相机照片列表
@@ -170,8 +177,8 @@ class TransferViewModel @Inject constructor(
             _selectedHandles.value = emptySet()
             _isLoading.value = false
             _message.value = if (photos.isEmpty()) "存储卡为空或未连接" else "共 ${photos.size} 个文件"
-            // 加载全部缩略图，实现相册式实时预览
-            loadAllThumbnails()
+            // 后台渐进取预热缩略图；可见项由 Adapter 按需触发
+            prewarmThumbnails(photos.map { it.handle })
         }
     }
 
@@ -284,25 +291,29 @@ class TransferViewModel @Inject constructor(
     private fun loadLocalThumbnails() {
         viewModelScope.launch {
             for (photo in _localPhotos.value) {
-                if (_thumbnails.value.containsKey(photo.handle)) continue
-                val bytes = withContext(Dispatchers.IO) {
-                    runCatching {
-                        val uri = localContentUri(photo.handle)
-                        val bitmap = context.contentResolver.loadThumbnail(
-                            uri,
-                            Size(512, 512),
-                            null
-                        )
-                        val output = ByteArrayOutputStream()
-                        bitmap.compress(Bitmap.CompressFormat.JPEG, 82, output)
-                        output.toByteArray()
-                    }.getOrNull()
-                }
-                if (bytes != null) {
-                    _thumbnails.value = _thumbnails.value + (photo.handle to bytes)
-                }
+                loadLocalThumbnailSuspend(photo.handle)
             }
         }
+    }
+
+    private suspend fun loadLocalThumbnailSuspend(handle: Int) {
+        if (_thumbnails.value.contains(handle)) return
+        val cached = thumbnailCache.fromMemory(handle) ?: thumbnailCache.get(handle)
+        if (cached == null) {
+            val bitmap = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.loadThumbnail(
+                        localContentUri(handle),
+                        Size(512, 512),
+                        null
+                    )
+                }.getOrNull()
+            }
+            if (bitmap != null) {
+                thumbnailCache.putBitmap(handle, bitmap)
+            }
+        }
+        _thumbnails.value = _thumbnails.value + handle
     }
 
     /** 本地照片的 MediaStore content URI */
@@ -343,24 +354,48 @@ class TransferViewModel @Inject constructor(
             }
             val deletedHandles = files.map { it.handle }.toSet()
             _localPhotos.value = _localPhotos.value.filterNot { it.handle in deletedHandles }
-            _thumbnails.value = _thumbnails.value.filterKeys { it !in deletedHandles }
+            _thumbnails.value = _thumbnails.value - deletedHandles
             _selectedHandles.value = emptySet()
             _message.value = if (deleted > 0) "已删除 $deleted 个本地文件" else "删除失败，请检查文件权限"
         }
     }
 
     /**
-     * 加载全部照片缩略图（实时预览）
-     * 逐个加载，加载完一张立即刷新一张
+     * 按需加载缩略图（可见项优先，并发窗口 3）。
+     * 两级缓存优先：内存 → 磁盘，未命中才走 PTP 网络请求。
      */
-    private fun loadAllThumbnails() {
+    fun requestThumbnail(handle: Int) {
+        if (handle < 0) {
+            viewModelScope.launch { loadLocalThumbnailSuspend(handle) }
+            return
+        }
+        if (_thumbnails.value.contains(handle) || !pendingThumbs.add(handle)) return
         viewModelScope.launch {
-            for (photo in _photoList.value) {
-                if (_thumbnails.value.containsKey(photo.handle)) continue
-                val thumb = transferManager.fetchThumbnail(photo.handle)
-                if (thumb != null) {
-                    _thumbnails.value = _thumbnails.value + (photo.handle to thumb)
+            thumbSemaphore.withPermit {
+                try {
+                    if (_thumbnails.value.contains(handle)) return@withPermit
+                    val bitmap = thumbnailCache.fromMemory(handle)
+                        ?: thumbnailCache.get(handle)
+                        ?: transferManager.fetchThumbnail(handle)
+                            ?.let { thumbnailCache.putBytes(handle, it) }
+                    if (bitmap != null) {
+                        _thumbnails.value = _thumbnails.value + handle
+                    }
+                } finally {
+                    pendingThumbs.remove(handle)
                 }
+            }
+        }
+    }
+
+    /** 后台低优先级预热已缓存缩略图（磁盘命中免网络），新照片留给可见项触发下载 */
+    private fun prewarmThumbnails(handles: List<Int>) {
+        prewarmJob?.cancel()
+        prewarmJob = viewModelScope.launch {
+            for (handle in handles) {
+                if (_thumbnails.value.contains(handle)) continue
+                val bitmap = thumbnailCache.fromMemory(handle) ?: thumbnailCache.get(handle) ?: continue
+                _thumbnails.value = _thumbnails.value + handle
             }
         }
     }
@@ -386,41 +421,15 @@ class TransferViewModel @Inject constructor(
     }
 
     /**
-     * 加载缩略图
+     * 加载缩略图（旧入口，已由 requestThumbnail 接管）
      */
+    @Deprecated("Use requestThumbnail", ReplaceWith("requestThumbnail(handle)"))
     fun loadThumbnail(handle: Int) {
-        if (handle < 0) {
-            loadLocalThumbnail(handle)
-            return
-        }
-        viewModelScope.launch {
-            if (_thumbnails.value.containsKey(handle)) return@launch
-            val thumb = transferManager.fetchThumbnail(handle)
-            if (thumb != null) {
-                _thumbnails.value = _thumbnails.value + (handle to thumb)
-            }
-        }
+        requestThumbnail(handle)
     }
 
     private fun loadLocalThumbnail(handle: Int) {
-        viewModelScope.launch {
-            if (_thumbnails.value.containsKey(handle)) return@launch
-            val bytes = withContext(Dispatchers.IO) {
-                runCatching {
-                    val bitmap = context.contentResolver.loadThumbnail(
-                        localContentUri(handle),
-                        Size(512, 512),
-                        null
-                    )
-                    val output = ByteArrayOutputStream()
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 82, output)
-                    output.toByteArray()
-                }.getOrNull()
-            }
-            if (bytes != null) {
-                _thumbnails.value = _thumbnails.value + (handle to bytes)
-            }
-        }
+        viewModelScope.launch { loadLocalThumbnailSuspend(handle) }
     }
 
     /**
@@ -488,7 +497,7 @@ class TransferViewModel @Inject constructor(
             }
             val deletedSet = deleted.toSet()
             _photoList.value = _photoList.value.filterNot { it.handle in deletedSet }
-            _thumbnails.value = _thumbnails.value.filterKeys { it !in deletedSet }
+            _thumbnails.value = _thumbnails.value - deletedSet
             _selectedHandles.value = _selectedHandles.value - deletedSet
             _message.value = "已从相机删除 ${deleted.size} 个文件"
         }
@@ -529,19 +538,19 @@ enum class AlbumSource(val label: String) {
 }
 
 /**
- * 影像筛选：全部 / 照片 / 视频 / RAW / JPG / 按日期
+ * 影像筛选：全部 / 照片 / 视频 / RAW / JPG
+ * （旧「按日期」选项无实际过滤逻辑，已移除）
  */
 enum class PhotoFilter(val label: String) {
     ALL("全部"),
     PHOTOS("照片"),
     VIDEO("视频"),
     RAW("RAW"),
-    JPEG("JPG"),
-    DATE("按日期");
+    JPEG("JPG");
 
     fun matches(file: CameraFile): Boolean {
         return when (this) {
-            ALL, DATE -> true
+            ALL -> true
             PHOTOS -> file.isPhoto
             VIDEO -> file.format == CameraFileFormat.VIDEO
             JPEG -> file.format == CameraFileFormat.JPEG

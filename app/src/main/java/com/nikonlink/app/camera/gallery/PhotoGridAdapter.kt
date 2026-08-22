@@ -2,9 +2,6 @@ package com.nikonlink.app.camera.gallery
 
 import android.animation.AnimatorSet
 import android.animation.ObjectAnimator
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.util.LruCache
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -17,13 +14,19 @@ import com.nikonlink.app.databinding.ItemPhotoGridBinding
  * 3 列网格 + 右上角黑色对勾 + 左下角格式角标
  * 交互：点击进入全屏预览，长按进入多选模式
  *
+ * 性能优化: Bitmap 统一由 ThumbnailCache（内存 LRU + 磁盘）管理，
+ * 不再持有自己的解码缓存；缩略图按可见性按需加载（onRequestThumb），
+ * 解码全部在后台线程完成，主线程只做 setImageBitmap。
+ *
  * Bug修复: 旧版 submit() 在 DiffUtil 计算前就把 selected 换成新集合，
  * 导致新旧内容比较永远相等、不触发重绑定 —— 表现为第二张起无选中反馈。
  * 现在保留 oldSelected 参与比较，并用 payload 对每次勾选/取消播放独立动画。
  */
 class PhotoGridAdapter(
+    private val cache: ThumbnailCache,
     private val onItemClick: (CameraFile, Int) -> Unit,
-    private val onItemLongClick: (CameraFile) -> Unit
+    private val onItemLongClick: (CameraFile) -> Unit,
+    private val onRequestThumb: (CameraFile) -> Unit
 ) : RecyclerView.Adapter<PhotoGridAdapter.GridViewHolder>() {
 
     companion object {
@@ -33,22 +36,19 @@ class PhotoGridAdapter(
 
     private var items: List<CameraFile> = emptyList()
     private var selected: Set<Int> = emptySet()
-    private var thumbnails: Map<Int, ByteArray> = emptyMap()
+    private var loadedThumbs: Set<Int> = emptySet()
 
     /** 多选模式：显示对勾容器 */
     var multiSelectMode: Boolean = false
 
-    /** Bitmap 解码缓存，避免滚动时重复解码 */
-    private val bitmapCache = LruCache<Int, Bitmap>(64)
-
-    fun submit(newItems: List<CameraFile>, newSelected: Set<Int>, newThumbs: Map<Int, ByteArray>) {
+    fun submit(newItems: List<CameraFile>, newSelected: Set<Int>, newThumbs: Set<Int>) {
         val oldItems = items
         // 关键: 先缓存旧状态，再赋值，DiffUtil 才能感知选中变化
         val oldSelected = selected
-        val oldThumbs = thumbnails
+        val oldThumbs = loadedThumbs
         items = newItems
         selected = newSelected
-        thumbnails = newThumbs
+        loadedThumbs = newThumbs
 
         DiffUtil.calculateDiff(object : DiffUtil.Callback() {
             override fun getOldListSize() = oldItems.size
@@ -58,13 +58,13 @@ class PhotoGridAdapter(
             override fun areContentsTheSame(oldPos: Int, newPos: Int): Boolean {
                 val h = items[newPos].handle
                 val selChanged = (h in oldSelected) != (h in newSelected)
-                val thumbChanged = newThumbs.containsKey(h) && !oldThumbs.containsKey(h)
+                val thumbChanged = newThumbs.contains(h) && !oldThumbs.contains(h)
                 return !selChanged && !thumbChanged && oldItems[oldPos] == items[newPos]
             }
             override fun getChangePayload(oldPos: Int, newPos: Int): Any? {
                 val h = items[newPos].handle
                 val selChanged = (h in oldSelected) != (h in newSelected)
-                val thumbChanged = newThumbs.containsKey(h) && !oldThumbs.containsKey(h)
+                val thumbChanged = newThumbs.contains(h) && !oldThumbs.contains(h)
                 return when {
                     selChanged && thumbChanged -> null // 全量刷新
                     selChanged -> PAYLOAD_SELECTION
@@ -83,19 +83,27 @@ class PhotoGridAdapter(
     }
 
     override fun onBindViewHolder(holder: GridViewHolder, position: Int) {
-        holder.bind(items[position], animate = false)
+        val file = items[position]
+        holder.bind(file, animate = false)
+        // 可见即加载：滚动到该格时请求缩略图（VM 层并发控制 + 缓存判断）
+        if (!cache.hasInMemory(file.handle)) {
+            onRequestThumb(file)
+        }
     }
 
     override fun onBindViewHolder(holder: GridViewHolder, position: Int, payloads: MutableList<Any>) {
         if (payloads.isEmpty()) {
-            holder.bind(items[position], animate = false)
+            onBindViewHolder(holder, position)
             return
         }
         // 局部刷新: 选中变化播放勾选动画，缩略图变化只更新图片
         payloads.forEach { payload ->
             when (payload) {
-                PAYLOAD_SELECTION -> holder.applySelection(items[position].handle in selected, animate = true)
-                PAYLOAD_THUMB -> holder.applyThumb(items[position].handle)
+                PAYLOAD_SELECTION -> holder.applySelection(
+                    items[position].handle in selected,
+                    animate = true
+                )
+                PAYLOAD_THUMB -> holder.applyThumb(items[position])
             }
         }
     }
@@ -116,7 +124,7 @@ class PhotoGridAdapter(
                 else -> "文件"
             }
             applySelection(file.handle in selected, animate)
-            applyThumb(file.handle)
+            applyThumb(file)
 
             binding.root.setOnClickListener { onItemClick(file, adapterPosition) }
             binding.root.setOnLongClickListener {
@@ -188,17 +196,12 @@ class PhotoGridAdapter(
             }
         }
 
-        /** 缩略图渲染（懒加载: 有数据才解码） */
-        fun applyThumb(handle: Int) {
-            val thumbData = thumbnails[handle]
-            if (thumbData != null) {
+        /** 缩略图渲染：缓存命中直接展示，未命中显示进度占位并等待 payload 刷新 */
+        fun applyThumb(file: CameraFile) {
+            val bmp = cache.fromMemory(file.handle)
+            if (bmp != null) {
                 binding.progressThumb.visibility = View.GONE
-                var bmp = bitmapCache.get(handle)
-                if (bmp == null) {
-                    bmp = BitmapFactory.decodeByteArray(thumbData, 0, thumbData.size)
-                    if (bmp != null) bitmapCache.put(handle, bmp)
-                }
-                if (bmp != null) binding.ivThumb.setImageBitmap(bmp)
+                binding.ivThumb.setImageBitmap(bmp)
             } else {
                 binding.progressThumb.visibility = View.VISIBLE
                 binding.ivThumb.setImageBitmap(null)

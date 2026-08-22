@@ -73,7 +73,8 @@ class ConnectionHealthWorker @AssistedInject constructor(
                 state == com.nikonlink.app.device.model.ConnectionState.FULLY_CONNECTED -> {
                     if (!connectionManager.isLinkHealthy()) {
                         Timber.tag(TAG).w("State says connected but link is dead, recovering")
-                        connectionManager.reconnectLastDevice()
+                        // WiFi 直连走 PTP 快速恢复，BLE 兜底走完整重连
+                        connectionManager.recoverLostLink()
                     } else {
                         Timber.tag(TAG).d("Fully connected - healthy")
                     }

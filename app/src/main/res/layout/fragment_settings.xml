@@ -37,54 +37,6 @@
             android:paddingHorizontal="@dimen/page_margin"
             android:paddingVertical="@dimen/module_gap">
 
-            <!-- 账号区域 -->
-            <LinearLayout
-                android:id="@+id/rowAccount"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="@drawable/bg_card"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                android:padding="18dp">
-
-                <ImageView
-                    android:layout_width="36dp"
-                    android:layout_height="36dp"
-                    android:background="@drawable/bg_icon_circle"
-                    android:contentDescription="账号"
-                    android:padding="8dp"
-                    android:src="@drawable/ic_user"
-                    app:tint="@color/text_primary" />
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="12dp"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        style="@style/NlText.SectionTitle"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="尼康账号" />
-
-                    <TextView
-                        style="@style/NlText.Caption"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="2dp"
-                        android:text="未登录 · 点击登录" />
-                </LinearLayout>
-
-                <ImageView
-                    android:layout_width="18dp"
-                    android:layout_height="18dp"
-                    android:contentDescription="进入"
-                    android:src="@drawable/ic_chevron_right"
-                    app:tint="@color/text_tertiary" />
-            </LinearLayout>
-
             <!-- 传输设置组 -->
             <TextView
                 style="@style/NlText.GroupTitle"
@@ -198,45 +150,6 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content" />
                 </LinearLayout>
-
-                <View
-                    android:layout_width="match_parent"
-                    android:layout_height="@dimen/divider_height"
-                    android:layout_marginStart="18dp"
-                    android:background="@color/divider" />
-
-                <LinearLayout
-                    android:id="@+id/rowRawProcess"
-                    android:layout_width="match_parent"
-                    android:layout_height="52dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal"
-                    android:paddingHorizontal="18dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="RAW 文件处理"
-                        android:textColor="@color/text_primary"
-                        android:textSize="14sp" />
-
-                    <TextView
-                        android:id="@+id/tvRawValue"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="原样保存"
-                        android:textColor="@color/text_tertiary"
-                        android:textSize="13sp" />
-
-                    <ImageView
-                        android:layout_width="16dp"
-                        android:layout_height="16dp"
-                        android:layout_marginStart="4dp"
-                        android:contentDescription="修改"
-                        android:src="@drawable/ic_chevron_right"
-                        app:tint="@color/text_tertiary" />
-                </LinearLayout>
             </LinearLayout>
 
             <!-- 相机设置组 -->
@@ -300,48 +213,31 @@
                     android:orientation="horizontal"
                     android:paddingHorizontal="18dp">
 
-                    <TextView
+                    <LinearLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="手机 GPS 位置同步"
-                        android:textColor="@color/text_primary"
-                        android:textSize="14sp" />
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="5GHz 频段优先"
+                            android:textColor="@color/text_primary"
+                            android:textSize="14sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="双频相机 AP 优先连接 5GHz，失败自动回退"
+                            android:textColor="@color/text_tertiary"
+                            android:textSize="11sp" />
+                    </LinearLayout>
 
                     <com.google.android.material.materialswitch.MaterialSwitch
-                        android:id="@+id/switchGpsSync"
+                        android:id="@+id/switchWifi5G"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content" />
-                </LinearLayout>
-
-                <View
-                    android:layout_width="match_parent"
-                    android:layout_height="@dimen/divider_height"
-                    android:layout_marginStart="18dp"
-                    android:background="@color/divider" />
-
-                <LinearLayout
-                    android:id="@+id/rowFirmware"
-                    android:layout_width="match_parent"
-                    android:layout_height="52dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal"
-                    android:paddingHorizontal="18dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="固件更新"
-                        android:textColor="@color/text_primary"
-                        android:textSize="14sp" />
-
-                    <ImageView
-                        android:layout_width="16dp"
-                        android:layout_height="16dp"
-                        android:contentDescription="进入"
-                        android:src="@drawable/ic_chevron_right"
-                        app:tint="@color/text_tertiary" />
                 </LinearLayout>
             </LinearLayout>
 
@@ -400,44 +296,6 @@
                     android:background="@color/divider" />
 
                 <LinearLayout
-                    android:id="@+id/rowLanguage"
-                    android:layout_width="match_parent"
-                    android:layout_height="52dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal"
-                    android:paddingHorizontal="18dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="语言设置"
-                        android:textColor="@color/text_primary"
-                        android:textSize="14sp" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="简体中文"
-                        android:textColor="@color/text_tertiary"
-                        android:textSize="13sp" />
-
-                    <ImageView
-                        android:layout_width="16dp"
-                        android:layout_height="16dp"
-                        android:layout_marginStart="4dp"
-                        android:contentDescription="修改"
-                        android:src="@drawable/ic_chevron_right"
-                        app:tint="@color/text_tertiary" />
-                </LinearLayout>
-
-                <View
-                    android:layout_width="match_parent"
-                    android:layout_height="@dimen/divider_height"
-                    android:layout_marginStart="18dp"
-                    android:background="@color/divider" />
-
-                <LinearLayout
                     android:id="@+id/rowClearCache"
                     android:layout_width="match_parent"
                     android:layout_height="52dp"
@@ -460,6 +318,37 @@
                         android:text="0 MB"
                         android:textColor="@color/text_tertiary"
                         android:textSize="13sp" />
+                </LinearLayout>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/divider_height"
+                    android:layout_marginStart="18dp"
+                    android:background="@color/divider" />
+
+                <LinearLayout
+                    android:id="@+id/rowExportLog"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="18dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="导出日志"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+
+                    <ImageView
+                        android:layout_width="16dp"
+                        android:layout_height="16dp"
+                        android:layout_marginStart="4dp"
+                        android:contentDescription="导出"
+                        android:src="@drawable/ic_chevron_right"
+                        app:tint="@color/text_tertiary" />
                 </LinearLayout>
 
                 <View

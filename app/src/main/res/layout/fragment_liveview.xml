@@ -91,34 +91,6 @@
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
-            <TextView
-                android:id="@+id/btnAspect"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:background="@drawable/bg_lv_pill"
-                android:gravity="center"
-                android:paddingHorizontal="10dp"
-                android:paddingVertical="6dp"
-                android:text="3:2"
-                android:textColor="@color/white"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/btnFormat"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:background="@drawable/bg_lv_pill"
-                android:gravity="center"
-                android:paddingHorizontal="10dp"
-                android:paddingVertical="6dp"
-                android:text="RAW+JPG"
-                android:textColor="@color/white"
-                android:textSize="11sp"
-                android:textStyle="bold" />
-
             <ImageView
                 android:id="@+id/btnGridToggle"
                 android:layout_width="38dp"
@@ -381,52 +353,6 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
                     android:text="相册"
-                    android:textColor="#CCFFFFFF"
-                    android:textSize="10sp" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:id="@+id/btnFilter"
-                android:layout_width="56dp"
-                android:layout_height="52dp"
-                android:gravity="center"
-                android:orientation="vertical">
-
-                <ImageView
-                    android:layout_width="22dp"
-                    android:layout_height="22dp"
-                    android:contentDescription="滤镜"
-                    android:src="@drawable/ic_filter"
-                    app:tint="@color/white" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:text="滤镜"
-                    android:textColor="#CCFFFFFF"
-                    android:textSize="10sp" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:id="@+id/btnRecipe"
-                android:layout_width="56dp"
-                android:layout_height="52dp"
-                android:gravity="center"
-                android:orientation="vertical">
-
-                <ImageView
-                    android:layout_width="22dp"
-                    android:layout_height="22dp"
-                    android:contentDescription="配方"
-                    android:src="@drawable/ic_lens"
-                    app:tint="@color/white" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:text="配方"
                     android:textColor="#CCFFFFFF"
                     android:textSize="10sp" />
             </LinearLayout>

@@ -1,5 +1,7 @@
 package com.nikonlink.app.device.ptp
 
+import com.nikonlink.app.shared.common.AppEventLogger
+import io.mockk.mockk
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetAddress
@@ -29,7 +31,7 @@ class PtpSessionManagerTest {
         val camera = MockPtpCamera()
         camera.start()
         try {
-            val session = PtpSessionManager(TestIdentity())
+            val session = PtpSessionManager(TestIdentity(), mockLog())
             withTimeout(10_000) {
                 val connected = session.connect(
                     host = "127.0.0.1",
@@ -69,7 +71,7 @@ class PtpSessionManagerTest {
         val camera = RejectingPtpCamera()
         camera.start()
         try {
-            val session = PtpSessionManager(TestIdentity())
+            val session = PtpSessionManager(TestIdentity(), mockLog())
             val connected = withTimeout(10_000) {
                 session.connect("127.0.0.1", camera.port, pairingMode = true)
             }
@@ -84,6 +86,8 @@ class PtpSessionManagerTest {
         override val clientGuid: ByteArray = ByteArray(16) { 0x42 }
         override val clientName: String = "N-Link-Test"
     }
+
+    private fun mockLog(): AppEventLogger = mockk(relaxed = true)
 }
 
 private class MockPtpCamera {

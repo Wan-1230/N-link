@@ -114,6 +114,9 @@ dependencies {
     // Image Loading
     implementation(libs.coil)
 
+    // EXIF metadata (预览页拍摄信息)
+    implementation(libs.androidx.exifinterface)
+
     // JSON Serialization
     implementation("com.google.code.gson:gson:2.11.0")
 

@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.nikonlink.app.device.service.ConnectionHealthWorker
+import com.nikonlink.app.shared.common.AppEventLogger
 import androidx.work.WorkManager
 import dagger.hilt.android.HiltAndroidApp
 import timber.log.Timber
@@ -21,6 +22,9 @@ class NLinkApp : Application(), Configuration.Provider {
     @Inject
     lateinit var workerFactory: HiltWorkerFactory
 
+    @Inject
+    lateinit var eventLogger: AppEventLogger
+
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
             .setWorkerFactory(workerFactory)
@@ -33,6 +37,7 @@ class NLinkApp : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        eventLogger.installCrashHandler()
         initLogging()
         createNotificationChannels()
         scheduleHealthCheck()
