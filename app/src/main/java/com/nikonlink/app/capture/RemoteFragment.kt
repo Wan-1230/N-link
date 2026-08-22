@@ -13,7 +13,6 @@ import android.view.ViewGroup
 import android.view.ViewOutlineProvider
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
@@ -288,14 +287,10 @@ class RemoteFragment : Fragment() {
                 .show()
         }
 
-        // 照片模式：间隔拍摄；视频模式：视频场景适配
+        // 间隔拍摄（仅照片模式可用；视频模式隐藏该按钮）
         binding.btnModeAction.pressEffect()
         binding.btnModeAction.setOnClickListener {
-            if (videoMode) {
-                showVideoSceneDialog()
-            } else {
-                showIntervalDialog()
-            }
+            showIntervalDialog()
         }
     }
 
@@ -310,20 +305,6 @@ class RemoteFragment : Fragment() {
                     2 -> viewModel.startInterval(IntervalConfig(10000, 100))
                     3 -> viewModel.cancelInterval()
                 }
-            }
-            .show()
-    }
-
-    private fun showVideoSceneDialog() {
-        val scenes = arrayOf("标准", "人像", "风景", "运动", "微距")
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle("视频场景")
-            .setItems(scenes) { _, which ->
-                Toast.makeText(
-                    requireContext(),
-                    "已切换视频场景：${scenes[which]}",
-                    Toast.LENGTH_SHORT
-                ).show()
             }
             .show()
     }
@@ -368,10 +349,12 @@ class RemoteFragment : Fragment() {
         if (video) {
             binding.ivShutterIcon.setImageResource(R.drawable.ic_record_dot)
             binding.ivShutterIcon.setColorFilter(resources.getColor(R.color.white, null))
-            binding.btnModeAction.text = "视频场景"
+            // 视频模式无对应“视频场景”PTP 能力，隐藏该按钮避免空操作
+            binding.btnModeAction.visibility = View.GONE
         } else {
             binding.ivShutterIcon.setImageResource(R.drawable.ic_shutter_white)
             binding.ivShutterIcon.clearColorFilter()
+            binding.btnModeAction.visibility = View.VISIBLE
             binding.btnModeAction.text = "间隔拍摄"
         }
     }

@@ -190,6 +190,10 @@ class DashboardFragment : Fragment() {
                 if (metrics.wifiFrequencyMhz > 0) {
                     binding.tvWifiBand.text =
                         "${WifiManager.bandLabel(metrics.wifiFrequencyMhz)} (${metrics.wifiFrequencyMhz} MHz)"
+                    binding.tvWifiBandCard.text =
+                        "${WifiManager.bandLabel(metrics.wifiFrequencyMhz)} · ${metrics.wifiFrequencyMhz}MHz"
+                } else {
+                    binding.tvWifiBandCard.text = "WiFi 频段\n未连接"
                 }
                 binding.tvReconnectCount.text = "${metrics.reconnectCount} 次"
             }
@@ -331,21 +335,14 @@ class DashboardFragment : Fragment() {
         binding.cardQuickAlbum.setOnClickListener {
             (activity as? MainActivity)?.switchToTab(MainActivity.TAB_ALBUM)
         }
-        binding.cardQuickFirmware.pressEffect()
-        binding.cardQuickFirmware.setOnClickListener {
-            MaterialAlertDialogBuilder(requireContext())
-                .setTitle("固件更新")
-                .setMessage("当前已是最新版本，暂无可用固件更新。")
-                .setPositiveButton("确定", null)
-                .show()
+        // 当前 WiFi 频段卡片：展示当前链路频段（不可用时隐藏），点击跳设置页开启 5GHz 优先
+        binding.cardWifiSpeed.pressEffect()
+        binding.cardWifiSpeed.setOnClickListener {
+            (activity as? MainActivity)?.switchToTab(MainActivity.TAB_SETTINGS)
         }
-        binding.cardQuickLocation.pressEffect()
-        binding.cardQuickLocation.setOnClickListener {
-            MaterialAlertDialogBuilder(requireContext())
-                .setTitle("位置同步")
-                .setMessage("将手机 GPS 位置写入照片需要相机支持位置信息写入，Z 系列机型可通过蓝牙持续同步。功能即将开放。")
-                .setPositiveButton("确定", null)
-                .show()
+        binding.cardQuickSettings.pressEffect()
+        binding.cardQuickSettings.setOnClickListener {
+            (activity as? MainActivity)?.switchToTab(MainActivity.TAB_SETTINGS)
         }
 
         // 相机详情折叠组（展开/收起 + 箭头旋转动画）

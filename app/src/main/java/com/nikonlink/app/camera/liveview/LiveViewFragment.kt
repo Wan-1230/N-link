@@ -61,13 +61,8 @@ class LiveViewFragment : Fragment() {
     private var controlsVisible = true
     private var gridVisible = true
     private var levelVisible = false
-    private var aspectLabel = "3:2"
-    private var formatLabel = "RAW+JPG"
     private var baseZoom = 1f
     private var scaleDetector: ScaleGestureDetector? = null
-
-    private val aspectOptions = listOf("3:2", "4:3", "1:1", "16:9")
-    private val formatOptions = listOf("RAW+JPG", "RAW", "JPG")
 
     private val apertureValues = listOf(140, 180, 200, 280, 350, 400, 560, 800, 1100, 1600, 2200)
     private val shutterValues = listOf(
@@ -110,20 +105,6 @@ class LiveViewFragment : Fragment() {
 
         binding.btnAfMode.pressEffect()
         binding.btnAfMode.setOnClickListener { paramsViewModel.cycleFocusMode() }
-
-        binding.btnAspect.pressEffect()
-        binding.btnAspect.setOnClickListener {
-            val idx = aspectOptions.indexOf(aspectLabel)
-            aspectLabel = aspectOptions[(idx + 1).coerceAtLeast(0) % aspectOptions.size]
-            binding.btnAspect.text = aspectLabel
-        }
-
-        binding.btnFormat.pressEffect()
-        binding.btnFormat.setOnClickListener {
-            val idx = formatOptions.indexOf(formatLabel)
-            formatLabel = formatOptions[(idx + 1).coerceAtLeast(0) % formatOptions.size]
-            binding.btnFormat.text = formatLabel
-        }
 
         binding.btnGridToggle.pressEffect()
         binding.btnGridToggle.setOnClickListener {
@@ -170,16 +151,6 @@ class LiveViewFragment : Fragment() {
             }
             startActivity(intent)
             requireActivity().finish()
-        }
-
-        binding.btnFilter.pressEffect()
-        binding.btnFilter.setOnClickListener {
-            Toast.makeText(requireContext(), "滤镜效果请在拍摄页调整", Toast.LENGTH_SHORT).show()
-        }
-
-        binding.btnRecipe.pressEffect()
-        binding.btnRecipe.setOnClickListener {
-            Toast.makeText(requireContext(), "配方功能将在设置页开放", Toast.LENGTH_SHORT).show()
         }
     }
 

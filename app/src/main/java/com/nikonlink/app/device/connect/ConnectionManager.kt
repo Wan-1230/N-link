@@ -1,5 +1,6 @@
 package com.nikonlink.app.device.connect
 
+import android.content.Context
 import com.nikonlink.app.device.ble.BleConnectionState
 import com.nikonlink.app.device.ble.BleManager
 import com.nikonlink.app.device.ble.WifiCredential
@@ -16,6 +17,9 @@ import com.nikonlink.app.device.wifi_ap.WifiManager
 import com.nikonlink.app.device.wifi_sta.WifiCameraCandidate
 import com.nikonlink.app.device.wifi_sta.WifiScanner
 import com.nikonlink.app.device.data.DeviceRepository
+import com.nikonlink.app.camera.gallery.TransferManager
+import com.nikonlink.app.shared.common.AppEventLogger
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import timber.log.Timber
@@ -36,19 +40,26 @@ import javax.inject.Singleton
  */
 @Singleton
 class ConnectionManager @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val bleManager: BleManager,
     private val wifiManager: WifiManager,
     private val wifiScanner: WifiScanner,
     private val ptpSession: PtpSessionManager,
     private val usbPtpManager: UsbPtpManager,
     private val stateMachine: ConnectionStateMachine,
-    private val deviceRepository: DeviceRepository
+    private val deviceRepository: DeviceRepository,
+    private val transferManager: TransferManager,
+    private val eventLogger: AppEventLogger
 ) {
     companion object {
         private const val TAG = "ConnectionMgr"
         private const val WIFI_UPGRADE_DELAY_MS = 1000L
         private const val PAIRING_TIMEOUT_MS = 90000L
         private const val PAIRING_RETRY_DELAY_MS = 3000L
+        /** STA 恢复指数退避间隔（共 5 次，总等待 ≤ 60s） */
+        private val STA_RECOVERY_DELAYS_MS = longArrayOf(2000L, 4000L, 8000L, 16000L, 30000L)
+        private const val PREFS_NAME = "nl_settings"
+        private const val PREFS_WIFI_5G_PREFER = "wifi_band_5g_prefer"
     }
 
     private var scope: CoroutineScope? = null
@@ -58,6 +69,8 @@ class ConnectionManager @Inject constructor(
     private var connectedSince: Long? = null
     private var pairingJob: Job? = null
     private var recoveryJob: Job? = null
+    /** STA 直连场景：WiFi 路由器断网标记（网络恢复后触发 PTP 重建） */
+    private var staNetworkLost = false
 
     private val _connectionMetrics = MutableStateFlow(ConnectionMetrics())
     val connectionMetrics: StateFlow<ConnectionMetrics> = _connectionMetrics.asStateFlow()
@@ -77,6 +90,7 @@ class ConnectionManager @Inject constructor(
         wifiManager.start(scope)
         ptpSession.start(scope)
         usbPtpManager.start(scope)
+        transferManager.start(scope)
         stateMachine.start(scope)
 
         observeBleEvents()
@@ -85,6 +99,7 @@ class ConnectionManager @Inject constructor(
         observeUsbEvents()
         observeStateMachine()
         observeReconnectTrigger()
+        observeStaRecovery()
         startMetricsUpdater()
         scope.launch { reconnectLastDeviceIfPaired() }
 
@@ -100,6 +115,7 @@ class ConnectionManager @Inject constructor(
         wifiManager.stop()
         ptpSession.stop()
         usbPtpManager.stop()
+        transferManager.stop()
         stateMachine.stop()
         _connectionHint.value = null
         userDisconnectRequested = false
@@ -155,6 +171,7 @@ class ConnectionManager @Inject constructor(
 
         pairingJob = scope?.launch(Dispatchers.IO) {
             try {
+                eventLogger.event("pair_start", "ip" to ipAddress, "port" to port)
                 val deadline = System.currentTimeMillis() + PAIRING_TIMEOUT_MS
                 var ok = false
                 while (System.currentTimeMillis() < deadline && !ok) {
@@ -185,6 +202,7 @@ class ConnectionManager @Inject constructor(
                 if (ok) {
                     // Fix 任务1(STA): 直连成功后不再发 BLE 指令令相机切换 WiFi 模式，
                     // 避免 STA 模式下相机会话被重置导致后续操作失败
+                    eventLogger.event("pair_ok", "ip" to ipAddress, "port" to port)
                     _connectionHint.value = ConnectionHint(
                         "配对完成。OK确定",
                         kind = ConnectionHintKind.PAIRING_COMPLETE
@@ -201,8 +219,9 @@ class ConnectionManager @Inject constructor(
                     }
                 } else {
                     _connectionHint.value = null
+                    eventLogger.event("pair_fail", "ip" to ipAddress, "port" to port)
                     stateMachine.dispatch(
-                        ConnectionEvent.ErrorOccurred("WiFi 相机连接失败", recoverable = false)
+                        ConnectionEvent.ErrorOccurred("WiFi 相机连接失败", recoverable = true)
                     )
                 }
             } finally {
@@ -353,6 +372,8 @@ class ConnectionManager @Inject constructor(
                 if (!wifiManager.isConnected()) {
                     requestWifiReconnect()
                 }
+                // 设置「自动下载新照片」开启时，同步最新照片入队
+                transferManager.scheduleAutoSync()
             }
         }
     }
@@ -397,6 +418,7 @@ class ConnectionManager @Inject constructor(
                         // WiFi 网络就绪后先建立 PTP 会话，避免网络恢复但相机未在线时误报已连接
                         stateMachine.dispatch(ConnectionEvent.WifiUpgradeRequested)
                         establishPtpSession()
+                        transferManager.scheduleAutoSync()
                     }
                     com.nikonlink.app.device.wifi_ap.WifiChannelState.DISCONNECTED -> {
                         if (stateMachine.state.value == ConnectionState.FULLY_CONNECTED ||
@@ -417,8 +439,33 @@ class ConnectionManager @Inject constructor(
         scope?.launch {
             wifiManager.networkLost.collect {
                 Timber.tag(TAG).w("WiFi network lost, attempting recovery")
+                if (pairedDeviceAddress?.startsWith("wifi:") == true) {
+                    staNetworkLost = true
+                    eventLogger.event("wifi_sta", "state" to "network_lost")
+                    Timber.tag(TAG).i("STA camera link: network lost, waiting for network restore")
+                }
                 if (bleManager.isConnected()) {
                     requestWifiReconnect()
+                }
+            }
+        }
+    }
+
+    /**
+     * STA 直连场景的网络监护：路由器断网后置标记，网络恢复即重建 PTP 会话。
+     * 补原实现缺口（旧逻辑只覆盖 BLE+相机AP 场景，纯 WiFi 直连断网后无法自愈）。
+     */
+    private fun observeStaRecovery() {
+        scope?.launch {
+            wifiManager.networkAvailable.collect { network ->
+                if (staNetworkLost && !userDisconnectRequested &&
+                    pairedDeviceAddress?.startsWith("wifi:") == true &&
+                    pairingJob == null
+                ) {
+                    staNetworkLost = false
+                    eventLogger.event("wifi_sta", "state" to "network_restored")
+                    Timber.tag(TAG).i("STA WiFi network restored, rebuilding PTP session over $network")
+                    recoverWifiSession(network)
                 }
             }
         }
@@ -471,7 +518,7 @@ class ConnectionManager @Inject constructor(
                 if ((state == PtpSessionState.ERROR || state == PtpSessionState.DISCONNECTED) &&
                     !userDisconnectRequested &&
                     pairingJob == null &&
-                    stateMachine.state.value == ConnectionState.FULLY_CONNECTED &&
+                    stateMachine.state.value != ConnectionState.DISCONNECTED &&
                     pairedDeviceAddress?.startsWith("wifi:") == true
                 ) {
                     Timber.tag(TAG).w("PTP session lost, attempting recovery")
@@ -493,7 +540,7 @@ class ConnectionManager @Inject constructor(
         }
     }
 
-    private fun recoverWifiSession() {
+    private fun recoverWifiSession(network: android.net.Network? = null) {
         val address = pairedDeviceAddress ?: return
         if (recoveryJob?.isActive == true) return
         val parts = address.removePrefix("wifi:").split(":")
@@ -502,24 +549,32 @@ class ConnectionManager @Inject constructor(
         if (ip.isEmpty()) return
 
         recoveryJob = scope?.launch(Dispatchers.IO) {
-            val network = wifiManager.bindToActiveWifi()
-            // Fix 真机日志: 首次恢复时相机可能还在清理旧会话，返回异常包导致握手失败；
-            // 改为最多重试 3 次（间隔递增），只有全部失败才判定不可恢复
+            eventLogger.event("wifi_recover_start", "ip" to ip, "port" to port)
+            // 网络可能刚恢复，先显式重绑定（旧 Network 句柄在断网重连后失效）
+            val boundNetwork = network ?: wifiManager.bindToActiveWifi()
+            // STA 恢复不走配对模式：相机无需再次确认 OK，读超时也更短（15s）
             var ok = false
             var attempt = 0
-            while (!ok && attempt < 3) {
+            for (delayMs in STA_RECOVERY_DELAYS_MS) {
+                ensureActive()
                 attempt++
-                delay(2000L * attempt)
-                ok = ptpSession.connect(ip, port, pairingMode = true, network = network)
-                if (!ok) Timber.tag(TAG).w("PTP recovery attempt $attempt failed")
+                delay(delayMs)
+                ok = ptpSession.connect(ip, port, pairingMode = false, network = boundNetwork)
+                if (ok) {
+                    Timber.tag(TAG).i("PTP session recovered (attempt $attempt)")
+                    break
+                }
+                Timber.tag(TAG).w("PTP recovery attempt $attempt failed")
+                eventLogger.event("wifi_recover", "attempt" to attempt, "ok" to false)
             }
             if (ok) {
-                Timber.tag(TAG).i("PTP session recovered (attempt $attempt)")
+                eventLogger.event("wifi_recover", "attempt" to attempt, "ok" to true)
                 stateMachine.dispatch(ConnectionEvent.WifiConnected)
             } else {
-                Timber.tag(TAG).w("PTP session recovery failed after 3 attempts")
+                Timber.tag(TAG).w("PTP session recovery failed after $attempt attempts")
+                // 交由状态机指数退避继续兑底重连（不再直接判死）
                 stateMachine.dispatch(
-                    ConnectionEvent.ErrorOccurred("WiFi 连接已断开", recoverable = false)
+                    ConnectionEvent.ErrorOccurred("WiFi 连接已断开", recoverable = true)
                 )
             }
             recoveryJob = null
@@ -534,8 +589,18 @@ class ConnectionManager @Inject constructor(
             stateMachine.state.collect { state ->
                 if (state == ConnectionState.CONNECTING && !userDisconnectRequested) {
                     val address = pairedDeviceAddress
-                    if (address != null &&
-                        !address.startsWith("wifi:") &&
+                    if (address != null && address.startsWith("wifi:")) {
+                        // Fix STA: 状态机重试闭环补齐 WiFi 直连分支（旧逻辑只重连 BLE）
+                        if (pairingJob == null && !ptpSession.isConnected()) {
+                            val parts = address.removePrefix("wifi:").split(":")
+                            val ip = parts.firstOrNull().orEmpty()
+                            val port = parts.getOrNull(1)?.toIntOrNull() ?: 15740
+                            if (ip.isNotEmpty()) {
+                                Timber.tag(TAG).i("Auto-reconnecting to WiFi camera $ip:$port")
+                                connectToWifiCamera(ip, port)
+                            }
+                        }
+                    } else if (address != null &&
                         bleManager.connectionState.value != BleConnectionState.CONNECTED &&
                         bleManager.connectionState.value != BleConnectionState.CONNECTING
                     ) {
@@ -555,7 +620,10 @@ class ConnectionManager @Inject constructor(
         if (wifiManager.isConnected()) return
         if (wifiManager.wifiState.value == com.nikonlink.app.device.wifi_ap.WifiChannelState.CONNECTING) return
         stateMachine.dispatch(ConnectionEvent.WifiUpgradeRequested)
-        val success = wifiManager.connectToCamera(credential)
+        // 设置页「5GHz 优先」开关：双频相机 AP 时优先连接 5GHz，失败自动回退 2.4GHz
+        val prefer5G = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(PREFS_WIFI_5G_PREFER, false)
+        val success = wifiManager.connectToCamera(credential, preferBand5GHz = prefer5G)
         if (!success) {
             Timber.tag(TAG).w("WiFi upgrade failed, staying on BLE only")
             stateMachine.dispatch(ConnectionEvent.WifiDisconnected)
@@ -577,14 +645,18 @@ class ConnectionManager @Inject constructor(
         val host = credential?.ipAddress ?: "192.168.1.1"
         val port = credential?.port ?: 15740
 
-        val success = ptpSession.connect(host, port)
-        if (success) {
-            Timber.tag(TAG).i("✓ PTP session ready")
-            stateMachine.dispatch(ConnectionEvent.WifiConnected)
-        } else {
-            Timber.tag(TAG).w("PTP session failed, will retry on next WiFi reconnect")
-            stateMachine.dispatch(ConnectionEvent.WifiDisconnected)
+        // Fix STA/AP: 相机可能尚未就绪，连试 3 次再判定失败
+        repeat(3) { attempt ->
+            val success = ptpSession.connect(host, port)
+            if (success) {
+                Timber.tag(TAG).i("✓ PTP session ready (attempt ${attempt + 1})")
+                stateMachine.dispatch(ConnectionEvent.WifiConnected)
+                return
+            }
+            if (attempt < 2) delay(1500L * (attempt + 1))
         }
+        Timber.tag(TAG).w("PTP session failed, will retry on next WiFi reconnect")
+        stateMachine.dispatch(ConnectionEvent.WifiDisconnected)
     }
 
     /**
@@ -640,6 +712,21 @@ class ConnectionManager @Inject constructor(
 
     fun isFullyConnected(): Boolean = stateMachine.state.value == ConnectionState.FULLY_CONNECTED
     fun isBleConnected(): Boolean = bleManager.isConnected()
+
+    /**
+     * 健康检查入口：WiFi 直连设备会话死亡时走 PTP 快速恢复，
+     * 其余（BLE/未配对）走完整重连流程。
+     */
+    fun recoverLostLink() {
+        val address = pairedDeviceAddress
+        if (address != null && address.startsWith("wifi:") && pairingJob == null &&
+            stateMachine.state.value != ConnectionState.DISCONNECTED
+        ) {
+            recoverWifiSession()
+        } else {
+            scope?.launch { reconnectLastDevice() }
+        }
+    }
 
     /**
      * 连接状态机与底层会话是否一致。

@@ -97,6 +97,34 @@ object PtpConstants {
     const val RESPONSE_TRANSACTION_CANCELLED = 0x201F
     const val RESPONSE_NIKON_NOT_LIVE_VIEW = 0xA00B
 
+    /**
+     * PTP 响应码中文化描述（日志与用户提示统一使用）。
+     * 未知码返回十六进制形式，便于扩展排查。
+     */
+    fun describeResponseCode(code: Int): String = when (code) {
+        RESPONSE_OK -> "成功"
+        RESPONSE_GENERAL_ERROR -> "一般错误"
+        RESPONSE_SESSION_NOT_OPEN -> "会话未打开"
+        RESPONSE_INVALID_TRANSACTION -> "事务无效"
+        RESPONSE_OPERATION_NOT_SUPPORTED -> "相机不支持该操作"
+        RESPONSE_PARAMETER_NOT_SUPPORTED -> "参数不受支持"
+        RESPONSE_INCOMPLETE_TRANSFER -> "传输不完整"
+        RESPONSE_INVALID_STORAGE_ID -> "存储 ID 无效"
+        RESPONSE_INVALID_OBJECT_HANDLE -> "对象句柄无效"
+        RESPONSE_DEVICE_PROP_NOT_SUPPORTED -> "相机不支持该属性"
+        RESPONSE_INVALID_OBJECT_FORMAT -> "对象格式无效"
+        RESPONSE_STORE_FULL -> "存储卡已满"
+        RESPONSE_OBJECT_WRITE_PROTECTED -> "文件写保护"
+        RESPONSE_STORE_READ_ONLY -> "存储卡只读"
+        RESPONSE_ACCESS_DENIED -> "访问被拒绝（相机端未确认连接）"
+        RESPONSE_NO_THUMBNAIL_PRESENT -> "无缩略图可用"
+        RESPONSE_DEVICE_BUSY -> "相机忙碌，请稍后重试"
+        RESPONSE_SESSION_ALREADY_OPEN -> "会话已打开"
+        RESPONSE_TRANSACTION_CANCELLED -> "事务已取消"
+        RESPONSE_NIKON_NOT_LIVE_VIEW -> "相机未处于实时取景状态"
+        else -> "0x${code.toString(16).uppercase()}"
+    }
+
     // PTP Event Codes
     // event code=0x4002 (ObjectAdded) / 0x4006 (DevicePropChanged) / 0x400d
     const val EVENT_OBJECT_ADDED = 0x4002

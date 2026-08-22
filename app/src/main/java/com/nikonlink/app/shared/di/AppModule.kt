@@ -20,6 +20,8 @@ import com.nikonlink.app.capture.RemoteShootingManager
 import com.nikonlink.app.camera.params.CameraParameterManager
 import com.nikonlink.app.camera.params.DigeekerShutterCountClient
 import com.nikonlink.app.camera.gallery.TransferManager
+import com.nikonlink.app.shared.common.AppEventLogger
+import com.nikonlink.app.shared.common.AppSettings
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -56,8 +58,9 @@ object AppModule {
     @Provides
     @Singleton
     fun providePtpSessionManager(
-        identityStore: PtpIdentityStore
-    ): PtpSessionManager = PtpSessionManager(identityStore)
+        identityStore: PtpIdentityStore,
+        eventLogger: AppEventLogger
+    ): PtpSessionManager = PtpSessionManager(identityStore, eventLogger)
 
     @Provides
     @Singleton
@@ -66,21 +69,27 @@ object AppModule {
     @Provides
     @Singleton
     fun provideConnectionManager(
+        @ApplicationContext context: Context,
         bleManager: BleManager,
         wifiManager: WifiManager,
         wifiScanner: WifiScanner,
         ptpSessionManager: PtpSessionManager,
         usbPtpManager: UsbPtpManager,
         stateMachine: ConnectionStateMachine,
-        deviceRepository: DeviceRepository
+        deviceRepository: DeviceRepository,
+        transferManager: TransferManager,
+        eventLogger: AppEventLogger
     ): ConnectionManager = ConnectionManager(
-        bleManager = bleManager,
-        wifiManager = wifiManager,
-        wifiScanner = wifiScanner,
-        ptpSession = ptpSessionManager,
-        usbPtpManager = usbPtpManager,
-        stateMachine = stateMachine,
-        deviceRepository = deviceRepository
+        context,
+        bleManager,
+        wifiManager,
+        wifiScanner,
+        ptpSessionManager,
+        usbPtpManager,
+        stateMachine,
+        deviceRepository,
+        transferManager,
+        eventLogger
     )
 
     @Provides
@@ -112,12 +121,18 @@ object AppModule {
         @ApplicationContext context: Context,
         ptpSessionManager: PtpSessionManager,
         usbPtpManager: UsbPtpManager,
-        transferRepository: TransferRepository
+        transferRepository: TransferRepository,
+        wifiManager: WifiManager,
+        settings: AppSettings,
+        eventLogger: AppEventLogger
     ): TransferManager = TransferManager(
         context,
         ptpSessionManager,
         usbPtpManager,
-        transferRepository
+        transferRepository,
+        wifiManager,
+        settings,
+        eventLogger
     )
 
     @Provides

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.*
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
+import android.os.Build
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -54,6 +55,7 @@ class WifiManager @Inject constructor(
     private val _wifiState = MutableStateFlow(WifiChannelState.DISCONNECTED)
     val wifiState: StateFlow<WifiChannelState> = _wifiState.asStateFlow()
 
+    /** WiFi 网络从无到有的恢复信号（STA 直连场景用于触发 PTP 会话重建） */
     private val _networkAvailable = MutableSharedFlow<Network>(extraBufferCapacity = 1)
     val networkAvailable: SharedFlow<Network> = _networkAvailable.asSharedFlow()
 
@@ -86,72 +88,59 @@ class WifiManager @Inject constructor(
      * PRD 7.1: 优先使用 Infrastructure 模式（相机作为 AP）
      */
     suspend fun connectToCamera(credential: WifiCredential): Boolean {
+        return connectToCamera(credential, preferBand5GHz = false)
+    }
+
+    /**
+     * 连接到相机 WiFi AP。
+     *
+     * @param preferBand5GHz 开启 5GHz 优先（API ≥ 30）：先请求 5GHz 频段，
+     *   失败自动回退不带 band 限制的请求（相机 AP 仅 2.4GHz / 手机不支持时仍可连接）。
+     *   硬件限制：部分国产 ROM 对 setBand 支持不完整；相机 AP 无双频时回退可保证基本可用。
+     */
+    suspend fun connectToCamera(credential: WifiCredential, preferBand5GHz: Boolean): Boolean {
         if (isConnected()) return true
         currentCredential = credential
         _wifiState.value = WifiChannelState.CONNECTING
 
         return withContext(Dispatchers.Main) {
             try {
-                val builder = WifiNetworkSpecifier.Builder().setSsid(credential.ssid)
-                if (credential.password.isNotEmpty()) {
-                    builder.setWpa2Passphrase(credential.password)
+                // 阶段1: 5GHz 优先请求；阶段2: 无 band 限制回退
+                val bands = buildList {
+                    if (preferBand5GHz && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) add(5)
+                    add(0)
                 }
-                val specifier = builder.build()
+                var outcome = false
+                for (band in bands) {
+                    val result = CompletableDeferred<Boolean>()
+                    val callback = createRequestCallback(result)
+                    val request = buildCameraApRequest(credential, band)
+                    connectivityManager.requestNetwork(request, callback)
+                    this@WifiManager.networkCallback = callback
+                    Timber.tag(TAG).i(
+                        "Requesting camera AP '%s' band=%s",
+                        credential.ssid,
+                        if (band == 0) "auto" else if (band == 5) "5GHz" else band.toString()
+                    )
 
-                val request = NetworkRequest.Builder()
-                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                    .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    .setNetworkSpecifier(specifier)
-                    .build()
-
-                val result = CompletableDeferred<Boolean>()
-
-                val callback = object : ConnectivityManager.NetworkCallback() {
-                    override fun onAvailable(network: Network) {
-                        if (result.isCompleted) return
-                        Timber.tag(TAG).i("WiFi network available: $network")
-                        activeNetwork = network
-                        // 将此网络绑定为进程默认（用于 PTP/IP 通信）
-                        connectivityManager.bindProcessToNetwork(network)
-                        _wifiState.value = WifiChannelState.CONNECTED
-                        _networkAvailable.tryEmit(network)
-                        scope?.launch { refreshWifiBand() }
-                        result.complete(true)
+                    val connected = withTimeoutOrNull(CONNECT_TIMEOUT_MS) { result.await() }
+                    if (connected == true) {
+                        outcome = true
+                        break
                     }
-
-                    override fun onUnavailable() {
-                        if (result.isCompleted) return
-                        Timber.tag(TAG).w("WiFi network unavailable")
-                        _wifiState.value = WifiChannelState.DISCONNECTED
-                        _wifiFrequencyMhz.value = 0
-                        result.complete(false)
+                    // 失败/超时清理本次回调，进入下一阶段
+                    runCatching {
+                        connectivityManager.unregisterNetworkCallback(callback)
                     }
-
-                    override fun onLost(network: Network) {
-                        Timber.tag(TAG).w("WiFi network lost")
-                        if (network == activeNetwork) {
-                            activeNetwork = null
-                            _wifiState.value = WifiChannelState.DISCONNECTED
-                            _wifiFrequencyMhz.value = 0
-                            _networkLost.tryEmit(Unit)
-                        }
-                    }
-                }
-
-                connectivityManager.requestNetwork(request, callback)
-                this@WifiManager.networkCallback = callback
-
-                // 等待连接结果（带超时）
-                val outcome = withTimeoutOrNull(CONNECT_TIMEOUT_MS) {
-                    result.await()
-                } ?: run {
-                    connectivityManager.unregisterNetworkCallback(callback)
                     if (this@WifiManager.networkCallback === callback) {
                         this@WifiManager.networkCallback = null
                     }
+                    _wifiState.value = WifiChannelState.CONNECTING
+                    Timber.tag(TAG).w("Camera AP request band=%s failed, trying next band", band)
+                }
+                if (!outcome) {
                     _wifiState.value = WifiChannelState.DISCONNECTED
                     _wifiFrequencyMhz.value = 0
-                    false
                 }
                 outcome
             } catch (e: Exception) {
@@ -159,6 +148,55 @@ class WifiManager @Inject constructor(
                 _wifiState.value = WifiChannelState.DISCONNECTED
                 _wifiFrequencyMhz.value = 0
                 false
+            }
+        }
+    }
+
+    private fun buildCameraApRequest(credential: WifiCredential, band: Int): NetworkRequest {
+        val builder = WifiNetworkSpecifier.Builder().setSsid(credential.ssid)
+        if (credential.password.isNotEmpty()) {
+            builder.setWpa2Passphrase(credential.password)
+        }
+        if (band != 0 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            builder.setBand(band)
+        }
+        return NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .setNetworkSpecifier(builder.build())
+            .build()
+    }
+
+    private fun createRequestCallback(result: CompletableDeferred<Boolean>): ConnectivityManager.NetworkCallback {
+        return object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                if (result.isCompleted) return
+                Timber.tag(TAG).i("WiFi network available: $network")
+                activeNetwork = network
+                // 将此网络绑定为进程默认（用于 PTP/IP 通信）
+                connectivityManager.bindProcessToNetwork(network)
+                _wifiState.value = WifiChannelState.CONNECTED
+                _networkAvailable.tryEmit(network)
+                scope?.launch { refreshWifiBand() }
+                result.complete(true)
+            }
+
+            override fun onUnavailable() {
+                if (result.isCompleted) return
+                Timber.tag(TAG).w("WiFi network unavailable")
+                _wifiState.value = WifiChannelState.DISCONNECTED
+                _wifiFrequencyMhz.value = 0
+                result.complete(false)
+            }
+
+            override fun onLost(network: Network) {
+                Timber.tag(TAG).w("WiFi network lost")
+                if (network == activeNetwork) {
+                    activeNetwork = null
+                    _wifiState.value = WifiChannelState.DISCONNECTED
+                    _wifiFrequencyMhz.value = 0
+                    _networkLost.tryEmit(Unit)
+                }
             }
         }
     }
@@ -191,6 +229,10 @@ class WifiManager @Inject constructor(
     }
 
     fun isConnected(): Boolean = _wifiState.value == WifiChannelState.CONNECTED
+
+    fun isWifiEnabled(): Boolean {
+        return runCatching { wifiManager.isWifiEnabled }.getOrDefault(false) || isConnected()
+    }
 
     fun getActiveNetwork(): Network? = activeNetwork
 
@@ -242,10 +284,22 @@ class WifiManager @Inject constructor(
      * 但不应在纯扫描时副作用式地修改 bindProcessToNetwork。
      */
     fun currentWifiNetwork(): Network? {
-        return connectivityManager.allNetworks.firstOrNull { candidate ->
-            connectivityManager.getNetworkCapabilities(candidate)
-                ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-        }
+        val active = activeNetwork
+        if (active != null && isWifiTransport(active)) return active
+        return resolveWifiNetwork()
+    }
+
+    /**
+     * 解析当前可用的 WiFi 网络：优先已绑定的 activeNetwork，
+     * 其次遍历系统网络列表挑选 WiFi transport 的候选。
+     */
+    fun resolveWifiNetwork(): Network? {
+        return connectivityManager.allNetworks.firstOrNull { isWifiTransport(it) }
+    }
+
+    private fun isWifiTransport(candidate: Network): Boolean {
+        return connectivityManager.getNetworkCapabilities(candidate)
+            ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
     }
 
     /**
@@ -253,10 +307,7 @@ class WifiManager @Inject constructor(
      * 把进程默认网络绑定到当前 WiFi，确保 PTP/IP Socket 不会走到蜂窝网。
      */
     fun bindToActiveWifi(): Network? {
-        val network = connectivityManager.allNetworks.firstOrNull { candidate ->
-            connectivityManager.getNetworkCapabilities(candidate)
-                ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-        } ?: return null
+        val network = resolveWifiNetwork() ?: return null
         activeNetwork = network
         connectivityManager.bindProcessToNetwork(network)
         Timber.tag(TAG).i("Bound process to active WiFi network $network")
@@ -275,11 +326,15 @@ class WifiManager @Inject constructor(
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 Timber.tag(TAG).d("WiFi available (global)")
+                // WiFi 从无到有的恢复信号：STA 直连场景由 ConnectionManager 监听后重建 PTP
+                _networkAvailable.tryEmit(network)
             }
 
             override fun onLost(network: Network) {
-                if (network == activeNetwork) {
-                    Timber.tag(TAG).w("Active WiFi lost")
+                if (network == activeNetwork) activeNetwork = null
+                // 只有所有 WiFi 网络都消失才视为断网（STA 场景路由器断连）
+                if (resolveWifiNetwork() == null) {
+                    Timber.tag(TAG).w("All WiFi networks lost")
                     _wifiState.value = WifiChannelState.DISCONNECTED
                     _networkLost.tryEmit(Unit)
                 }

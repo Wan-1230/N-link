@@ -6,7 +6,9 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
+import com.nikonlink.app.shared.common.AppEventLogger
 import java.io.IOException
+import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicInteger
@@ -21,13 +23,15 @@ import javax.inject.Singleton
  */
 @Singleton
 class PtpSessionManager @Inject constructor(
-    private val identityStore: PtpClientIdentity
+    private val identityStore: PtpClientIdentity,
+    private val eventLogger: AppEventLogger
 ) {
 
     companion object {
         private const val TAG = "PtpSession"
         private const val CONNECT_TIMEOUT_MS = 10000
-        private const val READ_TIMEOUT_MS = 30000
+        // 非配对模式读超时降至 15s：断链/半开连接能更快被识别，交给上层快速恢复
+        private const val READ_TIMEOUT_MS = 15000
         private const val PAIRING_TIMEOUT_MS = 60000L
         private const val KEEP_ALIVE_INTERVAL_MS = 15000L
         private const val EVENT_PING_TIMEOUT_MS = 1500
@@ -96,6 +100,8 @@ class PtpSessionManager @Inject constructor(
             }
 
             // 建立 Command 通道
+            Timber.tag(TAG).i("phase=connecting host=%s:%d", host, port)
+            eventLogger.event("connect", "phase" to "socket", "host" to host, "port" to port, "pairing" to pairingMode)
             commandSocket = createSocket(network).apply {
                 connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
                 soTimeout = readTimeout
@@ -110,6 +116,7 @@ class PtpSessionManager @Inject constructor(
             commandInput = commandSocket!!.getInputStream()
 
             // 发送初始化命令
+            Timber.tag(TAG).i("phase=init sending InitCommand")
             val initPacket = InitCommandPacket(
                 clientGuid = clientGuid,
                 clientName = clientName
@@ -119,14 +126,17 @@ class PtpSessionManager @Inject constructor(
             // 等待初始化响应
             val response = PtpPacket.fromStream(commandInput!!)
             if (response !is InitResponsePacket) {
-                Timber.tag(TAG).e("Unexpected init response: $response")
+                Timber.tag(TAG).e("phase=init FAILED unexpected response: $response")
+                eventLogger.event("connect", "phase" to "init", "ok" to false, "resp" to response?.type)
                 _sessionState.value = PtpSessionState.ERROR
                 return@withContext false
             }
 
-            Timber.tag(TAG).i("Init response: server=${response.serverName}, session=${response.sessionId}")
+            Timber.tag(TAG).i("phase=init OK server=%s session=%s", response.serverName, response.sessionId)
+            eventLogger.event("connect", "phase" to "init", "ok" to true, "session" to response.sessionId)
 
             // 建立 Event 通道
+            Timber.tag(TAG).i("phase=event connecting")
             eventSocket = createSocket(network).apply {
                 connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
                 // 配对模式下相机可能等待用户按 OK，超时后由上层重试
@@ -144,10 +154,13 @@ class PtpSessionManager @Inject constructor(
             // 等待事件通道初始化确认
             val eventResponse = PtpPacket.fromStream(eventInput!!)
             if (eventResponse !is InitEventAckPacket) {
-                Timber.tag(TAG).e("Unexpected event init response: $eventResponse")
+                Timber.tag(TAG).e("phase=event FAILED unexpected event init response: $eventResponse")
+                eventLogger.event("connect", "phase" to "event", "ok" to false)
                 _sessionState.value = PtpSessionState.ERROR
                 return@withContext false
             }
+            Timber.tag(TAG).i("phase=event OK (InitEventAck)")
+            eventLogger.event("connect", "phase" to "event", "ok" to true)
 
             // EventAck 后客户端主动发送 PING，收到 PONG 才继续。
             // 部分相机在缺少这一握手时会把连接判定为失败，并在数秒后断开。
@@ -167,6 +180,7 @@ class PtpSessionManager @Inject constructor(
 
             // Fix P0-2: OpenSession 前先 GetDeviceInfo，
             // 让相机识别客户端并在屏幕显示连接状态
+            Timber.tag(TAG).i("phase=presession GetDeviceInfo")
             val deviceInfo = sendCommandWithData(PtpConstants.OP_GET_DEVICE_INFO)
             if (deviceInfo is PtpDataResult.Success) {
                 Timber.tag(TAG).i("GetDeviceInfo OK (${deviceInfo.data.size} bytes) before OpenSession")
@@ -175,9 +189,14 @@ class PtpSessionManager @Inject constructor(
             }
 
             // Fix P0-2: OpenSession 参数固定为 1（标准会话 ID），而非 connectionNumber
+            Timber.tag(TAG).i("phase=opensession")
             val openResult = sendCommand(PtpConstants.OP_OPEN_SESSION, listOf(1))
             if (!openResult.isOk) {
                 Timber.tag(TAG).e("Failed to open session: 0x${openResult.responseCode.toString(16)}")
+                eventLogger.event(
+                    "connect", "phase" to "opensession", "ok" to false,
+                    "code" to PtpConstants.describeResponseCode(openResult.responseCode)
+                )
                 _sessionState.value = PtpSessionState.ERROR
                 return@withContext false
             }
@@ -198,6 +217,7 @@ class PtpSessionManager @Inject constructor(
             startEventListener()
 
             Timber.tag(TAG).i("✓ PTP session established (session=$sessionId)")
+            eventLogger.event("connect", "phase" to "established", "session" to sessionId)
             true
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Connection failed")
@@ -250,11 +270,15 @@ class PtpSessionManager @Inject constructor(
     /**
      * 发送命令并接收数据（用于获取文件、缩略图等）
      * PRD 2.1: 照片传输速率 > 10MB/s
+     *
+     * @param sink 非空时数据包直接流式写入（大文件下载不落内存），
+     *   结束时 flush 但不 close（流归调用方所有）。
      */
     suspend fun sendCommandWithData(
         operationCode: Int,
         parameters: List<Int> = emptyList(),
-        onProgress: ((Long, Long) -> Unit)? = null
+        onProgress: ((Long, Long) -> Unit)? = null,
+        sink: OutputStream? = null
     ): PtpDataResult {
         val txId = transactionId.incrementAndGet()
         val packet = CommandRequestPacket(txId, operationCode, parameters)
@@ -264,7 +288,7 @@ class PtpSessionManager @Inject constructor(
                 try {
                     sendPacket(packet)
 
-                    val dataChunks = mutableListOf<ByteArray>()
+                    val dataChunks = if (sink == null) mutableListOf<ByteArray>() else null
                     var declaredSize = 0L
                     var receivedSize = 0L
                     var response: CommandResponsePacket? = null
@@ -278,12 +302,20 @@ class PtpSessionManager @Inject constructor(
                                 onProgress?.invoke(0L, declaredSize)
                             }
                             is DataPacket -> {
-                                dataChunks.add(pkt.data)
+                                if (sink != null) {
+                                    sink.write(pkt.data)
+                                } else {
+                                    dataChunks?.add(pkt.data)
+                                }
                                 receivedSize += pkt.data.size
                                 onProgress?.invoke(receivedSize, progressTotal(receivedSize, declaredSize))
                             }
                             is EndDataPacket -> {
-                                dataChunks.add(pkt.data)
+                                if (sink != null) {
+                                    sink.write(pkt.data)
+                                } else {
+                                    dataChunks?.add(pkt.data)
+                                }
                                 receivedSize += pkt.data.size
                                 onProgress?.invoke(receivedSize, progressTotal(receivedSize, declaredSize))
                             }
@@ -303,19 +335,30 @@ class PtpSessionManager @Inject constructor(
                     val finalResponse = response
                         ?: CommandResponsePacket(txId, PtpConstants.RESPONSE_GENERAL_ERROR)
                     if (finalResponse.isOk) {
-                        val combinedData = ByteArray(receivedSize.toInt())
-                        var offset = 0
-                        dataChunks.forEach { chunk ->
-                            System.arraycopy(chunk, 0, combinedData, offset, chunk.size)
-                            offset += chunk.size
+                        if (sink != null) {
+                            sink.flush()
+                            PtpDataResult.Success(ByteArray(0), finalResponse)
+                        } else {
+                            val combinedData = ByteArray(receivedSize.toInt())
+                            var offset = 0
+                            dataChunks.orEmpty().forEach { chunk ->
+                                System.arraycopy(chunk, 0, combinedData, offset, chunk.size)
+                                offset += chunk.size
+                            }
+                            PtpDataResult.Success(combinedData, finalResponse)
                         }
-                        PtpDataResult.Success(combinedData, finalResponse)
                     } else {
                         // 全链路优化: 数据命令被拒时必须记录响应码，
                         // 否则下载失败静默无日志可查
                         Timber.tag(TAG).w(
                             "Data command rejected: op=0x${operationCode.toString(16)} " +
                                 "code=0x${finalResponse.responseCode.toString(16)} recv=$receivedSize"
+                        )
+                        eventLogger.event(
+                            "data_fail",
+                            "op" to "0x${operationCode.toString(16)}",
+                            "code" to PtpConstants.describeResponseCode(finalResponse.responseCode),
+                            "recv" to receivedSize
                         )
                         PtpDataResult.Failure(finalResponse)
                     }
@@ -397,20 +440,32 @@ class PtpSessionManager @Inject constructor(
     /**
      * 获取完整对象（照片下载）
      * PRD 2.1: 选择性下载原图
+     * @param sink 非空时流式写入，避免大图全量驻留内存
      */
-    suspend fun getObject(handle: Int, onProgress: ((Long, Long) -> Unit)? = null): ByteArray? {
-        val result = sendCommandWithData(PtpConstants.OP_GET_OBJECT, listOf(handle), onProgress)
+    suspend fun getObject(
+        handle: Int,
+        onProgress: ((Long, Long) -> Unit)? = null,
+        sink: OutputStream? = null
+    ): ByteArray? {
+        val result = sendCommandWithData(PtpConstants.OP_GET_OBJECT, listOf(handle), onProgress, sink)
         return (result as? PtpDataResult.Success)?.data
     }
 
     /**
      * 获取部分对象（断点续传）
      * PRD 2.1: 断点续传 - 传输中断后自动从断点恢复
+     * @param sink 非空时流式写入
      */
-    suspend fun getPartialObject(handle: Int, offset: Int, maxBytes: Int): ByteArray? {
+    suspend fun getPartialObject(
+        handle: Int,
+        offset: Int,
+        maxBytes: Int,
+        sink: OutputStream? = null
+    ): ByteArray? {
         val result = sendCommandWithData(
             PtpConstants.OP_GET_PARTIAL_OBJECT,
-            listOf(handle, offset, maxBytes)
+            listOf(handle, offset, maxBytes),
+            sink = sink
         )
         return (result as? PtpDataResult.Success)?.data
     }
