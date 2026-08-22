@@ -12,7 +12,7 @@
         android:contentDescription="实时取景画面"
         android:scaleType="fitCenter" />
 
-    <com.nikonlink.app.feature.liveview.ViewfinderOverlayView
+    <com.nikonlink.app.camera.liveview.ViewfinderOverlayView
         android:id="@+id/viewGridOverlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -142,6 +142,20 @@
                 app:tint="@color/white" />
         </LinearLayout>
     </HorizontalScrollView>
+
+    <!-- 实时性能诊断：FPS / 单帧耗时 -->
+    <TextView
+        android:id="@+id/tvPerformance"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="60dp"
+        android:background="@drawable/bg_lv_pill"
+        android:paddingHorizontal="12dp"
+        android:paddingVertical="4dp"
+        android:text="0 FPS · 0 ms"
+        android:textColor="@color/white"
+        android:textSize="11sp" />
 
     <!-- DISP 显示切换 -->
     <TextView
