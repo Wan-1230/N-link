@@ -66,7 +66,7 @@
             app:tint="@color/white" />
     </LinearLayout>
 
-    <!-- 底部悬浮：下载 / EXIF / 分享 -->
+    <!-- 底部悬浮：下载 / 修图 / EXIF / 分享 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -117,6 +117,32 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
                     android:text="下载"
+                    android:textColor="@color/white"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/btnEdit"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:id="@+id/iconEdit"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:contentDescription="AI 修图"
+                    android:src="@drawable/ic_filter"
+                    app:tint="@color/white" />
+
+                <TextView
+                    android:id="@+id/tvEditLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="修图"
                     android:textColor="@color/white"
                     android:textSize="12sp" />
             </LinearLayout>

@@ -1,0 +1,84 @@
+{
+  "models": [
+    {
+      "id": "enhance_iadapt_lut",
+      "capability": "auto_enhance",
+      "display_name": "一键增强 (Image-Adaptive LUT)",
+      "version": 1,
+      "url": "https://models.nikonlink.example/enhance_iadapt_lut_v1.tflite",
+      "sha256": "PENDING_RELEASE",
+      "size_bytes": 4194304,
+      "tier": "builtin"
+    },
+    {
+      "id": "scene_effnet_lite2",
+      "capability": "scene_classify",
+      "display_name": "场景识别 (EfficientNet-Lite2)",
+      "version": 1,
+      "url": "https://models.nikonlink.example/scene_effnet_lite2_v1.tflite",
+      "sha256": "PENDING_RELEASE",
+      "size_bytes": 6291456,
+      "tier": "builtin"
+    },
+    {
+      "id": "denoise_nafnet_w64",
+      "capability": "denoise",
+      "display_name": "降噪 (NAFNet-w64)",
+      "version": 1,
+      "url": "https://models.nikonlink.example/denoise_nafnet_w64_v1.tflite",
+      "sha256": "PENDING_RELEASE",
+      "size_bytes": 29360128,
+      "tier": "on_demand"
+    },
+    {
+      "id": "restore_realesrgan_x4plus",
+      "capability": "detail_restore",
+      "display_name": "细节重建 (Real-ESRGAN_x4plus)",
+      "version": 1,
+      "url": "https://models.nikonlink.example/restore_realesrgan_x4plus_v1.tflite",
+      "sha256": "PENDING_RELEASE",
+      "size_bytes": 17825792,
+      "tier": "on_demand"
+    },
+    {
+      "id": "face_scrfd_10m",
+      "capability": "face_detect",
+      "display_name": "人脸检测 (SCRFD-10M)",
+      "version": 1,
+      "url": "https://models.nikonlink.example/face_scrfd_10m_v1.tflite",
+      "sha256": "PENDING_RELEASE",
+      "size_bytes": 17825792,
+      "tier": "on_demand"
+    },
+    {
+      "id": "face_bisenet_parse",
+      "capability": "face_parse",
+      "display_name": "人脸分区 (BiSeNet)",
+      "version": 1,
+      "url": "https://models.nikonlink.example/face_bisenet_parse_v1.tflite",
+      "sha256": "PENDING_RELEASE",
+      "size_bytes": 27262976,
+      "tier": "on_demand"
+    },
+    {
+      "id": "lowlight_retinexformer",
+      "capability": "low_light",
+      "display_name": "低光增强 (RetinexFormer)",
+      "version": 1,
+      "url": "https://models.nikonlink.example/lowlight_retinexformer_v1.tflite",
+      "sha256": "PENDING_RELEASE",
+      "size_bytes": 9437184,
+      "tier": "on_demand"
+    },
+    {
+      "id": "dehaze_mpranet",
+      "capability": "dehaze",
+      "display_name": "去雾 (MPRA-Net)",
+      "version": 1,
+      "url": "https://models.nikonlink.example/dehaze_mpranet_v1.tflite",
+      "sha256": "PENDING_RELEASE",
+      "size_bytes": 4194304,
+      "tier": "on_demand"
+    }
+  ]
+}

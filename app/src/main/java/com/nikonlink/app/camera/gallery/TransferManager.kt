@@ -16,6 +16,7 @@ import com.nikonlink.app.device.wifi_ap.WifiManager
 import com.nikonlink.app.camera.data.TransferRepository
 import com.nikonlink.app.shared.common.AppEventLogger
 import com.nikonlink.app.shared.common.AppSettings
+import com.nikonlink.app.feature.edit.EditNotification
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStream
@@ -398,6 +399,10 @@ class TransferManager @Inject constructor(
                     msg += "\n当前 2.4GHz 链路，可在设置开启 5GHz 优先提升下载速度"
                 }
                 postMessage(msg)
+                // PRD(AI修图) 入口③: 传输完成通知带「修图」 Action 直达编辑器（仅照片）
+                if (file.isPhoto) {
+                    EditNotification.postTransferComplete(context, savedPath, file.fileName, file.handle)
+                }
                 TransferResult.Success(savedPath)
             } else {
                 TransferResult.Failed("保存失败：存储空间不足或无写入权限")

@@ -69,14 +69,42 @@ interface PairedDeviceDao {
 
 /**
  * N-Link 数据库
+ * 修图自定义预设实体（PRD-AI修图 4.5: 滤镜 + 细节参数的组合预设，Room 本地存储）
+ * paramsJson 存 EditParams 序列化，filterId/filterStrength 存滤镜状态
+ */
+@Entity(tableName = "edit_presets")
+data class EditPresetEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    @ColumnInfo(name = "name") val name: String,
+    @ColumnInfo(name = "params_json") val paramsJson: String,
+    @ColumnInfo(name = "filter_id") val filterId: String,
+    @ColumnInfo(name = "filter_strength") val filterStrength: Int = 100,
+    @ColumnInfo(name = "created_time") val createdTime: Long = System.currentTimeMillis()
+)
+
+@Dao
+interface EditPresetDao {
+    @Query("SELECT * FROM edit_presets ORDER BY created_time DESC")
+    fun getAll(): Flow<List<EditPresetEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(preset: EditPresetEntity)
+
+    @Query("DELETE FROM edit_presets WHERE id = :id")
+    suspend fun deleteById(id: Long)
+}
+
+/**
  * PRD 4.2: Room + MediaStore（传输记录 + 照片归档）
+ * v2: 新增修图预设表（应用未发布，采用破坏式迁移）
  */
 @Database(
-    entities = [TransferRecord::class, PairedDevice::class],
-    version = 1,
+    entities = [TransferRecord::class, PairedDevice::class, EditPresetEntity::class],
+    version = 2,
     exportSchema = false
 )
 abstract class NLinkDatabase : RoomDatabase() {
     abstract fun transferHistoryDao(): TransferHistoryDao
     abstract fun pairedDeviceDao(): PairedDeviceDao
+    abstract fun editPresetDao(): EditPresetDao
 }
