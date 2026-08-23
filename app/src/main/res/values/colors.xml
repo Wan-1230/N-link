@@ -51,6 +51,10 @@
     <color name="scrim">#80000000</color>
     <color name="chip_unselected">#F0F0F0</color>
 
+    <!-- Switch 开关：OFF 轨道中性灰（深浅色主题均可见），滑块白色内嵌 -->
+    <color name="switch_track_off">#8F8F8F</color>
+    <color name="switch_thumb_off">#FFFFFF</color>
+
     <!-- Live View 专用 -->
     <color name="liveview_scrim">#99000000</color>
     <color name="white">#FFFFFF</color>

@@ -54,6 +54,8 @@ class DashboardFragment : Fragment() {
     private var cameraInfoRequested = false
     private var currentMode = ConnectMode.WIFI_AP
     private var modeTabWidth = 0
+    /** USB 链路激活标记：USB 模式下卡片展示 USB 信息而非 WiFi 频段 */
+    private var usbActive = false
 
     private val modeTabsViews: List<android.widget.TextView>
         get() = listOf(binding.tabWifiAp, binding.tabWifiSta, binding.tabUsb)
@@ -192,8 +194,9 @@ class DashboardFragment : Fragment() {
                         "${WifiManager.bandLabel(metrics.wifiFrequencyMhz)} (${metrics.wifiFrequencyMhz} MHz)"
                     binding.tvWifiBandCard.text =
                         "${WifiManager.bandLabel(metrics.wifiFrequencyMhz)} · ${metrics.wifiFrequencyMhz}MHz"
-                } else {
-                    binding.tvWifiBandCard.text = "WiFi 频段\n未连接"
+                } else if (!usbActive) {
+                    // USB 链路激活时频段卡由 USB 分支维护，避免每 2s 的指标刷新覆盖
+                    binding.tvWifiBandCard.text = "未连接"
                 }
                 binding.tvReconnectCount.text = "${metrics.reconnectCount} 次"
             }
@@ -256,6 +259,10 @@ class DashboardFragment : Fragment() {
             viewModel.usbState.collect { usbState ->
                 when (usbState) {
                     UsbConnectionState.CONNECTED -> {
+                        usbActive = true
+                        // USB 链路下频段卡切换为 USB 状态信息（WiFi 频段无意义）
+                        binding.ivWifiBandCard.setImageResource(R.drawable.ic_usb)
+                        binding.tvWifiBandCard.text = "USB 已连接"
                         binding.tvConnectionStatus.text = "USB 已连接"
                         binding.tvUsbDevice.text = "USB 相机已连接，可直接传输照片"
                         binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
@@ -270,6 +277,12 @@ class DashboardFragment : Fragment() {
                     }
                     UsbConnectionState.DISCONNECTED -> {
                         binding.tvUsbDevice.text = "未检测到 USB 相机"
+                        // 切回 WiFi 链路：恢复频段卡，具体频段由指标刷新补齐
+                        if (usbActive) {
+                            usbActive = false
+                            binding.ivWifiBandCard.setImageResource(R.drawable.ic_wifi_sta)
+                            binding.tvWifiBandCard.text = "未连接"
+                        }
                         if (viewModel.connectionState.value == ConnectionState.DISCONNECTED) {
                             binding.tvConnectionStatus.text = "未连接"
                             binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
