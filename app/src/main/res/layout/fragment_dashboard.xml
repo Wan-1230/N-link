@@ -361,6 +361,7 @@
                     style="@style/NlCard"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/module_gap"
                     app:cardBackgroundColor="@color/dark_card"
                     app:strokeColor="@color/dark_card_surface">
 
@@ -611,7 +612,7 @@
                     <LinearLayout
                         android:id="@+id/cardQuickRemote"
                         android:layout_width="0dp"
-                        android:layout_height="wrap_content"
+                        android:layout_height="96dp"
                         android:layout_columnWeight="1"
                         android:layout_marginEnd="6dp"
                         android:layout_marginBottom="12dp"
@@ -638,7 +639,7 @@
                     <LinearLayout
                         android:id="@+id/cardQuickAlbum"
                         android:layout_width="0dp"
-                        android:layout_height="wrap_content"
+                        android:layout_height="96dp"
                         android:layout_columnWeight="1"
                         android:layout_marginStart="6dp"
                         android:layout_marginBottom="12dp"
@@ -665,7 +666,7 @@
                     <LinearLayout
                         android:id="@+id/cardWifiSpeed"
                         android:layout_width="0dp"
-                        android:layout_height="wrap_content"
+                        android:layout_height="96dp"
                         android:layout_columnWeight="1"
                         android:layout_marginEnd="6dp"
                         android:layout_marginBottom="12dp"
@@ -675,6 +676,7 @@
                         android:paddingVertical="20dp">
 
                         <ImageView
+                            android:id="@+id/ivWifiBandCard"
                             android:layout_width="24dp"
                             android:layout_height="24dp"
                             android:contentDescription="WiFi 频段"
@@ -693,7 +695,7 @@
                     <LinearLayout
                         android:id="@+id/cardQuickSettings"
                         android:layout_width="0dp"
-                        android:layout_height="wrap_content"
+                        android:layout_height="96dp"
                         android:layout_columnWeight="1"
                         android:layout_marginStart="6dp"
                         android:layout_marginBottom="12dp"

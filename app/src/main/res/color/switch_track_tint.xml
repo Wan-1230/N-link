@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Switch 轨道色：ON=主题高亮色（日间黑/夜间白），OFF=中性灰（双主题可见填充） -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:color="@color/primary" android:state_checked="true" />
+    <item android:color="@color/switch_track_off" />
+</selector>

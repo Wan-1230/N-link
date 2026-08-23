@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Switch 滑块色：ON=主题反色（对比鲜明），OFF=白色内嵌滑块（灰轨道上清晰可辨） -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:color="@color/on_primary" android:state_checked="true" />
+    <item android:color="@color/switch_thumb_off" />
+</selector>
