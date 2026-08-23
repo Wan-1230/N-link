@@ -114,7 +114,7 @@ dependencies {
     // Image Loading
     implementation(libs.coil)
 
-    // EXIF metadata (预览页拍摄信息)
+    // EXIF metadata (预览页拍摄信息 / AI 修图导出复制拍摄参数 PRD-AI修图 4.7)
     implementation(libs.androidx.exifinterface)
 
     // JSON Serialization
@@ -123,10 +123,19 @@ dependencies {
     // Logging
     implementation(libs.timber)
 
+    // LiteRT: 端侧 AI 推理框架（PRD-AI修图 8.2，GPU Delegate 优先，CPU 兜底）
+    implementation(libs.tensorflow.lite)
+    implementation(libs.tensorflow.lite.gpu)
+
     // Testing
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.mockk)
+
+    // Instrumented testing（PRD-AI修图 §10.1 功能验收自动化）
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.espresso.core)
 }
 
 

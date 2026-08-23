@@ -22,6 +22,7 @@ import com.nikonlink.app.camera.params.DigeekerShutterCountClient
 import com.nikonlink.app.camera.gallery.TransferManager
 import com.nikonlink.app.shared.common.AppEventLogger
 import com.nikonlink.app.shared.common.AppSettings
+import com.nikonlink.app.shared.data.EditPresetDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -150,7 +151,10 @@ object AppModule {
         context,
         NLinkDatabase::class.java,
         "n-link.db"
-    ).build()
+    )
+        // 应用未发布阶段：库表变更直接破坏式迁移（v2 新增修图预设表）
+        .fallbackToDestructiveMigration()
+        .build()
 
     @Provides
     @Singleton
@@ -159,6 +163,10 @@ object AppModule {
     @Provides
     @Singleton
     fun providePairedDeviceDao(db: NLinkDatabase): PairedDeviceDao = db.pairedDeviceDao()
+
+    @Provides
+    @Singleton
+    fun provideEditPresetDao(db: NLinkDatabase): EditPresetDao = db.editPresetDao()
 
     @Provides
     @Singleton
