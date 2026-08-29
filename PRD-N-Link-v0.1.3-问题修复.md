@@ -871,15 +871,17 @@ auth.cld.nikon.com  --302-->  accounts.cld.nikon.com/login
 
 ```
 master (74e136f, v0.1.2)
-└── dev/v0.1.3-multi-fix          ← 集成主干，本 PRD 所在分支
-    ├── fix/album-download-dedup         ← T1
-    ├── fix/album-auto-refresh-on-connect← T2
-    ├── fix/shutter-aperture-control     ← T3
-    ├── feat/app-update-checker          ← T4
-    └── research/nikon-cloud-feasibility ← T5
+└── dev-v0.1.3-multi-fix            ← 集成主干，本 PRD 所在分支
+    ├── fix-album-download-dedup           ← T1
+    ├── fix-album-auto-refresh-on-connect  ← T2
+    ├── fix-shutter-aperture-control       ← T3
+    ├── feat-app-update-checker            ← T4
+    └── research-nikon-cloud-feasibility   ← T5
 ```
 
-所有子分支从 `dev/v0.1.3-multi-fix` 切出，各自独立实现，完成后由集成主干按 T1 → T3 → T4 → T2 → T5 顺序合并（把改动面最大、最需要真机验证的放前面）。
+所有子分支从 `dev-v0.1.3-multi-fix` 切出，各自独立实现，完成后由集成主干按 T1 → T3 → T4 → T2 → T5 顺序合并（把改动面最大、最需要真机验证的放前面）。
+
+> **命名说明**：当前开发环境下 `.git/refs/heads/` 无法创建子目录（带 `/` 的分支名会静默失败，详见 §8），因此全部采用扁平分支名（`-` 分隔层级）。若后续环境恢复，可通过 `git branch -m` 一次性改回 `fix/xxx` 风格，不影响提交历史。
 
 ### 6.2 文件归属矩阵（**零重叠**）
 
@@ -941,3 +943,34 @@ master (74e136f, v0.1.2)
 | D4 | 汇总交付 | 合并改动说明 + 各分支自测结果汇总 + 真机验证清单 |
 
 **D1 未确认前不动工。**
+
+---
+
+## 8. 附：本次排查期间的仓库异常与恢复记录
+
+排查过程中本机 `.git` 出现异常，已完整恢复，记录如下以便追溯。
+
+**现象**：创建带 `/` 的分支名 `dev/v0.1.3-multi-fix` 后，`.git/refs/` 目录被清空、`refs/heads/master` 丢失，最近 4 个提交（`4e6422f` / `aec77b4` / `308ddfe` / `74e136f`）的松散对象不可读。
+
+**影响范围**：
+
+- ✅ **工作区源码完全未受影响** —— 全部源文件与 `master` 内容一致，`git status` 无 modified 文件
+- ✅ **提交历史已完整恢复** —— 这些提交均已推送 GitHub，通过 `git fetch origin` 取回全部对象
+- ⚠️ 恢复过程中 `git fetch` 报 `bad tree object 197d9501...` 并跳过 `geometric-repack`，属本地损坏对象的清理告警，不影响已恢复内容
+
+**恢复步骤**：
+
+1. `mkdir -p .git/refs/{heads,tags,remotes/origin}` —— 重建 refs 目录
+2. `git fetch origin` —— 从 GitHub 取回对象与远端引用
+3. `git update-ref refs/heads/master 74e136f` —— 重建 master 指针
+4. `git update-ref refs/heads/dev-v0.1.3-multi-fix 74e136f` + `git symbolic-ref HEAD ...` —— 建立开发分支
+5. `git reset`（mixed，不动工作区）—— 重建索引
+6. `git status` 校验：无 modified、无 deleted，与异常前完全一致
+
+**根因**：该环境下 `.git/refs/heads/` 下无法创建子目录（`mkdir -p` 返回 0 但目录不落盘），带 `/` 的分支名写入时触发异常。改用扁平分支名后一切正常。
+
+**建议**：
+
+- 排查期间避免在本机执行 `git gc` / `git prune`
+- 重要改动及时 `git push` 到 GitHub（当前远端已有 `master` 及 `v0.1.0`–`v0.1.2` 全部标签）
+- 远端另有两个未合并分支 `feature/ai-photo-edit`、`feature/ai-photo-edit-v2`，本次未动
