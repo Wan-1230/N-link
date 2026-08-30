@@ -27,11 +27,11 @@ import com.nikonlink.app.databinding.FragmentLiveviewBinding
 import com.nikonlink.app.capture.ShootingState
 import com.nikonlink.app.capture.RemoteShootingViewModel
 import com.nikonlink.app.camera.params.CameraParamsViewModel
+import com.nikonlink.app.camera.params.resolvePickerIndex
 import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
-import java.util.Locale
 
 /**
  * 全屏实时取景器。
@@ -63,18 +63,6 @@ class LiveViewFragment : Fragment() {
     private var levelVisible = false
     private var baseZoom = 1f
     private var scaleDetector: ScaleGestureDetector? = null
-
-    private val apertureValues = listOf(140, 180, 200, 280, 350, 400, 560, 800, 1100, 1600, 2200)
-    private val shutterValues = listOf(
-        10, 13, 15, 20, 25, 30, 40, 50, 60, 80, 100, 125, 160, 200,
-        250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000
-    )
-    private val isoValues = listOf(100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200)
-    private val wbPresets = listOf(
-        2 to "自动", 0x8016 to "自然光自动适应", 4 to "晴天",
-        0x8010 to "阴天", 0x8011 to "背阴", 6 to "白炽灯",
-        5 to "荧光灯", 7 to "闪光灯", 0x8012 to "选择色温", 0x8013 to "手动预设"
-    )
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentLiveviewBinding.inflate(inflater, container, false)
@@ -252,42 +240,50 @@ class LiveViewFragment : Fragment() {
     private fun setupParams() {
         binding.cellShutter.pressEffect()
         binding.cellShutter.setOnClickListener {
+            // 档位表与格式化统一取自 paramsViewModel（唯一真源）
+            val rawValues = paramsViewModel.commonShutterSpeeds
+            val param = paramsViewModel.shutterSpeed.value
             showParamPicker(
                 title = "快门速度",
-                displayValues = shutterValues.map { "1/$it s" },
-                rawValues = shutterValues,
-                current = paramsViewModel.shutterSpeed.value.currentValue
-            ) { index -> paramsViewModel.setShutterByValue(shutterValues[index]) }
+                displayValues = rawValues.map { paramsViewModel.formatShutter(it) },
+                rawValues = rawValues,
+                current = param.currentValue,
+                currentRaw = param.rawValue,
+                // 档位表按曝光时间升序，向上滚 = 更快
+                hint = "↑ 更快 / ↓ 更慢",
+                onConfirm = { index -> paramsViewModel.setShutterByValue(rawValues[index]) }
+            )
         }
 
         binding.cellAperture.pressEffect()
-        binding.cellAperture.setOnClickListener {
-            showParamPicker(
-                title = "光圈",
-                displayValues = apertureValues.map { formatAperture(it) },
-                rawValues = apertureValues,
-                current = paramsViewModel.aperture.value.currentValue
-            ) { index -> paramsViewModel.setApertureByValue(apertureValues[index]) }
-        }
+        binding.cellAperture.setOnClickListener { openAperturePicker() }
 
         binding.cellIso.pressEffect()
         binding.cellIso.setOnClickListener {
+            val rawValues = paramsViewModel.commonIsoValues
+            val param = paramsViewModel.iso.value
             showParamPicker(
                 title = "ISO",
-                displayValues = isoValues.map { it.toString() },
-                rawValues = isoValues,
-                current = paramsViewModel.iso.value.currentValue
-            ) { index -> paramsViewModel.setIsoByValue(isoValues[index]) }
+                displayValues = rawValues.map { it.toString() },
+                rawValues = rawValues,
+                current = param.currentValue,
+                currentRaw = param.rawValue,
+                onConfirm = { index -> paramsViewModel.setIsoByValue(rawValues[index]) }
+            )
         }
 
         binding.cellWb.pressEffect()
         binding.cellWb.setOnClickListener {
+            val presets = paramsViewModel.whiteBalancePresets
+            val param = paramsViewModel.whiteBalance.value
             showParamPicker(
                 title = "白平衡",
-                displayValues = wbPresets.map { it.second },
-                rawValues = wbPresets.map { it.first },
-                current = paramsViewModel.whiteBalance.value.currentValue
-            ) { index -> paramsViewModel.setWhiteBalance(wbPresets[index].first) }
+                displayValues = presets.map { it.second },
+                rawValues = presets.map { it.first },
+                current = param.currentValue,
+                currentRaw = param.rawValue,
+                onConfirm = { index -> paramsViewModel.setWhiteBalance(presets[index].first) }
+            )
         }
 
         binding.cellEv.pressEffect()
@@ -296,11 +292,39 @@ class LiveViewFragment : Fragment() {
         }
     }
 
-    private fun <T> showParamPicker(
+    /**
+     * 打开光圈滚轮。
+     * 档位与镜头联动：打开时读一次当前焦距（PRD Q3，不进轮询），再按镜头生成可用档位。
+     */
+    private fun openAperturePicker() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            paramsViewModel.refreshApertureOptions()
+            if (_binding == null) return@launch
+            val options = paramsViewModel.apertureOptions.value
+            val param = paramsViewModel.aperture.value
+            showParamPicker(
+                title = "光圈",
+                displayValues = options.map { paramsViewModel.formatAperture(it) },
+                rawValues = options,
+                current = param.currentValue,
+                currentRaw = param.rawValue,
+                hint = if (paramsViewModel.apertureRangeFromLens) {
+                    "↑ 光圈更大 / ↓ 光圈收小"
+                } else {
+                    "未获取到镜头信息，使用通用档位"
+                },
+                onConfirm = { index -> paramsViewModel.setApertureByValue(options[index]) }
+            )
+        }
+    }
+
+    private fun showParamPicker(
         title: String,
         displayValues: List<String>,
-        rawValues: List<T>,
+        rawValues: List<Int>,
         current: String,
+        currentRaw: Int,
+        hint: String? = null,
         onConfirm: (Int) -> Unit
     ) {
         if (displayValues.isEmpty() || displayValues.size != rawValues.size) return
@@ -308,30 +332,24 @@ class LiveViewFragment : Fragment() {
         val pickerBinding = DialogParamPickerBinding.inflate(layoutInflater)
         dialog.setContentView(pickerBinding.root)
         pickerBinding.tvPickerTitle.text = title
-        pickerBinding.tvPickerCurrent.text = "当前: ${current.ifBlank { "--" }}"
+        pickerBinding.tvPickerCurrent.text = buildString {
+            append("当前: ").append(current.ifBlank { "--" })
+            if (!hint.isNullOrBlank()) append('\n').append(hint)
+        }
 
         val picker = pickerBinding.numberPicker
         picker.minValue = 0
         picker.maxValue = displayValues.size - 1
         picker.displayedValues = displayValues.toTypedArray()
         picker.wrapSelectorWheel = false
-        val currentIdx = displayValues.indexOfFirst { it == current }
-        picker.value = if (currentIdx >= 0) currentIdx else 0
+        // 用 raw 值定位，不再用显示字符串反查（v0.1.2 两处口径不一致导致恒定位到首项）
+        picker.value = resolvePickerIndex(rawValues, currentRaw)
 
         pickerBinding.btnPickerConfirm.setOnClickListener {
             onConfirm(picker.value)
             dialog.dismiss()
         }
         dialog.show()
-    }
-
-    private fun formatAperture(valueX100: Int): String {
-        val f = valueX100 / 100f
-        return if (f == f.toInt().toFloat()) {
-            "f/$f"
-        } else {
-            String.format(Locale.US, "f/%.1f", f)
-        }
     }
 
     // ---------------- 触摸对焦与缩放 ----------------
