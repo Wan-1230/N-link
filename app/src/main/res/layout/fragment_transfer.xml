@@ -36,6 +36,20 @@
             app:tint="@color/text_primary" />
 
         <TextView
+            android:id="@+id/btnSort"
+            android:layout_width="wrap_content"
+            android:layout_height="32dp"
+            android:layout_marginStart="8dp"
+            android:minWidth="76dp"
+            android:background="@drawable/bg_chip"
+            android:contentDescription="切换相册排序（最新在前 / 最早在前）"
+            android:gravity="center"
+            android:paddingHorizontal="12dp"
+            android:text="最新在前"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
+
+        <TextView
             android:id="@+id/btnMultiSelect"
             android:layout_width="wrap_content"
             android:layout_height="32dp"

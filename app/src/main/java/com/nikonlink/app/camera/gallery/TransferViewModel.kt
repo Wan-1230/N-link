@@ -16,6 +16,7 @@ import com.nikonlink.app.device.connect.ConnectionManager
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.usb.UsbConnectionState
 import com.nikonlink.app.device.usb.UsbPtpManager
+import com.nikonlink.app.shared.common.AppSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
@@ -43,7 +44,8 @@ class TransferViewModel @Inject constructor(
     private val ptpSession: PtpSessionManager,
     private val connectionManager: ConnectionManager,
     private val usbPtpManager: UsbPtpManager,
-    private val thumbnailCache: ThumbnailCache
+    private val thumbnailCache: ThumbnailCache,
+    private val settings: AppSettings
 ) : ViewModel() {
 
     companion object {
@@ -59,14 +61,37 @@ class TransferViewModel @Inject constructor(
     private val _activeAlbum = MutableStateFlow(AlbumSource.CAMERA)
     val activeAlbum: StateFlow<AlbumSource> = _activeAlbum.asStateFlow()
 
-    /** 当前标签页展示的列表：相机照片或本地照片 */
+    /**
+     * 排序偏好：true = 最新拍摄在前。
+     *
+     * 只作用于「相机照片」。PTP 返回的对象句柄顺序是旧→新，
+     * 新拍的照片会落在列表最底部，翻找不便，因此默认倒序。
+     * 「本地照片」由 MediaStore 按 DATE_ADDED 倒序返回，本身就是最新在前，不参与。
+     */
+    private val _sortNewestFirst = MutableStateFlow(settings.albumSortNewestFirst)
+    val sortNewestFirst: StateFlow<Boolean> = _sortNewestFirst.asStateFlow()
+
+    /** 按当前偏好排列相机照片（handle 递增即拍摄顺序递增，与 scheduleAutoSync 的判定口径一致） */
+    private fun sortCamera(list: List<CameraFile>): List<CameraFile> =
+        if (_sortNewestFirst.value) list.sortedByDescending { it.handle }
+        else list.sortedBy { it.handle }
+
+    /** 当前标签页展示的列表：相机照片（已排序）或本地照片 */
     val displayedPhotos: StateFlow<List<CameraFile>> = combine(
         _photoList,
         _localPhotos,
-        _activeAlbum
-    ) { camera, local, source ->
-        if (source == AlbumSource.CAMERA) camera else local
+        _activeAlbum,
+        _sortNewestFirst
+    ) { camera, local, source, _ ->
+        if (source == AlbumSource.CAMERA) sortCamera(camera) else local
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 切换排序并持久化；只改展示顺序，不触发重新加载 */
+    fun toggleSortOrder() {
+        val next = !_sortNewestFirst.value
+        _sortNewestFirst.value = next
+        settings.albumSortNewestFirst = next
+    }
 
     private val _photoFilter = MutableStateFlow(PhotoFilter.ALL)
     val photoFilter: StateFlow<PhotoFilter> = _photoFilter.asStateFlow()
@@ -216,10 +241,12 @@ class TransferViewModel @Inject constructor(
             try {
                 // 媒体列表按 limit=18 分页，每页完成后立即刷新网格，
                 // 避免照片多时等待整份列表返回才看到内容。
+                // 分页回调同样套用排序，使加载过程中的顺序与最终结果一致，
+                // 避免「先正序渲染、加载完突然翻转」。
                 val photos = transferManager.fetchPhotoList(
-                    onPage = { page -> _photoList.value = page }
+                    onPage = { page -> _photoList.value = sortCamera(page) }
                 )
-                _photoList.value = photos
+                _photoList.value = sortCamera(photos)
                 _selectedHandles.value = emptySet()
                 _message.value = if (photos.isEmpty()) "存储卡为空或未连接" else "共 ${photos.size} 个文件"
                 // 后台渐进取预热缩略图；可见项由 Adapter 按需触发
