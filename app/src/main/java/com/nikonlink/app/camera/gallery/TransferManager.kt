@@ -9,6 +9,8 @@ import android.provider.MediaStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.usb.UsbPtpManager
@@ -16,6 +18,10 @@ import com.nikonlink.app.device.wifi_ap.WifiManager
 import com.nikonlink.app.camera.data.TransferRepository
 import com.nikonlink.app.shared.common.AppEventLogger
 import com.nikonlink.app.shared.common.AppSettings
+import com.nikonlink.app.shared.data.NLinkDatabaseEntryPoint
+import com.nikonlink.app.shared.data.TransferHistoryDao
+import com.nikonlink.app.shared.data.findTransferredHandlesBatch
+import dagger.hilt.android.EntryPointAccessors
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStream
@@ -66,10 +72,22 @@ class TransferManager @Inject constructor(
     }
 
     private var scope: CoroutineScope? = null
+
+    // S3（队列状态线程安全）：主线程（UI 点击 → enqueue）与协程线程（下载完成回调）
+    // 会并发读写下面这组状态，统一由 queueMutex 保护。
+    // 约定：临界区内只做内存状态修改，不做任何 IO / 下载，避免长时间占锁。
+    private val queueMutex = Mutex()
     private val transferQueue = mutableListOf<TransferTask>()
     private var currentTask: TransferTask? = null
     private var currentJob: Job? = null
     private var isPaused = false
+
+    /**
+     * S2：入队阶段批量查「这批 handle 里哪些已传输」用的 DAO。
+     * 本类由 AppModule 手动构造，无法追加构造器参数，改用 Hilt EntryPoint 懒取。
+     */
+    @Volatile
+    private var historyDao: TransferHistoryDao? = null
 
     private var autoSyncJob: Job? = null
     private var lastAutoSyncAt = 0L
@@ -592,140 +610,320 @@ class TransferManager @Inject constructor(
     /**
      * 添加传输任务到队列
      * PRD 2.1: 传输队列管理 - 多任务排队
-     * 全链路优化: 已下载文件的去重在队列处理阶段异步执行（避免阻塞 UI 线程）
+     *
+     * S2（入队去重）：去重前移到入队阶段，队列内同 handle 与已传输记录都直接丢掉。
+     * 去重查询需要访问数据库，为避免阻塞 UI 线程，内部起协程异步入队；
+     * 对外函数签名保持不变（TransferViewModel 直接调用本方法）。
      */
     fun enqueue(files: List<CameraFile>) {
         if (files.isEmpty()) {
             postMessage("没有可下载的文件")
             return
         }
-        val tasks = files.map { TransferTask(it, TransferTaskStatus.PENDING) }
-        transferQueue.addAll(tasks)
-        _queue.value = transferQueue.toList()
+        val scope = this.scope
+        if (scope == null) {
+            Timber.tag(TAG).w("enqueue() called before start(), dropped ${files.size} files")
+            postMessage("传输服务尚未就绪，请稍后重试")
+            return
+        }
+        scope.launch { enqueueInternal(files) }
+    }
+
+    /**
+     * 入队去重实现（协程内执行），两层过滤：
+     * 1. 队列中已存在同 handle 的任务（PENDING/DOWNLOADING/COMPLETED 都算）→ 丢弃，挡住重复点击
+     * 2. transfer_history 中已成功传输的 handle → 丢弃，不发起任何 PTP 传输
+     * 3. 全部被过滤时给出明确提示，不静默返回
+     */
+    private suspend fun enqueueInternal(files: List<CameraFile>) {
+        // 数据库查询放在锁外，避免长时间占锁
+        val transferred = withContext(Dispatchers.IO) {
+            queryTransferredHandles(files.map { it.handle })
+        }
+
+        val accepted = mutableListOf<CameraFile>()
+        queueMutex.withLock {
+            val knownHandles = transferQueue.mapTo(mutableSetOf()) { it.file.handle }
+            for (file in files) {
+                if (file.handle in knownHandles) continue   // 队列内去重
+                if (file.handle in transferred) continue    // 已传输去重
+                knownHandles += file.handle                 // 同一批内部也去重
+                accepted += file
+            }
+            if (accepted.isNotEmpty()) {
+                transferQueue.addAll(accepted.map { TransferTask(it, TransferTaskStatus.PENDING) })
+                _queue.value = transferQueue.toList()   // S3: 快照在锁内生成
+            }
+        }
+
+        if (accepted.isEmpty()) {
+            // 全部被过滤：明确提示，不静默返回
+            // （eventLogger 会写日志文件，放在锁外执行）
+            postMessage("所选照片均已在队列中或已下载")
+            Timber.tag(TAG).i("Enqueue skipped: ${files.size} files already queued or downloaded")
+            eventLogger.event("enqueue_skipped", "requested" to files.size)
+            return
+        }
+
+        Timber.tag(TAG).i("Enqueued ${accepted.size}/${files.size} files")
+        eventLogger.event(
+            "enqueue",
+            "requested" to files.size,
+            "accepted" to accepted.size
+        )
         processQueue()
+    }
+
+    /** 批量查询这批 handle 中已成功传输过的子集（IN 查询一次搞定，避免 N 次 IO） */
+    private suspend fun queryTransferredHandles(handles: List<Int>): Set<Int> {
+        val dao = historyDaoOrNull()
+        if (dao != null) {
+            runCatching { dao.findTransferredHandlesBatch(handles) }
+                .onSuccess { return it }
+                .onFailure { Timber.tag(TAG).w(it, "Batch transferred query failed") }
+        }
+        // 兑底：DAO 不可用（Hilt 未就绪等）时逐条查询，保证去重逻辑仍然生效
+        return handles.filter {
+            runCatching { transferRepository.isAlreadyTransferred(it) }.getOrDefault(false)
+        }.toSet()
+    }
+
+    /**
+     * 懒取 TransferHistoryDao：本类由 AppModule 手动构造，无法追加构造器参数，
+     * 因此通过 Hilt EntryPoint 按类型取用（见 NLinkDatabaseEntryPoint）。
+     */
+    private fun historyDaoOrNull(): TransferHistoryDao? {
+        historyDao?.let { return it }
+        val dao = runCatching {
+            EntryPointAccessors.fromApplication(
+                context.applicationContext,
+                NLinkDatabaseEntryPoint::class.java
+            ).transferHistoryDao()
+        }.onFailure { Timber.tag(TAG).w(it, "TransferHistoryDao not available") }.getOrNull()
+        historyDao = dao
+        return dao
     }
 
     /**
      * 暂停传输
+     * S3: 队列状态统一在锁内修改
      */
     fun pause() {
-        isPaused = true
-        currentJob?.cancel()
-        currentJob = null
-        _transferState.value = TransferState.Paused
-        resetTransferSpeed()
+        val scope = this.scope
+        if (scope == null) {
+            // start() 之前不存在并发协程，直接置位即可
+            isPaused = true
+            _transferState.value = TransferState.Paused
+            resetTransferSpeed()
+            return
+        }
+        scope.launch {
+            queueMutex.withLock {
+                isPaused = true
+                currentJob?.cancel()
+                currentJob = null
+                _transferState.value = TransferState.Paused
+                resetTransferSpeed()
+            }
+        }
     }
 
     /**
      * 恢复传输
      */
     fun resume() {
-        isPaused = false
-        processQueue()
+        val scope = this.scope
+        if (scope == null) {
+            isPaused = false
+            return
+        }
+        scope.launch {
+            queueMutex.withLock { isPaused = false }
+            processQueue()
+        }
     }
 
     /**
      * 取消所有传输
      */
     fun cancelAll() {
-        isPaused = false
-        currentJob?.cancel()
-        currentJob = null
-        transferQueue.clear()
-        currentTask = null
-        _queue.value = emptyList()
-        _transferState.value = TransferState.Idle
-        resetTransferSpeed()
-        File(context.cacheDir, "n-link_transfer").listFiles()?.forEach { it.delete() }
-    }
-
-    private fun processQueue() {
-        if (isPaused || currentJob?.isActive == true) return
-
-        val nextTask = transferQueue.firstOrNull { it.status == TransferTaskStatus.PENDING }
-        if (nextTask == null) {
-            if (transferQueue.isEmpty()) _transferState.value = TransferState.Idle
+        val scope = this.scope
+        if (scope == null) {
+            transferQueue.clear()
+            currentTask = null
+            _queue.value = emptyList()
+            _transferState.value = TransferState.Idle
             return
         }
-
-        currentTask = nextTask
-        nextTask.status = TransferTaskStatus.DOWNLOADING
-        val tempDir = File(context.cacheDir, "n-link_transfer").apply { mkdirs() }
-        val tempFile = File(tempDir, "tmp_${nextTask.file.handle}.bin")
-        nextTask.tempFile = tempFile
-        _queue.value = transferQueue.toList()
-        resetTransferSpeed()
-        _transferState.value = TransferState.Downloading(
-            nextTask.file,
-            tempFile.length(),
-            nextTask.file.size
-        )
-
-        currentJob = scope?.launch {
-            // 全链路优化: 队列阶段去重，已下载过的文件直接跳过，不重复传输
-            val alreadyDone = runCatching {
-                transferRepository.isAlreadyTransferred(nextTask.file.handle)
-            }.getOrDefault(false)
-            if (alreadyDone) {
-                nextTask.status = TransferTaskStatus.COMPLETED
-                postMessage("${nextTask.file.fileName} 已下载过，自动跳过")
-                _queue.value = transferQueue.toList()
-                currentTask = null
+        scope.launch {
+            queueMutex.withLock {
+                isPaused = false
+                currentJob?.cancel()
                 currentJob = null
-                processQueue()
-                return@launch
-            }
-
-            var result: TransferResult = TransferResult.Cancelled
-            // 全链路优化: 失败自动重试 1 次（相机瞬时忙碌/通道切换场景）
-            repeat(2) { attempt ->
-                result = try {
-                    downloadPhoto(
-                        file = nextTask.file,
-                        onProgress = { received, total ->
-                            val resolvedTotal = resolveProgressTotal(nextTask.file.size, total, received)
-                            _transferState.value = TransferState.Downloading(
-                                nextTask.file,
-                                received,
-                                resolvedTotal
-                            )
-                            updateTransferSpeed(received)
-                        },
-                        targetFile = tempFile
-                    )
-                } catch (e: CancellationException) {
-                    TransferResult.Cancelled
-                }
-                if (result is TransferResult.Failed && attempt == 0) {
-                    Timber.tag(TAG).w("Task retry after failure: ${nextTask.file.fileName}")
-                    delay(1500)
-                }
-            }
-
-            nextTask.status = when (result) {
-                is TransferResult.Success -> TransferTaskStatus.COMPLETED
-                is TransferResult.Failed -> TransferTaskStatus.FAILED
-                is TransferResult.Cancelled -> TransferTaskStatus.PENDING
-            }
-            when (result) {
-                is TransferResult.Failed -> {
-                    // 全链路优化: 失败原因上抛给用户，不静默
-                    postMessage("下载失败: ${nextTask.file.fileName}（${result.reason}）")
-                    nextTask.tempFile?.delete()
-                    nextTask.tempFile = null
-                }
-                is TransferResult.Success -> Unit
-                is TransferResult.Cancelled -> Unit
-            }
-            _queue.value = transferQueue.toList()
-            currentTask = null
-            currentJob = null
-            if (transferQueue.none { it.status == TransferTaskStatus.PENDING }) {
+                transferQueue.clear()
+                currentTask = null
+                _queue.value = emptyList()
                 _transferState.value = TransferState.Idle
                 resetTransferSpeed()
             }
-            processQueue() // 处理下一个
+            // 临时文件清理是文件 IO，放在锁外执行
+            File(context.cacheDir, "n-link_transfer").listFiles()?.forEach { it.delete() }
         }
+    }
+
+    /**
+     * 取出下一个待下载任务并启动下载协程。
+     *
+     * S3: 取任务与写状态全在 queueMutex 内完成；下载协程在锁外启动
+     * （临界区内绝不执行下载/IO，否则会长时间占锁，且 Main.immediate 下可能重入死锁）。
+     */
+    private suspend fun processQueue() {
+        // 临时目录与队列状态无关，放在锁外准备
+        val tempDir = File(context.cacheDir, "n-link_transfer").apply { mkdirs() }
+
+        val nextTask = queueMutex.withLock {
+            if (isPaused || currentJob?.isActive == true) return
+
+            val task = transferQueue.firstOrNull { it.status == TransferTaskStatus.PENDING }
+            if (task == null) {
+                if (transferQueue.isEmpty()) _transferState.value = TransferState.Idle
+                return
+            }
+
+            currentTask = task
+            task.status = TransferTaskStatus.DOWNLOADING
+            val tempFile = File(tempDir, "tmp_${task.file.handle}.bin")
+            task.tempFile = tempFile
+            _queue.value = transferQueue.toList()
+            resetTransferSpeed()
+            _transferState.value = TransferState.Downloading(
+                task.file,
+                tempFile.length(),
+                task.file.size
+            )
+            task
+        }
+
+        // 先建 LAZY 任务，等到锁外再 start：避免协程体在持锁路径上同步执行造成重入
+        val job = scope?.launch(start = CoroutineStart.LAZY) {
+            try {
+                runTask(nextTask)
+            } catch (e: CancellationException) {
+                // 暂停/取消可能打断下载之外的等待点（失败重试的 delay）：
+                // 兜底退回 PENDING 并收尾，否则任务会永久卡在 DOWNLOADING
+                Timber.tag(TAG).i("Task interrupted: ${nextTask.file.fileName}")
+                nextTask.status = TransferTaskStatus.PENDING
+                finishTask(nextTask, skipped = false)
+                throw e
+            }
+        }
+        if (job == null) {
+            // 传输服务已停止：任务退回 PENDING，等 start() 后重新调度，避免任务永久卡住
+            queueMutex.withLock {
+                nextTask.status = TransferTaskStatus.PENDING
+                if (currentTask === nextTask) currentTask = null
+                _queue.value = transferQueue.toList()
+            }
+            Timber.tag(TAG).w("scope unavailable, task stays PENDING: ${nextTask.file.fileName}")
+            return
+        }
+        queueMutex.withLock { currentJob = job }
+        job.start()
+    }
+
+    /**
+     * 单个任务的执行体：二次去重 → 下载（失败重试 1 次）→ 状态回退 → 调度下一个。
+     */
+    private suspend fun runTask(task: TransferTask) {
+        // S5: 真正的去重已前移到入队阶段（enqueueInternal），这里只作二次保险 ——
+        // 覆盖「入队后到执行前该 handle 又被自动下载完成」这类时序竞态。
+        val alreadyDone = runCatching {
+            withContext(Dispatchers.IO) {
+                transferRepository.isAlreadyTransferred(task.file.handle)
+            }
+        }.getOrDefault(false)
+        if (alreadyDone) {
+            Timber.tag(TAG).i("Skip already downloaded: ${task.file.fileName}")
+            finishTask(task, skipped = true)
+            return
+        }
+
+        // S1（核心修复）：只有在第一次「失败」时才重试第二次，成功绝不重试。
+        // v0.1.2 的 repeat(2) 没有成功终止条件，成功后又跑一轮，
+        // 而首轮成功已删除临时文件，第二轮会重新完整下载并二次落盘，产生 "xxx (1).JPG"。
+        var result = downloadOnce(task)
+        if (result is TransferResult.Failed) {
+            Timber.tag(TAG).w("Task retry after failure: ${task.file.fileName}（${result.reason}）")
+            delay(1500)
+            result = downloadOnce(task)
+        }
+
+        // S5: 状态回退 —— 取消（暂停/停止）的任务退回 PENDING，恢复后可继续，不会被永久卡住
+        task.status = when (result) {
+            is TransferResult.Success -> TransferTaskStatus.COMPLETED
+            is TransferResult.Failed -> TransferTaskStatus.FAILED
+            is TransferResult.Cancelled -> TransferTaskStatus.PENDING
+        }
+        when (result) {
+            is TransferResult.Failed -> {
+                // 全链路优化: 失败原因上抛给用户，不静默
+                postMessage("下载失败: ${task.file.fileName}（${result.reason}）")
+                task.tempFile?.delete()
+                task.tempFile = null
+            }
+            is TransferResult.Cancelled -> {
+                // 保留临时文件，恢复传输时可从断点继续
+                Timber.tag(TAG).i("Task cancelled, back to PENDING: ${task.file.fileName}")
+            }
+            is TransferResult.Success -> Unit
+        }
+        finishTask(task, skipped = false)
+    }
+
+    /** 单次下载尝试；取消与异常统一收敛成 TransferResult，便于上层判断是否重试。 */
+    private suspend fun downloadOnce(task: TransferTask): TransferResult = try {
+        downloadPhoto(
+            file = task.file,
+            onProgress = { received, total ->
+                val resolvedTotal = resolveProgressTotal(task.file.size, total, received)
+                _transferState.value = TransferState.Downloading(
+                    task.file,
+                    received,
+                    resolvedTotal
+                )
+                updateTransferSpeed(received)
+            },
+            targetFile = task.tempFile
+        )
+    } catch (e: CancellationException) {
+        TransferResult.Cancelled
+    } catch (e: Exception) {
+        TransferResult.Failed(e.message ?: "未知错误")
+    }
+
+    /**
+     * 任务收尾：在锁内更新快照、释放 currentTask/currentJob，然后在锁外调度下一个任务。
+     * S3: 递归自调用改为 scope.launch，避免在持锁路径上重入死锁。
+     */
+    private suspend fun finishTask(task: TransferTask, skipped: Boolean) {
+        // NonCancellable：任务协程已被取消（暂停/停止）时收尾逻辑仍必须跑完，
+        // 否则 currentJob 不释放、任务卡在 DOWNLOADING，队列再也无法推进。
+        withContext(NonCancellable) {
+            queueMutex.withLock {
+                if (skipped) {
+                    task.status = TransferTaskStatus.COMPLETED
+                    postMessage("${task.file.fileName} 已下载过，自动跳过")
+                }
+                _queue.value = transferQueue.toList()
+                if (currentTask === task) currentTask = null
+                currentJob = null
+                if (transferQueue.none { it.status == TransferTaskStatus.PENDING }) {
+                    _transferState.value = TransferState.Idle
+                    resetTransferSpeed()
+                }
+            }
+        }
+        scope?.launch { processQueue() }   // 处理下一个
     }
 
     /**
