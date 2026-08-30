@@ -54,4 +54,15 @@ class AppSettings @Inject constructor(
     var autoDownload: Boolean
         get() = prefs.getBoolean("auto_download", false)
         set(value) = prefs.edit().putBoolean("auto_download", value).apply()
+
+    /**
+     * 相册排序：true = 最新拍摄在前，false = 最早拍摄在前。
+     *
+     * 默认 true —— 相机相册此前沿用 PTP 返回的对象句柄顺序（旧→新），
+     * 新拍的照片要翻到列表最底部才看得到。
+     * 仅作用于「相机照片」；「本地照片」由 MediaStore 按 DATE_ADDED 倒序返回，不参与此设置。
+     */
+    var albumSortNewestFirst: Boolean
+        get() = prefs.getBoolean("album_sort_newest_first", true)
+        set(value) = prefs.edit().putBoolean("album_sort_newest_first", value).apply()
 }

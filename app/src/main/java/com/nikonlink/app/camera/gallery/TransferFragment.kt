@@ -235,6 +235,15 @@ class TransferFragment : Fragment() {
             }
         }
 
+        // 排序切换：只改展示顺序，不重新拉取列表。
+        // 本地相册由 MediaStore 按 DATE_ADDED 倒序返回，本身即最新在前，故该入口仅相机相册可见。
+        binding.btnSort.pressEffect()
+        binding.btnSort.setOnClickListener {
+            viewModel.toggleSortOrder()
+            // 顺序翻转后原位置已失去意义，回到顶部让用户从最新/最早的一端重新看起
+            binding.gridPhotos.scrollToPosition(0)
+        }
+
         binding.btnMultiSelect.setOnClickListener {
             // Fix 真机反馈: 长按已选中照片后再点「多选」，旧逻辑会直接退出多选并清空选中，
             // 用户感知为「没有反馈」。新逻辑：已处于多选态时，有选中先清选中、保持多选；无选中才退出
@@ -329,10 +338,20 @@ class TransferFragment : Fragment() {
             viewModel.activeAlbum.collect { source ->
                 renderAlbumTabs(source)
                 if (multiSelectMode) renderActionButtons()
+                // 本地相册顺序由 MediaStore 决定，不提供排序切换
+                binding.btnSort.visibility =
+                    if (source == AlbumSource.CAMERA) View.VISIBLE else View.GONE
                 binding.tvMessage.text = when (source) {
                     AlbumSource.CAMERA -> "连接相机后查看相册"
                     AlbumSource.LOCAL -> "尚未下载照片到手机"
                 }
+            }
+        }
+
+        // 排序按钮文案跟随当前排序（两种文案字数相同，切换时不会挤动相邻控件）
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.sortNewestFirst.collect { newest ->
+                binding.btnSort.text = if (newest) "最新在前" else "最早在前"
             }
         }
 
