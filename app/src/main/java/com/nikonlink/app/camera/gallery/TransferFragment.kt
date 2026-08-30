@@ -397,6 +397,19 @@ class TransferFragment : Fragment() {
             }
         }
 
+        // 连接成功后自动加载相册。
+        // 背景：MainActivity 的四个 Fragment 常驻，切 Tab 只走 hide/show，
+        // onViewCreated 里的 fetchPhotos() 全程只跑一次（通常在相机还没连上时），
+        // 此前没有任何机制在连接就绪后补一次加载。
+        // 这里只负责转发状态，真正的「上升沿只触发一次」判定在 ViewModel 内，
+        // 保证切 Tab 回来、配置重建等场景不会重复加载。
+        // 手动刷新入口（btnRefresh / 下拉刷新）保持原样不变。
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.cameraReady.collect { ready ->
+                viewModel.onCameraReadyChanged(ready)
+            }
+        }
+
         // 下载进度：灰度确定进度条 + 百分比
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.transferState.collect { state ->
