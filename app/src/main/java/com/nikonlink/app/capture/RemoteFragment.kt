@@ -26,6 +26,7 @@ import com.nikonlink.app.camera.liveview.LiveViewActivity
 import com.nikonlink.app.camera.liveview.LiveViewViewModel
 import com.nikonlink.app.camera.params.CameraParam
 import com.nikonlink.app.camera.params.CameraParamsViewModel
+import com.nikonlink.app.camera.params.resolvePickerIndex
 import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Job
@@ -181,23 +182,33 @@ class RemoteFragment : Fragment() {
 
     private fun onParamClick(label: String, param: CameraParam) {
         when (label) {
-            "光圈" -> showWheelPicker("光圈", param,
-                liveViewModel2().commonAperturesDisplay(),
-                liveViewModel2().commonApertures
-            ) { idx -> paramsViewModel.setApertureByValue(liveViewModel2().commonApertures[idx]) }
-            "快门" -> showWheelPicker("快门速度", param,
-                liveViewModel2().commonShuttersDisplay(),
-                liveViewModel2().commonShutterSpeeds
-            ) { idx -> paramsViewModel.setShutterByValue(liveViewModel2().commonShutterSpeeds[idx]) }
-            "ISO" -> showWheelPicker("ISO", param,
-                liveViewModel2().commonIsoValues.map { it.toString() },
-                liveViewModel2().commonIsoValues
-            ) { idx -> paramsViewModel.setIsoByValue(liveViewModel2().commonIsoValues[idx]) }
+            // 光圈档位与镜头联动，打开滚轮前先刷新一次（内部会读一次当前焦距）
+            "光圈" -> openAperturePicker(param)
+            "快门" -> {
+                val rawValues = paramsViewModel.commonShutterSpeeds
+                showWheelPicker(
+                    title = "快门速度",
+                    param = param,
+                    displayValues = rawValues.map { paramsViewModel.formatShutter(it) },
+                    rawValues = rawValues,
+                    // 档位表按曝光时间升序，向上滚 = 更快
+                    hint = "↑ 更快 / ↓ 更慢",
+                    onConfirm = { idx -> paramsViewModel.setShutterByValue(rawValues[idx]) }
+                )
+            }
+            "ISO" -> {
+                val rawValues = paramsViewModel.commonIsoValues
+                showWheelPicker(
+                    "ISO", param, rawValues.map { it.toString() }, rawValues,
+                    onConfirm = { idx -> paramsViewModel.setIsoByValue(rawValues[idx]) }
+                )
+            }
             "白平衡" -> {
-                val presets = liveViewModel2().whiteBalancePresets
-                showWheelPicker("白平衡", param, presets.map { it.second }, presets.map { it.first }) { idx ->
-                    paramsViewModel.setWhiteBalance(presets[idx].first)
-                }
+                val presets = paramsViewModel.whiteBalancePresets
+                showWheelPicker(
+                    "白平衡", param, presets.map { it.second }, presets.map { it.first },
+                    onConfirm = { idx -> paramsViewModel.setWhiteBalance(presets[idx].first) }
+                )
             }
             "模式" -> MaterialAlertDialogBuilder(requireContext())
                 .setTitle("拍摄模式")
@@ -207,30 +218,57 @@ class RemoteFragment : Fragment() {
         }
     }
 
+    /**
+     * 打开光圈滚轮：档位与镜头联动。
+     * 打开时读一次当前焦距（PRD Q3，不进轮询），再从 paramsViewModel 暴露的档位流取结果。
+     */
+    private fun openAperturePicker(param: CameraParam) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            paramsViewModel.refreshApertureOptions()
+            if (_binding == null) return@launch
+            val options = paramsViewModel.apertureOptions.value
+            showWheelPicker(
+                title = "光圈",
+                param = param,
+                displayValues = options.map { paramsViewModel.formatAperture(it) },
+                rawValues = options,
+                hint = if (paramsViewModel.apertureRangeFromLens) {
+                    "↑ 光圈更大 / ↓ 光圈收小"
+                } else {
+                    "未获取到镜头信息，使用通用档位"
+                },
+                onConfirm = { idx -> paramsViewModel.setApertureByValue(options[idx]) }
+            )
+        }
+    }
+
     /** 滚轮选择器底部面板（从下向上滑入，Material 默认行为） */
-    private fun <T> showWheelPicker(
+    private fun showWheelPicker(
         title: String,
         param: CameraParam,
         displayValues: List<String>,
-        rawValues: List<T>,
+        rawValues: List<Int>,
+        hint: String? = null,
         onConfirm: (Int) -> Unit
     ) {
-        if (displayValues.isEmpty()) return
+        if (displayValues.isEmpty() || displayValues.size != rawValues.size) return
         val dialog = BottomSheetDialog(requireContext())
         val pickerBinding = DialogParamPickerBinding.inflate(layoutInflater)
         dialog.setContentView(pickerBinding.root)
 
         pickerBinding.tvPickerTitle.text = title
-        pickerBinding.tvPickerCurrent.text = "当前: ${param.currentValue.ifBlank { "--" }}"
+        pickerBinding.tvPickerCurrent.text = buildString {
+            append("当前: ").append(param.currentValue.ifBlank { "--" })
+            if (!hint.isNullOrBlank()) append('\n').append(hint)
+        }
 
         val picker = pickerBinding.numberPicker
         picker.minValue = 0
         picker.maxValue = displayValues.size - 1
         picker.displayedValues = displayValues.toTypedArray()
         picker.wrapSelectorWheel = false
-        // 定位到当前值附近
-        val currentIdx = displayValues.indexOfFirst { it == param.currentValue }
-        picker.value = if (currentIdx >= 0) currentIdx else 0
+        // 用 raw 值定位，不再用显示字符串反查（v0.1.2 两处口径不一致导致恒定位到首项）
+        picker.value = resolvePickerIndex(rawValues, param.rawValue)
 
         pickerBinding.btnPickerConfirm.setOnClickListener {
             onConfirm(picker.value)
@@ -238,9 +276,6 @@ class RemoteFragment : Fragment() {
         }
         dialog.show()
     }
-
-    /** 参数候选值格式化辅助 */
-    private fun liveViewModel2(): ParamCatalog = ParamCatalog(paramsViewModel)
 
     // ---------------- 快门户 ----------------
 
@@ -498,42 +533,5 @@ class RemoteFragment : Fragment() {
         liveViewViewModel.stopLiveView()
         recordTimerJob?.cancel()
         _binding = null
-    }
-}
-
-/**
- * 参数候选值目录：将 manager 的原始数值格式化为滚轮显示文本
- */
-private class ParamCatalog(private val vm: CameraParamsViewModel) {
-
-    private val manager
-        get() = vm
-
-    val commonApertures: List<Int>
-        get() = listOf(140, 180, 200, 280, 350, 400, 560, 800, 1100, 1600, 2200)
-
-    val commonShutterSpeeds: List<Int>
-        get() = listOf(10, 13, 15, 20, 25, 30, 40, 50, 60, 80, 100, 125, 160, 200,
-            250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000)
-
-    val commonIsoValues: List<Int>
-        get() = listOf(100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200)
-
-    val whiteBalancePresets: List<Pair<Int, String>>
-        get() = listOf(
-            2 to "自动", 0x8016 to "自然光自动适应", 4 to "晴天",
-            0x8010 to "阴天", 0x8011 to "背阴", 6 to "白炽灯",
-            5 to "荧光灯", 7 to "闪光灯", 0x8012 to "选择色温", 0x8013 to "手动预设"
-        )
-
-    fun commonAperturesDisplay(): List<String> =
-        commonApertures.map { "f/${formatF(it)}" }
-
-    fun commonShuttersDisplay(): List<String> =
-        commonShutterSpeeds.map { "1/$it s" }
-
-    private fun formatF(v: Int): String {
-        val f = v / 100f
-        return if (f == f.toLong().toFloat()) f.toLong().toString() else String.format("%.1f", f)
     }
 }
