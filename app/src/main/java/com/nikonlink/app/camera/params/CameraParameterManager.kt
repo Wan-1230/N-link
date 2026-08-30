@@ -9,6 +9,8 @@ import com.nikonlink.app.camera.gallery.TransferManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import timber.log.Timber
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -50,6 +52,13 @@ class CameraParameterManager @Inject constructor(
     private val refreshInProgress = AtomicBoolean(false)
     private var shutterQueryJob: Job? = null
     private val shutterQueryInProgress = AtomicBoolean(false)
+
+    /**
+     * 最近一次读到的当前焦距（mm）。
+     * 按 PRD Q3 决定：焦距只在打开光圈滚轮时读一次，不进 [readAllParameters] 轮询，
+     * 因此这里缓存下来供 [apertureOptions] 与 [setAperture] 复用。
+     */
+    private var cachedFocalMm: Double? = null
 
     // ==================== 曝光三要素 ====================
 
@@ -219,22 +228,112 @@ class CameraParameterManager @Inject constructor(
         )
     }
 
+    /**
+     * 镜头信息：除拼展示用的 [CameraInfo.lensName] 外，
+     * 还要把焦段与两端最大光圈结构化保存，供 [apertureOptions] 生成与镜头联动的档位。
+     *
+     * 0xD0E3–0xD0E6 是尼康厂商私有属性，老机身 / CPU 镜头 / 转接镜头可能不支持，
+     * 所有读取都走 [readPropOrNull]，取到 0（或异常）一律视为"未知"并走回退路径。
+     */
     private suspend fun readLensInfo() {
-        val lensId = readDeviceProp(PtpConstants.PROP_NIKON_LENS_ID)?.let(::readUInt)
-        val focalMinData = readDeviceProp(PtpConstants.PROP_NIKON_FOCAL_LENGTH_MIN)
-        val focalMaxData = readDeviceProp(PtpConstants.PROP_NIKON_FOCAL_LENGTH_MAX)
-        val apMinData = readDeviceProp(PtpConstants.PROP_NIKON_MAX_AP_AT_MIN)
-        val apMaxData = readDeviceProp(PtpConstants.PROP_NIKON_MAX_AP_AT_MAX)
+        val lensId = readPropOrNull(PtpConstants.PROP_NIKON_LENS_ID)?.let(::readUInt)
+        val focalMin = readPropOrNull(PtpConstants.PROP_NIKON_FOCAL_LENGTH_MIN)
+            ?.let { readUInt(it) / 100.0 }
+        val focalMax = readPropOrNull(PtpConstants.PROP_NIKON_FOCAL_LENGTH_MAX)
+            ?.let { readUInt(it) / 100.0 }
+        val apMin = readPropOrNull(PtpConstants.PROP_NIKON_MAX_AP_AT_MIN)?.let(::readUInt)
+        val apMax = readPropOrNull(PtpConstants.PROP_NIKON_MAX_AP_AT_MAX)?.let(::readUInt)
 
-        val focalMin = focalMinData?.let { readUInt(it).toDouble() / 100.0 }
-        val focalMax = focalMaxData?.let { readUInt(it).toDouble() / 100.0 }
-        val apMin = apMinData?.let(::readUInt)
-        val apMax = apMaxData?.let(::readUInt)
-        val lensName = buildLensName(lensId, focalMin, focalMax, apMin, apMax)
-        if (lensName.isNotBlank()) {
-            _cameraInfo.value = _cameraInfo.value.copy(lensName = lensName)
+        // 0 / 负数视为未知
+        val focalMinMm = focalMin?.takeIf { it > 0.0 }
+        val focalMaxMm = focalMax?.takeIf { it > 0.0 }
+        val apMinX100 = apMin?.takeIf { it > 0 }
+        val apMaxX100 = apMax?.takeIf { it > 0 }
+
+        // 两端最大光圈都要读到才认为光圈范围已知；只有一侧时无法安全插值，仍走回退
+        val apertureRangeKnown = apMinX100 != null && apMaxX100 != null
+
+        val lensName = buildLensName(lensId, focalMinMm, focalMaxMm, apMinX100, apMaxX100)
+        if (lensName.isNotBlank() || apertureRangeKnown) {
+            _cameraInfo.value = _cameraInfo.value.copy(
+                lensName = lensName.ifBlank { _cameraInfo.value.lensName },
+                lensFocalMinMm = focalMinMm ?: 0.0,
+                lensFocalMaxMm = focalMaxMm ?: 0.0,
+                lensMaxApAtMinFocalX100 = apMinX100 ?: 0,
+                lensMaxApAtMaxFocalX100 = apMaxX100 ?: 0,
+                lensApertureRangeKnown = apertureRangeKnown
+            )
+        }
+        if (apertureRangeKnown) {
+            Timber.tag(TAG).d(
+                "Lens aperture range: ${focalMinMm ?: 0.0}-${focalMaxMm ?: 0.0}mm " +
+                    "f/${(apMinX100 ?: 0) / 100.0}-${(apMaxX100 ?: 0) / 100.0}"
+            )
         }
     }
+
+    /**
+     * 读取设备属性并吞掉异常：厂商私有属性在部分机身上会直接返回错误响应。
+     */
+    private suspend fun readPropOrNull(propCode: Int): ByteArray? = runCatching {
+        readDeviceProp(propCode)
+    }.onFailure {
+        Timber.tag(TAG).d(it, "Read prop 0x${Integer.toHexString(propCode)} failed")
+    }.getOrNull()
+
+    /**
+     * 读取当前焦距（mm）。
+     * 只在打开光圈滚轮时调用一次（PRD Q3），不进 [readAllParameters] 轮询。
+     */
+    suspend fun readCurrentFocalLengthMm(): Double? {
+        if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) return null
+        val focalMm = runCatching {
+            val data = readDeviceProp(PtpConstants.PROP_FOCAL_LENGTH)
+            // 标准 PTP 0x5008：当前焦距 ×100，不支持时为 0
+            val raw = data?.let(::readUInt) ?: 0
+            if (raw > 0) raw / 100.0 else null
+        }.onFailure {
+            Timber.tag(TAG).w(it, "Read current focal length failed")
+        }.getOrNull()
+        cachedFocalMm = focalMm
+        return focalMm
+    }
+
+    /** 光圈档位是否来自镜头信息（false 表示走通用档位回退） */
+    val isLensApertureRangeKnown: Boolean
+        get() = _cameraInfo.value.lensApertureRangeKnown
+
+    /**
+     * 当前镜头可用光圈档位（f 值 ×100），按 f 值升序（大光圈 → 小光圈）。
+     *
+     * - 镜头光圈范围未知 → 回退 [ApertureCatalog.FALLBACK]（f/1.4–f/22），行为与 v0.1.2 一致
+     * - 变焦镜头 → 按当前焦距在广角端 / 长焦端最大光圈之间线性插值出最小可用 f 值
+     * - 定焦镜头两端相等，插值自然退化为定值
+     * - 最小光圈 PTP 无对应属性，按 f/22 兜底
+     *
+     * @param currentFocalMm 当前焦距（mm）；为 null 时复用 [readCurrentFocalLengthMm] 缓存的值。
+     */
+    fun apertureOptions(currentFocalMm: Double? = null): List<Int> {
+        val info = _cameraInfo.value
+        if (!info.lensApertureRangeKnown) return ApertureCatalog.FALLBACK
+
+        // 最大光圈 = f 值下限；读不到焦距时 ApertureCatalog 内部会保守取 f 值较大的一侧
+        val minFStop = ApertureCatalog.maxApertureAt(info, currentFocalMm ?: cachedFocalMm)
+        val maxFStop = ApertureCatalog.DEFAULT_MIN_APERTURE_X100
+        val options = ApertureCatalog.FALLBACK.filter { it in minFStop..maxFStop }
+        if (options.isEmpty()) {
+            // 镜头最大光圈比 f/22 还小（罕见）：至少退回镜头自身的最大光圈这一合法档
+            Timber.tag(TAG).w("No common aperture >= f/${minFStop / 100.0}, use lens max aperture only")
+            return listOf(minFStop)
+        }
+        return options
+    }
+
+    /** 快门显示格式化：raw 以 1/10000s 为单位，< 0.3s 显示 1/N，≥ 0.3s 显示 N.Ns */
+    fun formatShutter(rawX10000: Int): String = ShutterCatalog.format(rawX10000)
+
+    /** 光圈显示格式化：f 值 ×100 → "f/2.8" */
+    fun formatAperture(fStopX100: Int): String = ApertureCatalog.format(fStopX100)
 
     /**
      * 电池电量：优先读标准 PTP 0x5001，读不到保持 -1，UI 隐藏该行。
@@ -410,8 +509,8 @@ class CameraParameterManager @Inject constructor(
         }
         val aperture = when {
             apMinX100 != null && apMaxX100 != null && apMinX100 != apMaxX100 ->
-                "f/${formatAperture(apMinX100)}-${formatAperture(apMaxX100)}"
-            apMinX100 != null -> "f/${formatAperture(apMinX100)}"
+                "f/${ApertureCatalog.formatNumber(apMinX100)}-${ApertureCatalog.formatNumber(apMaxX100)}"
+            apMinX100 != null -> "f/${ApertureCatalog.formatNumber(apMinX100)}"
             else -> ""
         }
         val specs = listOf(focalRange, aperture).filter { it.isNotBlank() }.joinToString(" ")
@@ -426,11 +525,6 @@ class CameraParameterManager @Inject constructor(
 
     private fun formatFocal(value: Double): String =
         String.format(Locale.US, "%.0f", value)
-
-    private fun formatAperture(valueX100: Int): String {
-        val formatted = String.format(Locale.US, "%.1f", valueX100 / 100.0)
-        return formatted.removeSuffix(".0")
-    }
 
     private fun parseStorageInfo(data: ByteArray): PtpStorageInfo? {
         if (data.size < 26) return null
@@ -497,7 +591,7 @@ class CameraParameterManager @Inject constructor(
             val value = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
             val fStop = value / 100.0
             _aperture.value = _aperture.value.copy(
-                currentValue = "f/${String.format("%.1f", fStop)}",
+                currentValue = "f/${String.format(Locale.US, "%.1f", fStop)}",
                 rawValue = value
             )
         }
@@ -507,15 +601,10 @@ class CameraParameterManager @Inject constructor(
         val data = readDeviceProp(PtpConstants.PROP_EXPOSURE_TIME) ?: return
         if (data.size >= 4) {
             val value = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).int
-            // 快门速度以 1/10000s 为单位
-            val seconds = value / 10000.0
-            val display = if (seconds >= 1.0) {
-                "${String.format("%.1f", seconds)}s"
-            } else {
-                "1/${(1.0 / seconds).toInt()}"
-            }
+            // 快门速度以 1/10000s 为单位；显示统一走 formatShutter，
+            // 保证"当前值显示"与滚轮刻度口径完全一致（v0.1.2 两处口径不一致导致方向反转）
             _shutterSpeed.value = _shutterSpeed.value.copy(
-                currentValue = display,
+                currentValue = formatShutter(value),
                 rawValue = value
             )
         }
@@ -640,24 +729,45 @@ class CameraParameterManager @Inject constructor(
     /**
      * 设置光圈值
      * @param fStopX100 光圈值 x100 (如 f/2.8 = 280)
+     *
+     * 越界值会被 clamp 到镜头支持的最近合法档（并打日志）；
+     * 写入成功后回读比对，相机拒绝生效时给出警示。
      */
     suspend fun setAperture(fStopX100: Int): Boolean {
         if (_paramsLocked.value) return false
+        val options = apertureOptions()
+        val clamped = ApertureCatalog.clampToNearest(fStopX100, options)
+        if (clamped != fStopX100) {
+            Timber.tag(TAG).w("Aperture clamped: f/${fStopX100 / 100.0} -> f/${clamped / 100.0}")
+        }
         val data = ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN)
-            .putShort(fStopX100.toShort()).array()
+            .putShort(clamped.toShort()).array()
         val success = writeDeviceProp(PtpConstants.PROP_F_NUMBER, data)
-        if (success) readAperture()
+        if (success) {
+            readAperture()
+            val applied = _aperture.value.rawValue
+            if (applied != clamped) {
+                Timber.tag(TAG).w("Aperture write not applied, device reports $applied, expected $clamped")
+            }
+        }
         return success
     }
 
     /**
      * 设置快门速度
      * @param exposureTime 以 1/10000s 为单位 (如 1/250s = 40)
+     *
+     * 与光圈一致做上下限限位，避免按值设置（滚轮直接选值）时越界。
      */
     suspend fun setShutterSpeed(exposureTime: Int): Boolean {
         if (_paramsLocked.value) return false
+        val values = ShutterCatalog.VALUES
+        val clamped = exposureTime.coerceIn(values.first(), values.last())
+        if (clamped != exposureTime) {
+            Timber.tag(TAG).w("Shutter clamped: $exposureTime -> $clamped")
+        }
         val data = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
-            .putInt(exposureTime).array()
+            .putInt(clamped).array()
         val success = writeDeviceProp(PtpConstants.PROP_EXPOSURE_TIME, data)
         if (success) readShutterSpeed()
         return success
@@ -714,8 +824,9 @@ class CameraParameterManager @Inject constructor(
 
     // ==================== 常用预设值 ====================
 
-    val commonApertures = listOf(140, 180, 200, 280, 350, 400, 560, 800, 1100, 1600, 2200)
-    val commonShutterSpeeds = listOf(10, 13, 15, 20, 25, 30, 40, 50, 60, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000)
+    /** 常用快门档位 raw 值（1/10000s，升序 = 从快到慢），真源见 [ShutterCatalog.VALUES] */
+    val commonShutterSpeeds: List<Int> get() = ShutterCatalog.VALUES
+
     val commonIsoValues = listOf(100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200)
     val whiteBalancePresets = listOf(
         2 to "自动", 0x8016 to "自然光自动适应", 4 to "晴天",
@@ -751,8 +862,114 @@ data class CameraParam(
 )
 
 /**
+ * 快门档位唯一真源（PRD 3.4 S1）。
+ *
+ * 单位约定：`PROP_EXPOSURE_TIME` 以 **1/10000 秒** 为单位（`1/250s = 40`）。
+ * 列表按 raw **升序** = 曝光时间由短到长 = **index 0 最快，lastIndex 最慢**。
+ *
+ * UI（拍摄页 / 全屏监看页）一律从这里取档位，禁止再各自硬编码一份。
+ */
+object ShutterCatalog {
+
+    /** 常用快门档位 raw 值（1/10000 秒），升序 = 从快到慢 */
+    val VALUES: List<Int> = listOf(
+        10, 13, 15, 20, 25, 30, 40, 50, 60, 80, 100, 125, 160, 200,
+        250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000
+    )
+
+    /**
+     * raw（1/10000s）→ 显示文本。
+     *
+     * - `raw 10`   → `1/1000`
+     * - `raw 40`   → `1/250`
+     * - `raw 4000` → `0.4s`
+     *
+     * 0.3s 及以上按小数秒显示（相机行业惯例，Nikon 机身亦按 0.4 / 0.5 这样显示）；
+     * 不足 0.3s 显示 1/N，分母四舍五入（v0.1.2 用 `toInt()` 截断会产生 1/2 这类错误值）。
+     * 数字格式化固定 [Locale.US]，避免中文本地化下出现全角符号。
+     */
+    fun format(rawX10000: Int): String {
+        if (rawX10000 <= 0) return "--"
+        val seconds = rawX10000 / 10000.0
+        return if (seconds >= 0.3) {
+            String.format(Locale.US, "%.1fs", seconds)
+        } else {
+            "1/${(1.0 / seconds).roundToInt()}"
+        }
+    }
+}
+
+/**
+ * 光圈档位唯一真源（PRD 3.4 S1 / S6）。
+ * f 值以 ×100 存储（f/2.8 = 280），列表按 f 值升序 = 从大光圈到小光圈。
+ */
+object ApertureCatalog {
+
+    /** 镜头信息未知时的通用档位 f/1.4 – f/22，行为与 v0.1.2 一致 */
+    val FALLBACK: List<Int> = listOf(140, 180, 200, 280, 350, 400, 560, 800, 1100, 1600, 2200)
+
+    /** 最小光圈兜底值：PTP 无对应属性，按行业惯例取 f/22 */
+    const val DEFAULT_MIN_APERTURE_X100 = 2200
+
+    /** f 值 ×100 → "f/2.8"（≤0 视为未知） */
+    fun format(fStopX100: Int): String {
+        if (fStopX100 <= 0) return "--"
+        return "f/${formatNumber(fStopX100)}"
+    }
+
+    /** f 值 ×100 → "2.8"（不带 f/ 前缀），整数档去掉小数位 */
+    fun formatNumber(fStopX100: Int): String {
+        val text = String.format(Locale.US, "%.1f", fStopX100 / 100.0)
+        return text.removeSuffix(".0")
+    }
+
+    /**
+     * 当前焦距下镜头可用的最大光圈（= f 值下限，×100）。
+     *
+     * - 变焦镜头：在广角端 / 长焦端最大光圈之间按焦距线性插值
+     * - 定焦镜头：两端相等，插值退化为定值
+     * - 焦距未知或焦段无效：保守取 **f 值较大的一侧**，避免给出镜头不支持的档位
+     */
+    fun maxApertureAt(info: CameraInfo, currentFocalMm: Double?): Int {
+        val wide = info.lensMaxApAtMinFocalX100
+        val tele = info.lensMaxApAtMaxFocalX100
+        val focalMin = info.lensFocalMinMm
+        val focalMax = info.lensFocalMaxMm
+        if (currentFocalMm == null || focalMin <= 0.0 || focalMax <= focalMin) {
+            return maxOf(wide, tele)
+        }
+        val ratio = ((currentFocalMm - focalMin) / (focalMax - focalMin)).coerceIn(0.0, 1.0)
+        return (wide + (tele - wide) * ratio).roundToInt()
+    }
+
+    /** 越界时取最接近的合法档（用于写入前的 clamp） */
+    fun clampToNearest(fStopX100: Int, options: List<Int>): Int {
+        if (options.isEmpty()) return fStopX100
+        return options.minByOrNull { abs(it - fStopX100) } ?: fStopX100
+    }
+}
+
+/**
+ * 滚轮当前值定位（PRD 3.4 S4）。
+ *
+ * 不再用显示字符串反查（v0.1.2 里"当前值"与"滚轮刻度"口径不一致，恒匹配失败导致跳回首项）。
+ * 优先精确匹配 raw 值；匹配不到时按升序档位表取第一个不小于当前值的档。
+ */
+fun resolvePickerIndex(rawValues: List<Int>, currentRaw: Int): Int {
+    if (rawValues.isEmpty()) return 0
+    val exact = rawValues.indexOf(currentRaw)
+    if (exact >= 0) return exact
+    val next = rawValues.indexOfFirst { it >= currentRaw }
+    return if (next >= 0) next else rawValues.lastIndex
+}
+
+/**
  * 相机信息
  * PRD 2.4: 电量、快门次数、存储卡容量、固件版本
+ *
+ * 镜头部分除展示用的 [lensName] 外，还保存结构化的焦段与两端最大光圈，
+ * 供 [CameraParameterManager.apertureOptions] 生成与镜头联动的光圈档位。
+ * 0 表示未知（尼康私有属性 0xD0E3–0xD0E6 在部分机身 / 转接镜头上读不到）。
  */
 data class CameraInfo(
     val batteryLevel: Int = -1,
@@ -763,7 +980,17 @@ data class CameraInfo(
     val lensName: String = "",
     val firmwareVersion: String = "",
     val modelName: String = "",
-    val shutterQueryState: ShutterCountState = ShutterCountState.NONE
+    val shutterQueryState: ShutterCountState = ShutterCountState.NONE,
+    /** 广角端焦距（mm），0 = 未知 */
+    val lensFocalMinMm: Double = 0.0,
+    /** 长焦端焦距（mm），0 = 未知 */
+    val lensFocalMaxMm: Double = 0.0,
+    /** 广角端最大光圈（f 值 ×100），0 = 未知 */
+    val lensMaxApAtMinFocalX100: Int = 0,
+    /** 长焦端最大光圈（f 值 ×100），0 = 未知 */
+    val lensMaxApAtMaxFocalX100: Int = 0,
+    /** 光圈范围是否已知；false 时 [CameraParameterManager.apertureOptions] 走通用档位回退 */
+    val lensApertureRangeKnown: Boolean = false
 )
 
 /**
