@@ -7,16 +7,23 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.nikonlink.app.BuildConfig
+import com.nikonlink.app.R
 import com.nikonlink.app.databinding.FragmentSettingsBinding
 import com.nikonlink.app.shared.common.AppEventLogger
 import com.nikonlink.app.shared.common.AppSettings
 import com.nikonlink.app.shared.ui.pressEffect
+import com.nikonlink.app.shared.update.UpdateChecker
+import com.nikonlink.app.shared.update.UpdateResult
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.io.File
 import javax.inject.Inject
@@ -27,7 +34,8 @@ import javax.inject.Inject
  *
  * 功能整改: 移除无实际逻辑的入口（账号/固件更新/语言/RAW处理/GPS同步），
  * 落地画质/保存路径/连接偏好/5GHz优先/自动下载设置项（AppSettings 读写一体），
- * 意见反馈改为系统邮件意图，通用设置新增「导出日志」（AppEventLogger 链路日志）。
+ * 意见反馈改为系统邮件意图，通用设置新增「导出日志」（AppEventLogger 链路日志）、
+ * 「检查更新」（UpdateChecker 查 GitHub Releases + 失败降级，不做 APK 自下载安装）。
  */
 @AndroidEntryPoint
 class SettingsFragment : Fragment() {
@@ -40,6 +48,15 @@ class SettingsFragment : Fragment() {
 
     @Inject
     lateinit var eventLogger: AppEventLogger
+
+    @Inject
+    lateinit var updateChecker: UpdateChecker
+
+    /** 检查更新防抖时间戳：1.5s 内重复点击忽略（PRD S3 / AC-5） */
+    private var lastUpdateClickAt = 0L
+
+    /** 请求进行中：避免防抖窗口过后又叠加请求 */
+    private var checkingUpdate = false
 
     private val logExportLauncher = registerForActivityResult(
         ActivityResultContracts.CreateDocument("text/plain")
@@ -88,6 +105,8 @@ class SettingsFragment : Fragment() {
             else -> "跟随系统"
         }
         binding.tvCacheValue.text = formatCacheSize(requireContext())
+        binding.tvUpdateValue.text = BuildConfig.VERSION_NAME
+        binding.tvUpdateValue.setTextColor(resolveColor(R.color.text_tertiary))
     }
 
     private fun setupRows() {
@@ -179,11 +198,15 @@ class SettingsFragment : Fragment() {
             logExportLauncher.launch("n-link_logs_${System.currentTimeMillis()}.txt")
         }
 
+        // 检查更新：查 GitHub Releases latest，任何失败只降级提示、不误报新版本
+        binding.rowCheckUpdate.pressEffect()
+        binding.rowCheckUpdate.setOnClickListener { checkUpdate() }
+
         binding.rowAbout.pressEffect()
         binding.rowAbout.setOnClickListener {
             MaterialAlertDialogBuilder(requireContext()).setTitle("关于 N-Link")
                 .setMessage(
-                    "版本 ${BuildConfig.VERSION_NAME}\n\n为尼康 Z 系列微单打造的第三方连接应用：" +
+                    "当前版本 v${BuildConfig.VERSION_NAME}\n\n为尼康 Z 系列微单打造的第三方连接应用：" +
                         "永不断联的双通道连接、高速传输、遥控拍摄与实时监看。"
                 )
                 .setPositiveButton("确定", null)
@@ -233,6 +256,103 @@ class SettingsFragment : Fragment() {
         }
     }
 
+    /**
+     * 检查更新（PRD 4.4 S3/S4/S5）
+     * 主线程只切 UI 态，网络与解析在 UpdateChecker 内跑 Dispatchers.IO，不阻塞主线程（AC-6）。
+     */
+    private fun checkUpdate() {
+        val now = System.currentTimeMillis()
+        if (checkingUpdate || now - lastUpdateClickAt < UPDATE_CHECK_DEBOUNCE_MS) return
+        lastUpdateClickAt = now
+        checkingUpdate = true
+
+        binding.tvUpdateValue.text = "检查中…"
+        binding.rowCheckUpdate.isEnabled = false
+        eventLogger.event("setting", "key" to "check_update")
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            val result = updateChecker.check(BuildConfig.VERSION_NAME)
+            checkingUpdate = false
+            // 回调可能在视图销毁后才到达，必须判空
+            val b = _binding ?: return@launch
+            b.rowCheckUpdate.isEnabled = true
+            when (result) {
+                UpdateResult.UpToDate -> {
+                    b.tvUpdateValue.text = "已是最新"
+                    b.tvUpdateValue.setTextColor(resolveColor(R.color.text_tertiary))
+                    toast("已是最新版本")
+                }
+
+                is UpdateResult.Available -> {
+                    b.tvUpdateValue.text = "发现 ${result.versionLabel}"
+                    b.tvUpdateValue.setTextColor(resolveColor(R.color.accent))
+                    showUpdateDialog(result)
+                }
+
+                is UpdateResult.Failed -> {
+                    b.tvUpdateValue.text = BuildConfig.VERSION_NAME
+                    b.tvUpdateValue.setTextColor(resolveColor(R.color.text_tertiary))
+                    toast(result.reason.message)
+                    // 失败也给用户一条手动通路（404「暂无发布版本」除外）
+                    if (result.reason.offerReleasePage) showReleasePageDialog()
+                }
+            }
+        }
+    }
+
+    /** 新版本对话框：版本号 + 更新说明（body 前 500 字）+ 更新/稍后（AC-1） */
+    private fun showUpdateDialog(result: UpdateResult.Available) {
+        val message = buildString {
+            append("新版本：").append(result.versionLabel)
+            if (result.versionUnknown) append("\n（无法自动判断版本高低，请到发布页确认后再更新）")
+            append("\n\n").append(result.notes.ifBlank { "暂无更新说明。" })
+        }
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("发现新版本")
+            .setMessage(message)
+            .setPositiveButton("更新") { _, _ -> openUrl(result.url) }
+            .setNegativeButton("稍后", null)
+            .show()
+    }
+
+    /** 检查失败后的兜底入口：引导用户自己去发布页看（PRD S5） */
+    private fun showReleasePageDialog() {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("检查更新")
+            .setMessage("可前往 GitHub 发布页手动查看最新版本。")
+            .setPositiveButton("前往发布页") { _, _ -> openUrl(UpdateChecker.RELEASES_PAGE_URL) }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /**
+     * 跳转下载：优先 apk 直链，无 apk 时是 release 页面（PRD S4）。
+     * 无浏览器等场景退化成对话框展示完整 URL 供复制。
+     */
+    private fun openUrl(url: String) {
+        eventLogger.event("update_check", "action" to "open_url", "url" to url)
+        val opened = runCatching {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE)
+            startActivity(intent)
+        }.onFailure { e ->
+            Timber.w(e, "Open update url failed: $url")
+        }.isSuccess
+        if (opened) return
+
+        val b = _binding ?: return
+        MaterialAlertDialogBuilder(b.root.context)
+            .setTitle("无法打开链接")
+            .setMessage("请手动复制以下地址到浏览器打开：\n\n$url")
+            .setPositiveButton("确定", null)
+            .show()
+    }
+
+    private fun resolveColor(resId: Int): Int = ContextCompat.getColor(requireContext(), resId)
+
+    private fun toast(text: String) {
+        Toast.makeText(requireContext(), text, Toast.LENGTH_SHORT).show()
+    }
+
     private fun singleChoice(title: String, options: Array<String>, current: String, onPick: (String) -> Unit) {
         val checkedIdx = options.indexOf(current).coerceAtLeast(0)
         var selection = checkedIdx
@@ -258,5 +378,10 @@ class SettingsFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         _binding = null
+    }
+
+    companion object {
+        /** 检查更新防抖窗口：1.5s 内重复点击只发 1 次请求（PRD S3 / AC-5） */
+        private const val UPDATE_CHECK_DEBOUNCE_MS = 1_500L
     }
 }

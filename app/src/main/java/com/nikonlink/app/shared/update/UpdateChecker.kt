@@ -1,0 +1,228 @@
+package com.nikonlink.app.shared.update
+
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import com.google.gson.Gson
+import com.google.gson.JsonSyntaxException
+import com.nikonlink.app.shared.common.AppEventLogger
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import timber.log.Timber
+import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
+import javax.inject.Inject
+import javax.inject.Singleton
+
+/** 检查更新的失败类型：message 直接给用户看，offerReleasePage 决定是否附带「前往发布页」 */
+enum class FailReason(val message: String, val offerReleasePage: Boolean) {
+    /** 无网络 / 超时 / 连接失败 */
+    NETWORK("无法连接服务器，请检查网络后重试", true),
+
+    /** GitHub 未认证限流（403 / 429，60 次每小时每 IP） */
+    RATE_LIMIT("检查过于频繁，请稍后再试", true),
+
+    /** 仓库还没有任何 release（404） */
+    NOT_FOUND("暂无发布版本", false),
+
+    /** 服务端 5xx */
+    SERVER("服务器异常，请稍后再试", true),
+
+    /** 响应不是预期 JSON */
+    PARSE("检查更新失败，请稍后再试", true)
+}
+
+/** 检查结果：`Failed` 一律代表「没查出来」，调用方不得据此提示有更新 */
+sealed class UpdateResult {
+    /** 已是最新（含：latest 是 prerelease/draft 且未开启预览） */
+    object UpToDate : UpdateResult()
+
+    /**
+     * 发现新版本。
+     * [versionUnknown] = true 表示 tag 不是语义化版本（如 `release-2026`），
+     * 无法自动判断，按 PRD S2-4 保守提示并引导跳网页由用户自行判断。
+     */
+    data class Available(
+        val versionLabel: String,
+        val notes: String,
+        val url: String,
+        val versionUnknown: Boolean = false
+    ) : UpdateResult()
+
+    data class Failed(val reason: FailReason) : UpdateResult()
+}
+
+/**
+ * 检查更新（PRD 4.4 S1/S3/S5）
+ *
+ * - 数据源：GitHub Releases latest 接口，只读公开仓库，无需 token
+ * - 全程 [Dispatchers.IO]，连接/读取各 8s 超时，UI 不阻塞
+ * - 任一失败路径都返回 [UpdateResult.Failed]，**绝不误报新版本**
+ * - 所有行为写 AppEventLogger（phase = update_check），可在「导出日志」中回溯
+ */
+@Singleton
+class UpdateChecker @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val eventLogger: AppEventLogger
+) {
+
+    companion object {
+        private const val TAG = "UpdateChecker"
+
+        /** 接口地址集中管理：仓库改名/API 变更只改这一处 */
+        const val RELEASES_API_URL = "https://api.github.com/repos/Wan-1230/N-link/releases/latest"
+
+        /** 兜底地址：不依赖 API，任何失败路径都保证用户有手动获取更新的通路 */
+        const val RELEASES_PAGE_URL = "https://github.com/Wan-1230/N-link/releases"
+
+        private const val CONNECT_TIMEOUT_MS = 8_000
+        private const val READ_TIMEOUT_MS = 8_000
+
+        /** 更新说明最长展示长度（PRD AC-1：body 前 500 字） */
+        private const val NOTES_MAX_LEN = 500
+    }
+
+    private val gson = Gson()
+
+    /**
+     * 检查最新版本。
+     * @param currentVersion 本地版本号（BuildConfig.VERSION_NAME，可为 `0.1.2-debug`）
+     * @param includePreRelease 是否把 prerelease/draft 视为可更新版本（默认 false，PRD S2-5）
+     */
+    suspend fun check(currentVersion: String, includePreRelease: Boolean = false): UpdateResult =
+        withContext(Dispatchers.IO) {
+            eventLogger.event("update_check", "action" to "start", "current" to currentVersion)
+            val startedAt = System.currentTimeMillis()
+
+            val result = runCatching {
+                // 无网络直接短路，避免等满 8s 超时（AC-4 要求 800ms 内给出反馈）
+                if (!hasNetwork()) return@runCatching UpdateResult.Failed(FailReason.NETWORK)
+
+                val raw = requestLatestJson()
+                    ?: return@runCatching UpdateResult.Failed(FailReason.PARSE)
+
+                val release = parseRelease(raw)
+                    ?: return@runCatching UpdateResult.Failed(FailReason.PARSE)
+
+                if ((release.prerelease || release.draft) && !includePreRelease) {
+                    eventLogger.event(
+                        "update_check",
+                        "action" to "skip_unstable",
+                        "tag" to release.tagName,
+                        "prerelease" to release.prerelease,
+                        "draft" to release.draft
+                    )
+                    return@runCatching UpdateResult.UpToDate
+                }
+                evaluate(release, currentVersion)
+            }.getOrElse { e ->
+                Timber.tag(TAG).w(e, "Check update failed")
+                UpdateResult.Failed(e.toFailReason())
+            }
+
+            val cost = System.currentTimeMillis() - startedAt
+            when (result) {
+                is UpdateResult.Available -> eventLogger.event(
+                    "update_check",
+                    "action" to "available",
+                    "tag" to result.versionLabel,
+                    "unknown" to result.versionUnknown,
+                    "cost_ms" to cost
+                )
+
+                UpdateResult.UpToDate -> eventLogger.event(
+                    "update_check",
+                    "action" to "up_to_date",
+                    "current" to currentVersion,
+                    "cost_ms" to cost
+                )
+
+                is UpdateResult.Failed -> eventLogger.event(
+                    "update_check",
+                    "action" to "failed",
+                    "reason" to result.reason.name,
+                    "cost_ms" to cost
+                )
+            }
+            result
+        }
+
+    /**
+     * 比对版本：远端 tag 与本地 versionName。
+     * 任一侧解析失败都走保守策略（AC-1 的补充：宁可让用户自己看网页，也不能静默漏报）。
+     */
+    private fun evaluate(release: ReleaseInfo, currentVersion: String): UpdateResult {
+        val remote = SemVer.parse(release.tagName)
+        val local = SemVer.parse(currentVersion)
+        val remoteTag = release.tagName?.trim().orEmpty()
+
+        val hasUpdate = when {
+            // 远端 tag 非语义化：字面量与本地不同即保守提示，相同则视为最新
+            remote == null -> remoteTag.isNotEmpty() && !remoteTag.equals(currentVersion.trim(), ignoreCase = true)
+            // 本地版本解析不出来：远端能解析就按「有新版」处理
+            local == null -> true
+            else -> remote > local
+        }
+        if (!hasUpdate) return UpdateResult.UpToDate
+
+        val notes = release.body?.trim().orEmpty().let {
+            if (it.length > NOTES_MAX_LEN) it.substring(0, NOTES_MAX_LEN) + "…" else it
+        }
+        return UpdateResult.Available(
+            versionLabel = remote?.let { "v$it" } ?: remoteTag.ifEmpty { release.name ?: "新版本" },
+            notes = notes,
+            url = release.apkDownloadUrl() ?: release.htmlUrl ?: RELEASES_PAGE_URL,
+            versionUnknown = remote == null
+        )
+    }
+
+    /** 发起请求，返回响应体；非 200 抛 [UpdateHttpException]，读不到正文返回 null */
+    private fun requestLatestJson(): String? {
+        val conn = (URL(RELEASES_API_URL).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            setRequestProperty("Accept", "application/vnd.github+json")
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = READ_TIMEOUT_MS
+            instanceFollowRedirects = true
+        }
+        return try {
+            val code = conn.responseCode
+            if (code != HttpURLConnection.HTTP_OK) throw UpdateHttpException(code)
+            conn.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** JSON → ReleaseInfo；结构不符预期一律按解析失败处理 */
+    private fun parseRelease(raw: String): ReleaseInfo? = runCatching {
+        gson.fromJson(raw, ReleaseInfo::class.java)?.takeIf { !it.tagName.isNullOrBlank() }
+    }.onFailure { e ->
+        if (e !is JsonSyntaxException) Timber.tag(TAG).w(e, "Parse release failed")
+        else Timber.tag(TAG).w("Release json syntax error: ${e.message}")
+    }.getOrNull()
+
+    /** 网络可用性探测：探测本身失败不阻断请求，交由异常路径处理 */
+    private fun hasNetwork(): Boolean = runCatching {
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        val net = cm?.activeNetwork ?: return false
+        cm.getNetworkCapabilities(net)
+            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+    }.getOrDefault(true)
+
+    private fun Throwable.toFailReason(): FailReason = when (this) {
+        is UpdateHttpException -> when {
+            code == 403 || code == 429 -> FailReason.RATE_LIMIT
+            code == 404 -> FailReason.NOT_FOUND
+            code >= 500 -> FailReason.SERVER
+            else -> FailReason.PARSE
+        }
+
+        // SocketTimeoutException / UnknownHostException / 其他 IO 统一按「无法连接服务器」处理
+        else -> FailReason.NETWORK
+    }
+
+    private class UpdateHttpException(val code: Int) : IOException("HTTP $code")
+}
