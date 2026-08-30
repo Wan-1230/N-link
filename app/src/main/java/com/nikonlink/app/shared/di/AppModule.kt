@@ -22,6 +22,7 @@ import com.nikonlink.app.camera.params.DigeekerShutterCountClient
 import com.nikonlink.app.camera.gallery.TransferManager
 import com.nikonlink.app.shared.common.AppEventLogger
 import com.nikonlink.app.shared.common.AppSettings
+import com.nikonlink.app.shared.update.UpdateChecker
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -150,7 +151,7 @@ object AppModule {
         context,
         NLinkDatabase::class.java,
         "n-link.db"
-    ).build()
+    ).addMigrations(NLinkDatabase.MIGRATION_1_2).build()
 
     @Provides
     @Singleton
@@ -165,4 +166,11 @@ object AppModule {
     fun provideUsbPtpManager(
         @ApplicationContext context: Context
     ): UsbPtpManager = UsbPtpManager(context)
+
+    @Provides
+    @Singleton
+    fun provideUpdateChecker(
+        @ApplicationContext context: Context,
+        eventLogger: AppEventLogger
+    ): UpdateChecker = UpdateChecker(context, eventLogger)
 }
