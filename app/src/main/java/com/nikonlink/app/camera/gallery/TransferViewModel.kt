@@ -28,6 +28,8 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import timber.log.Timber
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 
 /**
@@ -43,6 +45,10 @@ class TransferViewModel @Inject constructor(
     private val usbPtpManager: UsbPtpManager,
     private val thumbnailCache: ThumbnailCache
 ) : ViewModel() {
+
+    companion object {
+        private const val TAG = "TransferVM"
+    }
 
     private val _photoList = MutableStateFlow<List<CameraFile>>(emptyList())
     val photoList: StateFlow<List<CameraFile>> = _photoList.asStateFlow()
@@ -109,20 +115,49 @@ class TransferViewModel @Inject constructor(
     val statusMessage: StateFlow<String> = connectionManager.statusMessage
     val usbState: StateFlow<UsbConnectionState> = usbPtpManager.usbState
 
+    /**
+     * 相机是否就绪（任一通道可用）。
+     *
+     * 三个来源都必须覆盖：
+     * - `FULLY_CONNECTED`：BLE + WiFi 双通道就绪（常规无线连接）
+     * - `BLE_CONNECTED`：相机已在线、WiFi 正在升级，此时 PTP 会话可能已可用
+     * - `UsbConnectionState.CONNECTED`：USB 有线通道**不进连接状态机**
+     *   （ConnectionManager 对 usbState 只打日志），纯 USB 场景必须单独判定
+     *
+     * 用 Eagerly 是为了冷启动时就能拿到初值：MainActivity 的四个 Fragment 常驻，
+     * TransferFragment 的 onViewCreated 全程只跑一次，若用 Lazily 则首次收集前
+     * 拿不到真实状态，已连相机时冷启动就不会自动加载（AC-2）。
+     */
+    val cameraReady: StateFlow<Boolean> = combine(
+        connectionState,
+        usbState
+    ) { conn, usb ->
+        conn == ConnectionState.FULLY_CONNECTED ||
+            conn == ConnectionState.BLE_CONNECTED ||
+            usb == UsbConnectionState.CONNECTED
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** 相册加载守卫：防止自动刷新与手动刷新并发跑两个 fetchPhotoList */
+    private val loadingGuard = AtomicBoolean(false)
+    private var loadJob: Job? = null
+    /** 上一次的就绪状态，用于只在「未就绪 → 就绪」上升沿触发一次自动加载 */
+    private var lastReady = false
+
     // 注：TransferManager 由 ConnectionManager 以应用级 scope 启动（支撑后台自动下载）
 
     /**
      * 获取相机照片列表
+     * @param force 透传给 [loadPhotos]，手动刷新时为 true
      */
-    fun fetchPhotos() {
+    fun fetchPhotos(force: Boolean = false) {
         if (!transferManager.hasActiveSession()) {
             val usbConnected = usbPtpManager.isConnected()
             if (usbConnected) {
-                _message.value = "正在建立 USB 通道..."
+                if (!force) _message.value = "正在建立 USB 通道..."
                 viewModelScope.launch {
                     val connected = usbPtpManager.isConnected()
                     if (connected) {
-                        loadPhotos()
+                        loadPhotos(force)
                     } else {
                         _isLoading.value = false
                         _message.value = "USB 连接尚未就绪，请稍后重试"
@@ -141,7 +176,7 @@ class TransferViewModel @Inject constructor(
                         true
                     } ?: false
                     if (connected) {
-                        loadPhotos()
+                        loadPhotos(force)
                     } else {
                         _isLoading.value = false
                         _message.value = "USB 连接尚未就绪，请检查相机 USB 模式（PTP）"
@@ -149,12 +184,12 @@ class TransferViewModel @Inject constructor(
                 }
                 return
             }
-            _message.value = "正在建立 WiFi 通道..."
+            if (!force) _message.value = "正在建立 WiFi 通道..."
             connectionManager.requestWifiReconnect()
             viewModelScope.launch {
                 val connected = usbPtpManager.isConnected() || connectionManager.awaitPtpSession()
                 if (connected) {
-                    loadPhotos()
+                    loadPhotos(force)
                 } else {
                     _isLoading.value = false
                     _message.value = "WiFi 通道未就绪，请先在连接页完成配对"
@@ -162,24 +197,52 @@ class TransferViewModel @Inject constructor(
             }
             return
         }
-        loadPhotos()
+        loadPhotos(force)
     }
 
-    private fun loadPhotos() {
-        _isLoading.value = true
-        viewModelScope.launch {
-            // 媒体列表按 limit=18 分页，每页完成后立即刷新网格，
-            // 避免照片多时等待整份列表返回才看到内容。
-            val photos = transferManager.fetchPhotoList(
-                onPage = { page -> _photoList.value = page }
-            )
-            _photoList.value = photos
-            _selectedHandles.value = emptySet()
-            _isLoading.value = false
-            _message.value = if (photos.isEmpty()) "存储卡为空或未连接" else "共 ${photos.size} 个文件"
-            // 后台渐进取预热缩略图；可见项由 Adapter 按需触发
-            prewarmThumbnails(photos.map { it.handle })
+    /**
+     * @param force 为 true 时无条件打断进行中的加载并重新开始（手动刷新走此路径）；
+     *              为 false 时若已有加载在途则直接返回，避免自动刷新与手动刷新叠加。
+     */
+    private fun loadPhotos(force: Boolean = false) {
+        if (!force && !loadingGuard.compareAndSet(false, true)) {
+            Timber.tag(TAG).d("Photo loading already in progress, skip")
+            return
         }
+        loadingGuard.set(true)
+        loadJob?.cancel()
+        _isLoading.value = true
+        loadJob = viewModelScope.launch {
+            try {
+                // 媒体列表按 limit=18 分页，每页完成后立即刷新网格，
+                // 避免照片多时等待整份列表返回才看到内容。
+                val photos = transferManager.fetchPhotoList(
+                    onPage = { page -> _photoList.value = page }
+                )
+                _photoList.value = photos
+                _selectedHandles.value = emptySet()
+                _message.value = if (photos.isEmpty()) "存储卡为空或未连接" else "共 ${photos.size} 个文件"
+                // 后台渐进取预热缩略图；可见项由 Adapter 按需触发
+                prewarmThumbnails(photos.map { it.handle })
+            } finally {
+                _isLoading.value = false
+                loadingGuard.set(false)
+            }
+        }
+    }
+
+    /**
+     * 相机连接就绪状态变化时由 UI 层回调。
+     * 只在「未就绪 → 就绪」的上升沿触发一次加载：
+     * 既避免 FULLY_CONNECTED 期间持续重刷，也避免切 Tab 回来时无谓重载（AC-4）。
+     */
+    fun onCameraReadyChanged(ready: Boolean) {
+        val rising = ready && !lastReady
+        lastReady = ready
+        if (!rising) return
+        if (_activeAlbum.value != AlbumSource.CAMERA) return
+        _message.value = "相机已连接，正在加载相册…"
+        loadPhotos(force = true)
     }
 
     /**
@@ -200,7 +263,8 @@ class TransferViewModel @Inject constructor(
      */
     fun refreshActiveAlbum() {
         if (_activeAlbum.value == AlbumSource.CAMERA) {
-            fetchPhotos()
+            // 手动刷新永远打断进行中的自动加载，保证用户主动操作必有响应
+            fetchPhotos(force = true)
         } else {
             fetchLocalPhotos()
         }
@@ -517,7 +581,9 @@ class TransferViewModel @Inject constructor(
      */
     fun downloadAll() {
         if (_activeAlbum.value == AlbumSource.LOCAL) return
-        val all = _photoList.value
+        // 与 selectAllFiltered() 保持同一数据源：全选选的是 filteredPhotos，
+        // 这里若用 _photoList 会把视频等被筛掉的项也拉进下载队列
+        val all = filteredPhotos.value
         if (all.isNotEmpty()) {
             transferManager.enqueue(all)
             _message.value = "全部加入队列: ${all.size} 个文件"
