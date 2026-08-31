@@ -89,7 +89,17 @@ class UpdateChecker @Inject constructor(
     /**
      * 检查最新版本。
      * @param currentVersion 本地版本号（BuildConfig.VERSION_NAME，可为 `0.1.2-debug`）
-     * @param includePreRelease 是否把 prerelease/draft 视为可更新版本（默认 false，PRD S2-5）
+     *
+     * @param includePreRelease 是否把 prerelease/draft 视为可更新版本。
+     *
+     * **恒为 false 是有意设计，不是漏接开关**（2026-08-31 由用户拍板）：
+     * 普通用户只应收到正式版提示，beta 之类的预发布不打扰他们。
+     * PRD 的 AC-11 原文为「默认不提示；打开设置开关后提示」，后半句明确不做，
+     * 所以本参数没有任何调用方传入 —— 保留形参是为了将来若要做内测分发，
+     * 接上一个开关即可，不必动这里的过滤逻辑。
+     *
+     * 注意 GitHub 的 `/releases/latest` **会把 prerelease 一并算入**，
+     * 因此这一层过滤必须在客户端做，不能指望接口。
      */
     suspend fun check(currentVersion: String, includePreRelease: Boolean = false): UpdateResult =
         withContext(Dispatchers.IO) {
