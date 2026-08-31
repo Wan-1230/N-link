@@ -56,13 +56,18 @@ class AppSettings @Inject constructor(
         set(value) = prefs.edit().putBoolean("auto_download", value).apply()
 
     /**
-     * 相册排序：true = 最新拍摄在前，false = 最早拍摄在前。
+     * 相册排序维度（存 AlbumSortDimension 的枚举名）。
      *
-     * 默认 true —— 相机相册此前沿用 PTP 返回的对象句柄顺序（旧→新），
-     * 新拍的照片要翻到列表最底部才看得到。
-     * 仅作用于「相机照片」；「本地照片」由 MediaStore 按 DATE_ADDED 倒序返回，不参与此设置。
+     * 以字符串而非枚举存储，是为了让 shared 层不反向依赖 feature 层的排序模型；
+     * 读写转换由相册 ViewModel 负责，取到非法值时回退到默认规则
+     * （默认「拍摄时间倒序」，即新拍的排最前）。
      */
-    var albumSortNewestFirst: Boolean
-        get() = prefs.getBoolean("album_sort_newest_first", true)
-        set(value) = prefs.edit().putBoolean("album_sort_newest_first", value).apply()
+    var albumSortDimension: String?
+        get() = prefs.getString("album_sort_dimension", null)
+        set(value) = prefs.edit().putString("album_sort_dimension", value).apply()
+
+    /** 相册排序方向（存 AlbumSortDirection 的枚举名），取值约定同上 */
+    var albumSortDirection: String?
+        get() = prefs.getString("album_sort_direction", null)
+        set(value) = prefs.edit().putString("album_sort_direction", value).apply()
 }

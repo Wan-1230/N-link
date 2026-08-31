@@ -3,6 +3,7 @@ package com.nikonlink.app.camera.gallery
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.database.Cursor
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
@@ -62,36 +63,32 @@ class TransferViewModel @Inject constructor(
     val activeAlbum: StateFlow<AlbumSource> = _activeAlbum.asStateFlow()
 
     /**
-     * 排序偏好：true = 最新拍摄在前。
-     *
-     * 只作用于「相机照片」。PTP 返回的对象句柄顺序是旧→新，
-     * 新拍的照片会落在列表最底部，翻找不便，因此默认倒序。
-     * 「本地照片」由 MediaStore 按 DATE_ADDED 倒序返回，本身就是最新在前，不参与。
+     * 排序规则，默认「拍摄时间倒序」——新拍的照片排在最前面。
+     * 从 AppSettings 恢复；取值非法时 [AlbumSort.fromPersistence] 会回退到默认规则。
      */
-    private val _sortNewestFirst = MutableStateFlow(settings.albumSortNewestFirst)
-    val sortNewestFirst: StateFlow<Boolean> = _sortNewestFirst.asStateFlow()
+    private val _sort = MutableStateFlow(
+        AlbumSort.fromPersistence(settings.albumSortDimension, settings.albumSortDirection)
+    )
+    val sort: StateFlow<AlbumSort> = _sort.asStateFlow()
 
-    /** 按当前偏好排列相机照片（handle 递增即拍摄顺序递增，与 scheduleAutoSync 的判定口径一致） */
-    private fun sortCamera(list: List<CameraFile>): List<CameraFile> =
-        if (_sortNewestFirst.value) list.sortedByDescending { it.handle }
-        else list.sortedBy { it.handle }
+    /**
+     * 更新排序规则并持久化。
+     * 只改展示顺序，不触发重新拉取列表；下次打开相册自动沿用，切换相册/目录同样生效。
+     */
+    fun setSort(sort: AlbumSort) {
+        _sort.value = sort
+        settings.albumSortDimension = sort.dimension.name
+        settings.albumSortDirection = sort.direction.name
+    }
 
-    /** 当前标签页展示的列表：相机照片（已排序）或本地照片 */
+    /** 当前标签页展示的列表：相机照片或本地照片。排序统一在 [filteredPhotos] 处理 */
     val displayedPhotos: StateFlow<List<CameraFile>> = combine(
         _photoList,
         _localPhotos,
-        _activeAlbum,
-        _sortNewestFirst
-    ) { camera, local, source, _ ->
-        if (source == AlbumSource.CAMERA) sortCamera(camera) else local
+        _activeAlbum
+    ) { camera, local, source ->
+        if (source == AlbumSource.CAMERA) camera else local
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
-
-    /** 切换排序并持久化；只改展示顺序，不触发重新加载 */
-    fun toggleSortOrder() {
-        val next = !_sortNewestFirst.value
-        _sortNewestFirst.value = next
-        settings.albumSortNewestFirst = next
-    }
 
     private val _photoFilter = MutableStateFlow(PhotoFilter.ALL)
     val photoFilter: StateFlow<PhotoFilter> = _photoFilter.asStateFlow()
@@ -99,15 +96,43 @@ class TransferViewModel @Inject constructor(
     private val _selectedHandles = MutableStateFlow<Set<Int>>(emptySet())
     val selectedHandles: StateFlow<Set<Int>> = _selectedHandles.asStateFlow()
 
-    val filteredPhotos: StateFlow<List<CameraFile>> = combine(
-        displayedPhotos,
-        _photoFilter
-    ) { photos, filter ->
-        photos.filter { filter.matches(it) }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
-
+    // 必须在 filteredPhotos 之前声明：后者在属性初始化时就要读它的 flow
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    /** 筛选与排序的入参快照 */
+    private data class SortInput(
+        val files: List<CameraFile>,
+        val sort: AlbumSort,
+        val loading: Boolean
+    )
+
+    /**
+     * 筛选 + 排序后的最终展示列表。
+     *
+     * 三个要点：
+     * 1. **先筛后排** —— 筛选先缩小集合，参与排序的元素更少。
+     * 2. **分页期间不排序** —— 数据还不完整时排序没有意义，且每页重排会让列表不断跳动。
+     *    分页只做追加，加载完成（_isLoading 转 false）时再对全量做一次排序，
+     *    因此最终结果始终基于**完整数据集**，而非「仅当前页内有序」。
+     * 3. **排序在 Dispatchers.Default** —— 大列表不会阻塞主线程。
+     *    [mapLatest] 会在新数据到达时取消上一次未完成的排序，避免堆积。
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val filteredPhotos: StateFlow<List<CameraFile>> = combine(
+        displayedPhotos,
+        _photoFilter,
+        _sort,
+        _isLoading
+    ) { photos, filter, sort, loading ->
+        SortInput(photos.filter { filter.matches(it) }, sort, loading)
+    }.mapLatest { input ->
+        when {
+            input.files.isEmpty() -> emptyList()
+            input.loading -> input.files
+            else -> withContext(Dispatchers.Default) { sortCameraFiles(input.files, input.sort) }
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val transferState: StateFlow<TransferState> = transferManager.transferState
     val queue: StateFlow<List<TransferTask>> = transferManager.queue
@@ -241,12 +266,12 @@ class TransferViewModel @Inject constructor(
             try {
                 // 媒体列表按 limit=18 分页，每页完成后立即刷新网格，
                 // 避免照片多时等待整份列表返回才看到内容。
-                // 分页回调同样套用排序，使加载过程中的顺序与最终结果一致，
-                // 避免「先正序渲染、加载完突然翻转」。
+                // 这里存原始顺序即可：分页期间排序没有意义（数据不完整），
+                // 且每页重排会让列表不断跳动；排序统一由 filteredPhotos 在加载完成后做全量处理。
                 val photos = transferManager.fetchPhotoList(
-                    onPage = { page -> _photoList.value = sortCamera(page) }
+                    onPage = { page -> _photoList.value = page }
                 )
-                _photoList.value = sortCamera(photos)
+                _photoList.value = photos
                 _selectedHandles.value = emptySet()
                 _message.value = if (photos.isEmpty()) "存储卡为空或未连接" else "共 ${photos.size} 个文件"
                 // 后台渐进取预热缩略图；可见项由 Adapter 按需触发
@@ -324,7 +349,12 @@ class TransferViewModel @Inject constructor(
             MediaStore.Files.FileColumns.MIME_TYPE,
             MediaStore.Files.FileColumns.SIZE,
             MediaStore.Files.FileColumns.RELATIVE_PATH,
-            MediaStore.Files.FileColumns.MEDIA_TYPE
+            MediaStore.Files.FileColumns.MEDIA_TYPE,
+            // 拍摄时间：DATE_TAKEN 由系统在索引时从 EXIF 的 DateTimeOriginal 提取（毫秒），
+            // 拿不到时回退 DATE_MODIFIED（秒）。逐个用 ExifInterface 打开文件读原始 EXIF
+            // 会退化成 O(n) 次 IO，这里直接用索引列，性能上是 O(1)。
+            MediaStore.MediaColumns.DATE_TAKEN,
+            MediaStore.MediaColumns.DATE_MODIFIED
         )
         val selection = "${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE ? AND (" +
             "${MediaStore.Files.FileColumns.MEDIA_TYPE} = ? OR " +
@@ -346,6 +376,9 @@ class TransferViewModel @Inject constructor(
             val nameIndex = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
             val mimeIndex = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE)
             val sizeIndex = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE)
+            // DATE_TAKEN 不是 Files 表的保证列，用 getColumnIndex（返回 -1）而非 ...OrThrow
+            val takenIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_TAKEN)
+            val modifiedIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idIndex)
                 val name = cursor.getString(nameIndex).orEmpty()
@@ -358,11 +391,29 @@ class TransferViewModel @Inject constructor(
                     size = size,
                     formatCode = 0,
                     storageId = id.toInt(),
-                    format = classifyLocalFormat(name, mime)
+                    format = classifyLocalFormat(name, mime),
+                    captureTimeMillis = resolveLocalCaptureTime(cursor, takenIndex, modifiedIndex)
                 )
             }
         }
         return items
+    }
+
+    /**
+     * 解析本地文件的拍摄时间：优先 DATE_TAKEN（系统从 EXIF 提取），缺失回退 DATE_MODIFIED。
+     *
+     * 注意两者量纲不同：DATE_TAKEN 是**毫秒**，DATE_MODIFIED 是**秒**，回退时需 ×1000。
+     * 两者都取不到（列不存在或值为 0）时返回 null，由排序逻辑统一兜底到列表末尾。
+     */
+    private fun resolveLocalCaptureTime(
+        cursor: android.database.Cursor,
+        takenIndex: Int,
+        modifiedIndex: Int
+    ): Long? {
+        val taken = if (takenIndex >= 0) cursor.getLong(takenIndex) else 0L
+        if (taken > 0) return taken
+        val modified = if (modifiedIndex >= 0) cursor.getLong(modifiedIndex) else 0L
+        return if (modified > 0) modified * 1000L else null
     }
 
     private fun classifyLocalFormat(name: String, mime: String): CameraFileFormat {

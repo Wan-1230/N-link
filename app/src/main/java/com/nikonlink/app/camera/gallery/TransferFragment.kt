@@ -9,6 +9,7 @@ import android.util.TypedValue
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
@@ -44,6 +45,12 @@ class TransferFragment : Fragment() {
     private val chipViews = mutableMapOf<PhotoFilter, TextView>()
     private var multiSelectMode = false
     private var lastToastMsg: String? = null
+
+    /**
+     * 排序锚点：切换排序前记下首屏第一项的 handle，
+     * 列表重排后把它滚回视野顶部，用户不会「被扔回列表开头」。
+     */
+    private var scrollAnchorHandle: Int? = null
 
     private val mediaPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -235,14 +242,10 @@ class TransferFragment : Fragment() {
             }
         }
 
-        // 排序切换：只改展示顺序，不重新拉取列表。
-        // 本地相册由 MediaStore 按 DATE_ADDED 倒序返回，本身即最新在前，故该入口仅相机相册可见。
+        // 排序入口：弹出下拉菜单，含「拍摄时间 / 文件类型」×「升序 / 降序」四项。
+        // 只改展示顺序，不重新拉取列表；相机相册与本地相册都可用（本地时间取 MediaStore 的 DATE_TAKEN）。
         binding.btnSort.pressEffect()
-        binding.btnSort.setOnClickListener {
-            viewModel.toggleSortOrder()
-            // 顺序翻转后原位置已失去意义，回到顶部让用户从最新/最早的一端重新看起
-            binding.gridPhotos.scrollToPosition(0)
-        }
+        binding.btnSort.setOnClickListener { showSortMenu() }
 
         binding.btnMultiSelect.setOnClickListener {
             // Fix 真机反馈: 长按已选中照片后再点「多选」，旧逻辑会直接退出多选并清空选中，
@@ -285,6 +288,55 @@ class TransferFragment : Fragment() {
 
         binding.btnShare.setOnClickListener {
             shareLocalSelected()
+        }
+    }
+
+    /**
+     * 排序下拉菜单（与 LiveViewFragment 的「更多」菜单同一实现：PopupMenu + menu.add）。
+     * 当前规则以勾选态标记，选中即 [TransferViewModel.setSort] 并持久化。
+     */
+    private fun showSortMenu() {
+        val current = viewModel.sort.value
+        val popup = PopupMenu(requireContext(), binding.btnSort)
+        AlbumSort.OPTIONS.forEachIndexed { index, option ->
+            popup.menu.add(0, index + 1, 0, option.menuLabel)
+        }
+        popup.menu.setGroupCheckable(0, true, true)
+        popup.menu.findItem(AlbumSort.OPTIONS.indexOf(current) + 1)?.isChecked = true
+        popup.setOnMenuItemClickListener { item ->
+            val option = AlbumSort.OPTIONS.getOrNull(item.itemId - 1) ?: return@setOnMenuItemClickListener false
+            if (option == current) return@setOnMenuItemClickListener true
+            // 先记锚点再改排序：重排后把这张图滚回原来的位置
+            captureScrollAnchor()
+            viewModel.setSort(option)
+            true
+        }
+        popup.show()
+    }
+
+    /** 记录当前首屏第一项作为排序后的滚动锚点 */
+    private fun captureScrollAnchor() {
+        val lm = binding.gridPhotos.layoutManager as? GridLayoutManager ?: return
+        val position = lm.findFirstVisibleItemPosition()
+        scrollAnchorHandle = adapter.currentList.getOrNull(position)?.handle
+    }
+
+    /**
+     * 列表刷新后把锚点项滚回视野顶部。
+     *
+     * 只在存在待恢复锚点时动作一次并立即清空，后续的缩略图加载、
+     * 选中态变化等常规刷新都不受影响。锚点文件被筛选掉时（找不到）不做滚动。
+     * 滚动放到 post 里执行，等 DiffUtil 的更新派发完成后再定位。
+     */
+    private fun restoreScrollAnchor(list: List<CameraFile>) {
+        val handle = scrollAnchorHandle ?: return
+        val index = list.indexOfFirst { it.handle == handle }
+        scrollAnchorHandle = null
+        if (index < 0) return
+        binding.gridPhotos.post {
+            if (_binding == null) return@post
+            (binding.gridPhotos.layoutManager as? GridLayoutManager)
+                ?.scrollToPositionWithOffset(index, 0)
         }
     }
 
@@ -338,9 +390,9 @@ class TransferFragment : Fragment() {
             viewModel.activeAlbum.collect { source ->
                 renderAlbumTabs(source)
                 if (multiSelectMode) renderActionButtons()
-                // 本地相册顺序由 MediaStore 决定，不提供排序切换
-                binding.btnSort.visibility =
-                    if (source == AlbumSource.CAMERA) View.VISIBLE else View.GONE
+                // 排序入口两个相册都保留：规则持久化在 AppSettings，
+                // 切换相册/目录时沿用同一套规则（本地文件的时间取自 MediaStore 的 DATE_TAKEN）
+                binding.btnSort.visibility = View.VISIBLE
                 binding.tvMessage.text = when (source) {
                     AlbumSource.CAMERA -> "连接相机后查看相册"
                     AlbumSource.LOCAL -> "尚未下载照片到手机"
@@ -348,20 +400,21 @@ class TransferFragment : Fragment() {
             }
         }
 
-        // 排序按钮文案跟随当前排序（两种文案字数相同，切换时不会挤动相邻控件）
+        // 排序按钮文案跟随当前排序（各选项字数一致，切换时不会挤动相邻控件）
         viewLifecycleOwner.lifecycleScope.launch {
-            viewModel.sortNewestFirst.collect { newest ->
-                binding.btnSort.text = if (newest) "最新在前" else "最早在前"
+            viewModel.sort.collect { sort ->
+                binding.btnSort.text = sort.shortLabel
             }
         }
 
         // 网格数据：列表 + 选中 + 缩略图
         viewLifecycleOwner.lifecycleScope.launch {
             launch {
-                viewModel.filteredPhotos.collect {
-                    adapter.submit(it, viewModel.selectedHandles.value, viewModel.thumbnails.value)
+                viewModel.filteredPhotos.collect { list ->
+                    adapter.submit(list, viewModel.selectedHandles.value, viewModel.thumbnails.value)
                     binding.layoutEmpty.visibility =
-                        if (it.isEmpty()) View.VISIBLE else View.GONE
+                        if (list.isEmpty()) View.VISIBLE else View.GONE
+                    restoreScrollAnchor(list)
                 }
             }
             launch {
