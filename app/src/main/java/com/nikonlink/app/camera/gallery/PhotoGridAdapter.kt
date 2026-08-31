@@ -38,6 +38,9 @@ class PhotoGridAdapter(
     private var selected: Set<Int> = emptySet()
     private var loadedThumbs: Set<Int> = emptySet()
 
+    /** 当前展示的列表（只读）。排序变更后供 Fragment 定位锚点项用 */
+    val currentList: List<CameraFile> get() = items
+
     /** 多选模式：显示对勾容器 */
     var multiSelectMode: Boolean = false
 

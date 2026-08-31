@@ -26,6 +26,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStream
 import java.util.ArrayDeque
+import java.util.Locale
 import java.util.concurrent.Semaphore
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -69,6 +70,15 @@ class TransferManager @Inject constructor(
         /** 压缩画质：长边上限与 JPEG 质量 */
         private const val COMPRESS_MAX_EDGE = 3200
         private const val COMPRESS_JPEG_QUALITY = 90
+
+        /**
+         * PTP ObjectInfo 的日期格式：`yyyyMMddTHHmmss`（15 字符，UTC，无时区标记）。
+         * DateTimeFormatter 是不可变且线程安全的，可安全用于 ObjectInfo 的并发解析。
+         */
+        private val PTP_DATE_TIME: java.time.format.DateTimeFormatter =
+            java.time.format.DateTimeFormatter
+                .ofPattern("yyyyMMdd'T'HHmmss", Locale.US)
+                .withZone(java.time.ZoneOffset.UTC)
     }
 
     private var scope: CoroutineScope? = null
@@ -581,16 +591,59 @@ class TransferManager @Inject constructor(
             buffer.get(nameBytes)
             val fileName = String(nameBytes, Charsets.UTF_16LE).trimEnd('\u0000')
 
+            // filename 之后依次是 DateCreated、DateModified、Keywords（PTP 标准 ObjectInfo 尾部）。
+            // 此前只读到 filename 就收尾，导致相册拿不到任何时间信息，无法按拍摄时间排序。
+            // DateCreated 是相机写入的拍摄时间，优先采用；缺失时回退 DateModified。
+            val dateCreated = parsePtpDate(readPtpString(buffer))
+            val dateModified = parsePtpDate(readPtpString(buffer))
+
             CameraFile(
                 handle = handle,
                 fileName = fileName,
                 size = compressedSize,
                 formatCode = formatCode,
                 storageId = storageId,
-                format = classifyFormat(formatCode, fileName)
+                format = classifyFormat(formatCode, fileName),
+                captureTimeMillis = dateCreated ?: dateModified
             )
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Failed to parse object info for handle=$handle")
+            null
+        }
+    }
+
+    /**
+     * 读取 PTP 字符串：1 字节长度前缀（含结尾 '\0' 的字符数）+ UTF-16LE 正文。
+     * 长度为 0 表示空串（只有长度字节，无正文）。
+     * 缓冲区不足时按已读到的部分返回，避免越界。
+     */
+    private fun readPtpString(buffer: java.nio.ByteBuffer): String {
+        if (buffer.remaining() < 1) return ""
+        val length = buffer.get().toInt() and 0xFF
+        if (length == 0) return ""
+        val chars = CharArray(length)
+        var i = 0
+        while (i < length && buffer.remaining() >= 2) {
+            chars[i++] = (buffer.short.toInt() and 0xFFFF).toChar()
+        }
+        return chars.concatToString(0, i).trimEnd('\u0000')
+    }
+
+    /**
+     * 解析 PTP 日期字符串为 epoch millis。
+     * 兼容 `yyyyMMddTHHmmss` / `...ss.s` / `...ssZ` 三种写法，只取前 15 位。
+     * PTP 约定按 UTC 记录且不带时区标记，因此按 UTC 解释。
+     * 解析失败（空串、格式异常）返回 null，由调用方走兜底。
+     */
+    private fun parsePtpDate(raw: String): Long? {
+        if (raw.length < 15) return null
+        return try {
+            java.time.LocalDateTime
+                .parse(raw.substring(0, 15), PTP_DATE_TIME)
+                .toInstant(java.time.ZoneOffset.UTC)
+                .toEpochMilli()
+        } catch (e: Exception) {
+            Timber.tag(TAG).d("Unparsable PTP date: $raw")
             null
         }
     }
@@ -1022,7 +1075,17 @@ data class CameraFile(
     val size: Long,
     val formatCode: Int,
     val storageId: Int,
-    val format: CameraFileFormat = CameraFileFormat.OTHER
+    val format: CameraFileFormat = CameraFileFormat.OTHER,
+    /**
+     * 拍摄时间（epoch millis）；null 表示无法获取。
+     *
+     * 来源与优先级：
+     * - 相机侧：PTP ObjectInfo 的 DateCreated（相机写入的拍摄时间），缺失回退 DateModified
+     * - 本地侧：MediaStore 的 DATE_TAKEN（系统索引时已从 EXIF 提取），缺失回退 DATE_MODIFIED
+     *
+     * 为 null 的文件在排序时统一排在「有时间数据」的文件之后，不参与时间比较。
+     */
+    val captureTimeMillis: Long? = null
 )
 
 /**
