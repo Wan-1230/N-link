@@ -767,7 +767,7 @@ val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEG
 | AC-8 | release 无 apk 资产 | 「更新」按钮跳转 release 页面 |
 | AC-9 | 仓库无任何 release（404） | Toast「暂无发布版本」，不崩溃 |
 | AC-10 | debug 包（versionName = `0.1.2-debug`） | 版本解析正确剥离 `-debug` 后缀，与 tag `v0.1.2` 正确比对 |
-| AC-11 | prelease/draft | 默认不提示；打开设置开关后提示 |
+| AC-11 | prelease/draft | 默认不提示 ~~；打开设置开关后提示~~ —— **2026-08-31 拍板：不做开关，用户永远只收正式版提示**。过滤逻辑已实现（`UpdateChecker.check(includePreRelease = false)`），该参数无调用方传入系有意设计 |
 | AC-12 | 日志 | 所有检查行为写入 `AppEventLogger`，可在「导出日志」中看到 `update_check` 事件与结果 |
 
 ### 4.6 回退方案
