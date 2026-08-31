@@ -329,7 +329,7 @@ class CameraParameterManager @Inject constructor(
         return options
     }
 
-    /** 快门显示格式化：raw 以 1/10000s 为单位，< 0.3s 显示 1/N，≥ 0.3s 显示 N.Ns */
+    /** 快门显示格式化：raw 以 1/10000s 为单位，< 1s 显示 1/N，≥ 1s 显示 Ns */
     fun formatShutter(rawX10000: Int): String = ShutterCatalog.format(rawX10000)
 
     /** 光圈显示格式化：f 值 ×100 → "f/2.8" */
@@ -878,24 +878,41 @@ object ShutterCatalog {
     )
 
     /**
-     * raw（1/10000s）→ 显示文本。
+     * raw（1/10000s）→ 显示文本。以 **1 秒** 为界（与 Nikon 机身一致）：
      *
-     * - `raw 10`   → `1/1000`
-     * - `raw 40`   → `1/250`
-     * - `raw 4000` → `0.4s`
+     * | raw | 曝光时间 | 显示 |
+     * | --- | --- | --- |
+     * | `40` | 1/250s | `1/250` |
+     * | `4000` | 1/2.5s | `1/2.5` |
+     * | `10000` | 1s | `1s` |
+     * | `13000` | 1.3s | `1.3s` |
+     * | `300000` | 30s | `30s` |
      *
-     * 0.3s 及以上按小数秒显示（相机行业惯例，Nikon 机身亦按 0.4 / 0.5 这样显示）；
-     * 不足 0.3s 显示 1/N，分母四舍五入（v0.1.2 用 `toInt()` 截断会产生 1/2 这类错误值）。
+     * 即：**不足 1 秒显示分数，1 秒及以上直接显示秒数**（整数秒不带小数位）。
+     *
+     * 分母的取值精度分两档：
+     * - ≥10 时取整 —— 大分母下取整误差可忽略，且 `1/769.2` 这类读数没有意义
+     * - <10 时保留一位小数 —— `0.4s` 的真值是 `1/2.5`，若四舍五入成 `1/3` 会偏差 20%，
+     *   相机肩屏显示 1/3 而实际按 1/2.5 曝光，属于误导
+     *
      * 数字格式化固定 [Locale.US]，避免中文本地化下出现全角符号。
      */
     fun format(rawX10000: Int): String {
         if (rawX10000 <= 0) return "--"
         val seconds = rawX10000 / 10000.0
-        return if (seconds >= 0.3) {
-            String.format(Locale.US, "%.1fs", seconds)
-        } else {
-            "1/${(1.0 / seconds).roundToInt()}"
-        }
+        if (seconds >= 1.0) return formatSeconds(seconds)
+        return "1/${formatDenominator(1.0 / seconds)}"
+    }
+
+    /** 秒数显示：整数秒不带小数位（`1s` / `30s`），其余保留一位（`1.3s`） */
+    private fun formatSeconds(seconds: Double): String {
+        return "${String.format(Locale.US, "%.1f", seconds).removeSuffix(".0")}s"
+    }
+
+    /** 分数分母：≥10 取整，<10 保留一位小数并去掉无意义的 `.0` */
+    private fun formatDenominator(denominator: Double): String {
+        if (denominator >= 10.0) return denominator.roundToInt().toString()
+        return String.format(Locale.US, "%.1f", denominator).removeSuffix(".0")
     }
 }
 
