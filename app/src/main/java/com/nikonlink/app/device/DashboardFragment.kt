@@ -22,6 +22,7 @@ import com.nikonlink.app.R
 import com.nikonlink.app.device.model.ConnectionState
 import com.nikonlink.app.device.connect.ConnectionHintKind
 import com.nikonlink.app.device.usb.UsbConnectionState
+import com.nikonlink.app.device.wifi.WifiEndpoint
 import com.nikonlink.app.device.wifi_ap.WifiManager
 import com.nikonlink.app.device.wifi_sta.WifiCameraCandidate
 import com.nikonlink.app.shared.data.PairedDevice
@@ -544,9 +545,9 @@ class DashboardFragment : Fragment() {
             )
             item.tvRecentName.text = device.deviceName.ifBlank { "尼康相机" }
             item.tvRecentInfo.text = buildString {
-                if (device.address.startsWith("wifi:")) {
-                    val ip = device.address.removePrefix("wifi:").split(":").firstOrNull().orEmpty()
-                    append("WiFi · ").append(ip)
+                val endpoint = WifiEndpoint.parse(device.address)
+                if (endpoint != null) {
+                    append("WiFi · ").append(endpoint.host)
                 } else {
                     append("BLE · ").append(device.address)
                 }
@@ -599,18 +600,16 @@ class DashboardFragment : Fragment() {
             )
             .setView(container)
             .setPositiveButton("连接") { _, _ ->
-                val raw = input.text.toString().trim()
-                val parts = raw.removePrefix("wifi:").split(":")
-                val ip = parts.firstOrNull().orEmpty()
-                val port = parts.getOrNull(1)?.toIntOrNull() ?: 15740
-                if (ip.isNotEmpty()) {
-                    binding.tvStatusMessage.text = "连接 $ip:$port"
-                    viewModel.connectToWifiCamera(
-                        WifiCameraCandidate(ip, port, "手动相机", "manual")
-                    )
-                } else {
-                    binding.tvStatusMessage.text = "IP 地址无效"
+                val endpoint = WifiEndpoint.parse(input.text?.toString())
+                if (endpoint == null) {
+                    binding.tvStatusMessage.text =
+                        "IP 地址无效，请填写形如 192.168.1.1 的 IPv4 地址"
+                    return@setPositiveButton
                 }
+                binding.tvStatusMessage.text = "连接 ${endpoint.display}"
+                viewModel.connectToWifiCamera(
+                    WifiCameraCandidate(endpoint.host, endpoint.port, "手动相机", "manual")
+                )
             }
             .setNegativeButton("取消", null)
             .show()

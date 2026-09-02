@@ -1,0 +1,152 @@
+package com.nikonlink.app.device.wifi_sta
+
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiManager
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import timber.log.Timber
+import javax.inject.Inject
+import javax.inject.Singleton
+
+/**
+ * WiFi 网络监听 + 锁持有（RC-4 / RC-5）。
+ *
+ * ## 解决的根因
+ *
+ * - **RC-4 stale Network**：旧实现循环外一次性取 `Network` 句柄，WiFi 断连重连后
+ *   句柄已失效仍复用（日志 L97 `network_lost` → L98 `network_restored` → 5 次
+ *   `ok=false`）。[awaitWifiNetwork] 让每次连接尝试都拿到**当前**就绪的网络，
+ *   网络未就绪就等待而不是拿 null 硬连。
+ * - **RC-5 无 WifiLock**：全项目此前零 `WifiLock`（三方 APK 全部持有），息屏后
+ *   系统 2m22s 就回收 WiFi。[acquireLocks] 在连接生命周期内持有
+ *   `WIFI_MODE_FULL_HIGH_PERF`（三方共识），断开即释放，`release()` 由调用方
+ *   放在 finally。
+ *
+ * `AndroidManifest` 已声明 `CHANGE_WIFI_STATE` + `WAKE_LOCK`，无需改清单。
+ */
+@Singleton
+class WifiNetworkMonitor @Inject constructor(
+    @ApplicationContext context: Context
+) {
+    companion object {
+        private const val TAG = "WifiNetMon"
+        private const val POLL_INTERVAL_MS = 200L
+    }
+
+    private val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
+    private val wifiManager = context.getSystemService(WifiManager::class.java)
+
+    private var wifiLock: WifiManager.WifiLock? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
+    private var callbackRegistered = false
+
+    private val _currentNetwork = MutableStateFlow<Network?>(null)
+    val currentNetwork: StateFlow<Network?> = _currentNetwork.asStateFlow()
+
+    private val callback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            _currentNetwork.value = network
+            Timber.tag(TAG).i("WiFi network available: $network")
+        }
+
+        override fun onLost(network: Network) {
+            if (_currentNetwork.value == network) {
+                _currentNetwork.value = null
+                Timber.tag(TAG).w("WiFi network lost: $network")
+            }
+        }
+    }
+
+    /** 注册 WiFi 网络回调（幂等）。 */
+    fun start() {
+        if (callbackRegistered) return
+        runCatching {
+            val request = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .build()
+            connectivityManager.registerNetworkCallback(request, callback)
+            callbackRegistered = true
+        }.onFailure {
+            Timber.tag(TAG).w(it, "Failed to register WiFi network callback")
+        }
+    }
+
+    fun stop() {
+        if (callbackRegistered) {
+            runCatching { connectivityManager.unregisterNetworkCallback(callback) }
+            callbackRegistered = false
+        }
+        releaseLocks()
+        _currentNetwork.value = null
+    }
+
+    /**
+     * 等待 WiFi 网络就绪并返回当前 [Network]；超时返回 null。
+     * RC-4：调用方每次连接尝试都应重新调用，绝不缓存旧句柄。
+     */
+    suspend fun awaitWifiNetwork(timeoutMs: Long): Network? {
+        _currentNetwork.value?.let { return it }
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            delay(POLL_INTERVAL_MS)
+            _currentNetwork.value?.let { return it }
+            // StateFlow 可能在注册前网络就已就绪，兜底直查一次
+            val direct = queryCurrentWifiNetwork()
+            if (direct != null) {
+                _currentNetwork.value = direct
+                return direct
+            }
+        }
+        return null
+    }
+
+    /**
+     * 连接生命周期内持有 WifiLock + MulticastLock。
+     * RC-5：`WIFI_MODE_FULL_HIGH_PERF` 是 ZRelay/影犀/ZDROP 三方共识。
+     */
+    fun acquireLocks() {
+        runCatching {
+            if (wifiLock == null) {
+                @Suppress("DEPRECATION")
+                val lock = wifiManager.createWifiLock(
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                    "N-LinkStaConnect"
+                )
+                lock.setReferenceCounted(false)
+                lock.acquire()
+                wifiLock = lock
+            }
+        }.onFailure { Timber.tag(TAG).w(it, "Failed to acquire WifiLock") }
+
+        runCatching {
+            if (multicastLock == null) {
+                val lock = wifiManager.createMulticastLock("N-LinkStaConnect")
+                lock.setReferenceCounted(false)
+                lock.acquire()
+                multicastLock = lock
+            }
+        }.onFailure { Timber.tag(TAG).w(it, "Failed to acquire MulticastLock") }
+    }
+
+    /** 断开时释放（调用方放 finally，绝不残留）。 */
+    fun releaseLocks() {
+        runCatching { wifiLock?.release() }
+        wifiLock = null
+        runCatching { multicastLock?.release() }
+        multicastLock = null
+    }
+
+    private fun queryCurrentWifiNetwork(): Network? {
+        return connectivityManager.allNetworks.firstOrNull { network ->
+            val caps = connectivityManager.getNetworkCapabilities(network)
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        }
+    }
+}

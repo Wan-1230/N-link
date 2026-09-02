@@ -12,6 +12,7 @@ import com.nikonlink.app.device.data.DeviceRepository
 import com.nikonlink.app.device.usb.UsbCameraInfo
 import com.nikonlink.app.device.usb.UsbConnectionState
 import com.nikonlink.app.device.usb.UsbPtpManager
+import com.nikonlink.app.device.wifi.WifiEndpoint
 import com.nikonlink.app.device.wifi_sta.WifiCameraCandidate
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
@@ -117,18 +118,14 @@ class DashboardViewModel @Inject constructor(
 
     /** 从最近连接列表快速重连 */
     fun connectToRecentDevice(device: PairedDevice) {
-        if (device.address.startsWith("wifi:")) {
-            val parts = device.address.removePrefix("wifi:").split(":")
-            val ip = parts.firstOrNull().orEmpty()
-            val port = parts.getOrNull(1)?.toIntOrNull() ?: 15740
-            if (ip.isNotEmpty()) {
-                connectionManager.connectToWifiCamera(
-                    ipAddress = ip,
-                    port = port,
-                    deviceName = device.deviceName
-                )
-                return
-            }
+        val endpoint = WifiEndpoint.parse(device.address)
+        if (endpoint != null) {
+            connectionManager.connectToWifiCamera(
+                ipAddress = endpoint.host,
+                port = endpoint.port,
+                deviceName = device.deviceName
+            )
+            return
         }
         connectToDevice(device.address)
     }

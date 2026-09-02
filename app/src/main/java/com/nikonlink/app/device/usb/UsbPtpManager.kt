@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.hardware.usb.*
 import android.os.Build
 import com.nikonlink.app.device.ptp.PtpConstants
+import com.nikonlink.app.shared.common.AppEventLogger
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -33,7 +34,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class UsbPtpManager @Inject constructor(
-    private val context: Context
+    private val context: Context,
+    private val eventLogger: AppEventLogger
 ) {
     companion object {
         private const val TAG = "UsbPtp"
@@ -51,6 +53,15 @@ class UsbPtpManager @Inject constructor(
 
     private val transactionId = AtomicInteger(0)
     private val commandMutex = Mutex()
+
+    /**
+     * RC-13 链路观测：最近一次命令尝试/成功时间戳。
+     * isAlive() = 从未发过命令，或最近一次尝试已得到成功响应。
+     */
+    @Volatile private var lastCommandAttemptAtMs = 0L
+    @Volatile private var lastCommandOkAtMs = 0L
+    @Volatile private var lvFrameOkLogged = false
+
     private var scope: CoroutineScope? = null
     private var eventPollJob: Job? = null
     private var keepAliveJob: Job? = null
@@ -167,6 +178,7 @@ class UsbPtpManager @Inject constructor(
         try {
             val connection = usbManager.openDevice(device) ?: run {
                 Timber.tag(TAG).e("Failed to open USB device")
+                eventLogger.event("usb_open", "ok" to false, "reason" to "openDevice_null")
                 _usbState.value = UsbConnectionState.ERROR
                 return
             }
@@ -201,6 +213,7 @@ class UsbPtpManager @Inject constructor(
 
             if (ptpInterface == null || outEndpoint == null || inEndpoint == null) {
                 Timber.tag(TAG).e("PTP interface/endpoints not found")
+                eventLogger.event("usb_open", "ok" to false, "reason" to "no_ptp_interface")
                 connection.close()
                 _usbState.value = UsbConnectionState.ERROR
                 return
@@ -221,11 +234,17 @@ class UsbPtpManager @Inject constructor(
                 cameraModel = UsbPtpProtocol.getCameraName(device.productId),
                 serialNumber = device.serialNumber ?: "unknown"
             )
+            eventLogger.event(
+                "usb_open",
+                "ok" to true,
+                "model" to (_deviceInfo.value?.cameraModel ?: "unknown")
+            )
 
             // 打开 PTP 会话
             scope?.launch {
                 val sessionOk = openPtpSession()
                 if (sessionOk) {
+                    eventLogger.event("usb_session", "ok" to true)
                     // 会话建立后向相机反馈，保持相机处于持续连接状态
                     val ready = sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
                     Timber.tag(TAG).d("USB DeviceReady response=${ready?.responseCode}")
@@ -234,6 +253,7 @@ class UsbPtpManager @Inject constructor(
                     startKeepAlive()
                     Timber.tag(TAG).i("✓ USB PTP connected: ${_deviceInfo.value?.cameraModel}")
                 } else {
+                    eventLogger.event("usb_session", "ok" to false)
                     _usbState.value = UsbConnectionState.ERROR
                     disconnect()
                 }
@@ -272,6 +292,7 @@ class UsbPtpManager @Inject constructor(
 
         return withContext(Dispatchers.IO) {
             commandMutex.withLock {
+                lastCommandAttemptAtMs = System.currentTimeMillis()
                 try {
                     val txId = transactionId.incrementAndGet()
                     val container = UsbPtpProtocol.buildCommandContainer(txId, operationCode, params)
@@ -292,7 +313,9 @@ class UsbPtpManager @Inject constructor(
                     }
 
                     val data = responseBuffer.copyOf(read)
-                    UsbPtpProtocol.parseResponseContainer(data)
+                    UsbPtpProtocol.parseResponseContainer(data)?.also {
+                        lastCommandOkAtMs = System.currentTimeMillis()
+                    }
                 } catch (e: Exception) {
                     Timber.tag(TAG).e(e, "sendCommand error: op=0x${operationCode.toString(16)}")
                     null
@@ -315,6 +338,7 @@ class UsbPtpManager @Inject constructor(
 
         return withContext(Dispatchers.IO) {
             commandMutex.withLock {
+                lastCommandAttemptAtMs = System.currentTimeMillis()
                 try {
                     val txId = transactionId.incrementAndGet()
                     val container = UsbPtpProtocol.buildCommandContainer(txId, operationCode, params)
@@ -360,6 +384,7 @@ class UsbPtpManager @Inject constructor(
                         )
                         return@withLock null
                     }
+                    lastCommandOkAtMs = System.currentTimeMillis()
                     if (chunks.isEmpty()) return@withLock ByteArray(0)
 
                     // 合并所有数据块
@@ -482,16 +507,42 @@ class UsbPtpManager @Inject constructor(
      */
     suspend fun startLiveView(): Boolean {
         val response = sendCommand(PtpConstants.OP_NIKON_START_LIVE_VIEW)
-        return response?.isOk ?: false
+        val ok = response?.isOk ?: false
+        if (ok) lvFrameOkLogged = false
+        eventLogger.event(
+            "lv_start",
+            "ok" to ok,
+            "code" to (response?.responseCode ?: -1)
+        )
+        return ok
     }
 
     suspend fun stopLiveView(): Boolean {
         val response = sendCommand(PtpConstants.OP_NIKON_END_LIVE_VIEW)
-        return response?.isOk ?: false
+        val ok = response?.isOk ?: false
+        if (!ok) eventLogger.event("lv_stop_fail", "code" to (response?.responseCode ?: -1))
+        return ok
     }
 
     suspend fun getLiveViewImage(): ByteArray? {
-        return sendCommandWithData(PtpConstants.OP_NIKON_GET_LIVE_VIEW_IMAGE)
+        val data = sendCommandWithData(PtpConstants.OP_NIKON_GET_LIVE_VIEW_IMAGE)
+        if (data == null || data.isEmpty()) {
+            eventLogger.event("lv_fail", "empty" to (data != null))
+        } else if (!lvFrameOkLogged) {
+            lvFrameOkLogged = true
+            eventLogger.event("lv_frame", "bytes" to data.size)
+        }
+        return data
+    }
+
+    /**
+     * RC-12 链路判活：连接着且最近一次命令尝试已得到成功响应。
+     * 有命令在途（attempt > ok）时视为不可信，调用方应回退 WiFi 通道。
+     */
+    fun isAlive(): Boolean {
+        if (!isConnected()) return false
+        if (lastCommandAttemptAtMs == 0L) return true
+        return lastCommandOkAtMs >= lastCommandAttemptAtMs
     }
 
     /**
@@ -664,8 +715,12 @@ class UsbPtpManager @Inject constructor(
         bulkOut = null
         bulkIn = null
         interruptIn = null
+        lastCommandAttemptAtMs = 0L
+        lastCommandOkAtMs = 0L
+        lvFrameOkLogged = false
         _deviceInfo.value = null
         _usbState.value = UsbConnectionState.DISCONNECTED
+        eventLogger.event("usb_session", "ok" to false, "reason" to "disconnected")
         Timber.tag(TAG).i("USB disconnected")
     }
 

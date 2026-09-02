@@ -76,7 +76,10 @@ class PtpSessionManagerTest {
                 session.connect("127.0.0.1", camera.port, pairingMode = true)
             }
             assertFalse(connected)
-            assertEquals(PtpSessionState.ERROR, session.sessionState.value)
+            // v0.1.4：连接阶段失败回 DISCONNECTED 而非 ERROR——
+            // ERROR 会被健康检查当「链路死亡需重建」触发重连风暴，
+            // 只留给运行期 markLinkError（RC-2 配套语义）
+            assertEquals(PtpSessionState.DISCONNECTED, session.sessionState.value)
         } finally {
             camera.stop()
         }

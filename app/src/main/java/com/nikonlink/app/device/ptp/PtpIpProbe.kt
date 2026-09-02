@@ -1,6 +1,7 @@
 package com.nikonlink.app.device.ptp
 
 import android.net.Network
+import com.nikonlink.app.device.wifi.WifiEndpoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -15,6 +16,13 @@ import java.net.Socket
  */
 object PtpIpProbe {
     private const val TAG = "PtpIpProbe"
+
+    /** WifiEndpoint 便捷重载：地址已归一化，直接探测。 */
+    suspend fun probe(
+        endpoint: WifiEndpoint,
+        timeoutMs: Long = 1200L,
+        network: Network? = null
+    ): Boolean = probe(endpoint.host, endpoint.port, timeoutMs, network)
 
     suspend fun probe(
         host: String,
