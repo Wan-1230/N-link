@@ -8,4 +8,11 @@
     <string name="notification_connection_text_full">BLE + WiFi 已连接</string>
     <string name="notification_connection_text_disconnected">未连接</string>
     <string name="notification_transfer_title">正在传输照片</string>
+    <!-- F5 传输完成通知 -->
+    <string name="notification_transfer_done_single_title">照片已保存</string>
+    <string name="notification_transfer_done_batch_title">批量下载完成</string>
+    <string name="notification_transfer_action_view">查看</string>
+    <string name="notification_transfer_action_share">分享</string>
+    <!-- F7 打赏页 -->
+    <string name="support_title">支持开发</string>
 </resources>

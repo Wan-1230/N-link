@@ -43,12 +43,16 @@ sealed class UpdateResult {
      * 发现新版本。
      * [versionUnknown] = true 表示 tag 不是语义化版本（如 `release-2026`），
      * 无法自动判断，按 PRD S2-4 保守提示并引导跳网页由用户自行判断。
+     * [publishedAtLabel] = 发布日期（yyyy-MM-dd，解析失败为 null，F6 更新日志展示用）
+     * [releaseUrl] = Release 网页（F6「查看完整日志」入口；无网页链接时为 null）
      */
     data class Available(
         val versionLabel: String,
         val notes: String,
         val url: String,
-        val versionUnknown: Boolean = false
+        val versionUnknown: Boolean = false,
+        val publishedAtLabel: String? = null,
+        val releaseUrl: String? = null
     ) : UpdateResult()
 
     data class Failed(val reason: FailReason) : UpdateResult()
@@ -184,9 +188,17 @@ class UpdateChecker @Inject constructor(
             versionLabel = remote?.let { "v$it" } ?: remoteTag.ifEmpty { release.name ?: "新版本" },
             notes = notes,
             url = release.apkDownloadUrl() ?: release.htmlUrl ?: RELEASES_PAGE_URL,
-            versionUnknown = remote == null
+            versionUnknown = remote == null,
+            publishedAtLabel = release.publishedAt?.let(::formatPublishDate),
+            releaseUrl = release.htmlUrl
         )
     }
+
+    /** ISO8601 时间戳 → yyyy-MM-dd（F6 弹窗日期展示；解析失败返回 null 不阻塞更新流程） */
+    private fun formatPublishDate(raw: String): String? = runCatching {
+        val instant = java.time.Instant.parse(raw)
+        java.time.LocalDate.ofInstant(instant, java.time.ZoneId.systemDefault()).toString()
+    }.getOrNull()
 
     /** 发起请求，返回响应体；非 200 抛 [UpdateHttpException]，读不到正文返回 null */
     private fun requestLatestJson(): String? {

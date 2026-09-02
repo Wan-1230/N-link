@@ -155,7 +155,7 @@ object AppModule {
         context,
         NLinkDatabase::class.java,
         "n-link.db"
-    ).addMigrations(NLinkDatabase.MIGRATION_1_2).build()
+    ).addMigrations(NLinkDatabase.MIGRATION_1_2, NLinkDatabase.MIGRATION_2_3).build()
 
     @Provides
     @Singleton
@@ -164,6 +164,11 @@ object AppModule {
     @Provides
     @Singleton
     fun providePairedDeviceDao(db: NLinkDatabase): PairedDeviceDao = db.pairedDeviceDao()
+
+    @Provides
+    @Singleton
+    fun providePhotoMarkDao(db: NLinkDatabase): com.nikonlink.app.shared.data.PhotoMarkDao =
+        db.photoMarkDao()
 
     @Provides
     @Singleton

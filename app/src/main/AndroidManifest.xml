@@ -84,6 +84,12 @@
             android:exported="false"
             android:theme="@style/Theme.NLink.Preview" />
 
+        <!-- F7 打赏支持页（开源免费声明 + 自愿打赏） -->
+        <activity
+            android:name=".settings.SupportActivity"
+            android:exported="false"
+            android:theme="@style/Theme.NLink" />
+
         <!-- 全屏实时取景页：跟随重力感应横竖屏切换 -->
         <activity
             android:name=".camera.liveview.LiveViewActivity"
@@ -107,6 +113,17 @@
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
+
+        <!-- FileProvider：F4 分享副本 / F7 打赏二维码分享（仅暴露 cache/share 子目录） -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- WorkManager Health Check -->
         <provider
