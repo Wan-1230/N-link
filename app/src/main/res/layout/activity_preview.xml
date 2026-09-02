@@ -95,6 +95,33 @@
             android:gravity="center"
             android:orientation="horizontal">
 
+            <!-- F1：标记（星标），与相册网格标记同一数据源 -->
+            <LinearLayout
+                android:id="@+id/btnMark"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:id="@+id/iconMark"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:contentDescription="标记"
+                    android:src="@drawable/ic_star"
+                    app:tint="@color/white" />
+
+                <TextView
+                    android:id="@+id/tvMarkLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="标记"
+                    android:textColor="@color/white"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
             <LinearLayout
                 android:id="@+id/btnDownload"
                 android:layout_width="0dp"

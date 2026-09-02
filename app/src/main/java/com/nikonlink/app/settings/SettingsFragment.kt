@@ -96,6 +96,8 @@ class SettingsFragment : Fragment() {
     private fun restoreState() {
         binding.switchAutoDownload.isChecked = settings.autoDownload
         binding.switchWifi5G.isChecked = settings.preferWifi5GHz
+        binding.switchMarkAutoDownload.isChecked = settings.markAutoDownload
+        binding.switchShareKeepGps.isChecked = settings.shareKeepGps
         binding.tvQualityValue.text = settings.downloadQuality
         binding.tvSavePathValue.text = settings.savePath
         binding.tvConnPrefValue.text = settings.connectionPreference
@@ -138,6 +140,18 @@ class SettingsFragment : Fragment() {
         binding.switchAutoDownload.setOnCheckedChangeListener { _, checked ->
             settings.autoDownload = checked
             eventLogger.event("setting", "key" to "auto_download", "value" to checked)
+        }
+
+        // F1 可选增强：标记后自动入队下载原图（默认关）
+        binding.switchMarkAutoDownload.setOnCheckedChangeListener { _, checked ->
+            settings.markAutoDownload = checked
+            eventLogger.event("setting", "key" to "mark_auto_download", "value" to checked)
+        }
+
+        // F4：分享副本默认剥离 GPS，开启后按原样保留
+        binding.switchShareKeepGps.setOnCheckedChangeListener { _, checked ->
+            settings.shareKeepGps = checked
+            eventLogger.event("setting", "key" to "share_keep_gps", "value" to checked)
         }
 
         // 相机设置
@@ -211,6 +225,13 @@ class SettingsFragment : Fragment() {
                 )
                 .setPositiveButton("确定", null)
                 .show()
+        }
+
+        // F7：打赏支持页（开源免费声明 + 自愿打赏，打赏不附带任何权益）
+        binding.rowSupport.pressEffect()
+        binding.rowSupport.setOnClickListener {
+            eventLogger.event("setting", "key" to "open_support")
+            startActivity(Intent(requireContext(), SupportActivity::class.java))
         }
 
         // 帮助与反馈
@@ -300,10 +321,11 @@ class SettingsFragment : Fragment() {
         }
     }
 
-    /** 新版本对话框：版本号 + 更新说明（body 前 500 字）+ 更新/稍后（AC-1） */
+    /** 新版本对话框（F6）：版本号 + 发布日期 + 更新说明 + 更新/稍后/查看完整日志 */
     private fun showUpdateDialog(result: UpdateResult.Available) {
         val message = buildString {
             append("新版本：").append(result.versionLabel)
+            result.publishedAtLabel?.let { append(" · 发布于 ").append(it) }
             if (result.versionUnknown) append("\n（无法自动判断版本高低，请到发布页确认后再更新）")
             append("\n\n").append(result.notes.ifBlank { "暂无更新说明。" })
         }
@@ -312,6 +334,12 @@ class SettingsFragment : Fragment() {
             .setMessage(message)
             .setPositiveButton("更新") { _, _ -> openUrl(result.url) }
             .setNegativeButton("稍后", null)
+            // F6：无网络时隐藏跳转（PRD AC-2），有 Release 网页才提供完整日志入口
+            .apply {
+                if (!result.releaseUrl.isNullOrBlank()) {
+                    setNeutralButton("查看完整日志") { _, _ -> openUrl(result.releaseUrl) }
+                }
+            }
             .show()
     }
 

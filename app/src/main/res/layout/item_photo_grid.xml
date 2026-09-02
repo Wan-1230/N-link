@@ -50,6 +50,18 @@
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toTopOf="parent" />
 
+        <!-- 右上角星形标记（F1）：常驻角标，多选对勾在其上层绘制 -->
+        <ImageView
+            android:id="@+id/ivMarkBadge"
+            android:layout_width="18dp"
+            android:layout_height="18dp"
+            android:layout_margin="6dp"
+            android:contentDescription="已标记"
+            android:src="@drawable/ic_star"
+            android:visibility="gone"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
         <!-- 右上角黑色对勾标记 -->
         <FrameLayout
             android:id="@+id/checkContainer"
@@ -90,5 +102,22 @@
             android:textStyle="bold"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintStart_toStartOf="parent" />
+
+        <!-- 右下角已下载角标（F2）：对勾小胶囊，视觉口径与格式角标一致 -->
+        <TextView
+            android:id="@+id/tvDownloadedBadge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_margin="6dp"
+            android:background="#AA000000"
+            android:paddingHorizontal="5dp"
+            android:paddingVertical="2dp"
+            android:text="✓"
+            android:textColor="@color/white"
+            android:textSize="9sp"
+            android:textStyle="bold"
+            android:visibility="gone"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="parent" />
     </androidx.constraintlayout.widget.ConstraintLayout>
 </androidx.constraintlayout.widget.ConstraintLayout>

@@ -32,11 +32,15 @@ class PhotoGridAdapter(
     companion object {
         private const val PAYLOAD_SELECTION = "payload_selection"
         private const val PAYLOAD_THUMB = "payload_thumb"
+        private const val PAYLOAD_MARK = "payload_mark"
+        private const val PAYLOAD_DOWNLOADED = "payload_downloaded"
     }
 
     private var items: List<CameraFile> = emptyList()
     private var selected: Set<Int> = emptySet()
     private var loadedThumbs: Set<Int> = emptySet()
+    private var marked: Set<Int> = emptySet()
+    private var downloaded: Set<Int> = emptySet()
 
     /** 当前展示的列表（只读）。排序变更后供 Fragment 定位锚点项用 */
     val currentList: List<CameraFile> get() = items
@@ -44,14 +48,24 @@ class PhotoGridAdapter(
     /** 多选模式：显示对勾容器 */
     var multiSelectMode: Boolean = false
 
-    fun submit(newItems: List<CameraFile>, newSelected: Set<Int>, newThumbs: Set<Int>) {
+    fun submit(
+        newItems: List<CameraFile>,
+        newSelected: Set<Int>,
+        newThumbs: Set<Int>,
+        newMarked: Set<Int> = marked,
+        newDownloaded: Set<Int> = downloaded
+    ) {
         val oldItems = items
         // 关键: 先缓存旧状态，再赋值，DiffUtil 才能感知选中变化
         val oldSelected = selected
         val oldThumbs = loadedThumbs
+        val oldMarked = marked
+        val oldDownloaded = downloaded
         items = newItems
         selected = newSelected
         loadedThumbs = newThumbs
+        marked = newMarked
+        downloaded = newDownloaded
 
         DiffUtil.calculateDiff(object : DiffUtil.Callback() {
             override fun getOldListSize() = oldItems.size
@@ -62,16 +76,25 @@ class PhotoGridAdapter(
                 val h = items[newPos].handle
                 val selChanged = (h in oldSelected) != (h in newSelected)
                 val thumbChanged = newThumbs.contains(h) && !oldThumbs.contains(h)
-                return !selChanged && !thumbChanged && oldItems[oldPos] == items[newPos]
+                val markChanged = (h in oldMarked) != (h in newMarked)
+                val downloadedChanged = (h in oldDownloaded) != (h in newDownloaded)
+                return !selChanged && !thumbChanged && !markChanged && !downloadedChanged &&
+                    oldItems[oldPos] == items[newPos]
             }
             override fun getChangePayload(oldPos: Int, newPos: Int): Any? {
                 val h = items[newPos].handle
                 val selChanged = (h in oldSelected) != (h in newSelected)
                 val thumbChanged = newThumbs.contains(h) && !oldThumbs.contains(h)
+                val markChanged = (h in oldMarked) != (h in newMarked)
+                val downloadedChanged = (h in oldDownloaded) != (h in newDownloaded)
+                // 多维变化叠加时退化为全量重绑定（null payload）
+                val changed = listOf(selChanged, thumbChanged, markChanged, downloadedChanged).count { it }
+                if (changed > 1) return null
                 return when {
-                    selChanged && thumbChanged -> null // 全量刷新
                     selChanged -> PAYLOAD_SELECTION
                     thumbChanged -> PAYLOAD_THUMB
+                    markChanged -> PAYLOAD_MARK
+                    downloadedChanged -> PAYLOAD_DOWNLOADED
                     else -> null
                 }
             }
@@ -107,6 +130,8 @@ class PhotoGridAdapter(
                     animate = true
                 )
                 PAYLOAD_THUMB -> holder.applyThumb(items[position])
+                PAYLOAD_MARK -> holder.applyMark(items[position].handle in marked)
+                PAYLOAD_DOWNLOADED -> holder.applyDownloaded(items[position].handle in downloaded)
             }
         }
     }
@@ -128,12 +153,24 @@ class PhotoGridAdapter(
             }
             applySelection(file.handle in selected, animate)
             applyThumb(file)
+            applyMark(file.handle in marked)
+            applyDownloaded(file.handle in downloaded)
 
             binding.root.setOnClickListener { onItemClick(file, adapterPosition) }
             binding.root.setOnLongClickListener {
                 onItemLongClick(file)
                 true
             }
+        }
+
+        /** F1：星形标记角标（常驻，非多选态也可见） */
+        fun applyMark(isMarked: Boolean) {
+            binding.ivMarkBadge.visibility = if (isMarked) View.VISIBLE else View.GONE
+        }
+
+        /** F2：已下载角标（右下角对勾胶囊） */
+        fun applyDownloaded(isDownloaded: Boolean) {
+            binding.tvDownloadedBadge.visibility = if (isDownloaded) View.VISIBLE else View.GONE
         }
 
         /** 选中状态渲染 + 勾选/取消动画（每次切换都触发） */

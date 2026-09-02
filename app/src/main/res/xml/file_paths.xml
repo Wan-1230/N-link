@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 共享路径（F4 分享副本 / F7 打赏二维码分享）：
+     仅暴露 cache/share 子目录，主 cache 与内部目录不外借 -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path
+        name="share"
+        path="share/" />
+</paths>

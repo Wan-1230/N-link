@@ -195,6 +195,17 @@
                 android:textSize="13sp"
                 android:textStyle="bold" />
 
+            <!-- F1「已标记」独立分区：聚合跨卡跨日的标记照片，一键批量收片 -->
+            <TextView
+                android:id="@+id/tabMarkedPhotos"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:text="已标记"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp" />
+
             <TextView
                 android:id="@+id/tabLocalPhotos"
                 android:layout_width="0dp"
@@ -232,6 +243,31 @@
             android:textColor="@color/text_primary"
             android:textSize="13sp"
             android:textStyle="bold" />
+
+        <!-- F1：标记/取消标记（切换语义：选中集全部已标 → 取消，否则 → 打标） -->
+        <TextView
+            android:id="@+id/btnMark"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:background="?attr/selectableItemBackground"
+            android:gravity="center"
+            android:paddingHorizontal="12dp"
+            android:text="标记"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
+
+        <!-- F2：已标记栏「跳过已下载」开关（会话内状态） -->
+        <TextView
+            android:id="@+id/btnSkipDownloaded"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:background="?attr/selectableItemBackground"
+            android:gravity="center"
+            android:paddingHorizontal="12dp"
+            android:text="跳过已下载"
+            android:textColor="@color/text_tertiary"
+            android:textSize="13sp"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/btnSelectAll"

@@ -70,4 +70,20 @@ class AppSettings @Inject constructor(
     var albumSortDirection: String?
         get() = prefs.getString("album_sort_direction", null)
         set(value) = prefs.edit().putString("album_sort_direction", value).apply()
+
+    /**
+     * 标记后自动入队下载原图（F1 可选增强，默认关）。
+     * 关闭时标记只做「清单」，进「已标记」栏手动批量收片。
+     */
+    var markAutoDownload: Boolean
+        get() = prefs.getBoolean("mark_auto_download", false)
+        set(value) = prefs.edit().putBoolean("mark_auto_download", value).apply()
+
+    /**
+     * 分享预览副本保留 GPS（F4，默认关）。
+     * 默认剥离 GPS 只保留拍摄参数，避免发图暴露位置；开启后按原样保留全部 EXIF。
+     */
+    var shareKeepGps: Boolean
+        get() = prefs.getBoolean("share_keep_gps", false)
+        set(value) = prefs.edit().putBoolean("share_keep_gps", value).apply()
 }

@@ -69,6 +69,53 @@ interface TransferHistoryDao {
     suspend fun deleteOlderThan(beforeTime: Long)
 }
 
+/**
+ * 相册照片标记实体（PRD v0.2.0 主题 F / F1）
+ *
+ * 「已标记」分区的持久化数据：外拍现场把要收的片子标出来，最后在标记栏一键全选批量下载。
+ *
+ * 指纹键设计：唯一索引为 (storage_id, object_handle, file_name, file_size, capture_time) 五列。
+ * 相机重插卡后 object_handle 会被复用，仅凭 handle 定位会「张冠李戴」——
+ * 文件名 + 大小 + 拍摄时间共同构成内容指纹，键不匹配的旧标记在校验时被清理而不是误标到新文件。
+ */
+@Entity(
+    tableName = "photo_marks",
+    indices = [Index(
+        value = ["storage_id", "object_handle", "file_name", "file_size", "capture_time"],
+        unique = true
+    )]
+)
+data class PhotoMarkEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    @ColumnInfo(name = "storage_id") val storageId: Int,
+    @ColumnInfo(name = "object_handle") val objectHandle: Int,
+    @ColumnInfo(name = "file_name") val fileName: String,
+    @ColumnInfo(name = "file_size") val fileSize: Long,
+    /** 拍摄时间（epoch millis，取 ObjectInfo 的 DateCreated，缺失为 0）；参与指纹校验 */
+    @ColumnInfo(name = "capture_time") val captureTime: Long = 0,
+    @ColumnInfo(name = "marked_at") val markedAt: Long = System.currentTimeMillis()
+)
+
+@Dao
+interface PhotoMarkDao {
+    /** 「已标记」栏数据源：按标记时间倒序，最新标的排最前 */
+    @Query("SELECT * FROM photo_marks ORDER BY marked_at DESC")
+    fun observeAll(): Flow<List<PhotoMarkEntity>>
+
+    @Query("SELECT * FROM photo_marks ORDER BY marked_at DESC")
+    suspend fun getAll(): List<PhotoMarkEntity>
+
+    // 指纹唯一索引生效后，重复标记同一步文件静默忽略
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertAll(marks: List<PhotoMarkEntity>)
+
+    @Delete
+    suspend fun delete(marks: List<PhotoMarkEntity>)
+
+    @Query("DELETE FROM photo_marks")
+    suspend fun clearAll()
+}
+
 @Dao
 interface PairedDeviceDao {
     @Query("SELECT * FROM paired_devices ORDER BY last_connected DESC")
@@ -119,13 +166,14 @@ suspend fun TransferHistoryDao.findTransferredHandlesBatch(handles: List<Int>): 
  * PRD 4.2: Room + MediaStore（传输记录 + 照片归档）
  */
 @Database(
-    entities = [TransferRecord::class, PairedDevice::class],
-    version = 2,
+    entities = [TransferRecord::class, PairedDevice::class, PhotoMarkEntity::class],
+    version = 3,
     exportSchema = false
 )
 abstract class NLinkDatabase : RoomDatabase() {
     abstract fun transferHistoryDao(): TransferHistoryDao
     abstract fun pairedDeviceDao(): PairedDeviceDao
+    abstract fun photoMarkDao(): PhotoMarkDao
 
     companion object {
         private const val TAG = "NLinkDb"
@@ -180,6 +228,36 @@ abstract class NLinkDatabase : RoomDatabase() {
                         Timber.tag(TAG).e(ex, "Migration 1->2 fallback failed")
                     }
                 }
+            }
+        }
+        /**
+         * v2 → v3：新增 photo_marks 表（F1 相册标记分区）。
+         *
+         * 纯新增表，无存量数据迁移；唯一索引名遵循 Room 约定（index_表名_列名，多列下划线连接）。
+         * 建表失败即抛异常走 Room 的破坏性兜底路径之外——标记数据可重建，
+         * 但 schema 必须与 version 3 一致，因此这里任一步失败都要向上抛，
+         * 由调用方（AppModule）决定兜底策略。
+         */
+        @JvmField
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `photo_marks` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`storage_id` INTEGER NOT NULL, " +
+                        "`object_handle` INTEGER NOT NULL, " +
+                        "`file_name` TEXT NOT NULL, " +
+                        "`file_size` INTEGER NOT NULL, " +
+                        "`capture_time` INTEGER NOT NULL, " +
+                        "`marked_at` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                        "`index_photo_marks_storage_id_object_handle_file_name_file_size_capture_time` " +
+                        "ON `photo_marks` (" +
+                        "`storage_id`, `object_handle`, `file_name`, `file_size`, `capture_time`)"
+                )
+                Timber.tag(TAG).i("Migration 2->3 done: photo_marks created")
             }
         }
     }
