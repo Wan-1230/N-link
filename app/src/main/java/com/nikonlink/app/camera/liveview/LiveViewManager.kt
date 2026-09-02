@@ -3,6 +3,7 @@ package com.nikonlink.app.camera.liveview
 import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.usb.UsbPtpManager
+import com.nikonlink.app.shared.common.AppEventLogger
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import timber.log.Timber
@@ -29,12 +30,19 @@ import javax.inject.Singleton
 @Singleton
 class LiveViewManager @Inject constructor(
     private val ptpSession: PtpSessionManager,
-    private val usbPtpManager: UsbPtpManager
+    private val usbPtpManager: UsbPtpManager,
+    private val eventLogger: AppEventLogger
 ) {
     companion object {
         private const val TAG = "LiveViewMgr"
         private const val FRAME_INTERVAL_MS = 66L  // ~15fps，预留保活通道余量防断联
         private const val MAX_CONSECUTIVE_ERRORS = 5
+
+        /** RC-9：StartLiveView 成功后等待相机完成切换（gphoto2 实测 ~250ms）再验帧 */
+        private const val LV_START_SETTLE_MS = 300L
+
+        /** RC-10：最多重试轮数，每轮都重发 0x9201 */
+        private const val MAX_START_ATTEMPTS = 6
     }
 
     private var scope: CoroutineScope? = null
@@ -121,17 +129,20 @@ class LiveViewManager @Inject constructor(
                 // 启动 LiveView 前先设置 Nikon 图像配置 0xD1AC=3，
                 // 否则相机可能不输出 JPEG 帧
                 runCatching {
-                    val profileOk = if (usbPtpManager.isConnected()) {
-                        usbPtpManager.setDevicePropValue(
-                            PtpConstants.PROP_NIKON_LV_IMAGE_PROFILE,
-                            byteArrayOf(3)
-                        )
-                    } else {
-                        ptpSession.setDevicePropValue(
-                            PtpConstants.PROP_NIKON_LV_IMAGE_PROFILE,
-                            byteArrayOf(3)
-                        )
-                    }
+                    val profileOk = onActiveChannel(
+                        wifi = {
+                            ptpSession.setDevicePropValue(
+                                PtpConstants.PROP_NIKON_LV_IMAGE_PROFILE,
+                                byteArrayOf(3)
+                            )
+                        },
+                        usb = {
+                            usbPtpManager.setDevicePropValue(
+                                PtpConstants.PROP_NIKON_LV_IMAGE_PROFILE,
+                                byteArrayOf(3)
+                            )
+                        }
+                    )
                     if (profileOk) {
                         Timber.tag(TAG).i("LiveView image profile set 0xD1AC=3")
                     } else {
@@ -164,54 +175,135 @@ class LiveViewManager @Inject constructor(
     }
 
     /**
-     * StartLiveView 返回 DeviceBusy 时，
-     * 等待相机就绪（DeviceReady）而不是立即报错。
+     * RC-12 通道选择：USB 已连接且链路判活才走 USB，否则一律回退 WiFi。
+     * 避免相机假在线（TCP 在但命令无响应）时把命令打进黑洞。
+     */
+    private suspend fun <T> onActiveChannel(
+        wifi: suspend () -> T,
+        usb: suspend () -> T
+    ): T {
+        return if (usbPtpManager.isConnected() && usbPtpManager.isAlive()) usb() else wifi()
+    }
+
+    /**
+     * RC-9/10/11 闭环启动：
+     * 1) 先读 0xD1A4 禁止条件位图——只记录与提示，不阻断（位含义无权威定义）；
+     * 2) 每一轮都重发 0x9201（相机假成功/状态回退后，重发才有效）；
+     * 3) 返回成功后等 300ms 再拉一帧 0x9203 验真，探测失败不计入 consecutiveErrors；
+     * 4) DeviceBusy 时用 DeviceReady 等待，最多 MAX_START_ATTEMPTS 轮。
      */
     private suspend fun startLiveViewCommand(): Boolean {
-        val (firstOk, firstCode) = startLiveViewResult()
-        if (firstCode < 0) return false
-
-        if (firstOk) return true
-        if (firstCode != PtpConstants.RESPONSE_DEVICE_BUSY &&
-            firstCode != PtpConstants.RESPONSE_NIKON_NOT_LIVE_VIEW
-        ) {
-            Timber.tag(TAG).w("StartLiveView rejected: 0x${firstCode.toString(16)}")
-            return false
+        readProhibitCondition()?.let { desc ->
+            eventLogger.event("lv_prohibit", "reason" to desc)
+            _errorMessage.value = "相机提示：$desc"
         }
 
-        repeat(10) { attempt ->
-            delay(250)
-            val (readyOk, readyCode) = deviceReadyResult()
-            if (readyOk) {
-                Timber.tag(TAG).i("LiveView became ready after $attempt retries")
-                return true
-            }
-            if (readyCode != -1 && readyCode != PtpConstants.RESPONSE_DEVICE_BUSY) {
-                Timber.tag(TAG).w("DeviceReady while starting LiveView: 0x${readyCode.toString(16)}")
-                return false
+        repeat(MAX_START_ATTEMPTS) { attempt ->
+            val (ok, code) = startLiveViewResult()
+            when {
+                ok -> {
+                    delay(LV_START_SETTLE_MS)
+                    if (probeLiveViewFrame()) {
+                        eventLogger.event("lv_probe", "ok" to true, "attempt" to attempt)
+                        return true
+                    }
+                    // 假成功：下一轮重发 0x9201
+                    eventLogger.event("lv_probe", "ok" to false, "attempt" to attempt)
+                }
+                code < 0 -> return false
+                code != PtpConstants.RESPONSE_DEVICE_BUSY &&
+                    code != PtpConstants.RESPONSE_NIKON_NOT_LIVE_VIEW -> {
+                    eventLogger.event("lv_start", "ok" to false, "code" to code, "attempt" to attempt)
+                    Timber.tag(TAG).w("StartLiveView rejected: 0x${code.toString(16)}")
+                    return false
+                }
+                else -> {
+                    eventLogger.event("lv_start_retry", "attempt" to attempt, "code" to code)
+                    waitDeviceReady(attempt)
+                }
             }
         }
         return false
     }
 
-    private suspend fun startLiveViewResult(): Pair<Boolean, Int> {
-        return if (usbPtpManager.isConnected()) {
-            val response = usbPtpManager.sendCommand(PtpConstants.OP_NIKON_START_LIVE_VIEW)
-            if (response == null) Pair(false, -1) else Pair(response.isOk, response.responseCode)
-        } else {
-            val response = ptpSession.sendCommand(PtpConstants.OP_NIKON_START_LIVE_VIEW)
-            Pair(response.isOk, response.responseCode)
+    /**
+     * 读 0xD1A4 LiveView 禁止条件位图（只读、不阻断）。
+     * 返回 null 表示读取失败或无已知含义。
+     */
+    private suspend fun readProhibitCondition(): String? {
+        return try {
+            val data = onActiveChannel(
+                wifi = { ptpSession.getDevicePropValue(PtpConstants.PROP_NIKON_LV_PROHIBIT_CONDITION) },
+                usb = { usbPtpManager.getDevicePropValue(PtpConstants.PROP_NIKON_LV_PROHIBIT_CONDITION) }
+            ) ?: return null
+            if (data.size < 4) return null
+            val value = java.nio.ByteBuffer.wrap(data)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN).int
+            PtpConstants.describeProhibitCondition(value)
+        } catch (_: Exception) {
+            null
         }
     }
 
-    private suspend fun deviceReadyResult(): Pair<Boolean, Int> {
-        return if (usbPtpManager.isConnected()) {
-            val response = usbPtpManager.sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
-            if (response == null) Pair(false, -1) else Pair(response.isOk, response.responseCode)
-        } else {
-            val response = ptpSession.sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
-            Pair(response.isOk, response.responseCode)
+    /**
+     * RC-11 假成功验证：真正拉一帧 0x9203。
+     * 失败不计入 consecutiveErrors（帧循环的错误计数只管运行期）。
+     */
+    private suspend fun probeLiveViewFrame(): Boolean {
+        return try {
+            fetchFrame()?.isNotEmpty() == true
+        } catch (_: Exception) {
+            false
         }
+    }
+
+    private suspend fun fetchFrame(): ByteArray? = onActiveChannel(
+        wifi = { ptpSession.getLiveViewImage() },
+        usb = { usbPtpManager.getLiveViewImage() }
+    )
+
+    /**
+     * DeviceBusy 时等待相机就绪（只等待，不判定成功；成功与否由调用方重发 0x9201 验证）。
+     */
+    private suspend fun waitDeviceReady(fromAttempt: Int) {
+        repeat(10) {
+            delay(250)
+            val (readyOk, readyCode) = deviceReadyResult()
+            if (readyOk) {
+                Timber.tag(TAG).i("DeviceReady after wait (attempt=$fromAttempt)")
+                return
+            }
+            if (readyCode != -1 && readyCode != PtpConstants.RESPONSE_DEVICE_BUSY) {
+                Timber.tag(TAG).w("DeviceReady code=0x${readyCode.toString(16)} (attempt=$fromAttempt)")
+                return
+            }
+        }
+    }
+
+    private suspend fun startLiveViewResult(): Pair<Boolean, Int> {
+        return onActiveChannel(
+            wifi = {
+                val response = ptpSession.sendCommand(PtpConstants.OP_NIKON_START_LIVE_VIEW)
+                Pair(response.isOk, response.responseCode)
+            },
+            usb = {
+                val response = usbPtpManager.sendCommand(PtpConstants.OP_NIKON_START_LIVE_VIEW)
+                if (response == null) Pair(false, -1) else Pair(response.isOk, response.responseCode)
+            }
+        )
+    }
+
+    private suspend fun deviceReadyResult(): Pair<Boolean, Int> {
+        return onActiveChannel(
+            wifi = {
+                val response = ptpSession.sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
+                Pair(response.isOk, response.responseCode)
+            },
+            usb = {
+                val response = usbPtpManager.sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
+                if (response == null) Pair(false, -1) else Pair(response.isOk, response.responseCode)
+            }
+        )
     }
 
     /**
@@ -224,11 +316,15 @@ class LiveViewManager @Inject constructor(
         if (_liveViewState.value == LiveViewState.RUNNING) {
             scope?.launch(Dispatchers.IO) {
                 try {
-                    if (usbPtpManager.isConnected()) {
-                        usbPtpManager.stopLiveView()
-                    } else {
-                        ptpSession.stopLiveView()
-                    }
+                    val ok = onActiveChannel(
+                        wifi = {
+                            val wifiOk = ptpSession.stopLiveView()
+                            if (!wifiOk) eventLogger.event("lv_stop_fail", "channel" to "wifi")
+                            wifiOk
+                        },
+                        usb = { usbPtpManager.stopLiveView() }
+                    )
+                    if (!ok) Timber.tag(TAG).w("stopLiveView returned false")
                 } catch (_: Exception) {}
             }
         }
@@ -267,11 +363,7 @@ class LiveViewManager @Inject constructor(
                 val frameStart = System.currentTimeMillis()
 
                 try {
-                    val imageData = if (usbPtpManager.isConnected()) {
-                        usbPtpManager.getLiveViewImage()
-                    } else {
-                        ptpSession.getLiveViewImage()
-                    }
+                    val imageData = fetchFrame()
                     if (imageData != null && imageData.isNotEmpty()) {
                         val latency = System.currentTimeMillis() - frameStart
                         _latency.value = latency
@@ -342,22 +434,22 @@ class LiveViewManager @Inject constructor(
                 val afY = (y * PtpConstants.AF_COORD_MAX_Y).toInt()
                     .coerceIn(0, PtpConstants.AF_COORD_MAX_Y)
 
-                val response = if (usbPtpManager.isConnected()) {
-                    usbPtpManager.changeAfArea(afX, afY)
-                } else {
-                    ptpSession.sendCommand(
-                        PtpConstants.OP_NIKON_CHANGE_AF_AREA,
-                        listOf(afX, afY)
-                    ).isOk
-                }
+                val response = onActiveChannel(
+                    wifi = {
+                        ptpSession.sendCommand(
+                            PtpConstants.OP_NIKON_CHANGE_AF_AREA,
+                            listOf(afX, afY)
+                        ).isOk
+                    },
+                    usb = { usbPtpManager.changeAfArea(afX, afY) }
+                )
 
                 if (response) {
                     // 触发 AF 驱动
-                    if (usbPtpManager.isConnected()) {
-                        usbPtpManager.afDrive()
-                    } else {
-                        ptpSession.afDrive()
-                    }
+                    onActiveChannel(
+                        wifi = { ptpSession.afDrive() },
+                        usb = { usbPtpManager.afDrive() }
+                    )
                     Timber.tag(TAG).d("Touch focus: ($afX, $afY)")
                 }
                 response
@@ -377,14 +469,15 @@ class LiveViewManager @Inject constructor(
         if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) return false
         return withContext(Dispatchers.IO) {
             try {
-                if (usbPtpManager.isConnected()) {
-                    usbPtpManager.manualFocusDrive(direction, speed)
-                } else {
-                    ptpSession.sendCommand(
-                        PtpConstants.OP_NIKON_MF_DRIVE,
-                        listOf(direction, speed)
-                    ).isOk
-                }
+                onActiveChannel(
+                    wifi = {
+                        ptpSession.sendCommand(
+                            PtpConstants.OP_NIKON_MF_DRIVE,
+                            listOf(direction, speed)
+                        ).isOk
+                    },
+                    usb = { usbPtpManager.manualFocusDrive(direction, speed) }
+                )
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "MF drive failed")
                 false

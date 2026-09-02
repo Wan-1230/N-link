@@ -128,7 +128,9 @@ class PtpSessionManager @Inject constructor(
             if (response !is InitResponsePacket) {
                 Timber.tag(TAG).e("phase=init FAILED unexpected response: $response")
                 eventLogger.event("connect", "phase" to "init", "ok" to false, "resp" to response?.type)
-                _sessionState.value = PtpSessionState.ERROR
+                // 连接失败回到 DISCONNECTED 而非 ERROR：
+                // ERROR 会被健康检查当成「链路死亡需重建」，触发不必要的重连风暴
+                _sessionState.value = PtpSessionState.DISCONNECTED
                 return@withContext false
             }
 
@@ -156,7 +158,8 @@ class PtpSessionManager @Inject constructor(
             if (eventResponse !is InitEventAckPacket) {
                 Timber.tag(TAG).e("phase=event FAILED unexpected event init response: $eventResponse")
                 eventLogger.event("connect", "phase" to "event", "ok" to false)
-                _sessionState.value = PtpSessionState.ERROR
+                // 同 init 阶段：连接失败回 DISCONNECTED，不进 ERROR
+                _sessionState.value = PtpSessionState.DISCONNECTED
                 return@withContext false
             }
             Timber.tag(TAG).i("phase=event OK (InitEventAck)")
@@ -197,7 +200,8 @@ class PtpSessionManager @Inject constructor(
                     "connect", "phase" to "opensession", "ok" to false,
                     "code" to PtpConstants.describeResponseCode(openResult.responseCode)
                 )
-                _sessionState.value = PtpSessionState.ERROR
+                // 同 init 阶段：连接失败回 DISCONNECTED，不进 ERROR
+                _sessionState.value = PtpSessionState.DISCONNECTED
                 return@withContext false
             }
             sessionId = response.sessionId
@@ -221,7 +225,8 @@ class PtpSessionManager @Inject constructor(
             true
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Connection failed")
-            _sessionState.value = PtpSessionState.ERROR
+            // 连接异常回 DISCONNECTED（ERROR 只留给 markLinkError 的运行期链路死亡）
+            _sessionState.value = PtpSessionState.DISCONNECTED
             closeSession()
             false
         }

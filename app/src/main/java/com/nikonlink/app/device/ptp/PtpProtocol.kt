@@ -96,6 +96,7 @@ object PtpConstants {
     const val RESPONSE_SESSION_ALREADY_OPEN = 0x201E
     const val RESPONSE_TRANSACTION_CANCELLED = 0x201F
     const val RESPONSE_NIKON_NOT_LIVE_VIEW = 0xA00B
+    const val RESPONSE_NIKON_LV_ENABLE_FAILED = 0xA004
 
     /**
      * PTP 响应码中文化描述（日志与用户提示统一使用）。
@@ -122,6 +123,7 @@ object PtpConstants {
         RESPONSE_SESSION_ALREADY_OPEN -> "会话已打开"
         RESPONSE_TRANSACTION_CANCELLED -> "事务已取消"
         RESPONSE_NIKON_NOT_LIVE_VIEW -> "相机未处于实时取景状态"
+        RESPONSE_NIKON_LV_ENABLE_FAILED -> "相机拒绝开启实时取景（Nikon 0xA004）"
         else -> "0x${code.toString(16).uppercase()}"
     }
 
@@ -133,6 +135,30 @@ object PtpConstants {
 
     // Nikon 厂商属性: LiveView 图像配置 (image profile set size=0xd1ac:3)
     const val PROP_NIKON_LV_IMAGE_PROFILE = 0xD1AC
+
+    /**
+     * Nikon 厂商属性: LiveView 禁止条件位图（只读）。
+     * 官方文档未公布各 bit 含义，gphoto2 / ZRelay 也仅有状态名没有权威位定义，
+     * 因此只能做日志记录与错误提示富化：非 0 时不应阻断流程，永远以相机实际
+     * 返回码为准。
+     */
+    const val PROP_NIKON_LV_PROHIBIT_CONDITION = 0xD1A4
+
+    /**
+     * 把 0xD1A4 位图翻译成可读提示。
+     * 位含义为社区逆向的常见值，未知组合返回 null（按未知处理，不阻断）。
+     */
+    fun describeProhibitCondition(value: Int): String? {
+        if (value == 0) return null
+        val parts = mutableListOf<String>()
+        if (value and 0x01 != 0) parts.add("镜头未安装")
+        if (value and 0x02 != 0) parts.add("电量不足")
+        if (value and 0x04 != 0) parts.add("相机处于回放/菜单状态")
+        if (value and 0x08 != 0) parts.add("USB 模式占用")
+        if (value and 0x10 != 0) parts.add("机身过热")
+        if (value and 0x20 != 0) parts.add("正在写卡")
+        return if (parts.isEmpty()) null else parts.joinToString("、")
+    }
 
     // 监看启动后相机上报 DevicePropChanged prop=0x500E，
     // 即进入无线控制(遥控)模式时曝光程序模式切到 Remote 值；

@@ -4,22 +4,25 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import com.nikonlink.app.device.ptp.PtpIpProbe
+import com.nikonlink.app.device.wifi.WifiEndpoint
 import java.io.ByteArrayOutputStream
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import java.net.DatagramPacket
 import java.net.Inet4Address
 import java.net.InetAddress
-import java.net.InetSocketAddress
 import java.net.MulticastSocket
-import java.net.Socket
 import java.net.SocketTimeoutException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Semaphore
@@ -44,9 +47,12 @@ class WifiScanner @Inject constructor(
         private const val PTP_PORT = 15740
         private const val MDNS_ADDRESS = "224.0.0.251"
         private const val DEFAULT_SCAN_TIMEOUT_MS = 12000L
-        private const val TCP_PROBE_TIMEOUT_MS = 800
         private const val MAX_SCAN_CONCURRENCY = 32
         private const val GENERIC_NAME = "尼康相机"
+
+        /** RC-6：系统 NSD 服务类型（与自绘 mDNS 并行兜底） */
+        private const val NSD_SERVICE_TYPE_PTP = "_ptp._tcp."
+        private const val NSD_SERVICE_TYPE_NIKON = "_nikon._tcp."
     }
 
     private val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
@@ -63,7 +69,8 @@ class WifiScanner @Inject constructor(
         withContext(Dispatchers.IO) {
             val mdnsJob = async { collectMdns(timeoutMs, results, network) }
             val subnetJob = async { scanSubnet(timeoutMs, results, network) }
-            awaitAll(mdnsJob, subnetJob)
+            val nsdJob = async { collectNsd(timeoutMs, results) }
+            awaitAll(mdnsJob, subnetJob, nsdJob)
         }
         // 任务2: 同一台相机会产生多个同名/异名条目（mDNS+网段扫描），按 IP 去重，
         // 优先保留相机自定义名称条目，隐藏通用占位名称的重复项
@@ -145,10 +152,14 @@ class WifiScanner @Inject constructor(
 
         val subnetHosts = networks.flatMap { (ip, prefix) ->
             subnetHosts(ip, prefix).filterNot { it == ip }
-        }.distinct()
+        }.filter { WifiEndpoint.isValidHost(it) }.distinct()
         // 相机 AP/STA 常见网关 IP，即使当前网段不同也做一次轻量探测。
-        val knownGatewayHosts = listOf("192.168.1.1", "192.168.0.1", "10.0.0.1", "192.168.42.1")
-        val hosts = (subnetHosts + knownGatewayHosts).distinct()
+        val knownGatewayHosts = listOf(
+            "192.168.1.1", "192.168.0.1", "10.0.0.1", "192.168.42.1",
+            "192.168.31.1", "192.168.2.1", "192.168.10.1", "192.168.50.1",
+            "192.168.137.1", "172.16.0.1", "10.0.1.1"
+        )
+        val hosts = (subnetHosts + knownGatewayHosts).filter { WifiEndpoint.isValidHost(it) }.distinct()
         if (hosts.isEmpty()) return
 
         val semaphore = Semaphore(MAX_SCAN_CONCURRENCY)
@@ -171,18 +182,74 @@ class WifiScanner @Inject constructor(
         }
     }
 
-    private fun tcpProbe(host: String): Boolean {
-        return tcpProbe(host, PTP_PORT)
-    }
+    /**
+     * RC-6：NsdManager 系统服务发现，作为裸 mDNS Socket 的并行兜底。
+     * 部分机型/路由器会过滤组播包，自绘 mDNS 收不到相机广播；系统 NSD 走
+     * daemon 通道可以绕开这类过滤。发现结果仍需通过 PTP/IP Init Ack 确认。
+     */
+    private suspend fun collectNsd(timeoutMs: Long, results: MutableSet<WifiCameraCandidate>) {
+        val nsdManager = context.getSystemService(Context.NSD_SERVICE) as? NsdManager
+        if (nsdManager == null) {
+            Timber.tag(TAG).w("NsdManager unavailable, NSD discovery skipped")
+            return
+        }
 
-    private fun tcpProbe(host: String, port: Int): Boolean {
-        return try {
-            Socket().use { socket ->
-                socket.connect(InetSocketAddress(host, port), TCP_PROBE_TIMEOUT_MS)
-                true
+        val discovered = ConcurrentHashMap.newKeySet<String>()  // "host:port"
+        val done = CompletableDeferred<Unit>()
+
+        val resolveListener = object : NsdManager.ResolveListener {
+            override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {}
+            override fun onServiceResolved(info: NsdServiceInfo) {
+                val host = info.host?.hostAddress
+                if (!host.isNullOrEmpty()) discovered.add("$host:${info.port}")
             }
-        } catch (_: Exception) {
-            false
+        }
+
+        fun discoveryListener() = object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(serviceType: String) {}
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                Timber.tag(TAG).w("NSD discovery start failed: $serviceType err=$errorCode")
+                done.complete(Unit)
+            }
+            override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+                runCatching { nsdManager.resolveService(serviceInfo, resolveListener) }
+            }
+            override fun onServiceLost(serviceInfo: NsdServiceInfo) {}
+            override fun onDiscoveryStopped(serviceType: String) {}
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
+        }
+
+        val listeners = listOf(NSD_SERVICE_TYPE_PTP, NSD_SERVICE_TYPE_NIKON)
+            .map { type -> type to discoveryListener() }
+        try {
+            listeners.forEach { (type, listener) ->
+                runCatching {
+                    nsdManager.discoverServices(type, NsdManager.PROTOCOL_DNS_SD, listener)
+                }
+            }
+            // NSD 发现无天然结束信号，靠超时收口
+            withTimeoutOrNull(timeoutMs) { done.await() }
+        } finally {
+            listeners.forEach { (_, listener) ->
+                runCatching { nsdManager.stopServiceDiscovery(listener) }
+            }
+        }
+
+        coroutineScope {
+            discovered.map { entry ->
+                async(Dispatchers.IO) {
+                    val endpoint = WifiEndpoint.parse("wifi:$entry")
+                    if (endpoint != null &&
+                        results.none { it.ipAddress == endpoint.host } &&
+                        PtpIpProbe.probe(endpoint)
+                    ) {
+                        results.add(
+                            WifiCameraCandidate(endpoint.host, endpoint.port, GENERIC_NAME, "WiFi")
+                        )
+                        Timber.tag(TAG).i("NSD candidate: ${endpoint.host}:${endpoint.port}")
+                    }
+                }
+            }.awaitAll()
         }
     }
 
@@ -309,11 +376,13 @@ class WifiScanner @Inject constructor(
 
     private fun subnetHosts(ip: String, prefixLength: Int): List<String> {
         val prefix = prefixLength.coerceIn(0, 32)
-        if (prefix < 24) return emptyList() // 避免在大网段做全量扫描
-
         val ipInt = ipToInt(ip) ?: return emptyList()
         val mask = if (prefix == 0) 0 else (0xFFFFFFFF.toInt() shl (32 - prefix))
         val networkBase = ipInt and mask
+        if (prefix < 24) {
+            // RC-6：宽网段不再放弃扫描，只探测前 1024 个地址控制耗时
+            return (1..1024).map { intToIp(networkBase + it) }
+        }
         return (1 until 255).map { intToIp(networkBase or it) }
     }
 
@@ -326,31 +395,6 @@ class WifiScanner @Inject constructor(
     private fun intToIp(value: Int): String {
         return "${(value ushr 24) and 0xFF}.${(value ushr 16) and 0xFF}." +
                 "${(value ushr 8) and 0xFF}.${value and 0xFF}"
-    }
-
-    private fun parseDnsName(data: ByteArray): String? {
-        if (data.size < 12) return null
-        var offset = 12
-        val labels = mutableListOf<String>()
-        var guard = 0
-        while (offset < data.size && guard++ < 32) {
-            val length = data[offset].toInt() and 0xFF
-            if (length == 0) break
-            if ((length and 0xC0) == 0xC0) {
-                if (offset + 1 >= data.size) break
-                offset = ((length and 0x3F) shl 8) or (data[offset + 1].toInt() and 0xFF)
-                continue
-            }
-            if (offset + 1 + length > data.size) break
-            val label = String(data, offset + 1, length, Charsets.US_ASCII).trim()
-            if (label.isNotEmpty()) labels.add(label)
-            offset += 1 + length
-        }
-        if (labels.isEmpty()) return null
-        return labels
-            .filterNot { it.equals("local", ignoreCase = true) || it.startsWith("_") }
-            .ifEmpty { labels }
-            .joinToString(".")
     }
 
     private fun sendMdnsProbe(socket: MulticastSocket) {

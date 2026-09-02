@@ -9,6 +9,7 @@ import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.ptp.PtpIdentityStore
 import com.nikonlink.app.device.usb.UsbPtpManager
 import com.nikonlink.app.device.wifi_ap.WifiManager
+import com.nikonlink.app.device.wifi_sta.WifiDirectConnector
 import com.nikonlink.app.device.wifi_sta.WifiScanner
 import com.nikonlink.app.shared.data.NLinkDatabase
 import com.nikonlink.app.shared.data.PairedDeviceDao
@@ -79,6 +80,7 @@ object AppModule {
         stateMachine: ConnectionStateMachine,
         deviceRepository: DeviceRepository,
         transferManager: TransferManager,
+        connector: WifiDirectConnector,
         eventLogger: AppEventLogger
     ): ConnectionManager = ConnectionManager(
         context,
@@ -90,6 +92,7 @@ object AppModule {
         stateMachine,
         deviceRepository,
         transferManager,
+        connector,
         eventLogger
     )
 
@@ -140,8 +143,9 @@ object AppModule {
     @Singleton
     fun provideLiveViewManager(
         ptpSessionManager: PtpSessionManager,
-        usbPtpManager: UsbPtpManager
-    ): LiveViewManager = LiveViewManager(ptpSessionManager, usbPtpManager)
+        usbPtpManager: UsbPtpManager,
+        eventLogger: AppEventLogger
+    ): LiveViewManager = LiveViewManager(ptpSessionManager, usbPtpManager, eventLogger)
 
     @Provides
     @Singleton
@@ -164,8 +168,9 @@ object AppModule {
     @Provides
     @Singleton
     fun provideUsbPtpManager(
-        @ApplicationContext context: Context
-    ): UsbPtpManager = UsbPtpManager(context)
+        @ApplicationContext context: Context,
+        eventLogger: AppEventLogger
+    ): UsbPtpManager = UsbPtpManager(context, eventLogger)
 
     @Provides
     @Singleton

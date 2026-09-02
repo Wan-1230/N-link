@@ -13,8 +13,10 @@ import com.nikonlink.app.device.ptp.PtpSessionState
 import com.nikonlink.app.device.ptp.PtpIpProbe
 import com.nikonlink.app.device.usb.UsbConnectionState
 import com.nikonlink.app.device.usb.UsbPtpManager
+import com.nikonlink.app.device.wifi.WifiEndpoint
 import com.nikonlink.app.device.wifi_ap.WifiManager
 import com.nikonlink.app.device.wifi_sta.WifiCameraCandidate
+import com.nikonlink.app.device.wifi_sta.WifiDirectConnector
 import com.nikonlink.app.device.wifi_sta.WifiScanner
 import com.nikonlink.app.device.data.DeviceRepository
 import com.nikonlink.app.camera.gallery.TransferManager
@@ -49,15 +51,12 @@ class ConnectionManager @Inject constructor(
     private val stateMachine: ConnectionStateMachine,
     private val deviceRepository: DeviceRepository,
     private val transferManager: TransferManager,
+    private val connector: WifiDirectConnector,
     private val eventLogger: AppEventLogger
 ) {
     companion object {
         private const val TAG = "ConnectionMgr"
         private const val WIFI_UPGRADE_DELAY_MS = 1000L
-        private const val PAIRING_TIMEOUT_MS = 90000L
-        private const val PAIRING_RETRY_DELAY_MS = 3000L
-        /** STA 恢复指数退避间隔（共 5 次，总等待 ≤ 60s） */
-        private val STA_RECOVERY_DELAYS_MS = longArrayOf(2000L, 4000L, 8000L, 16000L, 30000L)
         private const val PREFS_NAME = "nl_settings"
         private const val PREFS_WIFI_5G_PREFER = "wifi_band_5g_prefer"
     }
@@ -92,6 +91,7 @@ class ConnectionManager @Inject constructor(
         usbPtpManager.start(scope)
         transferManager.start(scope)
         stateMachine.start(scope)
+        connector.start(scope)
 
         observeBleEvents()
         observeWifiEvents()
@@ -117,6 +117,7 @@ class ConnectionManager @Inject constructor(
         usbPtpManager.stop()
         transferManager.stop()
         stateMachine.stop()
+        connector.stop()
         _connectionHint.value = null
         userDisconnectRequested = false
         connectedSince = null
@@ -146,6 +147,7 @@ class ConnectionManager @Inject constructor(
     fun disconnectDevice() {
         pairingJob?.cancel()
         pairingJob = null
+        connector.cancelActive()
         _connectionHint.value = null
         userDisconnectRequested = true
         stopScan()
@@ -159,75 +161,67 @@ class ConnectionManager @Inject constructor(
 
     /**
      * 通过 WiFi 直连相机（AP/STA 均适用）。
-     * 手机与相机在同一 WiFi 后扫描发现相机，再建立 PTP/IP。
+     * RC-1/2/7/8：连接全部收敛到 WifiDirectConnector 单一入口——
+     * Mutex + activeJob 槽位消灭并发 pair_start 风暴，generation 令牌保证
+     * 旧任务在每个挂起点失效，指数退避把重试窗口拉长到 ~90s。
      */
     fun connectToWifiCamera(ipAddress: String, port: Int = 15740, deviceName: String? = null) {
-        pairingJob?.cancel()
-        pairedDeviceAddress = "wifi:$ipAddress:$port"
-        userDisconnectRequested = false
-        val network = wifiManager.bindToActiveWifi()
-        stateMachine.dispatch(ConnectionEvent.StartConnect)
+        val endpoint = WifiEndpoint.parse("wifi:$ipAddress:$port")
+        if (endpoint == null) {
+            eventLogger.event("sta_fail", "reason" to "invalid_endpoint", "host" to ipAddress)
+            stateMachine.dispatch(
+                ConnectionEvent.ErrorOccurred("IP 地址无效，请填写形如 192.168.1.1 的 IPv4 地址", recoverable = true)
+            )
+            return
+        }
+
         _connectionHint.value = null
+        pairedDeviceAddress = endpoint.address
+        userDisconnectRequested = false
 
-        pairingJob = scope?.launch(Dispatchers.IO) {
-            try {
-                eventLogger.event("pair_start", "ip" to ipAddress, "port" to port)
-                val deadline = System.currentTimeMillis() + PAIRING_TIMEOUT_MS
-                var ok = false
-                while (System.currentTimeMillis() < deadline && !ok) {
-                    ensureActive()
-                    ok = ptpSession.connect(
-                        ipAddress,
-                        port,
-                        pairingMode = true,
-                        network = network
-                    ) {
-                        if (_connectionHint.value == null) {
-                            _connectionHint.value =
-                                ConnectionHint("请在相机配对完成画面按 OK，然后等待即可")
-                        }
-                    }
-                    if (!ok) {
-                        Timber.tag(TAG).w("Pairing attempt failed, waiting for camera OK and retrying")
-                        if (_connectionHint.value != null) {
-                            _connectionHint.value =
-                                ConnectionHint(
-                                    "请稍候，相机正在完成重新连接。请勿切换相机网络设置界面或启动其他连接。"
-                                )
-                        }
-                        delay(PAIRING_RETRY_DELAY_MS)
-                    }
+        // RC-1：必须先同步登记 activeJob，再派发 StartConnect，
+        // 否则状态机触发的重连观察者会认为没有任务在跑而再次发起连接
+        pairingJob = connector.connect(
+            endpoint = endpoint,
+            mode = WifiDirectConnector.Mode.PAIRING,
+            onWaitingCameraOk = {
+                if (_connectionHint.value == null) {
+                    _connectionHint.value =
+                        ConnectionHint("请在相机配对完成画面按 OK，然后等待即可")
                 }
-
-                if (ok) {
-                    // Fix 任务1(STA): 直连成功后不再发 BLE 指令令相机切换 WiFi 模式，
-                    // 避免 STA 模式下相机会话被重置导致后续操作失败
-                    eventLogger.event("pair_ok", "ip" to ipAddress, "port" to port)
+            },
+            onRetry = {
+                if (_connectionHint.value != null) {
                     _connectionHint.value = ConnectionHint(
-                        "配对完成。OK确定",
-                        kind = ConnectionHintKind.PAIRING_COMPLETE
+                        "请稍候，相机正在完成重新连接。请勿切换相机网络设置界面或启动其他连接。"
                     )
-                    stateMachine.dispatch(ConnectionEvent.WifiConnected)
+                }
+            },
+            onSuccess = {
+                eventLogger.event("pair_ok", "host" to endpoint.host, "port" to endpoint.port)
+                _connectionHint.value = ConnectionHint(
+                    "配对完成。OK确定",
+                    kind = ConnectionHintKind.PAIRING_COMPLETE
+                )
+                // 回调非挂起上下文，持久化是 fire-and-forget，放独立协程（与旧实现语义一致）
+                scope?.launch(Dispatchers.IO) {
                     try {
                         deviceRepository.savePairedDevice(
-                            "wifi:$ipAddress:$port",
+                            endpoint.address,
                             deviceName ?: "尼康相机",
-                            ipAddress
+                            endpoint.host
                         )
                     } catch (e: Exception) {
                         Timber.tag(TAG).w(e, "Failed to persist WiFi camera")
                     }
-                } else {
-                    _connectionHint.value = null
-                    eventLogger.event("pair_fail", "ip" to ipAddress, "port" to port)
-                    stateMachine.dispatch(
-                        ConnectionEvent.ErrorOccurred("WiFi 相机连接失败", recoverable = true)
-                    )
                 }
-            } finally {
-                pairingJob = null
+            },
+            onFail = {
+                _connectionHint.value = null
+                eventLogger.event("pair_fail", "host" to endpoint.host, "port" to endpoint.port)
             }
-        }
+        )
+        stateMachine.dispatch(ConnectionEvent.StartConnect)
     }
 
     /**
@@ -236,6 +230,7 @@ class ConnectionManager @Inject constructor(
     fun cancelPairing() {
         pairingJob?.cancel()
         pairingJob = null
+        connector.cancelActive()
         _connectionHint.value = null
         userDisconnectRequested = true
         ptpSession.closeSession()
@@ -260,18 +255,21 @@ class ConnectionManager @Inject constructor(
         val network = wifiManager.currentWifiNetwork()
         val candidates = wifiScanner.scan(timeoutMs, network).toMutableList()
         // 扫描失败时直接复用历史 IP 发起 PTP/IP，避免每次都全段盲扫。
+        // RC-3：地址统一走 WifiEndpoint 归一化（前导零校正、非法段拦截）
         val last = runCatching { deviceRepository.getLastAutoConnectDevice() }.getOrNull()
-        if (last != null && last.address.startsWith("wifi:")) {
-            val parts = last.address.removePrefix("wifi:").split(":")
-            val ip = parts.firstOrNull().orEmpty()
-            val port = parts.getOrNull(1)?.toIntOrNull() ?: 15740
+        val lastEndpoint = last?.let { WifiEndpoint.parse(it.address) }
+        if (lastEndpoint != null &&
+            candidates.none { it.ipAddress == lastEndpoint.host }
+        ) {
             // 历史 IP 需要先通过 PTP/IP Init Ack 确认，避免把已失效地址展示给用户。
-            if (ip.isNotEmpty() &&
-                candidates.none { it.ipAddress == ip } &&
-                PtpIpProbe.probe(ip, port, 1000L, network)
-            ) {
+            if (PtpIpProbe.probe(lastEndpoint, timeoutMs = 1000L, network = network)) {
                 candidates.add(
-                    WifiCameraCandidate(ip, port, last.deviceName.ifBlank { "尼康相机(历史)" }, "sta-history")
+                    WifiCameraCandidate(
+                        lastEndpoint.host,
+                        lastEndpoint.port,
+                        last.deviceName.ifBlank { "尼康相机(历史)" },
+                        "sta-history"
+                    )
                 )
             }
         }
@@ -285,13 +283,13 @@ class ConnectionManager @Inject constructor(
         return try {
             val device = deviceRepository.getLastAutoConnectDevice()
             if (device != null) {
-                if (device.address.startsWith("wifi:")) {
-                    val parts = device.address.removePrefix("wifi:").split(":")
-                    val ip = parts.firstOrNull().orEmpty()
-                    val port = parts.getOrNull(1)?.toIntOrNull() ?: 15740
-                    if (ip.isNotEmpty()) {
-                        connectToWifiCamera(ip, port, device.deviceName)
-                    }
+                val endpoint = WifiEndpoint.parse(device.address)
+                if (endpoint != null) {
+                    connectToWifiCamera(
+                        ipAddress = endpoint.host,
+                        port = endpoint.port,
+                        deviceName = device.deviceName
+                    )
                 } else {
                     connectToDevice(device.address)
                 }
@@ -460,7 +458,7 @@ class ConnectionManager @Inject constructor(
             wifiManager.networkAvailable.collect { network ->
                 if (staNetworkLost && !userDisconnectRequested &&
                     pairedDeviceAddress?.startsWith("wifi:") == true &&
-                    pairingJob == null
+                    !connector.isActive
                 ) {
                     staNetworkLost = false
                     eventLogger.event("wifi_sta", "state" to "network_restored")
@@ -517,7 +515,7 @@ class ConnectionManager @Inject constructor(
             ptpSession.sessionState.collect { state ->
                 if ((state == PtpSessionState.ERROR || state == PtpSessionState.DISCONNECTED) &&
                     !userDisconnectRequested &&
-                    pairingJob == null &&
+                    !connector.isActive && pairingJob?.isActive != true &&
                     stateMachine.state.value != ConnectionState.DISCONNECTED &&
                     pairedDeviceAddress?.startsWith("wifi:") == true
                 ) {
@@ -541,42 +539,16 @@ class ConnectionManager @Inject constructor(
     }
 
     private fun recoverWifiSession(network: android.net.Network? = null) {
-        val address = pairedDeviceAddress ?: return
-        if (recoveryJob?.isActive == true) return
-        val parts = address.removePrefix("wifi:").split(":")
-        val ip = parts.firstOrNull().orEmpty()
-        val port = parts.getOrNull(1)?.toIntOrNull() ?: 15740
-        if (ip.isEmpty()) return
+        val endpoint = pairedDeviceAddress?.let { WifiEndpoint.parse(it) } ?: return
+        // RC-1：恢复走 connector 单一入口，避免与配对循环并发双写会话
+        if (connector.isActive) return
 
         recoveryJob = scope?.launch(Dispatchers.IO) {
-            eventLogger.event("wifi_recover_start", "ip" to ip, "port" to port)
-            // 网络可能刚恢复，先显式重绑定（旧 Network 句柄在断网重连后失效）
-            val boundNetwork = network ?: wifiManager.bindToActiveWifi()
-            // STA 恢复不走配对模式：相机无需再次确认 OK，读超时也更短（15s）
-            var ok = false
-            var attempt = 0
-            for (delayMs in STA_RECOVERY_DELAYS_MS) {
-                ensureActive()
-                attempt++
-                delay(delayMs)
-                ok = ptpSession.connect(ip, port, pairingMode = false, network = boundNetwork)
-                if (ok) {
-                    Timber.tag(TAG).i("PTP session recovered (attempt $attempt)")
-                    break
-                }
-                Timber.tag(TAG).w("PTP recovery attempt $attempt failed")
-                eventLogger.event("wifi_recover", "attempt" to attempt, "ok" to false)
-            }
-            if (ok) {
-                eventLogger.event("wifi_recover", "attempt" to attempt, "ok" to true)
-                stateMachine.dispatch(ConnectionEvent.WifiConnected)
-            } else {
-                Timber.tag(TAG).w("PTP session recovery failed after $attempt attempts")
-                // 交由状态机指数退避继续兑底重连（不再直接判死）
-                stateMachine.dispatch(
-                    ConnectionEvent.ErrorOccurred("WiFi 连接已断开", recoverable = true)
-                )
-            }
+            eventLogger.event("wifi_recover_start", "host" to endpoint.host, "port" to endpoint.port)
+            connector.connect(
+                endpoint = endpoint,
+                mode = WifiDirectConnector.Mode.RESUME
+            )
             recoveryJob = null
         }
     }
@@ -591,13 +563,12 @@ class ConnectionManager @Inject constructor(
                     val address = pairedDeviceAddress
                     if (address != null && address.startsWith("wifi:")) {
                         // Fix STA: 状态机重试闭环补齐 WiFi 直连分支（旧逻辑只重连 BLE）
-                        if (pairingJob == null && !ptpSession.isConnected()) {
-                            val parts = address.removePrefix("wifi:").split(":")
-                            val ip = parts.firstOrNull().orEmpty()
-                            val port = parts.getOrNull(1)?.toIntOrNull() ?: 15740
-                            if (ip.isNotEmpty()) {
-                                Timber.tag(TAG).i("Auto-reconnecting to WiFi camera $ip:$port")
-                                connectToWifiCamera(ip, port)
+                        if (!connector.isActive && pairingJob?.isActive != true && !ptpSession.isConnected()) {
+                            // 地址解析统一走 WifiEndpoint（RC-3 收敛：全项目唯一解析入口）
+                            val endpoint = WifiEndpoint.parse(address)
+                            if (endpoint != null) {
+                                Timber.tag(TAG).i("Auto-reconnecting to WiFi camera ${endpoint.display}")
+                                connectToWifiCamera(endpoint.host, endpoint.port)
                             }
                         }
                     } else if (address != null &&
@@ -689,13 +660,13 @@ class ConnectionManager @Inject constructor(
             val device = deviceRepository.getLastAutoConnectDevice()
             if (device != null && pairedDeviceAddress == null) {
                 Timber.tag(TAG).i("Restoring connection to ${device.deviceName} [${device.address}]")
-                if (device.address.startsWith("wifi:")) {
-                    val parts = device.address.removePrefix("wifi:").split(":")
-                    val ip = parts.firstOrNull().orEmpty()
-                    val port = parts.getOrNull(1)?.toIntOrNull() ?: 15740
-                    if (ip.isNotEmpty()) {
-                        connectToWifiCamera(ip, port, device.deviceName)
-                    }
+                val endpoint = WifiEndpoint.parse(device.address)
+                if (endpoint != null) {
+                    connectToWifiCamera(
+                        ipAddress = endpoint.host,
+                        port = endpoint.port,
+                        deviceName = device.deviceName
+                    )
                 } else {
                     connectToDevice(device.address)
                 }
@@ -719,7 +690,8 @@ class ConnectionManager @Inject constructor(
      */
     fun recoverLostLink() {
         val address = pairedDeviceAddress
-        if (address != null && address.startsWith("wifi:") && pairingJob == null &&
+        if (address != null && address.startsWith("wifi:") &&
+            !connector.isActive && pairingJob?.isActive != true &&
             stateMachine.state.value != ConnectionState.DISCONNECTED
         ) {
             recoverWifiSession()
