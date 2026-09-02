@@ -43,6 +43,7 @@ class TransferFragment : Fragment() {
 
     private lateinit var adapter: PhotoGridAdapter
     private val chipViews = mutableMapOf<PhotoFilter, TextView>()
+    private var chipNotDownloaded: TextView? = null
     private var multiSelectMode = false
     private var lastToastMsg: String? = null
 
@@ -76,6 +77,24 @@ class TransferFragment : Fragment() {
         setupActions()
         observe()
         viewModel.fetchPhotos()
+        consumeDeepLink()
+    }
+
+    /**
+     * F5 深链：传输完成通知的「查看」跳到相册页本地照片源。
+     * extra 由 MainActivity 的 open_tab 路由带入，消费后立即移除，
+     * 避免之后重建 Fragment（切 Tab 回来/旋转）时重复触发。
+     */
+    private fun consumeDeepLink() {
+        val activity = activity ?: return
+        val intent = activity.intent ?: return
+        if (!intent.getBooleanExtra(TransferManager.EXTRA_OPEN_GALLERY_LOCAL, false)) return
+        intent.removeExtra(TransferManager.EXTRA_OPEN_GALLERY_LOCAL)
+        if (hasMediaPermission()) {
+            viewModel.setAlbum(AlbumSource.LOCAL)
+        } else {
+            requestMediaPermission()
+        }
     }
 
     private fun setupGrid() {
@@ -137,6 +156,25 @@ class TransferFragment : Fragment() {
             chipViews[filter] = chip
             binding.chipRow.addView(chip)
         }
+
+        // F2：「未下载」开关 chip，与类型筛选可叠加；仅相机相册显示
+        val notDownloadedChip = TextView(requireContext()).apply {
+            text = "未下载"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            maxLines = 1
+            setPadding(dp(16), dp(7), dp(16), dp(7))
+            val lp = android.widget.LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            lp.marginStart = dp(4)
+            layoutParams = lp
+            setOnClickListener {
+                viewModel.setOnlyNotDownloaded(!viewModel.onlyNotDownloaded.value)
+            }
+            pressEffect()
+        }
+        chipNotDownloaded = notDownloadedChip
+        binding.chipRow.addView(notDownloadedChip)
     }
 
     private fun renderChips(current: PhotoFilter) {
@@ -150,12 +188,32 @@ class TransferFragment : Fragment() {
                 )
             )
         }
+        renderNotDownloadedChip(viewModel.onlyNotDownloaded.value)
+    }
+
+    /** F2：「未下载」chip 选中态渲染；仅相机源可见 */
+    private fun renderNotDownloadedChip(enabled: Boolean) {
+        val chip = chipNotDownloaded ?: return
+        chip.visibility =
+            if (viewModel.activeAlbum.value == AlbumSource.CAMERA) View.VISIBLE else View.GONE
+        chip.setBackgroundResource(if (enabled) R.drawable.bg_chip_selected else R.drawable.bg_chip)
+        chip.setTextColor(
+            ContextCompat.getColor(
+                requireContext(),
+                if (enabled) R.color.on_primary else R.color.text_primary
+            )
+        )
     }
 
     private fun setupAlbumTabs() {
         binding.tabCameraPhotos.pressEffect()
         binding.tabCameraPhotos.setOnClickListener {
             viewModel.setAlbum(AlbumSource.CAMERA)
+        }
+        // F1「已标记」独立分区：进入即默认多选态（全选 → 批量下载的工作台）
+        binding.tabMarkedPhotos.pressEffect()
+        binding.tabMarkedPhotos.setOnClickListener {
+            viewModel.setAlbum(AlbumSource.MARKED)
         }
         binding.tabLocalPhotos.pressEffect()
         binding.tabLocalPhotos.setOnClickListener {
@@ -168,31 +226,24 @@ class TransferFragment : Fragment() {
     }
 
     private fun renderAlbumTabs(source: AlbumSource) {
-        val cameraSelected = source == AlbumSource.CAMERA
-        binding.tabCameraPhotos.setBackgroundResource(
-            if (cameraSelected) R.drawable.bg_chip_selected else 0
+        val tabs = mapOf(
+            AlbumSource.CAMERA to binding.tabCameraPhotos,
+            AlbumSource.MARKED to binding.tabMarkedPhotos,
+            AlbumSource.LOCAL to binding.tabLocalPhotos
         )
-        binding.tabLocalPhotos.setBackgroundResource(
-            if (cameraSelected) 0 else R.drawable.bg_chip_selected
-        )
-        binding.tabCameraPhotos.setTextColor(
-            ContextCompat.getColor(
-                requireContext(),
-                if (cameraSelected) R.color.on_primary else R.color.text_primary
+        tabs.forEach { (tabSource, tab) ->
+            val selected = tabSource == source
+            tab.setBackgroundResource(if (selected) R.drawable.bg_chip_selected else 0)
+            tab.setTextColor(
+                ContextCompat.getColor(
+                    requireContext(),
+                    if (selected) R.color.on_primary else R.color.text_primary
+                )
             )
-        )
-        binding.tabLocalPhotos.setTextColor(
-            ContextCompat.getColor(
-                requireContext(),
-                if (cameraSelected) R.color.text_primary else R.color.on_primary
-            )
-        )
-        binding.tabCameraPhotos.typeface =
-            if (cameraSelected) android.graphics.Typeface.DEFAULT_BOLD
-            else android.graphics.Typeface.DEFAULT
-        binding.tabLocalPhotos.typeface =
-            if (cameraSelected) android.graphics.Typeface.DEFAULT
-            else android.graphics.Typeface.DEFAULT_BOLD
+            tab.typeface =
+                if (selected) android.graphics.Typeface.DEFAULT_BOLD
+                else android.graphics.Typeface.DEFAULT
+        }
     }
 
     private fun setupPullRefresh() {
@@ -259,12 +310,48 @@ class TransferFragment : Fragment() {
             }
         }
 
-        binding.btnSelectAll.setOnClickListener { viewModel.selectAllFiltered() }
+        binding.btnSelectAll.setOnClickListener {
+            when (viewModel.activeAlbum.value) {
+                AlbumSource.MARKED -> viewModel.selectAllMarked()
+                else -> viewModel.selectAllFiltered()
+            }
+        }
+
+        // F1：标记/取消标记切换（选中集全部已标 → 取消；否则 → 打标）
+        binding.btnMark.pressEffect()
+        binding.btnMark.setOnClickListener {
+            viewLifecycleOwner.lifecycleScope.launch {
+                viewModel.toggleMarkSelection()
+                renderActionButtons()
+            }
+        }
+
+        // F2：已标记栏「跳过已下载」开关
+        binding.btnSkipDownloaded.pressEffect()
+        binding.btnSkipDownloaded.setOnClickListener {
+            viewModel.setSkipDownloadedInMarks(!viewModel.skipDownloadedInMarks.value)
+            renderActionButtons()
+        }
 
         binding.btnDownload.pressEffect()
         binding.btnDownload.setOnClickListener {
             if (viewModel.selectedHandles.value.isEmpty()) {
                 viewModel.showMessage("请先选择要下载的照片")
+                return@setOnClickListener
+            }
+            // F1 大额保护（ZRelay largeSelectionWarning 口径）：全选超过阈值先二次确认
+            if (viewModel.activeAlbum.value == AlbumSource.MARKED &&
+                viewModel.selectedHandles.value.size > LARGE_SELECTION_WARNING
+            ) {
+                MaterialAlertDialogBuilder(requireContext())
+                    .setTitle("批量下载")
+                    .setMessage(
+                        "已选 ${viewModel.selectedHandles.value.size} 张，" +
+                            "批量下载原图会占用较多电量与时间，继续吗？"
+                    )
+                    .setPositiveButton("继续") { _, _ -> viewModel.downloadMarkedSelected() }
+                    .setNegativeButton("取消", null)
+                    .show()
             } else {
                 viewModel.downloadSelected()
             }
@@ -287,7 +374,11 @@ class TransferFragment : Fragment() {
         }
 
         binding.btnShare.setOnClickListener {
-            shareLocalSelected()
+            when (viewModel.activeAlbum.value) {
+                // F4：相机源分享走「预览副本」链路（长边 2048，默认剥离 GPS）
+                AlbumSource.CAMERA -> viewModel.shareSelectedCameraCopies()
+                else -> shareLocalSelected()
+            }
         }
     }
 
@@ -346,6 +437,12 @@ class TransferFragment : Fragment() {
             viewModel.showMessage("请先选择要分享的本地文件")
             return
         }
+        shareUris(uris, "分享本地文件")
+    }
+
+    /** 统一的多文件分享面板（本地分享与 F4 预览副本共用） */
+    private fun shareUris(uris: List<Uri>, title: String) {
+        if (uris.isEmpty()) return
         val intent = Intent(
             if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE
         ).apply {
@@ -357,7 +454,11 @@ class TransferFragment : Fragment() {
             }
         }
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        startActivity(Intent.createChooser(intent, "分享本地文件"))
+        runCatching {
+            startActivity(Intent.createChooser(intent, title))
+        }.onFailure {
+            viewModel.showMessage("没有可用的分享应用")
+        }
     }
 
     private fun setMultiSelectMode(enabled: Boolean) {
@@ -374,11 +475,59 @@ class TransferFragment : Fragment() {
     }
 
     private fun renderActionButtons() {
-        val isLocal = viewModel.activeAlbum.value == AlbumSource.LOCAL
-        binding.btnDownload.visibility = if (isLocal) View.GONE else View.VISIBLE
-        // 相机端照片未下载前无法直接分享，仅本地相册展示分享入口
-        binding.btnShare.visibility = if (isLocal) View.VISIBLE else View.GONE
-        binding.btnDelete.text = if (isLocal) "删除本地" else "删除"
+        when (viewModel.activeAlbum.value) {
+            AlbumSource.LOCAL -> {
+                binding.btnDownload.visibility = View.GONE
+                // 相机端照片未下载前无法直接分享，仅本地相册展示分享入口
+                binding.btnShare.visibility = View.VISIBLE
+                binding.btnDelete.text = "删除本地"
+                binding.btnMark.visibility = View.GONE
+                binding.btnSkipDownloaded.visibility = View.GONE
+            }
+
+            AlbumSource.MARKED -> {
+                // F1：标记栏工作台 —— 下载 + 删除 + 标记切换 + 跳过已下载
+                binding.btnDownload.visibility = View.VISIBLE
+                binding.btnShare.visibility = View.GONE
+                binding.btnDelete.text = "删除"
+                binding.btnMark.visibility = View.VISIBLE
+                binding.btnSkipDownloaded.visibility = View.VISIBLE
+                renderMarkButton()
+                renderSkipDownloadedButton()
+            }
+
+            AlbumSource.CAMERA -> {
+                binding.btnDownload.visibility = View.VISIBLE
+                // F4：相机源分享 = 批量生成预览副本
+                binding.btnShare.visibility = View.VISIBLE
+                binding.btnDelete.text = "删除"
+                binding.btnMark.visibility = View.VISIBLE
+                binding.btnSkipDownloaded.visibility = View.GONE
+                renderMarkButton()
+            }
+        }
+    }
+
+    /** F1：底栏「标记」按钮的文案随选中集状态切换（全部已标 → 「取消标记」） */
+    private fun renderMarkButton() {
+        val selected = viewModel.selectedHandles.value
+        val allMarked = selected.isNotEmpty() && selected.all { it in viewModel.markedHandles.value }
+        binding.btnMark.text = if (allMarked) "取消标记" else "标记"
+    }
+
+    /** F2：「跳过已下载」开关的选中态渲染 */
+    private fun renderSkipDownloadedButton() {
+        val on = viewModel.skipDownloadedInMarks.value
+        binding.btnSkipDownloaded.text = if (on) "✓ 跳过已下载" else "跳过已下载"
+        binding.btnSkipDownloaded.setTextColor(
+            ContextCompat.getColor(
+                requireContext(),
+                if (on) R.color.on_primary else R.color.text_tertiary
+            )
+        )
+        binding.btnSkipDownloaded.setBackgroundResource(
+            if (on) R.drawable.bg_chip_selected else 0
+        )
     }
 
     private fun observe() {
@@ -387,16 +536,36 @@ class TransferFragment : Fragment() {
         }
 
         viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.onlyNotDownloaded.collect { renderNotDownloadedChip(it) }
+        }
+
+        viewLifecycleOwner.lifecycleScope.launch {
             viewModel.activeAlbum.collect { source ->
                 renderAlbumTabs(source)
+                // F1：「已标记」进入即默认多选态（全选 → 批量下载的工作台）；
+                // 离开标记栏回到常规浏览则退出多选，保持既有交互心智
+                when (source) {
+                    AlbumSource.MARKED -> if (!multiSelectMode) setMultiSelectMode(true)
+                    else -> if (multiSelectMode) setMultiSelectMode(false)
+                }
                 if (multiSelectMode) renderActionButtons()
-                // 排序入口两个相册都保留：规则持久化在 AppSettings，
-                // 切换相册/目录时沿用同一套规则（本地文件的时间取自 MediaStore 的 DATE_TAKEN）
-                binding.btnSort.visibility = View.VISIBLE
+                // 排序入口仅常规两源可用：「已标记」固定按标记时间倒序（PRD F1）
+                binding.btnSort.visibility =
+                    if (source == AlbumSource.MARKED) View.GONE else View.VISIBLE
+                renderNotDownloadedChip(viewModel.onlyNotDownloaded.value)
                 binding.tvMessage.text = when (source) {
                     AlbumSource.CAMERA -> "连接相机后查看相册"
+                    AlbumSource.MARKED -> "暂无标记照片：在相机相册长按多选后点「标记」"
                     AlbumSource.LOCAL -> "尚未下载照片到手机"
                 }
+            }
+        }
+
+        // F1：「已标记」栏数量角标（Tab 文案跟随）
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.markedRecords.collect { records ->
+                binding.tabMarkedPhotos.text =
+                    if (records.isEmpty()) "已标记" else "已标记 ${records.size}"
             }
         }
 
@@ -407,22 +576,67 @@ class TransferFragment : Fragment() {
             }
         }
 
-        // 网格数据：列表 + 选中 + 缩略图
+        // 网格数据：列表 + 选中 + 缩略图 + 标记/已下载角标（F1/F2）
+        // 「已标记」源提交 markedDisplayList，其余源提交 filteredPhotos
         viewLifecycleOwner.lifecycleScope.launch {
+            fun displayList(): List<CameraFile> =
+                if (viewModel.activeAlbum.value == AlbumSource.MARKED) {
+                    viewModel.markedDisplayList.value
+                } else {
+                    viewModel.filteredPhotos.value
+                }
+
             launch {
                 viewModel.filteredPhotos.collect { list ->
-                    adapter.submit(list, viewModel.selectedHandles.value, viewModel.thumbnails.value)
-                    binding.layoutEmpty.visibility =
-                        if (list.isEmpty()) View.VISIBLE else View.GONE
-                    restoreScrollAnchor(list)
+                    if (viewModel.activeAlbum.value != AlbumSource.MARKED) {
+                        adapter.submit(
+                            list,
+                            viewModel.selectedHandles.value,
+                            viewModel.thumbnails.value,
+                            viewModel.markedHandles.value,
+                            viewModel.downloadedHandles.value
+                        )
+                        binding.layoutEmpty.visibility =
+                            if (list.isEmpty()) View.VISIBLE else View.GONE
+                        restoreScrollAnchor(list)
+                    }
+                }
+            }
+            launch {
+                viewModel.markedDisplayList.collect { list ->
+                    if (viewModel.activeAlbum.value == AlbumSource.MARKED) {
+                        adapter.submit(
+                            list,
+                            viewModel.selectedHandles.value,
+                            viewModel.thumbnails.value,
+                            viewModel.markedHandles.value,
+                            viewModel.downloadedHandles.value
+                        )
+                        binding.layoutEmpty.visibility =
+                            if (list.isEmpty()) View.VISIBLE else View.GONE
+                        if (list.isEmpty()) {
+                            binding.tvMessage.text = if (viewModel.markedRecords.value.isEmpty()) {
+                                "暂无标记照片：在相机相册长按多选后点「标记」"
+                            } else {
+                                "标记的照片都已下载，或相机尚未连接"
+                            }
+                        }
+                    }
                 }
             }
             launch {
                 viewModel.selectedHandles.collect { selected ->
-                    adapter.submit(viewModel.filteredPhotos.value, selected, viewModel.thumbnails.value)
+                    adapter.submit(
+                        displayList(),
+                        selected,
+                        viewModel.thumbnails.value,
+                        viewModel.markedHandles.value,
+                        viewModel.downloadedHandles.value
+                    )
                     binding.tvSelectedCount.text = "已选 ${selected.size} 项"
                     if (multiSelectMode) {
                         binding.bottomBar.visibility = View.VISIBLE
+                        renderMarkButton()
                     } else if (selected.isEmpty()) {
                         binding.bottomBar.visibility = View.GONE
                     }
@@ -430,7 +644,72 @@ class TransferFragment : Fragment() {
             }
             launch {
                 viewModel.thumbnails.collect { thumbs ->
-                    adapter.submit(viewModel.filteredPhotos.value, viewModel.selectedHandles.value, thumbs)
+                    adapter.submit(
+                        displayList(),
+                        viewModel.selectedHandles.value,
+                        thumbs,
+                        viewModel.markedHandles.value,
+                        viewModel.downloadedHandles.value
+                    )
+                }
+            }
+            launch {
+                viewModel.markedHandles.collect {
+                    adapter.submit(
+                        displayList(),
+                        viewModel.selectedHandles.value,
+                        viewModel.thumbnails.value,
+                        it,
+                        viewModel.downloadedHandles.value
+                    )
+                }
+            }
+            launch {
+                viewModel.downloadedHandles.collect {
+                    adapter.submit(
+                        displayList(),
+                        viewModel.selectedHandles.value,
+                        viewModel.thumbnails.value,
+                        viewModel.markedHandles.value,
+                        it
+                    )
+                }
+            }
+            launch {
+                viewModel.skipDownloadedInMarks.collect { renderSkipDownloadedButton() }
+            }
+        }
+
+        // F1 AC-5：标记栏批量下载完成 → 弹「清除这些标记」确认
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.clearMarksPrompt.collect { count ->
+                if (count <= 0) return@collect
+                MaterialAlertDialogBuilder(requireContext())
+                    .setTitle("批量下载完成")
+                    .setMessage("已下载 $count 张标记照片，是否清除这些标记？")
+                    .setPositiveButton("清除") { _, _ -> viewModel.clearDownloadedMarks() }
+                    .setNegativeButton("保留", null)
+                    .show()
+            }
+        }
+
+        // F4：批量生成分享副本的进度与完成事件
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.shareExportProgress.collect { progress ->
+                if (progress == null) return@collect
+                val (done, total) = progress
+                binding.tvMessage.text = "生成分享副本 $done/$total…"
+            }
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.shareExportDone.collect { result ->
+                shareUris(result.uris, "分享照片")
+                if (result.failed.isNotEmpty()) {
+                    Toast.makeText(
+                        requireContext(),
+                        "${result.failed.size} 个文件生成副本失败",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
         }
@@ -532,5 +811,10 @@ class TransferFragment : Fragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         _binding = null
+    }
+
+    companion object {
+        /** F1 大额保护阈值：全选超过该张数时批量下载前二次确认（PRD F1 AC-10） */
+        private const val LARGE_SELECTION_WARNING = 200
     }
 }

@@ -1,11 +1,20 @@
 package com.nikonlink.app.camera.gallery
 
+import android.app.PendingIntent
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import com.nikonlink.app.MainActivity
+import com.nikonlink.app.NLinkApp
+import com.nikonlink.app.R
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -79,6 +88,14 @@ class TransferManager @Inject constructor(
             java.time.format.DateTimeFormatter
                 .ofPattern("yyyyMMdd'T'HHmmss", Locale.US)
                 .withZone(java.time.ZoneOffset.UTC)
+
+        // F5：完成通知的固定 id 与 requestCode（覆盖式更新，不堆积通知）
+        private const val NOTIFY_TRANSFER_DONE = 2001
+        private const val REQ_CODE_VIEW = 2101
+        private const val REQ_CODE_SHARE = 2102
+
+        /** 深链附加位：通知「查看」落相册页本地照片源 */
+        const val EXTRA_OPEN_GALLERY_LOCAL = "open_gallery_local"
     }
 
     private var scope: CoroutineScope? = null
@@ -101,6 +118,16 @@ class TransferManager @Inject constructor(
 
     private var autoSyncJob: Job? = null
     private var lastAutoSyncAt = 0L
+
+    // ---------- F5：批量完成通知 ----------
+    // 批量口径 = 「队列从空到非空的一次连续排空」：单张给 查看/分享 两个 action，
+    // 多张聚合为一条摘要（避免连拍 50 张弹 50 条通知）。
+    private data class BatchEntry(val fileName: String, val path: String, val sizeBytes: Long)
+
+    private val batchMutex = Mutex()
+    private val batchFiles = mutableListOf<BatchEntry>()
+    private var batchStartedAt = 0L
+    private var batchFailed = 0
 
     private val ptpTransport: CameraTransport = PtpTransport(ptpSession)
     private val usbTransport: CameraTransport = UsbTransport(usbPtpManager)
@@ -724,6 +751,12 @@ class TransferManager @Inject constructor(
             "requested" to files.size,
             "accepted" to accepted.size
         )
+        // F5：队列空闲时接受新任务 → 开启新批次计时（通知摘要的耗时口径）
+        if (batchStartedAt == 0L) {
+            batchMutex.withLock {
+                if (batchStartedAt == 0L) batchStartedAt = System.currentTimeMillis()
+            }
+        }
         processQueue()
     }
 
@@ -740,6 +773,13 @@ class TransferManager @Inject constructor(
             runCatching { transferRepository.isAlreadyTransferred(it) }.getOrDefault(false)
         }.toSet()
     }
+
+    /**
+     * 对外批量查询：这批相机 handle 里哪些已成功下载（F2「已下载」角标与未下载筛选的数据源）。
+     * 与入队去重共用同一查询路径，口径完全一致。
+     */
+    suspend fun queryDownloadedHandles(handles: List<Int>): Set<Int> =
+        queryTransferredHandles(handles)
 
     /**
      * 懒取 TransferHistoryDao：本类由 AppModule 手动构造，无法追加构造器参数，
@@ -923,12 +963,18 @@ class TransferManager @Inject constructor(
                 postMessage("下载失败: ${task.file.fileName}（${result.reason}）")
                 task.tempFile?.delete()
                 task.tempFile = null
+                batchMutex.withLock { batchFailed++ }
             }
             is TransferResult.Cancelled -> {
                 // 保留临时文件，恢复传输时可从断点继续
                 Timber.tag(TAG).i("Task cancelled, back to PENDING: ${task.file.fileName}")
             }
-            is TransferResult.Success -> Unit
+            is TransferResult.Success -> {
+                // F5：登记本批次的成功条目（队列排空时聚合发一条完成通知）
+                batchMutex.withLock {
+                    batchFiles.add(BatchEntry(task.file.fileName, result.path, task.file.size))
+                }
+            }
         }
         finishTask(task, skipped = false)
     }
@@ -961,6 +1007,7 @@ class TransferManager @Inject constructor(
     private suspend fun finishTask(task: TransferTask, skipped: Boolean) {
         // NonCancellable：任务协程已被取消（暂停/停止）时收尾逻辑仍必须跑完，
         // 否则 currentJob 不释放、任务卡在 DOWNLOADING，队列再也无法推进。
+        var drained = false
         withContext(NonCancellable) {
             queueMutex.withLock {
                 if (skipped) {
@@ -973,10 +1020,102 @@ class TransferManager @Inject constructor(
                 if (transferQueue.none { it.status == TransferTaskStatus.PENDING }) {
                     _transferState.value = TransferState.Idle
                     resetTransferSpeed()
+                    drained = true
                 }
             }
         }
+        // F5：队列排空时聚合发一条完成通知（通知本身有 IO，放锁外）
+        if (drained) notifyBatchCompleted()
         scope?.launch { processQueue() }   // 处理下一个
+    }
+
+    /** F5：批量完成通知（单张：查看/分享；多张：摘要 + 查看全部） */
+    private fun notifyBatchCompleted() {
+        val scope = this.scope ?: return
+        scope.launch {
+            val snapshot = batchMutex.withLock {
+                val files = batchFiles.toList()
+                batchFiles.clear()
+                val startedAt = batchStartedAt
+                batchStartedAt = 0L
+                val failed = batchFailed
+                batchFailed = 0
+                Triple(files, startedAt, failed)
+            }
+            val (files, startedAt, failed) = snapshot
+            if (files.isEmpty()) return@launch
+
+            val notificationManager = context.getSystemService(
+                android.app.NotificationManager::class.java
+            )
+            if (notificationManager?.areNotificationsEnabled() != true) return@launch
+            if (android.os.Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(
+                    context, android.Manifest.permission.POST_NOTIFICATIONS
+                ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                Timber.tag(TAG).d("POST_NOTIFICATIONS not granted, skip completion notification")
+                return@launch
+            }
+
+            val openIntent = Intent(context, MainActivity::class.java).apply {
+                putExtra(MainActivity.EXTRA_OPEN_TAB, MainActivity.TAB_ALBUM)
+                putExtra(EXTRA_OPEN_GALLERY_LOCAL, true)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            val openPending = PendingIntent.getActivity(
+                context, REQ_CODE_VIEW, openIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val builder = if (files.size == 1) {
+                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = getMimeType(files.first().fileName)
+                    putExtra(Intent.EXTRA_STREAM, Uri.parse(files.first().path))
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                val sharePending = PendingIntent.getActivity(
+                    context, REQ_CODE_SHARE,
+                    Intent.createChooser(shareIntent, "分享照片"),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+                NotificationCompat.Builder(context, NLinkApp.CHANNEL_TRANSFER)
+                    .setSmallIcon(R.drawable.ic_download)
+                    .setContentTitle(context.getString(R.string.notification_transfer_done_single_title))
+                    .setContentText(files.first().fileName)
+                    .setContentIntent(openPending)
+                    .addAction(0, context.getString(R.string.notification_transfer_action_view), openPending)
+                    .addAction(0, context.getString(R.string.notification_transfer_action_share), sharePending)
+            } else {
+                val totalBytes = files.sumOf { it.sizeBytes }
+                val elapsedSec = ((System.currentTimeMillis() - startedAt) / 1000).coerceAtLeast(1)
+                val speedMb = totalBytes / 1024.0 / 1024.0 / elapsedSec
+                val summary = buildString {
+                    append(files.size).append(" 张 · ")
+                        .append(formatBytes(totalBytes))
+                    append(" · ").append(String.format(Locale.US, "%.1f", speedMb)).append(" MB/s")
+                    if (failed > 0) append(" · ").append(failed).append(" 张失败")
+                }
+                NotificationCompat.Builder(context, NLinkApp.CHANNEL_TRANSFER)
+                    .setSmallIcon(R.drawable.ic_download)
+                    .setContentTitle(context.getString(R.string.notification_transfer_done_batch_title))
+                    .setContentText(summary)
+                    .setContentIntent(openPending)
+                    .addAction(
+                        0,
+                        context.getString(R.string.notification_transfer_action_view),
+                        openPending
+                    )
+            }
+            builder.setAutoCancel(true)
+            notificationManager.notify(NOTIFY_TRANSFER_DONE, builder.build())
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1024 * 1024 * 1024 -> String.format(Locale.US, "%.2f GB", bytes / 1024.0 / 1024 / 1024)
+        bytes >= 1024 * 1024 -> String.format(Locale.US, "%.1f MB", bytes / 1024.0 / 1024)
+        else -> String.format(Locale.US, "%.0f KB", bytes / 1024.0)
     }
 
     /**

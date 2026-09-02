@@ -12,12 +12,14 @@ import android.util.Size
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.nikonlink.app.camera.data.PhotoMarkRepository
 import com.nikonlink.app.device.model.ConnectionState
 import com.nikonlink.app.device.connect.ConnectionManager
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.usb.UsbConnectionState
 import com.nikonlink.app.device.usb.UsbPtpManager
 import com.nikonlink.app.shared.common.AppSettings
+import com.nikonlink.app.shared.data.PhotoMarkEntity
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
@@ -46,7 +48,9 @@ class TransferViewModel @Inject constructor(
     private val connectionManager: ConnectionManager,
     private val usbPtpManager: UsbPtpManager,
     private val thumbnailCache: ThumbnailCache,
-    private val settings: AppSettings
+    private val settings: AppSettings,
+    private val photoMarkRepository: PhotoMarkRepository,
+    private val previewShareExporter: PreviewShareExporter
 ) : ViewModel() {
 
     companion object {
@@ -96,6 +100,66 @@ class TransferViewModel @Inject constructor(
     private val _selectedHandles = MutableStateFlow<Set<Int>>(emptySet())
     val selectedHandles: StateFlow<Set<Int>> = _selectedHandles.asStateFlow()
 
+    // ---------- F1「已标记」分区状态 ----------
+
+    /** 全部标记记录（DB 流驱动：标记/校验清理后自动刷新） */
+    private val _markedRecords = MutableStateFlow<List<PhotoMarkEntity>>(emptyList())
+    val markedRecords: StateFlow<List<PhotoMarkEntity>> = _markedRecords.asStateFlow()
+
+    /** 当前相机列表中命中标记的 handle 集合（网格星标角标渲染用） */
+    val markedHandles: StateFlow<Set<Int>> =
+        _markedRecords.map { list -> list.mapTo(mutableSetOf()) { it.objectHandle } }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    /** 「已标记」栏可下载项：标记 JOIN 当前相机列表（键校验保证同 handle 即同文件） */
+    val markedPhotos: StateFlow<List<CameraFile>> = combine(
+        _markedRecords, _photoList
+    ) { marks, photos ->
+        val byHandle = photos.associateBy { it.handle }
+        marks.mapNotNull { mark -> byHandle[mark.objectHandle] }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 失效待清的标记（相机列表里找不到对应文件的记录；未连接相机时恒为空是正常态） */
+    val staleMarkCount: StateFlow<Int> = combine(
+        _markedRecords, _photoList
+    ) { marks, photos ->
+        val handles = photos.mapTo(HashSet(photos.size)) { it.handle }
+        marks.count { it.objectHandle !in handles }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+
+    /** F2：已标记栏「跳过已下载」开关（默认开，会话内状态不持久化） */
+    private val _skipDownloadedInMarks = MutableStateFlow(true)
+    val skipDownloadedInMarks: StateFlow<Boolean> = _skipDownloadedInMarks.asStateFlow()
+
+    fun setSkipDownloadedInMarks(enabled: Boolean) {
+        _skipDownloadedInMarks.value = enabled
+    }
+
+    /** F2：已下载判定集合（传输历史按 handle 查询，传输状态变化时增量刷新） */
+    private val _downloadedHandles = MutableStateFlow<Set<Int>>(emptySet())
+    val downloadedHandles: StateFlow<Set<Int>> = _downloadedHandles.asStateFlow()
+
+    /** 「已标记」栏最终展示列表：按标记时间倒序 + 可选跳过已下载（F2 联动） */
+    val markedDisplayList: StateFlow<List<CameraFile>> = combine(
+        markedPhotos, _downloadedHandles, _skipDownloadedInMarks
+    ) { photos, downloaded, skip ->
+        if (skip) photos.filterNot { it.handle in downloaded } else photos
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** F2：相机栏「未下载」筛选 chip（与类型筛选可叠加） */
+    private val _onlyNotDownloaded = MutableStateFlow(false)
+    val onlyNotDownloaded: StateFlow<Boolean> = _onlyNotDownloaded.asStateFlow()
+
+    fun setOnlyNotDownloaded(enabled: Boolean) {
+        _onlyNotDownloaded.value = enabled
+    }
+
+    /** F1：批量下载完成后弹「清除这些标记」确认的一次性事件（载荷 = 可清除张数） */
+    private val _clearMarksPrompt = MutableSharedFlow<Int>(extraBufferCapacity = 1)
+
+    /** 记录从「已标记」栏发起的批量下载，等队列排空后检查是否弹清除提示 */
+    private var pendingClearCandidates: Set<Int> = emptySet()
+
     // 必须在 filteredPhotos 之前声明：后者在属性初始化时就要读它的 flow
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -120,7 +184,10 @@ class TransferViewModel @Inject constructor(
      */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val filteredPhotos: StateFlow<List<CameraFile>> = combine(
-        displayedPhotos,
+        // F2：先把「未下载」筛选折叠进数据源（关闭时原样透传，行为与 v0.1.4 完全一致）
+        combine(displayedPhotos, _onlyNotDownloaded, _downloadedHandles) { photos, hideDownloaded, downloaded ->
+            if (hideDownloaded) photos.filter { it.handle !in downloaded } else photos
+        },
         _photoFilter,
         _sort,
         _isLoading
@@ -192,6 +259,41 @@ class TransferViewModel @Inject constructor(
     private var loadJob: Job? = null
     /** 上一次的就绪状态，用于只在「未就绪 → 就绪」上升沿触发一次自动加载 */
     private var lastReady = false
+
+    init {
+        // F1：标记记录流驱动（打标/取消/指纹清理后自动广播到网格与「已标记」栏）
+        viewModelScope.launch {
+            photoMarkRepository.observeAll().collect { _markedRecords.value = it }
+        }
+        // F2 + F1 批量收尾：下载状态变化时刷新已下载集合；
+        // 队列排空（Idle）且存在「已标记」栏发起的批量任务时，检查并弹「清除标记」确认
+        viewModelScope.launch {
+            transferManager.transferState.collect { state ->
+                if (state is TransferState.Idle) {
+                    refreshDownloadedHandles()
+                    val pending = pendingClearCandidates
+                    if (pending.isNotEmpty()) {
+                        pendingClearCandidates = emptySet()
+                        val downloaded = _downloadedHandles.value.intersect(pending)
+                        if (downloaded.isNotEmpty()) _clearMarksPrompt.emit(downloaded.size)
+                    }
+                }
+            }
+        }
+    }
+
+    /** 查询当前相机列表中已成功下载过的 handle 子集（传输历史一次性批量查询） */
+    private suspend fun refreshDownloadedHandles() {
+        val handles = _photoList.value.map { it.handle }.filter { it > 0 }
+        if (handles.isEmpty()) {
+            _downloadedHandles.value = emptySet()
+            return
+        }
+        _downloadedHandles.value = transferManager.queryDownloadedHandles(handles)
+    }
+
+    /** UI 层订阅：批量下载完成后弹「是否清除这些标记」（载荷 = 可清除张数，0 不弹） */
+    val clearMarksPrompt: Flow<Int> = _clearMarksPrompt
 
     // 注：TransferManager 由 ConnectionManager 以应用级 scope 启动（支撑后台自动下载）
 
@@ -274,6 +376,13 @@ class TransferViewModel @Inject constructor(
                 _photoList.value = photos
                 _selectedHandles.value = emptySet()
                 _message.value = if (photos.isEmpty()) "存储卡为空或未连接" else "共 ${photos.size} 个文件"
+                if (photos.isNotEmpty()) {
+                    // F1 失效自愈：全量列表到手后做指纹校验，清理机内已删除/换卡失效的标记。
+                    // 仅在非空列表时校验——空列表可能是抓取失败，此时清理会把全部标记误删。
+                    runCatching { photoMarkRepository.reconcile(photos) }
+                        .onFailure { Timber.tag(TAG).w(it, "Photo mark reconcile failed") }
+                    refreshDownloadedHandles()
+                }
                 // 后台渐进取预热缩略图；可见项由 Adapter 按需触发
                 prewarmThumbnails(photos.map { it.handle })
             } finally {
@@ -298,27 +407,32 @@ class TransferViewModel @Inject constructor(
     }
 
     /**
-     * 切换相册标签：相机照片 / 本地照片。
+     * 切换相册标签：相机照片 / 本地照片 / 已标记（F1）。
      */
     fun setAlbum(source: AlbumSource) {
         if (_activeAlbum.value == source) return
         _activeAlbum.value = source
         _selectedHandles.value = emptySet()
         _message.value = ""
-        if (source == AlbumSource.LOCAL && _localPhotos.value.isEmpty()) {
-            fetchLocalPhotos()
+        when (source) {
+            AlbumSource.LOCAL -> if (_localPhotos.value.isEmpty()) fetchLocalPhotos()
+            AlbumSource.MARKED -> {
+                // 首次进入标记栏时刷新一次已下载判定，保证「跳过已下载」开关立即生效
+                viewModelScope.launch { refreshDownloadedHandles() }
+            }
+            AlbumSource.CAMERA -> Unit
         }
     }
 
     /**
      * 下拉刷新 / 右上角刷新：按当前标签重新拉取对应列表。
+     * 「已标记」源的数据源于相机列表，刷新即重拉相机（顺带完成标记指纹校验）。
      */
     fun refreshActiveAlbum() {
-        if (_activeAlbum.value == AlbumSource.CAMERA) {
+        when (_activeAlbum.value) {
+            AlbumSource.LOCAL -> fetchLocalPhotos()
             // 手动刷新永远打断进行中的自动加载，保证用户主动操作必有响应
-            fetchPhotos(force = true)
-        } else {
-            fetchLocalPhotos()
+            else -> fetchPhotos(force = true)
         }
     }
 
@@ -558,9 +672,152 @@ class TransferViewModel @Inject constructor(
         _selectedHandles.value = filteredPhotos.value.mapTo(mutableSetOf()) { it.handle }
     }
 
+    /** 「已标记」栏全选：选中当前展示列表（已应用跳过已下载）全部可下载项 */
+    fun selectAllMarked() {
+        _selectedHandles.value = markedDisplayList.value.mapTo(mutableSetOf()) { it.handle }
+    }
+
     fun clearSelection() {
         _selectedHandles.value = emptySet()
     }
+
+    // ---------- F1：标记 / 取消标记 ----------
+
+    /**
+     * 底栏「标记」按钮的切换语义：选中集全部已标记 → 取消标记；否则 → 打标。
+     * 返回实际动作方向，供按钮文案切换（true = 打标，false = 取消）。
+     */
+    suspend fun toggleMarkSelection(): Boolean {
+        val files = selectedCameraFiles()
+        if (files.isEmpty()) {
+            _message.value = "请先选择要标记的照片"
+            return true
+        }
+        val marked = markedHandles.value
+        val allMarked = files.all { it.handle in marked }
+        if (allMarked) {
+            photoMarkRepository.unmark(files)
+            _message.value = "已取消 ${files.size} 个标记"
+        } else {
+            photoMarkRepository.mark(files)
+            _message.value = "已标记 ${files.size} 张，可在「已标记」栏批量下载"
+            // F1 可选增强：标记后自动入队下载原图（设置开关，默认关）
+            if (settings.markAutoDownload && transferManager.hasActiveSession()) {
+                transferManager.enqueue(files)
+            }
+        }
+        return !allMarked
+    }
+
+    /** 清除指定文件的标记（预览页取消星标入口） */
+    suspend fun unmarkFile(file: CameraFile) {
+        photoMarkRepository.unmark(listOf(file))
+    }
+
+    /** 打标单个文件（预览页加星标入口），返回打标后的状态 */
+    suspend fun markFile(file: CameraFile): Boolean {
+        photoMarkRepository.mark(listOf(file))
+        if (settings.markAutoDownload && transferManager.hasActiveSession()) {
+            transferManager.enqueue(listOf(file))
+        }
+        return true
+    }
+
+    /** AC-5：批量下载完成后「清除已下载项的标记」 */
+    fun clearDownloadedMarks() {
+        val files = markedPhotos.value.filter { it.handle in _downloadedHandles.value }
+        if (files.isEmpty()) return
+        viewModelScope.launch {
+            photoMarkRepository.unmark(files)
+            _message.value = "已清除 ${files.size} 个已下载项的标记"
+        }
+    }
+
+    /** 当前选中集映射到相机文件（仅相机源有效；标记栏复用同一选中集语义） */
+    private fun selectedCameraFiles(): List<CameraFile> {
+        val source = _activeAlbum.value
+        val photos = when (source) {
+            AlbumSource.MARKED -> markedPhotos.value
+            else -> displayedPhotos.value
+        }
+        return photos.filter { it.handle in _selectedHandles.value }
+    }
+
+    /**
+     * F1：「已标记」栏批量下载原图。
+     * 入队走现有 TransferManager（去重/断点续传不变）；登记候选集，
+     * 队列排空后由 init 的监听弹「清除标记」确认。返回实际入队张数。
+     */
+    fun downloadMarkedSelected(): Int {
+        val selected = selectedCameraFiles()
+        if (selected.isEmpty()) {
+            _message.value = "请先选择要下载的照片"
+            return 0
+        }
+        val candidates = if (_skipDownloadedInMarks.value) {
+            selected.filterNot { it.handle in _downloadedHandles.value }
+        } else {
+            selected
+        }
+        if (candidates.isEmpty()) {
+            _message.value = "所选照片均已下载"
+            return 0
+        }
+        if (!transferManager.hasActiveSession()) {
+            _message.value = "相机未连接，请先在「设备」页连接后再收片"
+            return 0
+        }
+        pendingClearCandidates = candidates.mapTo(mutableSetOf()) { it.handle }
+        transferManager.enqueue(candidates)
+        _message.value = "已加入队列: ${candidates.size} 个文件"
+        return candidates.size
+    }
+
+    // ---------- F4：批量分享预览副本 ----------
+
+    /** 导出进度 (已完成, 总数)；null = 空闲 */
+    private val _shareExportProgress = MutableStateFlow<Pair<Int, Int>?>(null)
+    val shareExportProgress: StateFlow<Pair<Int, Int>?> = _shareExportProgress.asStateFlow()
+
+    /** 导出完成的一次性事件，载荷带可分享 URI 列表与跳过/失败清单 */
+    private val _shareExportDone = MutableSharedFlow<PreviewShareExporter.ExportResult>(extraBufferCapacity = 1)
+    val shareExportDone: Flow<PreviewShareExporter.ExportResult> = _shareExportDone
+
+    /**
+     * 相机源多选「分享」：为选中的 JPEG 生成预览副本后拉起分享面板。
+     * RAW/视频不在副本支持范围，计入跳过并提示（PRD F4 AC-4）。
+     */
+    fun shareSelectedCameraCopies() {
+        val selected = selectedCameraFiles()
+        if (selected.isEmpty()) {
+            _message.value = "请先选择要分享的照片"
+            return
+        }
+        if (!transferManager.hasActiveSession()) {
+            _message.value = "相机未连接，无法生成分享副本"
+            return
+        }
+        val eligible = selected.filter { previewShareExporter.supportsPreviewCopy(it) }
+        val skippedCount = selected.size - eligible.size
+        if (eligible.isEmpty()) {
+            _message.value = "所选文件暂不支持生成分享副本（RAW/视频请先下载原图）"
+            return
+        }
+        viewModelScope.launch {
+            _shareExportProgress.value = 0 to eligible.size
+            val result = previewShareExporter.export(eligible) { done, total ->
+                _shareExportProgress.value = done to total
+            }
+            _shareExportProgress.value = null
+            val note = if (skippedCount > 0) "，已跳过 $skippedCount 个不支持的文件" else ""
+            _message.value = when {
+                result.failed.isEmpty() -> "已生成 ${result.uris.size} 个分享副本$note"
+                else -> "已生成 ${result.uris.size} 个，${result.failed.size} 个失败$note"
+            }
+            _shareExportDone.emit(result)
+        }
+    }
+
 
     /**
      * 加载缩略图（旧入口，已由 requestThumbnail 接管）
@@ -597,6 +854,11 @@ class TransferViewModel @Inject constructor(
     }
 
     fun downloadSelected() {
+        // F1：已标记栏的下载入口走专用链路（跳过已下载 + 完成后清标记提示）
+        if (_activeAlbum.value == AlbumSource.MARKED) {
+            downloadMarkedSelected()
+            return
+        }
         val selected = displayedPhotos.value.filter { it.handle in _selectedHandles.value }
         if (selected.isEmpty()) {
             _message.value = "请先选择要下载的照片"
@@ -618,7 +880,8 @@ class TransferViewModel @Inject constructor(
      * 从相机存储卡删除选中的文件。
      */
     fun deleteSelected() {
-        val selected = displayedPhotos.value.filter { it.handle in _selectedHandles.value }
+        // F1：已标记栏的删除目标取「标记 ∩ 相机列表」，不落到本地相册
+        val selected = selectedCameraFiles()
         if (selected.isEmpty()) {
             _message.value = "请先选择要删除的照片"
             return
@@ -641,6 +904,8 @@ class TransferViewModel @Inject constructor(
             _photoList.value = _photoList.value.filterNot { it.handle in deletedSet }
             _thumbnails.value = _thumbnails.value - deletedSet
             _selectedHandles.value = _selectedHandles.value - deletedSet
+            // F1 AC-6：相机端文件已删，对应标记即时失效清理，避免「已标记」栏出现残影
+            photoMarkRepository.unmark(selected.filter { it.handle in deletedSet })
             _message.value = "已从相机删除 ${deleted.size} 个文件"
         }
     }
@@ -674,11 +939,12 @@ class TransferViewModel @Inject constructor(
 }
 
 /**
- * 相册数据源：相机机身 / 手机本地。
+ * 相册数据源：相机机身 / 手机本地 / 已标记（F1 独立分区）。
  */
 enum class AlbumSource(val label: String) {
     CAMERA("相机照片"),
-    LOCAL("本地照片")
+    LOCAL("本地照片"),
+    MARKED("已标记")
 }
 
 /**

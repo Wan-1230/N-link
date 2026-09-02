@@ -39,6 +39,9 @@ class AppSettingsTest {
         assertEquals(AppSettings.CONN_PREF_USB, settings.connectionPreference)
         assertFalse(settings.preferWifi5GHz)
         assertFalse(settings.autoDownload)
+        // F1/F4 新增开关的默认态：全部关闭（PRD 约定）
+        assertFalse(settings.markAutoDownload)
+        assertFalse(settings.shareKeepGps)
     }
 
     @Test
@@ -48,11 +51,15 @@ class AppSettingsTest {
         settings.connectionPreference = AppSettings.CONN_PREF_WIFI
         settings.preferWifi5GHz = true
         settings.autoDownload = true
+        settings.markAutoDownload = true
+        settings.shareKeepGps = true
 
         verify { editor.putString("quality", AppSettings.QUALITY_COMPRESSED) }
         verify { editor.putString("save_path", AppSettings.SAVE_PATH_DOWNLOAD) }
         verify { editor.putString("conn_pref", AppSettings.CONN_PREF_WIFI) }
         verify { editor.putBoolean("wifi_band_5g_prefer", true) }
         verify { editor.putBoolean("auto_download", true) }
+        verify { editor.putBoolean("mark_auto_download", true) }
+        verify { editor.putBoolean("share_keep_gps", true) }
     }
 }
