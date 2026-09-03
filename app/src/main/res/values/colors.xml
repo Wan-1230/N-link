@@ -21,7 +21,6 @@
     <color name="text_primary">#000000</color>
     <color name="text_secondary">#525252</color>
     <color name="text_tertiary">#8C8C8C</color>
-    <color name="text_disabled">#66000000</color>
     <color name="on_background">#000000</color>
     <color name="on_surface">#000000</color>
     <color name="on_surface_variant">#737373</color>
@@ -30,25 +29,19 @@
     <color name="primary">#000000</color>
     <color name="primary_variant">#1A1A1A</color>
     <color name="accent">#000000</color>
-    <color name="accent_2">#525252</color>
     <color name="accent_soft">#F5F5F5</color>
     <color name="on_primary">#FFFFFF</color>
-    <color name="on_accent">#FFFFFF</color>
 
     <color name="secondary">#262626</color>
     <color name="secondary_variant">#404040</color>
     <color name="on_secondary">#FFFFFF</color>
 
     <!-- 状态色：仅灰度表达（规范：不引入彩色） -->
-    <color name="status_connected">#000000</color>
-    <color name="status_connecting">#737373</color>
     <color name="status_disconnected">#BFBFBF</color>
     <color name="ble_indicator">#525252</color>
     <color name="wifi_indicator">#000000</color>
 
     <!-- 点击反馈 / 遮罩 -->
-    <color name="pressed_overlay">#14000000</color>
-    <color name="scrim">#80000000</color>
     <color name="chip_unselected">#F0F0F0</color>
 
     <!-- Switch 开关：OFF 轨道中性灰（深浅色主题均可见），滑块白色内嵌 -->
@@ -63,7 +56,6 @@
 
     <!-- 底部导航：背景与页面底色一致 -->
     <color name="nav_background">#FFFFFF</color>
-    <color name="nav_active_bg">#F5F5F5</color>
     <color name="nav_active_icon">#000000</color>
     <color name="nav_inactive_icon">#9E9E9E</color>
 </resources>

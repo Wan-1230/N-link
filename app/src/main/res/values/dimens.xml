@@ -7,6 +7,5 @@
     <dimen name="group_gap">12dp</dimen>
     <dimen name="group_gap_small">8dp</dimen>
     <dimen name="card_radius">12dp</dimen>
-    <dimen name="btn_radius">8dp</dimen>
     <dimen name="divider_height">1dp</dimen>
 </resources>
