@@ -50,6 +50,17 @@
     <uses-feature android:name="android.hardware.wifi" android:required="false" />
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
+    <!-- 意见反馈：跳转 QQ 加群。Android 11+ 包可见性限制下需显式声明，
+         否则 queryIntentActivities 查不到 QQ、会误判为「未安装」。 -->
+    <queries>
+        <package android:name="com.tencent.mobileqq" />
+        <package android:name="com.tencent.tim" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="mqqwpa" />
+        </intent>
+    </queries>
+
     <application
         android:name=".NLinkApp"
         android:allowBackup="false"

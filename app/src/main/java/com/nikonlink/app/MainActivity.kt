@@ -12,6 +12,8 @@ import android.provider.Settings
 import android.view.View
 import android.widget.ImageView
 import android.widget.TextView
+import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.DrawableRes
 import androidx.appcompat.app.AppCompatActivity
@@ -42,9 +44,15 @@ class MainActivity : AppCompatActivity() {
         const val TAB_REMOTE = 2
         const val TAB_SETTINGS = 3
         const val EXTRA_OPEN_TAB = "open_tab"
+
+        /** 双击退出的时间窗：2 秒内再次按返回键才退出，超时重新计时 */
+        private const val BACK_EXIT_INTERVAL_MS = 2_000L
     }
 
     private lateinit var binding: ActivityMainBinding
+
+    /** 上一次按下返回键的时间戳；0 表示当前不在「待退出」窗口内 */
+    private var lastBackPressedAt = 0L
 
     private val dashboardFragment = DashboardFragment()
     private val transferFragment = TransferFragment()
@@ -90,8 +98,31 @@ class MainActivity : AppCompatActivity() {
 
         setupFragments()
         setupBottomNav()
+        setupBackExit()
         handleOpenTab(intent)
         checkPermissionsAndStart()
+    }
+
+    /**
+     * 双击返回退出：首次按返回键提示「再按一次退出」，2 秒内再次按下才真正退出，
+     * 超过间隔重新计时（下一次按键又被当作首次）。
+     *
+     * 用 [OnBackPressedDispatcher] 而不是重写已废弃的 [onBackPressed]，
+     * 后续 Fragment 若注册自己的返回回调也不会互相覆盖。
+     */
+    private fun setupBackExit() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                val now = System.currentTimeMillis()
+                if (now - lastBackPressedAt > BACK_EXIT_INTERVAL_MS) {
+                    lastBackPressedAt = now
+                    Toast.makeText(this@MainActivity, "再按一次退出", Toast.LENGTH_SHORT).show()
+                    return
+                }
+                lastBackPressedAt = 0L
+                finish()
+            }
+        })
     }
 
     override fun onNewIntent(intent: Intent) {

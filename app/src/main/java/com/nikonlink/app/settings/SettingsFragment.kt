@@ -1,8 +1,11 @@
 package com.nikonlink.app.settings
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -259,22 +262,72 @@ class SettingsFragment : Fragment() {
                 .show()
         }
         binding.rowFeedback.pressEffect()
-        binding.rowFeedback.setOnClickListener {
-            val intent = Intent(Intent.ACTION_SENDTO).apply {
-                data = Uri.parse("mailto:")
-                putExtra(Intent.EXTRA_EMAIL, arrayOf("feedback@nikonlink.app"))
-                putExtra(Intent.EXTRA_SUBJECT, "N-Link 意见反馈 v${BuildConfig.VERSION_NAME}")
-            }
-            runCatching {
-                startActivity(Intent.createChooser(intent, "反馈方式"))
-            }.onFailure {
-                MaterialAlertDialogBuilder(requireContext())
-                    .setTitle("提示")
-                    .setMessage("未找到可用的邮件应用，请通过应用商店评价反馈。")
-                    .setPositiveButton("确定", null)
-                    .show()
-            }
+        binding.rowFeedback.setOnClickListener { showFeedbackDialog() }
+    }
+
+    /**
+     * 意见反馈（QQ 交流群）。
+     *
+     * 三个出口：
+     * - 复制群号 → 系统剪贴板（Android 13+ 由系统自带复制提示，低版本自行 Toast）
+     * - 加入 QQ 群 → mqqwpa:// 群会话 scheme 拉起 QQ 的群资料 / 申请加群页
+     * - 未安装 QQ → 明确提示 + 引导复制群号后手动搜索添加
+     *
+     * Android 11+ 的包可见性限制要求在 manifest 里用 `<queries>` 声明 QQ 包名与该 scheme，
+     * 否则 [android.content.pm.PackageManager.queryIntentActivities] 查不到 QQ，会误判为未安装。
+     */
+    private fun showFeedbackDialog() {
+        val groupNumber = getString(R.string.feedback_qq_group_number)
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.feedback_qq_group_title)
+            .setMessage(getString(R.string.feedback_qq_group_message, groupNumber))
+            .setPositiveButton("加入 QQ 群") { _, _ -> joinQqGroup(groupNumber) }
+            .setNeutralButton(R.string.feedback_copy_group_number) { _, _ -> copyQqGroupNumber(groupNumber) }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /** 复制群号到剪贴板；Android 13+ 系统自带复制气泡，只在低版本或失败时提示 */
+    private fun copyQqGroupNumber(groupNumber: String) {
+        val ok = runCatching {
+            val manager = requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            manager.setPrimaryClip(ClipData.newPlainText("QQ 群号", groupNumber))
+        }.isSuccess
+        if (!ok || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            toast(if (ok) getString(R.string.feedback_copied) else getString(R.string.feedback_copy_failed))
         }
+    }
+
+    /**
+     * 拉起 QQ 加群。
+     *
+     * `mqqwpa://im/chat?chat_type=group&uin=<群号>` 是 QQ 对外公开的群会话协议，
+     * 尚未加群时打开的是群资料页并给出「申请加群」入口，QQ / TIM 均可响应。
+     * 查不到可响应的应用即判定为未安装，转提示引导用户复制群号手动添加。
+     */
+    private fun joinQqGroup(groupNumber: String) {
+        eventLogger.event("setting", "key" to "feedback_join_qq")
+        val intent = Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("mqqwpa://im/chat?chat_type=group&uin=$groupNumber&version=1")
+        )
+        val hasQq = runCatching {
+            requireContext().packageManager.queryIntentActivities(intent, 0)
+        }.getOrDefault(emptyList()).isNotEmpty()
+
+        if (hasQq && runCatching { startActivity(intent) }.isSuccess) return
+        Timber.w("Launch QQ group failed or QQ not installed, fallback to manual hint")
+        showQqNotInstalledDialog(groupNumber)
+    }
+
+    /** 未安装 QQ（或拉起失败）：明确告知 + 给出复制群号出口 */
+    private fun showQqNotInstalledDialog(groupNumber: String) {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(R.string.feedback_qq_not_installed)
+            .setMessage(getString(R.string.feedback_qq_not_installed_message, groupNumber))
+            .setPositiveButton(R.string.feedback_copy_group_number) { _, _ -> copyQqGroupNumber(groupNumber) }
+            .setNegativeButton("关闭", null)
+            .show()
     }
 
     /**

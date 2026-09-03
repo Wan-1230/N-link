@@ -7,12 +7,23 @@
     <string name="notification_connection_text_ble">BLE 已连接</string>
     <string name="notification_connection_text_full">BLE + WiFi 已连接</string>
     <string name="notification_connection_text_disconnected">未连接</string>
-    <string name="notification_transfer_title">正在传输照片</string>
     <!-- F5 传输完成通知 -->
     <string name="notification_transfer_done_single_title">照片已保存</string>
     <string name="notification_transfer_done_batch_title">批量下载完成</string>
     <string name="notification_transfer_action_view">查看</string>
     <string name="notification_transfer_action_share">分享</string>
-    <!-- F7 打赏页 -->
-    <string name="support_title">支持开发</string>
+
+    <!-- 意见反馈：QQ 交流群 -->
+    <string name="feedback_qq_group_number">805613299</string>
+    <string name="feedback_qq_group_title">加入 QQ 交流群</string>
+    <string name="feedback_qq_group_message">遇到问题或有功能建议，欢迎加入 N-Link 交流群，直接和开发者沟通。\n\n群号：%1$s</string>
+    <string name="feedback_qq_not_installed">未检测到 QQ</string>
+    <string name="feedback_qq_not_installed_message">当前设备未安装 QQ，无法直接跳转加群。\n\n请先复制群号 %1$s，再打开 QQ → 右上角「+」→ 加好友/群 → 粘贴群号搜索添加。</string>
+    <string name="feedback_copy_group_number">复制群号</string>
+    <string name="feedback_copied">群号已复制</string>
+    <string name="feedback_copy_failed">复制失败，请手动记录群号</string>
+
+    <!-- 相册按日期分组 -->
+    <string name="album_group_select_all">全选</string>
+    <string name="album_group_deselect_all">取消全选</string>
 </resources>

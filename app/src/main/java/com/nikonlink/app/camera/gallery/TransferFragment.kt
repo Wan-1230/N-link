@@ -114,11 +114,35 @@ class TransferFragment : Fragment() {
                 if (!multiSelectMode) setMultiSelectMode(true)
                 viewModel.toggleSelection(file.handle)
             },
-            onRequestThumb = { file -> viewModel.requestThumbnail(file.handle) }
+            onRequestThumb = { file -> viewModel.requestThumbnail(file.handle) },
+            // 日期分组标题行的「全选 / 取消全选」：
+            // 非多选态先进入多选模式（让底栏与对勾一并出现），再整组切换选中
+            onToggleGroupSelection = { handles ->
+                if (!multiSelectMode) setMultiSelectMode(true)
+                viewModel.toggleGroupSelection(handles)
+            }
         )
-        binding.gridPhotos.layoutManager = GridLayoutManager(requireContext(), 3)
+        binding.gridPhotos.layoutManager = GridLayoutManager(requireContext(), 3).apply {
+            // 日期标题行占满整行，照片格子各占 1 列
+            spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
+                override fun getSpanSize(position: Int): Int =
+                    if (adapter.isHeaderAt(position)) 3 else 1
+            }
+        }
         binding.gridPhotos.adapter = adapter
     }
+
+    /**
+     * 是否按日期分组展示。
+     *
+     * 仅「拍摄时间」排序下生效：时间排序天然按日成块，插标题行不会打乱顺序；
+     * 「文件类型」排序下同一天的照片被拆散在 JPG / RAW 各段里，硬分组会出现
+     * 重复的日期标题，故保持平铺。「已标记」栏按标记时间排列（与拍摄日期无关），
+     * 同样不分组。
+     */
+    private fun shouldGroupByDate(): Boolean =
+        viewModel.activeAlbum.value != AlbumSource.MARKED &&
+            viewModel.sort.value.dimension == AlbumSortDimension.CAPTURE_TIME
 
     private fun openLocalFile(file: CameraFile) {
         val uri = viewModel.localContentUri(file.handle)
@@ -405,11 +429,16 @@ class TransferFragment : Fragment() {
         popup.show()
     }
 
-    /** 记录当前首屏第一项作为排序后的滚动锚点 */
+    /**
+     * 记录当前首屏第一项作为排序后的滚动锚点。
+     *
+     * 网格现在是「标题行 + 照片」的扁平序列：首屏第一项是日期标题时，
+     * 取它后面那一张照片作锚点（标题行本身不参与排序，不能当锚）。
+     */
     private fun captureScrollAnchor() {
         val lm = binding.gridPhotos.layoutManager as? GridLayoutManager ?: return
         val position = lm.findFirstVisibleItemPosition()
-        scrollAnchorHandle = adapter.currentList.getOrNull(position)?.handle
+        scrollAnchorHandle = adapter.itemAt(position)?.handle ?: adapter.itemAt(position + 1)?.handle
     }
 
     /**
@@ -418,11 +447,13 @@ class TransferFragment : Fragment() {
      * 只在存在待恢复锚点时动作一次并立即清空，后续的缩略图加载、
      * 选中态变化等常规刷新都不受影响。锚点文件被筛选掉时（找不到）不做滚动。
      * 滚动放到 post 里执行，等 DiffUtil 的更新派发完成后再定位。
+     * 下标用 [PhotoGridAdapter.indexOfHandle] 换算，因为扁平序列里插了日期标题行。
      */
     private fun restoreScrollAnchor(list: List<CameraFile>) {
         val handle = scrollAnchorHandle ?: return
-        val index = list.indexOfFirst { it.handle == handle }
         scrollAnchorHandle = null
+        if (list.none { it.handle == handle }) return
+        val index = adapter.indexOfHandle(handle)
         if (index < 0) return
         binding.gridPhotos.post {
             if (_binding == null) return@post
@@ -594,7 +625,8 @@ class TransferFragment : Fragment() {
                             viewModel.selectedHandles.value,
                             viewModel.thumbnails.value,
                             viewModel.markedHandles.value,
-                            viewModel.downloadedHandles.value
+                            viewModel.downloadedHandles.value,
+                            groupByDate = shouldGroupByDate()
                         )
                         binding.layoutEmpty.visibility =
                             if (list.isEmpty()) View.VISIBLE else View.GONE
@@ -610,7 +642,8 @@ class TransferFragment : Fragment() {
                             viewModel.selectedHandles.value,
                             viewModel.thumbnails.value,
                             viewModel.markedHandles.value,
-                            viewModel.downloadedHandles.value
+                            viewModel.downloadedHandles.value,
+                            groupByDate = shouldGroupByDate()
                         )
                         binding.layoutEmpty.visibility =
                             if (list.isEmpty()) View.VISIBLE else View.GONE
@@ -631,7 +664,8 @@ class TransferFragment : Fragment() {
                         selected,
                         viewModel.thumbnails.value,
                         viewModel.markedHandles.value,
-                        viewModel.downloadedHandles.value
+                        viewModel.downloadedHandles.value,
+                        groupByDate = shouldGroupByDate()
                     )
                     binding.tvSelectedCount.text = "已选 ${selected.size} 项"
                     if (multiSelectMode) {
@@ -649,7 +683,8 @@ class TransferFragment : Fragment() {
                         viewModel.selectedHandles.value,
                         thumbs,
                         viewModel.markedHandles.value,
-                        viewModel.downloadedHandles.value
+                        viewModel.downloadedHandles.value,
+                        groupByDate = shouldGroupByDate()
                     )
                 }
             }
@@ -660,7 +695,8 @@ class TransferFragment : Fragment() {
                         viewModel.selectedHandles.value,
                         viewModel.thumbnails.value,
                         it,
-                        viewModel.downloadedHandles.value
+                        viewModel.downloadedHandles.value,
+                        groupByDate = shouldGroupByDate()
                     )
                 }
             }
@@ -671,7 +707,8 @@ class TransferFragment : Fragment() {
                         viewModel.selectedHandles.value,
                         viewModel.thumbnails.value,
                         viewModel.markedHandles.value,
-                        it
+                        it,
+                        groupByDate = shouldGroupByDate()
                     )
                 }
             }

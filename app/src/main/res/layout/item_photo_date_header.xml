@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  相册日期分组标题行：左侧日期，右侧「全选 / 取消全选」。
+
+  在 3 列网格里整行占满（由 GridLayoutManager.SpanSizeLookup 设定 span = 3），
+  视觉上把不同拍摄日期的照片切成一段一段。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="4dp"
+    android:paddingEnd="4dp"
+    android:paddingTop="14dp"
+    android:paddingBottom="8dp">
+
+    <TextView
+        android:id="@+id/tvDate"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:text="2026年9月3日"
+        android:textColor="@color/text_primary"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/tvSelectGroup"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_chip"
+        android:paddingHorizontal="10dp"
+        android:paddingVertical="4dp"
+        android:text="全选"
+        android:textColor="@color/text_primary"
+        android:textSize="12sp" />
+</LinearLayout>
