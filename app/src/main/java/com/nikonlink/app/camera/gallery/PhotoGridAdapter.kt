@@ -5,9 +5,37 @@ import android.animation.ObjectAnimator
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
+import com.nikonlink.app.R
+import com.nikonlink.app.databinding.ItemPhotoDateHeaderBinding
 import com.nikonlink.app.databinding.ItemPhotoGridBinding
+import com.nikonlink.app.shared.ui.pressEffect
+import java.util.Calendar
+import java.util.Locale
+
+/**
+ * 网格里的一行：要么是日期分组标题，要么是一张照片。
+ *
+ * 用密封接口而不是两套列表，是为了让 DiffUtil 对「标题 + 照片」这一整条
+ * 扁平序列统一计算，避免分组变化时的下标错位。
+ */
+sealed interface PhotoGridItem {
+
+    /** 日期分组标题行 */
+    data class DateHeader(
+        /** 分组稳定键（如 20260903 / unknown），DiffUtil 用 */
+        val key: String,
+        /** 展示用的日期文案（今天 / 昨天 / 2026年9月3日 / 未知日期） */
+        val label: String,
+        /** 该分组下全部照片的 handle，供整组全选 / 取消全选 */
+        val handles: List<Int>
+    ) : PhotoGridItem
+
+    /** 一个照片格子 */
+    data class Photo(val file: CameraFile) : PhotoGridItem
+}
 
 /**
  * 相册风格照片网格适配器（黑白设计语言）
@@ -21,29 +49,43 @@ import com.nikonlink.app.databinding.ItemPhotoGridBinding
  * Bug修复: 旧版 submit() 在 DiffUtil 计算前就把 selected 换成新集合，
  * 导致新旧内容比较永远相等、不触发重绑定 —— 表现为第二张起无选中反馈。
  * 现在保留 oldSelected 参与比较，并用 payload 对每次勾选/取消播放独立动画。
+ *
+ * 按日期分组: [submit] 传入 groupByDate = true 时，会在相邻同日的照片前插入
+ * [PhotoGridItem.DateHeader] 标题行，标题右侧提供整组全选 / 取消全选。
+ * 标题行需要在 3 列网格里占满整行，由调用方给 GridLayoutManager 配
+ * SpanSizeLookup（见 [isHeaderAt]）。
  */
 class PhotoGridAdapter(
     private val cache: ThumbnailCache,
     private val onItemClick: (CameraFile, Int) -> Unit,
     private val onItemLongClick: (CameraFile) -> Unit,
-    private val onRequestThumb: (CameraFile) -> Unit
-) : RecyclerView.Adapter<PhotoGridAdapter.GridViewHolder>() {
+    private val onRequestThumb: (CameraFile) -> Unit,
+    private val onToggleGroupSelection: (List<Int>) -> Unit
+) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
     companion object {
         private const val PAYLOAD_SELECTION = "payload_selection"
         private const val PAYLOAD_THUMB = "payload_thumb"
         private const val PAYLOAD_MARK = "payload_mark"
         private const val PAYLOAD_DOWNLOADED = "payload_downloaded"
+
+        private const val TYPE_PHOTO = 0
+        private const val TYPE_DATE_HEADER = 1
+
+        /** 取不到拍摄时间的文件的分组键与标题 */
+        private const val KEY_UNKNOWN_DATE = "unknown"
+        private const val UNKNOWN_DATE_LABEL = "未知日期"
     }
 
-    private var items: List<CameraFile> = emptyList()
+    private var items: List<PhotoGridItem> = emptyList()
     private var selected: Set<Int> = emptySet()
     private var loadedThumbs: Set<Int> = emptySet()
     private var marked: Set<Int> = emptySet()
     private var downloaded: Set<Int> = emptySet()
 
-    /** 当前展示的列表（只读）。排序变更后供 Fragment 定位锚点项用 */
-    val currentList: List<CameraFile> get() = items
+    /** 当前展示的照片列表（不含日期标题）。排序变更后供 Fragment 定位锚点项用 */
+    val currentList: List<CameraFile>
+        get() = items.mapNotNull { (it as? PhotoGridItem.Photo)?.file }
 
     /** 多选模式：显示对勾容器 */
     var multiSelectMode: Boolean = false
@@ -53,15 +95,17 @@ class PhotoGridAdapter(
         newSelected: Set<Int>,
         newThumbs: Set<Int>,
         newMarked: Set<Int> = marked,
-        newDownloaded: Set<Int> = downloaded
+        newDownloaded: Set<Int> = downloaded,
+        groupByDate: Boolean = false
     ) {
+        val newFlat = buildItems(newItems, groupByDate)
         val oldItems = items
         // 关键: 先缓存旧状态，再赋值，DiffUtil 才能感知选中变化
         val oldSelected = selected
         val oldThumbs = loadedThumbs
         val oldMarked = marked
         val oldDownloaded = downloaded
-        items = newItems
+        items = newFlat
         selected = newSelected
         loadedThumbs = newThumbs
         marked = newMarked
@@ -70,73 +114,248 @@ class PhotoGridAdapter(
         DiffUtil.calculateDiff(object : DiffUtil.Callback() {
             override fun getOldListSize() = oldItems.size
             override fun getNewListSize() = items.size
-            override fun areItemsTheSame(oldPos: Int, newPos: Int) =
-                oldItems[oldPos].handle == items[newPos].handle
-            override fun areContentsTheSame(oldPos: Int, newPos: Int): Boolean {
-                val h = items[newPos].handle
-                val selChanged = (h in oldSelected) != (h in newSelected)
-                val thumbChanged = newThumbs.contains(h) && !oldThumbs.contains(h)
-                val markChanged = (h in oldMarked) != (h in newMarked)
-                val downloadedChanged = (h in oldDownloaded) != (h in newDownloaded)
-                return !selChanged && !thumbChanged && !markChanged && !downloadedChanged &&
-                    oldItems[oldPos] == items[newPos]
-            }
-            override fun getChangePayload(oldPos: Int, newPos: Int): Any? {
-                val h = items[newPos].handle
-                val selChanged = (h in oldSelected) != (h in newSelected)
-                val thumbChanged = newThumbs.contains(h) && !oldThumbs.contains(h)
-                val markChanged = (h in oldMarked) != (h in newMarked)
-                val downloadedChanged = (h in oldDownloaded) != (h in newDownloaded)
-                // 多维变化叠加时退化为全量重绑定（null payload）
-                val changed = listOf(selChanged, thumbChanged, markChanged, downloadedChanged).count { it }
-                if (changed > 1) return null
+
+            override fun areItemsTheSame(oldPos: Int, newPos: Int): Boolean {
+                val oldItem = oldItems[oldPos]
+                val newItem = items[newPos]
                 return when {
-                    selChanged -> PAYLOAD_SELECTION
-                    thumbChanged -> PAYLOAD_THUMB
-                    markChanged -> PAYLOAD_MARK
-                    downloadedChanged -> PAYLOAD_DOWNLOADED
+                    oldItem is PhotoGridItem.Photo && newItem is PhotoGridItem.Photo ->
+                        oldItem.file.handle == newItem.file.handle
+                    oldItem is PhotoGridItem.DateHeader && newItem is PhotoGridItem.DateHeader ->
+                        oldItem.key == newItem.key
+                    else -> false
+                }
+            }
+
+            override fun areContentsTheSame(oldPos: Int, newPos: Int): Boolean {
+                val oldItem = oldItems[oldPos]
+                val newItem = items[newPos]
+                return when {
+                    oldItem is PhotoGridItem.Photo && newItem is PhotoGridItem.Photo -> {
+                        val h = newItem.file.handle
+                        val selChanged = (h in oldSelected) != (h in newSelected)
+                        val thumbChanged = newThumbs.contains(h) && !oldThumbs.contains(h)
+                        val markChanged = (h in oldMarked) != (h in newMarked)
+                        val downloadedChanged = (h in oldDownloaded) != (h in newDownloaded)
+                        !selChanged && !thumbChanged && !markChanged && !downloadedChanged &&
+                            oldItem.file == newItem.file
+                    }
+                    oldItem is PhotoGridItem.DateHeader && newItem is PhotoGridItem.DateHeader ->
+                        oldItem.label == newItem.label &&
+                            oldItem.handles == newItem.handles &&
+                            isGroupAllSelected(oldItem, oldSelected) ==
+                            isGroupAllSelected(newItem, newSelected)
+                    else -> false
+                }
+            }
+
+            override fun getChangePayload(oldPos: Int, newPos: Int): Any? {
+                val oldItem = oldItems[oldPos]
+                val newItem = items[newPos]
+                return when {
+                    oldItem is PhotoGridItem.Photo && newItem is PhotoGridItem.Photo -> {
+                        val h = newItem.file.handle
+                        val selChanged = (h in oldSelected) != (h in newSelected)
+                        val thumbChanged = newThumbs.contains(h) && !oldThumbs.contains(h)
+                        val markChanged = (h in oldMarked) != (h in newMarked)
+                        val downloadedChanged = (h in oldDownloaded) != (h in newDownloaded)
+                        // 多维变化叠加时退化为全量重绑定（null payload）
+                        val changed =
+                            listOf(selChanged, thumbChanged, markChanged, downloadedChanged).count { it }
+                        if (changed > 1) return null
+                        when {
+                            selChanged -> PAYLOAD_SELECTION
+                            thumbChanged -> PAYLOAD_THUMB
+                            markChanged -> PAYLOAD_MARK
+                            downloadedChanged -> PAYLOAD_DOWNLOADED
+                            else -> null
+                        }
+                    }
+                    // 标题行的「全选 / 取消全选」文案随组内选中状态翻转
+                    oldItem is PhotoGridItem.DateHeader && newItem is PhotoGridItem.DateHeader ->
+                        if (isGroupAllSelected(oldItem, oldSelected) !=
+                            isGroupAllSelected(newItem, newSelected)
+                        ) PAYLOAD_SELECTION else null
                     else -> null
                 }
             }
         }).dispatchUpdatesTo(this)
     }
 
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): GridViewHolder {
-        val binding = ItemPhotoGridBinding.inflate(
-            LayoutInflater.from(parent.context), parent, false
-        )
-        return GridViewHolder(binding)
+    /** 该分组是否已整组选中 */
+    private fun isGroupAllSelected(header: PhotoGridItem.DateHeader, from: Set<Int>): Boolean =
+        header.handles.isNotEmpty() && header.handles.all { it in from }
+
+    /** 该位置是否为日期标题行（供 SpanSizeLookup 判定占满整行） */
+    fun isHeaderAt(position: Int): Boolean =
+        items.getOrNull(position) is PhotoGridItem.DateHeader
+
+    /** 该位置对应的照片；标题行返回 null（供滚动锚点定位） */
+    fun itemAt(position: Int): CameraFile? =
+        (items.getOrNull(position) as? PhotoGridItem.Photo)?.file
+
+    /** 照片在扁平序列（含标题行）中的位置，找不到返回 -1 */
+    fun indexOfHandle(handle: Int): Int =
+        items.indexOfFirst { it is PhotoGridItem.Photo && it.file.handle == handle }
+
+    /**
+     * 构造扁平展示序列：按日期分组时在「相邻同日」的照片段前插入标题行。
+     *
+     * 只合并相邻同日的连续段，不整体重排 —— 这样既尊重用户选定的排序，
+     * 又能在按拍摄时间排序（默认）时天然按日成块。
+     */
+    private fun buildItems(files: List<CameraFile>, groupByDate: Boolean): List<PhotoGridItem> {
+        if (!groupByDate) return files.map { PhotoGridItem.Photo(it) }
+
+        val today = Calendar.getInstance()
+        val yesterday = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }
+        // 复用的临时 Calendar：单线程顺序执行，避免每个文件都新建实例
+        val scratch = Calendar.getInstance()
+
+        val keys = ArrayList<String>(files.size)
+        val labels = ArrayList<String>(files.size)
+        for (file in files) {
+            val millis = file.captureTimeMillis
+            if (millis == null) {
+                keys += KEY_UNKNOWN_DATE
+                labels += UNKNOWN_DATE_LABEL
+            } else {
+                scratch.timeInMillis = millis
+                keys += String.format(
+                    Locale.US, "%04d%02d%02d",
+                    scratch.get(Calendar.YEAR),
+                    scratch.get(Calendar.MONTH) + 1,
+                    scratch.get(Calendar.DAY_OF_MONTH)
+                )
+                labels += formatDateLabel(scratch, today, yesterday)
+            }
+        }
+
+        val result = ArrayList<PhotoGridItem>(files.size + 8)
+        var i = 0
+        while (i < files.size) {
+            val key = keys[i]
+            var j = i + 1
+            while (j < files.size && keys[j] == key) j++
+            val handles = ArrayList<Int>(j - i)
+            for (k in i until j) handles += files[k].handle
+            result += PhotoGridItem.DateHeader(key = key, label = labels[i], handles = handles)
+            for (k in i until j) result += PhotoGridItem.Photo(files[k])
+            i = j
+        }
+        return result
     }
 
-    override fun onBindViewHolder(holder: GridViewHolder, position: Int) {
-        val file = items[position]
-        holder.bind(file, animate = false)
-        // 可见即加载：滚动到该格时请求缩略图（VM 层并发控制 + 缓存判断）
-        if (!cache.hasInMemory(file.handle)) {
-            onRequestThumb(file)
+    /** 日期标题文案：今天 / 昨天 / 同年省略年份 */
+    private fun formatDateLabel(cal: Calendar, today: Calendar, yesterday: Calendar): String {
+        if (isSameDay(cal, today)) return "今天"
+        if (isSameDay(cal, yesterday)) return "昨天"
+        val year = cal.get(Calendar.YEAR)
+        val month = cal.get(Calendar.MONTH) + 1
+        val day = cal.get(Calendar.DAY_OF_MONTH)
+        return if (year == today.get(Calendar.YEAR)) "${month}月${day}日"
+        else "${year}年${month}月${day}日"
+    }
+
+    private fun isSameDay(a: Calendar, b: Calendar): Boolean =
+        a.get(Calendar.YEAR) == b.get(Calendar.YEAR) &&
+            a.get(Calendar.DAY_OF_YEAR) == b.get(Calendar.DAY_OF_YEAR)
+
+    override fun getItemViewType(position: Int): Int =
+        if (items[position] is PhotoGridItem.DateHeader) TYPE_DATE_HEADER else TYPE_PHOTO
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+        val inflater = LayoutInflater.from(parent.context)
+        return if (viewType == TYPE_DATE_HEADER) {
+            DateHeaderViewHolder(
+                ItemPhotoDateHeaderBinding.inflate(inflater, parent, false)
+            )
+        } else {
+            GridViewHolder(ItemPhotoGridBinding.inflate(inflater, parent, false))
         }
     }
 
-    override fun onBindViewHolder(holder: GridViewHolder, position: Int, payloads: MutableList<Any>) {
+    override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+        when (val item = items[position]) {
+            is PhotoGridItem.Photo -> {
+                (holder as GridViewHolder).bind(item.file, animate = false)
+                // 可见即加载：滚动到该格时请求缩略图（VM 层并发控制 + 缓存判断）
+                if (!cache.hasInMemory(item.file.handle)) {
+                    onRequestThumb(item.file)
+                }
+            }
+            is PhotoGridItem.DateHeader -> (holder as DateHeaderViewHolder).bind(item)
+        }
+    }
+
+    override fun onBindViewHolder(
+        holder: RecyclerView.ViewHolder,
+        position: Int,
+        payloads: MutableList<Any>
+    ) {
         if (payloads.isEmpty()) {
             onBindViewHolder(holder, position)
             return
         }
         // 局部刷新: 选中变化播放勾选动画，缩略图变化只更新图片
-        payloads.forEach { payload ->
-            when (payload) {
-                PAYLOAD_SELECTION -> holder.applySelection(
-                    items[position].handle in selected,
-                    animate = true
-                )
-                PAYLOAD_THUMB -> holder.applyThumb(items[position])
-                PAYLOAD_MARK -> holder.applyMark(items[position].handle in marked)
-                PAYLOAD_DOWNLOADED -> holder.applyDownloaded(items[position].handle in downloaded)
+        when (val item = items[position]) {
+            is PhotoGridItem.Photo -> {
+                val viewHolder = holder as GridViewHolder
+                payloads.forEach { payload ->
+                    when (payload) {
+                        PAYLOAD_SELECTION -> viewHolder.applySelection(
+                            item.file.handle in selected,
+                            animate = true
+                        )
+                        PAYLOAD_THUMB -> viewHolder.applyThumb(item.file)
+                        PAYLOAD_MARK -> viewHolder.applyMark(item.file.handle in marked)
+                        PAYLOAD_DOWNLOADED -> viewHolder.applyDownloaded(item.file.handle in downloaded)
+                    }
+                }
+            }
+            is PhotoGridItem.DateHeader -> {
+                val viewHolder = holder as DateHeaderViewHolder
+                if (payloads.contains(PAYLOAD_SELECTION)) {
+                    viewHolder.applySelection(isGroupAllSelected(item, selected))
+                }
             }
         }
     }
 
     override fun getItemCount(): Int = items.size
+
+    /** 日期分组标题行 */
+    inner class DateHeaderViewHolder(
+        private val binding: ItemPhotoDateHeaderBinding
+    ) : RecyclerView.ViewHolder(binding.root) {
+
+        init {
+            binding.tvSelectGroup.pressEffect()
+        }
+
+        fun bind(header: PhotoGridItem.DateHeader) {
+            binding.tvDate.text = header.label
+            binding.tvSelectGroup.setOnClickListener { onToggleGroupSelection(header.handles) }
+            applySelection(isGroupAllSelected(header, selected))
+        }
+
+        /** 组内全选时按钮反色，文案切成「取消全选」 */
+        fun applySelection(allSelected: Boolean) {
+            binding.tvSelectGroup.text =
+                itemView.context.getString(
+                    if (allSelected) R.string.album_group_deselect_all else R.string.album_group_select_all
+                )
+            binding.tvSelectGroup.setBackgroundResource(
+                if (allSelected) R.drawable.bg_chip_selected else R.drawable.bg_chip
+            )
+            binding.tvSelectGroup.setTextColor(
+                ContextCompat.getColor(
+                    itemView.context,
+                    if (allSelected) R.color.on_primary else R.color.text_primary
+                )
+            )
+        }
+    }
 
     inner class GridViewHolder(
         private val binding: ItemPhotoGridBinding
