@@ -157,7 +157,7 @@
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:background="@drawable/bg_lv_icon"
-            android:contentDescription="旋转画面"
+            android:contentDescription="切换横竖屏"
             android:padding="11dp"
             android:src="@drawable/ic_rotate_lv" />
 

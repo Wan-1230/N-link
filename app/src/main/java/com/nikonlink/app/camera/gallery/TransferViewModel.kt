@@ -677,6 +677,24 @@ class TransferViewModel @Inject constructor(
         _selectedHandles.value = markedDisplayList.value.mapTo(mutableSetOf()) { it.handle }
     }
 
+    /**
+     * 按日期分组的整组全选 / 取消全选。
+     *
+     * 组内全部已选 → 取消该组；否则 → 把该组并入选中集（不动其它分组的选中）。
+     * 只改 [selectedHandles]，UI 的已选数量、底栏按钮、勾选动画都由既有的
+     * 收集链路驱动，因此与其它入口（单张点选、底部全选）天然同步。
+     */
+    fun toggleGroupSelection(handles: List<Int>) {
+        if (handles.isEmpty()) return
+        val current = _selectedHandles.value.toMutableSet()
+        if (handles.all { it in current }) {
+            current.removeAll(handles.toSet())
+        } else {
+            current.addAll(handles)
+        }
+        _selectedHandles.value = current
+    }
+
     fun clearSelection() {
         _selectedHandles.value = emptySet()
     }
