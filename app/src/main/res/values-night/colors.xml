@@ -21,7 +21,6 @@
     <color name="text_primary">#FFFFFF</color>
     <color name="text_secondary">#ADADAD</color>
     <color name="text_tertiary">#7A7A7A</color>
-    <color name="text_disabled">#66FFFFFF</color>
     <color name="on_background">#FFFFFF</color>
     <color name="on_surface">#FFFFFF</color>
     <color name="on_surface_variant">#A3A3A3</color>
@@ -30,25 +29,19 @@
     <color name="primary">#FFFFFF</color>
     <color name="primary_variant">#E6E6E6</color>
     <color name="accent">#FFFFFF</color>
-    <color name="accent_2">#ADADAD</color>
     <color name="accent_soft">#121212</color>
     <color name="on_primary">#000000</color>
-    <color name="on_accent">#000000</color>
 
     <color name="secondary">#D9D9D9</color>
     <color name="secondary_variant">#BFBFBF</color>
     <color name="on_secondary">#000000</color>
 
     <!-- 状态色：仅灰度 -->
-    <color name="status_connected">#FFFFFF</color>
-    <color name="status_connecting">#A3A3A3</color>
     <color name="status_disconnected">#5C5C5C</color>
     <color name="ble_indicator">#ADADAD</color>
     <color name="wifi_indicator">#FFFFFF</color>
 
     <!-- 点击反馈 / 遮罩 -->
-    <color name="pressed_overlay">#1FFFFFFF</color>
-    <color name="scrim">#99000000</color>
     <color name="chip_unselected">#1A1A1A</color>
 
     <!-- Live View 专用 -->
@@ -59,7 +52,6 @@
 
     <!-- 底部导航 -->
     <color name="nav_background">#000000</color>
-    <color name="nav_active_bg">#121212</color>
     <color name="nav_active_icon">#FFFFFF</color>
     <color name="nav_inactive_icon">#6E6E6E</color>
 </resources>
