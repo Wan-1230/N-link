@@ -22,6 +22,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.nikonlink.app.R
 import com.nikonlink.app.databinding.DialogParamPickerBinding
 import com.nikonlink.app.databinding.FragmentRemoteBinding
+import com.nikonlink.app.camera.liveview.FocusTapMapper
 import com.nikonlink.app.camera.liveview.LiveViewState
 import com.nikonlink.app.camera.liveview.LiveViewActivity
 import com.nikonlink.app.camera.liveview.LiveViewViewModel
@@ -114,15 +115,18 @@ class RemoteFragment : Fragment() {
         }
         applyHistogramToggle(settings.histogramEnabled)
 
-        // 点击画面选择对焦点（淡入淡出动效）
+        // 点击画面选择对焦点（淡入淡出动效）。
+        // Fix: 旧版直接 event.x/view.width 归一化，把 fitCenter 黑边算进坐标，
+        // 实际对焦点与点击位置系统性偏移；统一走 FocusTapMapper（含缩放还原）
         binding.ivLiveView.setOnTouchListener { v, event ->
             if (event.action == MotionEvent.ACTION_UP &&
                 liveViewViewModel.liveViewState.value == LiveViewState.RUNNING
             ) {
-                val nx = event.x / v.width
-                val ny = event.y / v.height
-                liveViewViewModel.touchFocus(nx, ny)
-                showFocusIndicator(event.x, event.y)
+                val tap = FocusTapMapper.mapToNormalized(binding.ivLiveView, event.x, event.y)
+                if (tap != null) {
+                    liveViewViewModel.touchFocus(tap.x, tap.y)
+                    showFocusIndicator(event.x, event.y)
+                }
             }
             true
         }
@@ -250,12 +254,31 @@ class RemoteFragment : Fragment() {
                     onConfirm = { idx -> paramsViewModel.setWhiteBalance(presets[idx].first) }
                 )
             }
-            "模式" -> MaterialAlertDialogBuilder(requireContext())
-                .setTitle("拍摄模式")
-                .setMessage("当前模式: ${param.currentValue.ifBlank { "--" }}\n远程切换 P/A/S/M 需要机身支持，请在相机拨盘上切换。")
-                .setPositiveButton("确定", null)
-                .show()
+            "模式" -> showModePicker(param)
         }
+    }
+
+    /**
+     * 拍摄模式远程切换（0x500E ExposureProgramMode）。
+     * 机身不接受远程切换时（部分模式拨盘机型只读），以回读值提示实际模式。
+     */
+    private fun showModePicker(param: CameraParam) {
+        val modes = paramsViewModel.exposureProgramModes
+        val labels = modes.map { it.second }.toTypedArray()
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("拍摄模式（远程切换）")
+            .setMessage("当前: ${param.currentValue.ifBlank { "--" }}")
+            .setSingleChoiceItems(labels, -1) { dialog, which ->
+                dialog.dismiss()
+                paramsViewModel.setExposureProgram(modes[which].first)
+                Toast.makeText(
+                    requireContext(),
+                    "已下发 ${modes[which].second}，以相机实际模式为准",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     /**
@@ -364,10 +387,10 @@ class RemoteFragment : Fragment() {
         dialog.show()
     }
 
-    /** 按参数名取当前 raw 值，用于手动输入成功后回正滚轮位置 */
+    /** 按参数名取当前 raw 值，用于手动输入成功后回正滚轮位置（label 与 setupParamRow 一致） */
     private fun currentParamRaw(name: String): Int = when (name) {
         "光圈" -> paramsViewModel.aperture.value.rawValue
-        "快门速度" -> paramsViewModel.shutterSpeed.value.rawValue
+        "快门" -> paramsViewModel.shutterSpeed.value.rawValue
         "ISO" -> paramsViewModel.iso.value.rawValue
         else -> 0
     }
@@ -533,6 +556,16 @@ class RemoteFragment : Fragment() {
             }
         }
 
+        // 拍摄动作结果提示（录像失败原因等）：旧版静默失败表现为「按了没反应」
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.shootingMessage.collect { msg ->
+                if (!msg.isNullOrBlank()) {
+                    Toast.makeText(requireContext(), msg, Toast.LENGTH_LONG).show()
+                    viewModel.consumeMessage()
+                }
+            }
+        }
+
         // 顶部悬浮信息：电量 / 剩余可拍
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.batteryLevel.collect { lv ->
@@ -560,6 +593,7 @@ class RemoteFragment : Fragment() {
                     ShootingState.TIMER_COUNTDOWN -> "倒计时"
                     ShootingState.INTERVAL_SHOOTING -> "间隔拍摄中"
                     ShootingState.BULB_EXPOSING -> "B门曝光中"
+                    ShootingState.VIDEO_PREPARING -> "正在启动监看…"
                     ShootingState.VIDEO_RECORDING -> "录制中"
                 }
                 val nowRecording = state == ShootingState.VIDEO_RECORDING

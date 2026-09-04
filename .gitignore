@@ -25,6 +25,8 @@ build/
 # Local media / reverse-engineering material
 .tmp_bili/
 release_extract/
+.tools/
+videos/
 
 # Local configuration file (sdk path, etc)
 local.properties

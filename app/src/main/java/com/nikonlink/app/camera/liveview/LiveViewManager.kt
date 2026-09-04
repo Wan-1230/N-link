@@ -43,6 +43,9 @@ class LiveViewManager @Inject constructor(
 
         /** RC-10：最多重试轮数，每轮都重发 0x9201 */
         private const val MAX_START_ATTEMPTS = 6
+
+        /** ChangeAfArea(0x9205) 生效后再 AfDrive 的间隔 */
+        private const val AF_AREA_SETTLE_MS = 150L
     }
 
     private var scope: CoroutineScope? = null
@@ -335,6 +338,29 @@ class LiveViewManager @Inject constructor(
         Timber.tag(TAG).i("Live View stopped")
     }
 
+    /**
+     * 监看未运行时启动之；已运行直接返回成功。
+     * 供视频录制等依赖实时取景的功能前置调用（Nikon 0x920A 需要 LiveView 处于开启状态）。
+     * STARTING 状态下等待进行中的启动收敛后再判定，避免并发重复启动。
+     */
+    suspend fun ensureRunning(): Boolean {
+        when (_liveViewState.value) {
+            LiveViewState.RUNNING -> return true
+            LiveViewState.STARTING -> {
+                repeat(40) {
+                    delay(100)
+                    when (_liveViewState.value) {
+                        LiveViewState.RUNNING -> return true
+                        LiveViewState.STOPPED, LiveViewState.ERROR -> return startLiveView()
+                        else -> {}
+                    }
+                }
+                return _liveViewState.value == LiveViewState.RUNNING
+            }
+            else -> return startLiveView()
+        }
+    }
+
     /** 恢复进入无线控制模式前的曝光程序模式（停止/启动失败时调用） */
     private fun restoreExposureModeIfNeeded() {
         val restore = savedExposureMode
@@ -342,8 +368,23 @@ class LiveViewManager @Inject constructor(
         if (restore != null && !usbPtpManager.isConnected()) {
             scope?.launch(Dispatchers.IO) {
                 runCatching {
-                    ptpSession.setDevicePropValue(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE, restore)
-                    Timber.tag(TAG).i("Wireless control mode exited, exposure mode restored")
+                    // 守卫：监看期间用户可能已远程切换了模式（0x500E 可写），
+                    // 仅当相机仍停留在遥控值 0x8012 时才回退，避免覆盖用户选择
+                    val current = ptpSession.getDevicePropValue(
+                        PtpConstants.PROP_EXPOSURE_PROGRAM_MODE
+                    )
+                    val stillRemote = current != null && current.size >= 2 &&
+                        ((current[0].toInt() and 0xFF) or
+                            ((current[1].toInt() and 0xFF) shl 8)) ==
+                        PtpConstants.PROP_VALUE_REMOTE_MODE
+                    if (stillRemote) {
+                        ptpSession.setDevicePropValue(
+                            PtpConstants.PROP_EXPOSURE_PROGRAM_MODE, restore
+                        )
+                        Timber.tag(TAG).i("Wireless control mode exited, exposure mode restored")
+                    } else {
+                        Timber.tag(TAG).i("Exposure mode changed during LV, skip restore")
+                    }
                 }
             }
         }
@@ -445,7 +486,8 @@ class LiveViewManager @Inject constructor(
                 )
 
                 if (response) {
-                    // 触发 AF 驱动
+                    // 触发 AF 驱动：稍等 AF 区域生效后再驱动，部分机型立刻驱动会仍按旧区域对焦
+                    delay(AF_AREA_SETTLE_MS)
                     onActiveChannel(
                         wifi = { ptpSession.afDrive() },
                         usb = { usbPtpManager.afDrive() }
