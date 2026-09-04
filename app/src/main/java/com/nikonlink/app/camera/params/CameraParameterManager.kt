@@ -868,28 +868,78 @@ data class CameraParam(
  * 列表按 raw **升序** = 曝光时间由短到长 = **index 0 最快，lastIndex 最慢**。
  *
  * UI（拍摄页 / 全屏监看页）一律从这里取档位，禁止再各自硬编码一份。
+ *
+ * ## 档位名与 raw 不是简单倒数关系（重要）
+ *
+ * 机身档位表是**按 1/3 档递进后取整到"两位有效数字"的干净值**（`0.006s`、`0.016s`、
+ * `0.032s`、`1.3s`、`3.2s` …），而不是标称值的精确倒数：
+ *
+ * | 机身标称 | 标称精确 raw | **机身实际 raw** | 旧版按倒数反算的显示 |
+ * | --- | --- | --- | --- |
+ * | 1/160 | 62.5 | **60** | ~~1/167~~ ❌ |
+ * | 1/800 | 12.5 | **13** | ~~1/769~~ ❌ |
+ * | 1/640 | 15.625 | **15** | ~~1/667~~ ❌ |
+ * | 1/320 | 31.25 | **30** | ~~1/333~~ ❌ |
+ * | 1/60 | 166.67 | **160** | ~~1/63~~ ❌ |
+ * | 1/30 | 333.33 | **320** | ~~1/31~~ ❌ |
+ *
+ * 因此**显示名必须由档位表给出，不能用 `10000 / raw` 反算**（旧版正是这样才出现了
+ * 机身根本不存在的 `1/167`）。表外 raw（机身回读的特殊值）仍走数值反算兜底。
  */
 object ShutterCatalog {
 
+    /** 一个档位：协议 raw 值 + 机身标称显示名 */
+    data class Stop(val raw: Int, val label: String)
+
     /**
-     * 快门档位 raw 值（1/10000 秒），升序 = 从快到慢。
+     * 不足 1 秒的档位：raw（1/10000s）→ **机身标称名**。
      *
-     * 覆盖 1/1000s → 30s：前 27 档为常用速度，`5000`（0.5s）起为**长曝光段**，
-     * 按 1/3 档递进（与 Nikon 机身 M 档步进一致）：1/2 → 1/1.6 → 1/1.25 → 1s →
-     * 1.3s → … → 30s。B 门（ShootingState.BULB）不在此表内，独立控制。
+     * raw 序列即机身真实档位（升序 = 快 → 慢），label 是机身上显示的名字；
+     * 两者按位置一一对应，不要拿 label 去反推 raw。
      *
-     * `setShutterSpeed` 的上下限限位取本表首尾（10 → 300000），越界自动 clamp。
+     * 高速段 `2..8`（1/4000 → 1/1250）为 v0.1.5 新增，上限由 1/1000 扩展到 1/4000，
+     * 延续同一套"1/3 档取整"约定（1/4000 的精确值 2.5 无法用整数表示，取 2；
+     * 1/3200 = 3.125 取 3，1/1600 = 6.25 取 6）。
      */
-    val VALUES: List<Int> = listOf(
-        10, 13, 15, 20, 25, 30, 40, 50, 60, 80, 100, 125, 160, 200,
-        250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000,
-        // —— 长曝光段（0.5s → 30s，1/3 档步进）——
+    private val FRACTION_STOPS: List<Stop> = listOf(
+        // —— 高速段（1/4000 → 1/1250）——
+        Stop(2, "1/4000"), Stop(3, "1/3200"), Stop(4, "1/2500"),
+        Stop(5, "1/2000"), Stop(6, "1/1600"), Stop(8, "1/1250"),
+        // —— 常用段（1/1000 → 1/2.5）——
+        Stop(10, "1/1000"), Stop(13, "1/800"), Stop(15, "1/640"), Stop(20, "1/500"),
+        Stop(25, "1/400"), Stop(30, "1/320"), Stop(40, "1/250"), Stop(50, "1/200"),
+        Stop(60, "1/160"), Stop(80, "1/125"), Stop(100, "1/100"), Stop(125, "1/80"),
+        Stop(160, "1/60"), Stop(200, "1/50"), Stop(250, "1/40"), Stop(320, "1/30"),
+        Stop(400, "1/25"), Stop(500, "1/20"), Stop(640, "1/15"), Stop(800, "1/13"),
+        Stop(1000, "1/10"), Stop(1250, "1/8"), Stop(1600, "1/6"), Stop(2000, "1/5"),
+        Stop(2500, "1/4"), Stop(3200, "1/3"), Stop(4000, "1/2.5")
+    )
+
+    /** 长曝光段 raw（0.5s → 30s，1/3 档步进）：≥1s 的数值本身就是标称值，显示可直接算 */
+    private val LONG_EXPOSURE_RAW: List<Int> = listOf(
         5000, 6250, 8000, 10000, 13000, 16000, 20000, 25000, 32000, 40000,
         50000, 64000, 80000, 100000, 130000, 160000, 200000, 250000, 300000
     )
 
     /**
-     * raw（1/10000s）→ 显示文本。以 **1 秒** 为界（与 Nikon 机身一致）：
+     * 全部档位，升序 = 快 → 慢。
+     *
+     * `setShutterSpeed` 的上下限限位取本表首尾（**2 → 300000**，即 1/4000s → 30s），越界自动 clamp。
+     * B 门（ShootingState.BULB）不在此表内，独立控制。
+     */
+    val STOPS: List<Stop> = FRACTION_STOPS +
+        LONG_EXPOSURE_RAW.map { Stop(it, formatNumeric(it)) }
+
+    /** 档位 raw 值（升序 = 从快到慢），供滚轮索引 / 限位 / 就近匹配使用 */
+    val VALUES: List<Int> = STOPS.map { it.raw }
+
+    private val LABEL_BY_RAW: Map<Int, String> = FRACTION_STOPS.associate { it.raw to it.label }
+
+    /**
+     * raw（1/10000s）→ 显示文本。
+     *
+     * 优先取档位表的**标称名**（保证与机身显示一致，不会出现 `1/167` 这类机身没有的档位名）；
+     * 表外 raw（机身回读的特殊值、B 门等）按数值反算兜底，以 **1 秒** 为界：
      *
      * | raw | 曝光时间 | 显示 |
      * | --- | --- | --- |
@@ -910,6 +960,12 @@ object ShutterCatalog {
      */
     fun format(rawX10000: Int): String {
         if (rawX10000 <= 0) return "--"
+        LABEL_BY_RAW[rawX10000]?.let { return it }
+        return formatNumeric(rawX10000)
+    }
+
+    /** 数值兜底：≥1s 显示秒数（如 `1.3s`），<1s 显示分数（如 `1/2`、`1/1.2`） */
+    private fun formatNumeric(rawX10000: Int): String {
         val seconds = rawX10000 / 10000.0
         if (seconds >= 1.0) return formatSeconds(seconds)
         return "1/${formatDenominator(1.0 / seconds)}"
@@ -925,6 +981,87 @@ object ShutterCatalog {
         if (denominator >= 10.0) return denominator.roundToInt().toString()
         return String.format(Locale.US, "%.1f", denominator).removeSuffix(".0")
     }
+
+    /**
+     * 解析用户输入的快门速度 → 秒。非法输入返回 `null`。
+     *
+     * 支持写法（与机身 / 主流 App 输入习惯一致）：
+     * - `1/250`、`1 / 250`、`1／250`（全角斜杠）
+     * - `250`、`4000` —— **纯整数且 > 30 视为分母**（本机最长曝光 30s，
+     *   因此 >30 的整数不可能是秒数，只能是 `1/N`）
+     * - `0.6`、`2.5`、`30` —— 带小数点或 ≤30 视为**秒**
+     * - `1.3s`、`30s` —— 带 `s` 后缀视为秒
+     *
+     * @return 曝光时间（秒）；越界（快于 1/8000 或慢于 30s）时返回 `null`
+     */
+    fun parseSeconds(input: String?): Double? {
+        val text = input?.trim()?.lowercase(Locale.US) ?: return null
+        if (text.isEmpty()) return null
+        val normalized = text.replace("／", "/").replace(" ", "")
+        // 「s / 秒」后缀必须在分母判定之前识别，否则 `60s` 会被当成 1/60
+        val hasSecondsSuffix = normalized.endsWith("s") || normalized.endsWith("秒")
+        val raw = normalized.removeSuffix("s").removeSuffix("秒")
+        val seconds = when {
+            raw.contains("/") -> {
+                val parts = raw.split("/")
+                if (parts.size != 2) return null
+                val num = parts[0].toDoubleOrNull() ?: return null
+                val den = parts[1].toDoubleOrNull() ?: return null
+                if (den <= 0.0 || num <= 0.0) return null
+                num / den
+            }
+            else -> {
+                val value = raw.toDoubleOrNull() ?: return null
+                // 无秒后缀、纯整数且 > 30（超过本机最长曝光）→ 当作分母 1/N；否则当作秒
+                if (!hasSecondsSuffix && value > MAX_EXPOSURE_SECONDS && value % 1.0 == 0.0) {
+                    1.0 / value
+                } else {
+                    value
+                }
+            }
+        }
+        if (seconds <= 0.0 || seconds.isNaN() || seconds.isInfinite()) return null
+        // 支持范围：1/8000s（0.000125s）→ 30s，超出即判非法
+        if (seconds < MIN_EXPOSURE_SECONDS || seconds > MAX_EXPOSURE_SECONDS) return null
+        return seconds
+    }
+
+    /**
+     * 按曝光时间（秒）匹配**最接近**的档位 raw。
+     *
+     * 用对数距离而非线性差：1/3 档在短曝光端只差几毫秒、在长曝光端差几秒，
+     * 线性差会让短端永远匹配到同一个档。对数距离等价于"差几档"。
+     *
+     * ⚠️ 高速档（1/4000 = 2.5、1/3200 = 3.125）无法用整数 raw 精确表示，纯按距离匹配会把
+     * `1/4000` 判给 raw 3（1/3200）。因此调用方应**先用 [matchByLabel] 做标称名精确匹配**，
+     * 匹配不到时再回退到本函数。
+     */
+    fun matchNearest(seconds: Double): Int {
+        if (VALUES.isEmpty()) return 0
+        val target = kotlin.math.ln(seconds)
+        return VALUES.minByOrNull { kotlin.math.abs(kotlin.math.ln(it / 10000.0) - target) }
+            ?: VALUES.first()
+    }
+
+    /**
+     * 按**机身标称名**精确匹配档位 raw，匹配不到返回 `null`。
+     *
+     * 覆盖 `1/250`、`1/4000`、`1/160` 这类直接写档位名的输入——其中高速档的 raw
+     * 是取整值（1/4000 → 2），只有按名字才能精确命中。
+     * 大小写、空格、`f/` 式前缀与全角斜杠都做了宽容处理。
+     */
+    fun matchByLabel(input: String?): Int? {
+        val text = input?.trim()?.lowercase(Locale.US)
+            ?.replace("／", "/")
+            ?.replace(" ", "")
+            ?: return null
+        if (text.isEmpty()) return null
+        return STOPS.firstOrNull { it.label.lowercase(Locale.US) == text }?.raw
+    }
+
+    /** 支持的最快 / 最慢曝光时间（秒），用于输入校验 */
+    const val MIN_EXPOSURE_SECONDS = 1.0 / 8000.0
+    const val MAX_EXPOSURE_SECONDS = 30.0
 }
 
 /**
@@ -974,6 +1111,63 @@ object ApertureCatalog {
     fun clampToNearest(fStopX100: Int, options: List<Int>): Int {
         if (options.isEmpty()) return fStopX100
         return options.minByOrNull { abs(it - fStopX100) } ?: fStopX100
+    }
+
+    /**
+     * 解析用户输入的光圈值 → f 值 ×100。非法输入返回 `null`。
+     *
+     * 支持：`f/2.8`、`F2.8`、`2.8`、`f8`、`8`。
+     * 合法范围 f/1.0 – f/64（超出即判非法，避免把 `128` 这类笔误当 f/128 下发）。
+     */
+    fun parseFStop(input: String?): Int? {
+        val text = input?.trim()?.lowercase(Locale.US) ?: return null
+        if (text.isEmpty()) return null
+        val raw = text
+            .removePrefix("f/")
+            .removePrefix("f")
+            .replace("／", "/")
+            .replace(" ", "")
+            .removePrefix("/")
+        val value = raw.toDoubleOrNull() ?: return null
+        if (value < 1.0 || value > 64.0) return null
+        return (value * 100).roundToInt()
+    }
+}
+
+/**
+ * ISO 档位工具。
+ *
+ * ISO 走标准 `PROP_EXPOSURE_INDEX`（UINT16），档位表沿用 [CameraParameterManager.commonIsoValues]
+ * （整档列表），手动输入时按**对数距离**就近匹配 —— 与快门同理，ISO 是等比数列，
+ * 用线性差会让高感端永远匹配到同一档（例如 6400 与 12800 的线性差远大于 100 与 200）。
+ */
+object IsoCatalog {
+
+    /** 自动 ISO 在 PTP 中的哨兵值（与 [CameraParameterManager.readIso] 的显示映射一致） */
+    const val AUTO_ISO_RAW = 0xFFFF
+
+    /**
+     * 解析用户输入的 ISO → raw 值。非法输入返回 `null`。
+     *
+     * 支持：`800`、`ISO 800`、`iso800`、`auto` / `自动`（→ [AUTO_ISO_RAW]）。
+     * 合法范围 50 – 819200（超出即判非法）。
+     */
+    fun parse(input: String?): Int? {
+        val text = input?.trim()?.lowercase(Locale.US) ?: return null
+        if (text.isEmpty()) return null
+        if (text == "auto" || text == "自动" || text == "isoauto") return AUTO_ISO_RAW
+        val raw = text.removePrefix("iso").replace(" ", "")
+        val value = raw.toIntOrNull() ?: return null
+        if (value < 50 || value > 819200) return null
+        return value
+    }
+
+    /** 在给定档位表中匹配最接近的 ISO（对数距离；[AUTO_ISO_RAW] 原样返回） */
+    fun matchNearest(isoValue: Int, options: List<Int>): Int {
+        if (isoValue == AUTO_ISO_RAW || options.isEmpty()) return isoValue
+        val target = kotlin.math.ln(isoValue.toDouble())
+        return options.minByOrNull { kotlin.math.abs(kotlin.math.ln(it.toDouble()) - target) }
+            ?: isoValue
     }
 }
 

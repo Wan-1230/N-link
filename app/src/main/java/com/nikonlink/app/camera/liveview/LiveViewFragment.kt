@@ -28,10 +28,12 @@ import com.nikonlink.app.capture.ShootingState
 import com.nikonlink.app.capture.RemoteShootingViewModel
 import com.nikonlink.app.camera.params.CameraParamsViewModel
 import com.nikonlink.app.camera.params.resolvePickerIndex
+import com.nikonlink.app.shared.common.AppSettings
 import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import javax.inject.Inject
 
 /**
  * 全屏实时取景器。
@@ -57,6 +59,13 @@ class LiveViewFragment : Fragment() {
     private val viewModel: LiveViewViewModel by viewModels()
     private val paramsViewModel: CameraParamsViewModel by viewModels()
     private val shootingViewModel: RemoteShootingViewModel by viewModels()
+
+    /**
+     * 直方图开关状态（优化项 4/修复）。
+     * 与遥控页共用同一持久化键（AppSettings.histogramEnabled），
+     * 全屏与非全屏来回切换不会改变开关状态，两边按钮互相同步。
+     */
+    @Inject lateinit var settings: AppSettings
 
     private var controlsVisible = true
     private var gridVisible = true
@@ -101,6 +110,20 @@ class LiveViewFragment : Fragment() {
             binding.viewGridOverlay.visibility = if (gridVisible) View.VISIBLE else View.GONE
         }
 
+        // 优化项 4/修复：全屏页同样提供直方图开关，状态与遥控页共用
+        binding.btnHistogram.pressEffect()
+        binding.btnHistogram.setOnClickListener {
+            val enabled = !settings.histogramEnabled
+            settings.histogramEnabled = enabled
+            applyHistogramToggle(enabled)
+            Toast.makeText(
+                requireContext(),
+                if (enabled) "已开启亮度直方图" else "已关闭亮度直方图",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        applyHistogramToggle(settings.histogramEnabled)
+
         binding.btnMore.pressEffect()
         binding.btnMore.setOnClickListener { showMoreMenu() }
 
@@ -140,6 +163,18 @@ class LiveViewFragment : Fragment() {
             startActivity(intent)
             requireActivity().finish()
         }
+    }
+
+    /**
+     * 优化项 4/修复：应用直方图开关状态。
+     * 该状态只由用户点击开关改变；全屏/非全屏切换、监看启停均不触碰它
+     * （两页共用 AppSettings.histogramEnabled，进出全屏自动对齐）。
+     * 关闭时清空柱体，避免重新打开时闪上一轮残留。
+     */
+    private fun applyHistogramToggle(enabled: Boolean) {
+        binding.viewHistogram.visibility = if (enabled) View.VISIBLE else View.GONE
+        binding.btnHistogram.alpha = if (enabled) 1f else 0.55f
+        if (!enabled) binding.viewHistogram.clear()
     }
 
     private fun showMoreMenu() {
@@ -520,6 +555,8 @@ class LiveViewFragment : Fragment() {
                     binding.ivLiveView.setImageBitmap(bitmap)
                     binding.viewGridOverlay.setImageSource(binding.ivLiveView)
                     binding.viewGridOverlay.invalidate()
+                    // 优化项 4/修复：直方图与取景画面同帧刷新；关闭时跳过统计，零开销
+                    if (settings.histogramEnabled) binding.viewHistogram.setFrame(bitmap)
                 }
             }
         }

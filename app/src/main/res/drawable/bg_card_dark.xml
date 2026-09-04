@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 独立强调卡片：纯黑反色底、无描边，与常规灰白卡片（bg_card）拉开层级 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/dark_card" />
+    <corners android:radius="@dimen/card_radius" />
+</shape>

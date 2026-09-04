@@ -50,6 +50,14 @@ class AppSettings @Inject constructor(
         get() = prefs.getBoolean("wifi_band_5g_prefer", false)
         set(value) = prefs.edit().putBoolean("wifi_band_5g_prefer", value).apply()
 
+    /**
+     * 亮度直方图开关（优化项 4）：遥控拍摄界面是否显示实时直方图。
+     * 默认关闭——直方图是进阶工具，默认铺开会遮挡取景画面。
+     */
+    var histogramEnabled: Boolean
+        get() = prefs.getBoolean("histogram_enabled", false)
+        set(value) = prefs.edit().putBoolean("histogram_enabled", value).apply()
+
     /** 自动下载：相机拍摄新照片后自动同步到手机（需连接就绪） */
     var autoDownload: Boolean
         get() = prefs.getBoolean("auto_download", false)

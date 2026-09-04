@@ -13,6 +13,7 @@ import android.view.ViewGroup
 import android.view.ViewOutlineProvider
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
@@ -26,9 +27,12 @@ import com.nikonlink.app.camera.liveview.LiveViewActivity
 import com.nikonlink.app.camera.liveview.LiveViewViewModel
 import com.nikonlink.app.camera.params.CameraParam
 import com.nikonlink.app.camera.params.CameraParamsViewModel
+import com.nikonlink.app.camera.params.ParamApplyResult
 import com.nikonlink.app.camera.params.resolvePickerIndex
+import com.nikonlink.app.shared.common.AppSettings
 import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -48,6 +52,9 @@ class RemoteFragment : Fragment() {
     private val viewModel: RemoteShootingViewModel by viewModels()
     private val paramsViewModel: CameraParamsViewModel by viewModels()
     private val liveViewViewModel: LiveViewViewModel by viewModels()
+
+    /** 优化项 4：直方图开关状态持久化（顺手保持跨页面/重启一致） */
+    @Inject lateinit var settings: AppSettings
 
     private var videoMode = false
     private var recording = false
@@ -93,6 +100,20 @@ class RemoteFragment : Fragment() {
             LiveViewActivity.start(requireContext())
         }
 
+        // 优化项 4：亮度直方图开关
+        binding.btnHistogram.pressEffect()
+        binding.btnHistogram.setOnClickListener {
+            val enabled = !settings.histogramEnabled
+            settings.histogramEnabled = enabled
+            applyHistogramToggle(enabled)
+            Toast.makeText(
+                requireContext(),
+                if (enabled) "已开启亮度直方图" else "已关闭亮度直方图",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        applyHistogramToggle(settings.histogramEnabled)
+
         // 点击画面选择对焦点（淡入淡出动效）
         binding.ivLiveView.setOnTouchListener { v, event ->
             if (event.action == MotionEvent.ACTION_UP &&
@@ -105,6 +126,17 @@ class RemoteFragment : Fragment() {
             }
             true
         }
+    }
+
+    /**
+     * 优化项 4：应用直方图开关状态。
+     * 关闭时一并清空已统计的柱体，否则重新打开会先闪一帧上一轮的残留图形。
+     * 开关态用图标透明度表达（开启 100% / 关闭 55%），不引入强调色，保持黑白体系。
+     */
+    private fun applyHistogramToggle(enabled: Boolean) {
+        binding.viewHistogram.visibility = if (enabled) View.VISIBLE else View.GONE
+        binding.btnHistogram.alpha = if (enabled) 1f else 0.55f
+        if (!enabled) binding.viewHistogram.clear()
     }
 
     private fun showFocusIndicator(x: Float, y: Float) {
@@ -192,14 +224,22 @@ class RemoteFragment : Fragment() {
                     displayValues = rawValues.map { paramsViewModel.formatShutter(it) },
                     rawValues = rawValues,
                     // 档位表按曝光时间升序，向上滚 = 更快
-                    hint = "↑ 更快 / ↓ 更慢",
+                    hint = "↑ 更快 / ↓ 更慢（可手动输入）",
+                    manualHintRes = R.string.param_input_hint_shutter,
+                    onManualInput = { text -> paramsViewModel.applyShutterInput(text) },
                     onConfirm = { idx -> paramsViewModel.setShutterByValue(rawValues[idx]) }
                 )
             }
             "ISO" -> {
                 val rawValues = paramsViewModel.commonIsoValues
                 showWheelPicker(
-                    "ISO", param, rawValues.map { it.toString() }, rawValues,
+                    title = "ISO",
+                    param = param,
+                    displayValues = rawValues.map { it.toString() },
+                    rawValues = rawValues,
+                    hint = null,
+                    manualHintRes = R.string.param_input_hint_iso,
+                    onManualInput = { text -> paramsViewModel.applyIsoInput(text) },
                     onConfirm = { idx -> paramsViewModel.setIsoByValue(rawValues[idx]) }
                 )
             }
@@ -233,22 +273,32 @@ class RemoteFragment : Fragment() {
                 displayValues = options.map { paramsViewModel.formatAperture(it) },
                 rawValues = options,
                 hint = if (paramsViewModel.apertureRangeFromLens) {
-                    "↑ 光圈更大 / ↓ 光圈收小"
+                    "↑ 光圈更大 / ↓ 光圈收小（可手动输入）"
                 } else {
-                    "未获取到镜头信息，使用通用档位"
+                    "未获取到镜头信息，使用通用档位（可手动输入）"
                 },
+                manualHintRes = R.string.param_input_hint_aperture,
+                onManualInput = { text -> paramsViewModel.applyApertureInput(text) },
                 onConfirm = { idx -> paramsViewModel.setApertureByValue(options[idx]) }
             )
         }
     }
 
-    /** 滚轮选择器底部面板（从下向上滑入，Material 默认行为） */
+    /**
+     * 滚轮选择器底部面板（从下向上滑入，Material 默认行为）。
+     *
+     * @param manualHintRes 非 0 时显示手动输入行（快门 / 光圈 / ISO 支持，
+     *                      白平衡等枚举型参数不传）
+     * @param onManualInput 手动输入的应用回调：解析 → 就近匹配 → 下发 → 回告生效值
+     */
     private fun showWheelPicker(
         title: String,
         param: CameraParam,
         displayValues: List<String>,
         rawValues: List<Int>,
         hint: String? = null,
+        manualHintRes: Int = 0,
+        onManualInput: (suspend (String) -> ParamApplyResult)? = null,
         onConfirm: (Int) -> Unit
     ) {
         if (displayValues.isEmpty() || displayValues.size != rawValues.size) return
@@ -270,11 +320,56 @@ class RemoteFragment : Fragment() {
         // 用 raw 值定位，不再用显示字符串反查（v0.1.2 两处口径不一致导致恒定位到首项）
         picker.value = resolvePickerIndex(rawValues, param.rawValue)
 
+        // —— 手动输入区 ——
+        val applyInput = onManualInput
+        if (applyInput != null && manualHintRes != 0) {
+            pickerBinding.layoutManualInput.visibility = View.VISIBLE
+            pickerBinding.tvManualHint.visibility = View.VISIBLE
+            pickerBinding.tvManualHint.setText(manualHintRes)
+            val submit = {
+                val text = pickerBinding.etManualInput.text?.toString()?.trim().orEmpty()
+                if (text.isEmpty()) {
+                    pickerBinding.etManualInput.error = "请输入数值"
+                } else {
+                    viewLifecycleOwner.lifecycleScope.launch {
+                        val result = applyInput(text)
+                        if (_binding == null) return@launch
+                        Toast.makeText(requireContext(), result.message, Toast.LENGTH_SHORT).show()
+                        if (result.ok) {
+                            // 成功后把滚轮定位到实际生效档位，避免面板与相机口径不一致
+                            val idx = resolvePickerIndex(rawValues, currentParamRaw(param.name))
+                            if (idx in 0..picker.maxValue) picker.value = idx
+                            pickerBinding.etManualInput.text?.clear()
+                            pickerBinding.etManualInput.clearFocus()
+                            dialog.dismiss()
+                        }
+                    }
+                }
+            }
+            pickerBinding.btnManualApply.setOnClickListener { submit() }
+            pickerBinding.etManualInput.setOnEditorActionListener { _, actionId, _ ->
+                // 键盘「完成」等同于点击应用
+                if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
+                    submit(); true
+                } else {
+                    false
+                }
+            }
+        }
+
         pickerBinding.btnPickerConfirm.setOnClickListener {
             onConfirm(picker.value)
             dialog.dismiss()
         }
         dialog.show()
+    }
+
+    /** 按参数名取当前 raw 值，用于手动输入成功后回正滚轮位置 */
+    private fun currentParamRaw(name: String): Int = when (name) {
+        "光圈" -> paramsViewModel.aperture.value.rawValue
+        "快门速度" -> paramsViewModel.shutterSpeed.value.rawValue
+        "ISO" -> paramsViewModel.iso.value.rawValue
+        else -> 0
     }
 
     // ---------------- 快门户 ----------------
@@ -403,7 +498,12 @@ class RemoteFragment : Fragment() {
                 val data = frame.data
                 val start = findJpegStart(data)
                 val bitmap = BitmapFactory.decodeByteArray(data, start, data.size - start)
-                if (bitmap != null) binding.ivLiveView.setImageBitmap(bitmap)
+                if (bitmap != null) {
+                    binding.ivLiveView.setImageBitmap(bitmap)
+                    // 优化项 4：直方图与取景画面同一帧刷新，不存在时延差。
+                    // 开关关闭时整段跳过——降采样统计本身也不跑，零额外开销。
+                    if (settings.histogramEnabled) binding.viewHistogram.setFrame(bitmap)
+                }
             }
         }
 
@@ -419,6 +519,8 @@ class RemoteFragment : Fragment() {
                     LiveViewState.ERROR -> "监看异常"
                     else -> "未监看"
                 }
+                // 优化项 4/修复：监看启停/进出全屏不自动改变直方图状态——
+                // 开关只由用户点击改变，停止期间保留最后一帧的分布，恢复监看后自然续上
             }
         }
 
