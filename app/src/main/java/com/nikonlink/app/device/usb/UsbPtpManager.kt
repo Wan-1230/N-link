@@ -454,6 +454,13 @@ class UsbPtpManager @Inject constructor(
     }
 
     /**
+     * 获取高清缩略图（Nikon 厂商扩展 0x90C4），不支持时机身返回错误响应 → null。
+     */
+    suspend fun getLargeThumbnail(handle: Int): ByteArray? {
+        return sendCommandWithData(PtpConstants.OP_NIKON_GET_LARGE_THUMB, listOf(handle))
+    }
+
+    /**
      * 获取设备属性值
      */
     suspend fun getDevicePropValue(propCode: Int): ByteArray? {
@@ -577,6 +584,17 @@ class UsbPtpManager @Inject constructor(
     suspend fun stopMovieRecording(): Boolean {
         val response = sendCommand(PtpConstants.OP_NIKON_END_MOVIE_REC)
         return response?.isOk ?: false
+    }
+
+    /** 录像命令带响应码版本（WiFi 通道同名方法的 USB 对应实现） */
+    suspend fun startMovieRecordingResult(): Pair<Boolean, Int> {
+        val response = sendCommand(PtpConstants.OP_NIKON_START_MOVIE_REC_IN_CARD)
+        return (response?.isOk ?: false) to (response?.responseCode ?: PtpConstants.RESPONSE_GENERAL_ERROR)
+    }
+
+    suspend fun stopMovieRecordingResult(): Pair<Boolean, Int> {
+        val response = sendCommand(PtpConstants.OP_NIKON_END_MOVIE_REC)
+        return (response?.isOk ?: false) to (response?.responseCode ?: PtpConstants.RESPONSE_GENERAL_ERROR)
     }
 
     suspend fun initiateOpenCapture(): Boolean {

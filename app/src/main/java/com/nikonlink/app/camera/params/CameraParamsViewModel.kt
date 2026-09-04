@@ -45,6 +45,14 @@ class CameraParamsViewModel @Inject constructor(
     /** 白平衡预设：PTP 枚举值 → 显示名 */
     val whiteBalancePresets: List<Pair<Int, String>> get() = paramManager.whiteBalancePresets
 
+    /** 可远程切换的拍摄模式（0x500E 值 → 标签） */
+    val exposureProgramModes: List<Pair<Int, String>> get() = paramManager.exposureProgramModes
+
+    /** 设置拍摄模式（远程切换 P/S/A/M/Auto，机身不支持时以回读值为准） */
+    fun setExposureProgram(mode: Int) {
+        viewModelScope.launch { paramManager.setExposureProgram(mode) }
+    }
+
     /** 快门显示文本（与相机回读值同一口径，见 [CameraParameterManager.formatShutter]） */
     fun formatShutter(rawX10000: Int): String = paramManager.formatShutter(rawX10000)
 
@@ -183,9 +191,9 @@ class CameraParamsViewModel @Inject constructor(
                 false, "输入无效，可填 1/250、250、0.6 或 30s（1/8000 – 30s）"
             )
         // 优先按标称名精确命中（1/4000 等高速档的 raw 是取整值，只能按名字命中），
-        // 命中不了再按曝光时间就近匹配
+        // 命中不了再按曝光时间就近匹配（按标称秒数对数距离，规避高速档取整误差）
         val labelHit = ShutterCatalog.matchByLabel(text)
-        val target = labelHit ?: ShutterCatalog.matchNearest(seconds)
+        val target = labelHit ?: ShutterCatalog.matchBySeconds(seconds)
         val snapped = labelHit == null && (seconds * 10000).roundToInt() != target
         if (!paramManager.setShutterSpeed(target)) {
             return@withContext ParamApplyResult(false, "参数已锁定，请先解锁后再调整")

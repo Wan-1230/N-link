@@ -597,15 +597,54 @@ class CameraParameterManager @Inject constructor(
         }
     }
 
+    /**
+     * 快门速度读取（多源归一化）。
+     *
+     * 不同机身对快门的暴露方式不一致：
+     * - 标准 0x500D（ExposureTime，1/10000s）：部分机身只读、不刷新，个别机型量纲还不符合规范；
+     * - 厂商 0xD100（ShutterSpeed，高 16 位分子/低 16 位分母的打包分数）：Z 系列遥控模式下
+     *   的实际控制属性（参考 ZRelay / SnapBridge 生态的双源实现）。
+     *
+     * 优先取 0xD100 的合法值，读不到再回退 0x500D；拿到曝光秒数后 snap 到档位表
+     * （显示名与滚轮定位统一用档位 raw，保证三处口径一致）。两者都非法时：
+     * 0x500D = 0xFFFFFFFF（B 门）显示「B门」，其余保持上次值不误刷新。
+     */
     private suspend fun readShutterSpeed() {
-        val data = readDeviceProp(PtpConstants.PROP_EXPOSURE_TIME) ?: return
-        if (data.size >= 4) {
-            val value = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).int
-            // 快门速度以 1/10000s 为单位；显示统一走 formatShutter，
-            // 保证"当前值显示"与滚轮刻度口径完全一致（v0.1.2 两处口径不一致导致方向反转）
-            _shutterSpeed.value = _shutterSpeed.value.copy(
-                currentValue = formatShutter(value),
-                rawValue = value
+        val stdData = readPropOrNull(PtpConstants.PROP_EXPOSURE_TIME)
+        val stdRaw = if (stdData != null && stdData.size >= 4) {
+            ByteBuffer.wrap(stdData).order(ByteOrder.LITTLE_ENDIAN).int
+        } else {
+            null
+        }
+        val nikonData = readPropOrNull(PtpConstants.PROP_NIKON_SHUTTER_SPEED)
+        val nikonRaw = if (nikonData != null && nikonData.size >= 4) {
+            ByteBuffer.wrap(nikonData).order(ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xFFFFFFFFL
+        } else {
+            null
+        }
+
+        val nikonSeconds = nikonRaw?.let { ShutterCatalog.parseNikonShutterSpeed(it) }
+        val stdSeconds = stdRaw?.takeIf { ShutterCatalog.isValidExposureTime(it) }?.let { it / 10000.0 }
+        val seconds = nikonSeconds ?: stdSeconds
+
+        when {
+            seconds != null -> {
+                val catalogRaw = ShutterCatalog.matchBySeconds(seconds)
+                _shutterSpeed.value = _shutterSpeed.value.copy(
+                    currentValue = formatShutter(catalogRaw),
+                    rawValue = catalogRaw
+                )
+            }
+            // B 门：0x500D 返回 0xFFFFFFFF（-1），档位表外的独立状态
+            stdRaw != null && stdRaw < 0 -> {
+                _shutterSpeed.value = _shutterSpeed.value.copy(
+                    currentValue = "B门",
+                    rawValue = 0
+                )
+            }
+            else -> Timber.tag(TAG).d(
+                "Shutter read invalid: std=0x${stdRaw?.toUInt()?.toString(16) ?: "null"}, " +
+                    "nikon=0x${nikonRaw?.toString(16) ?: "null"}"
             )
         }
     }
@@ -687,22 +726,25 @@ class CameraParameterManager @Inject constructor(
         val data = readDeviceProp(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE) ?: return
         if (data.size >= 2) {
             val value = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
-            val display = when (value) {
-                1 -> "M (手动)"
-                2 -> "P (程序)"
-                3 -> "A (光圈优先)"
-                4 -> "S (快门优先)"
-                0x8010 -> "Auto"
-                0x8011 -> "场景"
-                0x8012 -> "U1"
-                0x8013 -> "U2"
-                else -> "未知($value)"
-            }
             _exposureProgram.value = _exposureProgram.value.copy(
-                currentValue = display,
+                currentValue = describeExposureProgram(value),
                 rawValue = value
             )
         }
+    }
+
+    /** 0x500E 值 → 显示名（读路径与模式选择器共用，保证口径一致） */
+    fun describeExposureProgram(value: Int): String = when (value) {
+        1 -> "M (手动)"
+        2 -> "P (程序)"
+        3 -> "A (光圈优先)"
+        4 -> "S (快门优先)"
+        0x8010 -> "Auto"
+        0x8011 -> "场景"
+        0x8012 -> "U1 / 遥控"
+        0x8013 -> "U2"
+        0x8014 -> "U3"
+        else -> "未知($value)"
     }
 
     private suspend fun readMeteringMode() {
@@ -758,6 +800,10 @@ class CameraParameterManager @Inject constructor(
      * @param exposureTime 以 1/10000s 为单位 (如 1/250s = 40)
      *
      * 与光圈一致做上下限限位，避免按值设置（滚轮直接选值）时越界。
+     *
+     * 双源下发：标准 0x500D 之外，同时尝试厂商 0xD100（打包分数格式）——
+     * Z 系列机身遥控下 0x500D 可能只读或被忽略，0xD100 才是实际生效通道；
+     * 0xD100 写失败（机型不支持）不视为错误，以回读结果为准。
      */
     suspend fun setShutterSpeed(exposureTime: Int): Boolean {
         if (_paramsLocked.value) return false
@@ -769,7 +815,29 @@ class CameraParameterManager @Inject constructor(
         val data = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
             .putInt(clamped).array()
         val success = writeDeviceProp(PtpConstants.PROP_EXPOSURE_TIME, data)
+        if (success) {
+            ShutterCatalog.packedNikonShutterSpeed(clamped)?.let { packed ->
+                val nikonData = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(packed.toInt()).array()
+                writeDeviceProp(PtpConstants.PROP_NIKON_SHUTTER_SPEED, nikonData)
+            }
+        }
         if (success) readShutterSpeed()
+        return success
+    }
+
+    /**
+     * 设置拍摄模式（0x500E ExposureProgramMode）。
+     *
+     * 模式值：1=M、2=P、3=A、4=S、0x8010=Auto。这是"远程模式"语义的写入——
+     * 机身切到对应曝光模式；物理拨盘是更高优先级，断开重连后机身回到拨盘位置属于正常行为。
+     */
+    suspend fun setExposureProgram(mode: Int): Boolean {
+        if (_paramsLocked.value) return false
+        val data = ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN)
+            .putShort(mode.toShort()).array()
+        val success = writeDeviceProp(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE, data)
+        if (success) readExposureProgram()
         return success
     }
 
@@ -826,6 +894,15 @@ class CameraParameterManager @Inject constructor(
 
     /** 常用快门档位 raw 值（1/10000s，升序 = 从快到慢），真源见 [ShutterCatalog.VALUES] */
     val commonShutterSpeeds: List<Int> get() = ShutterCatalog.VALUES
+
+    /**
+     * 可远程切换的拍摄模式（0x500E 值 → 短标签）。
+     * 机身不支持远程切换时 SetDevicePropValue 会返回错误，UI 以回读值提示实际模式。
+     */
+    val exposureProgramModes: List<Pair<Int, String>> = listOf(
+        2 to "P (程序)", 4 to "S (快门优先)", 3 to "A (光圈优先)",
+        1 to "M (手动)", 0x8010 to "Auto"
+    )
 
     val commonIsoValues = listOf(100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200)
     val whiteBalancePresets = listOf(
@@ -1043,6 +1120,32 @@ object ShutterCatalog {
             ?: VALUES.first()
     }
 
+    /** 每个档位的"标称真实秒数"：高速段由标称名还原（1/4000 → 0.00025s），长曝段 raw 即精确值 */
+    private val TRUE_SECONDS_BY_STOP: List<Pair<Int, Double>> = STOPS.map { stop ->
+        val labelSeconds = when {
+            stop.label.startsWith("1/") ->
+                stop.label.removePrefix("1/").toDoubleOrNull()?.let { 1.0 / it }
+            stop.label.endsWith("s") -> stop.label.removeSuffix("s").toDoubleOrNull()
+            else -> null
+        }
+        stop.raw to (labelSeconds ?: (stop.raw / 10000.0))
+    }
+
+    /**
+     * 按曝光时间（秒）匹配最接近的**机身标称档**，返回该档 raw。
+     *
+     * 与 [matchNearest] 的区别：距离按**标称名还原的秒数**计算，而不是取整后的 raw。
+     * 高速段 raw 是取整值（1/4000 → 2，真值 2.5），用 raw 匹配会把 1/4000 错配到 1/3200；
+     * 机身回读值（0x500D / 0xD100）换算成秒后一律走本函数。
+     */
+    fun matchBySeconds(seconds: Double): Int {
+        if (seconds <= 0.0) return VALUES.first()
+        val target = kotlin.math.ln(seconds)
+        return TRUE_SECONDS_BY_STOP.minByOrNull { (_, trueSeconds) ->
+            kotlin.math.abs(kotlin.math.ln(trueSeconds) - target)
+        }?.first ?: VALUES.first()
+    }
+
     /**
      * 按**机身标称名**精确匹配档位 raw，匹配不到返回 `null`。
      *
@@ -1059,9 +1162,78 @@ object ShutterCatalog {
         return STOPS.firstOrNull { it.label.lowercase(Locale.US) == text }?.raw
     }
 
+    /**
+     * 标准 0x500D raw（1/10000s）是否为有效曝光时间。
+     * 0 / 负数（含 0xFFFFFFFF=-1 即 B 门、0xFFFFFFFE/FD 哨兵）与超出 60s 的异常值都视为无效，
+     * 无效值不应参与显示与滚轮定位。
+     */
+    fun isValidExposureTime(rawX10000: Int): Boolean =
+        rawX10000 in 1..MAX_RAW_X10000
+
+    /**
+     * Nikon 厂商属性 0xD100（ShutterSpeed）→ 曝光秒数。
+     *
+     * 值布局为**高 16 位 = 分子，低 16 位 = 分母**的打包分数
+     * （1/125 → 0x0001_007D、30/1 → 0x001E_0001），与 0x500D 的定点数完全不同。
+     * 非法（0、哨兵、超出支持范围）返回 null，调用方回退标准 0x500D 通道。
+     */
+    fun parseNikonShutterSpeed(raw: Long): Double? {
+        if (raw <= 0L || raw == PtpConstants.NIKON_SHUTTER_SPEED_INVALID) return null
+        val numerator = (raw shr 16) and 0xFFFFL
+        val denominator = raw and 0xFFFFL
+        if (numerator == 0L || denominator == 0L) return null
+        val seconds = numerator.toDouble() / denominator.toDouble()
+        // 允许 1/8000 ~ 64s 的宽容区间，档位snap时再按本表收敛
+        return if (seconds in 1.0 / 8000.0..64.0) seconds else null
+    }
+
+    /**
+     * 档位 raw → Nikon 0xD100 打包分数（高 16 位分子 / 低 16 位分母）。
+     *
+     * 由**机身标称名**还原精确分数（1/4000 → (1,4000)、1/2.5 → (2,5)、1.3s → (13,10)、
+     * 30s → (30,1)），避开 1/4000=2.5 这类取整 raw 无法还原分数的问题。
+     * 注意 "1/2.5" 这类非整数分母必须走分数化简（= 2/5），不能对分母四舍五入。
+     * 标称名无法解析时返回 null（调用方跳过 0xD100 下发）。
+     */
+    fun packedNikonShutterSpeed(rawX10000: Int): Long? {
+        val label = LABEL_BY_RAW[rawX10000] ?: formatNumeric(rawX10000)
+        val seconds = when {
+            label.endsWith("s") -> label.removeSuffix("s").toDoubleOrNull() ?: return null
+            label.startsWith("1/") ->
+                label.removePrefix("1/").toDoubleOrNull()?.let { 1.0 / it } ?: return null
+            else -> return null
+        }
+        if (seconds <= 0.0) return null
+        val (numerator, denominator) = fractionOf(seconds) ?: return null
+        if (numerator <= 0L || numerator > 0xFFFFL || denominator <= 0L || denominator > 0xFFFFL) return null
+        return (numerator shl 16) or denominator
+    }
+
+    /** 秒数 → 最简整数分数（分子, 分母），分母 ≤ 0xFFFF（0xD100 打包分母上限），无法表示返回 null */
+    private fun fractionOf(seconds: Double): Pair<Long, Long>? {
+        if (seconds <= 0.0) return null
+        // 分母从小往大试，找相对误差最小的；档位秒数都是干净值，命中即精确为 0
+        var best: Pair<Long, Long>? = null
+        var bestError = Double.MAX_VALUE
+        for (denominator in 1..0xFFFFL) {
+            val numerator = Math.round(seconds * denominator)
+            if (numerator <= 0L || numerator > 0xFFFFL) continue
+            val error = kotlin.math.abs(numerator.toDouble() / denominator - seconds) / seconds
+            if (error < bestError) {
+                bestError = error
+                best = numerator to denominator
+            }
+            if (error < 1e-9) break
+        }
+        return best?.takeIf { bestError < 0.001 }
+    }
+
     /** 支持的最快 / 最慢曝光时间（秒），用于输入校验 */
     const val MIN_EXPOSURE_SECONDS = 1.0 / 8000.0
     const val MAX_EXPOSURE_SECONDS = 30.0
+
+    /** 0x500D 有效 raw 上限（1/10000s × 600000 = 60s，留出超长曝光余量） */
+    const val MAX_RAW_X10000 = 600000
 }
 
 /**

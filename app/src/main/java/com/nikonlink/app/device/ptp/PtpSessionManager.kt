@@ -443,6 +443,17 @@ class PtpSessionManager @Inject constructor(
     }
 
     /**
+     * 获取高清缩略图（Nikon 厂商扩展 0x90C4）。
+     * 标准 0x100A 缩略图通常只有 160×120 上下，拉伸到相册网格必然模糊；
+     * 0x90C4 返回机身生成的更大预览图。部分机型不支持该操作（返回错误响应），
+     * 调用方必须能接受 null 并回退 [getThumbnail]。
+     */
+    suspend fun getLargeThumbnail(handle: Int): ByteArray? {
+        val result = sendCommandWithData(PtpConstants.OP_NIKON_GET_LARGE_THUMB, listOf(handle))
+        return (result as? PtpDataResult.Success)?.data
+    }
+
+    /**
      * 获取完整对象（照片下载）
      * PRD 2.1: 选择性下载原图
      * @param sink 非空时流式写入，避免大图全量驻留内存
@@ -511,6 +522,20 @@ class PtpSessionManager @Inject constructor(
 
     suspend fun stopMovieRecording(): Boolean {
         return sendCommand(PtpConstants.OP_NIKON_END_MOVIE_REC).isOk
+    }
+
+    /**
+     * 录像命令带响应码版本：0x920A/0x920B 被相机拒绝时（未监看 / 未处于视频模式 /
+     * 点测白平衡占用等）调用方需要原始响应码才能给出可操作的中文化提示。
+     */
+    suspend fun startMovieRecordingResult(): Pair<Boolean, Int> {
+        val response = sendCommand(PtpConstants.OP_NIKON_START_MOVIE_REC_IN_CARD)
+        return response.isOk to response.responseCode
+    }
+
+    suspend fun stopMovieRecordingResult(): Pair<Boolean, Int> {
+        val response = sendCommand(PtpConstants.OP_NIKON_END_MOVIE_REC)
+        return response.isOk to response.responseCode
     }
 
     /**

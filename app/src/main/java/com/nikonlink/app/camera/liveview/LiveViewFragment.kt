@@ -5,8 +5,6 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.graphics.BitmapFactory
-import android.graphics.Matrix
-import android.graphics.RectF
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -102,6 +100,10 @@ class LiveViewFragment : Fragment() {
 
         binding.btnAfMode.pressEffect()
         binding.btnAfMode.setOnClickListener { paramsViewModel.cycleFocusMode() }
+
+        // 模式标签可点：监看中远程切换拍摄模式（0x500E）
+        binding.tvModeTag.pressEffect()
+        binding.tvModeTag.setOnClickListener { showModePicker() }
 
         binding.btnGridToggle.pressEffect()
         binding.btnGridToggle.setOnClickListener {
@@ -225,6 +227,30 @@ class LiveViewFragment : Fragment() {
             .setItems(options) { _, which ->
                 paramsViewModel.setMeteringMode(codes[which])
             }
+            .show()
+    }
+
+    /**
+     * 拍摄模式远程切换（0x500E）。
+     * 与遥控页共用同一套档位；机身不接受时以回读值提示实际模式。
+     */
+    private fun showModePicker() {
+        val modes = paramsViewModel.exposureProgramModes
+        val labels = modes.map { it.second }.toTypedArray()
+        val current = paramsViewModel.exposureProgram.value
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("拍摄模式（远程切换）")
+            .setMessage("当前: ${current.currentValue.ifBlank { "--" }}")
+            .setSingleChoiceItems(labels, -1) { dialog, which ->
+                dialog.dismiss()
+                paramsViewModel.setExposureProgram(modes[which].first)
+                Toast.makeText(
+                    requireContext(),
+                    "已下发 ${modes[which].second}，以相机实际模式为准",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            .setNegativeButton("取消", null)
             .show()
     }
 
@@ -424,28 +450,10 @@ class LiveViewFragment : Fragment() {
     }
 
     private fun handleFocusTap(tapX: Float, tapY: Float) {
-        val rect = displayedImageRect() ?: RectF(0f, 0f, binding.ivLiveView.width.toFloat(), binding.ivLiveView.height.toFloat())
-        if (!rect.contains(tapX, tapY)) return
-
-        val nx = ((tapX - rect.left) / rect.width()).coerceIn(0f, 1f)
-        val ny = ((tapY - rect.top) / rect.height()).coerceIn(0f, 1f)
-        viewModel.touchFocus(nx, ny)
-        showFocusIndicator(
-            rect.left + nx * rect.width(),
-            rect.top + ny * rect.height()
-        )
-    }
-
-    private fun displayedImageRect(): RectF? {
-        val drawable = binding.ivLiveView.drawable ?: return null
-        if (drawable.intrinsicWidth <= 0 || drawable.intrinsicHeight <= 0) return null
-        val rect = RectF(
-            0f, 0f,
-            drawable.intrinsicWidth.toFloat(),
-            drawable.intrinsicHeight.toFloat()
-        )
-        Matrix(binding.ivLiveView.imageMatrix).mapRect(rect)
-        return if (rect.width() > 0 && rect.height() > 0) rect else null
+        // 统一换算：fitCenter 黑边剔除 + 双指缩放还原（旧版放大后点击坐标与实际不符）
+        val tap = FocusTapMapper.mapToNormalized(binding.ivLiveView, tapX, tapY) ?: return
+        viewModel.touchFocus(tap.x, tap.y)
+        showFocusIndicator(tapX, tapY)
     }
 
     private fun showFocusIndicator(x: Float, y: Float) {
