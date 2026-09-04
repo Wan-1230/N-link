@@ -291,6 +291,14 @@ class TransferViewModel @Inject constructor(
         viewModelScope.launch {
             remoteShootingManager.captureEvents.collect { scheduleCaptureSync() }
         }
+        // 高清缩略图升级：下载原图后本地重生成，网格局部重绑展示清晰版
+        viewModelScope.launch {
+            transferManager.thumbnailUpgrades.collect { handle ->
+                pendingThumbs.remove(handle)
+                _thumbnails.value = _thumbnails.value - handle
+                requestThumbnail(handle)
+            }
+        }
         // F2 + F1 批量收尾：下载状态变化时刷新已下载集合；
         // 队列排空（Idle）且存在「已标记」栏发起的批量任务时，检查并弹「清除标记」确认
         viewModelScope.launch {

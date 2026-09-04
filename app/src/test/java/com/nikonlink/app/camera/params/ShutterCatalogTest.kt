@@ -126,6 +126,67 @@ class ShutterCatalogTest {
         assertEquals(300000, ShutterCatalog.matchNearest(30.0))
     }
 
+    /**
+     * 按秒数匹配必须以**标称秒数**为基准：raw 是取整值（1/4000 → 2，真值 2.5），
+     * 用 raw 匹配会把 1/4000 错配到 1/3200（旧版 readShutterSpeed 的隐患）。
+     */
+    @Test
+    fun `按秒匹配高速档不因raw取整而错位`() {
+        assertEquals(2, ShutterCatalog.matchBySeconds(1.0 / 4000.0))       // 1/4000 ≠ 1/3200
+        assertEquals(3, ShutterCatalog.matchBySeconds(1.0 / 3200.0))
+        assertEquals(6, ShutterCatalog.matchBySeconds(1.0 / 1600.0))       // 1/1600 真值 6.25
+        assertEquals(8, ShutterCatalog.matchBySeconds(1.0 / 1250.0))
+        assertEquals(40, ShutterCatalog.matchBySeconds(1.0 / 250.0))
+        assertEquals(10000, ShutterCatalog.matchBySeconds(1.0))
+        assertEquals(13000, ShutterCatalog.matchBySeconds(1.3))
+        assertEquals(300000, ShutterCatalog.matchBySeconds(30.0))
+    }
+
+    // ---------- Nikon 0xD100 打包分数（多源快门读取） ----------
+
+    @Test
+    fun `0xD100 打包分数解析`() {
+        // 高 16 位 = 分子，低 16 位 = 分母：1/125 → (1, 125)
+        assertEquals(0.008, ShutterCatalog.parseNikonShutterSpeed((1L shl 16) or 125L)!!, 1e-9)
+        // 30/1 = 30s
+        assertEquals(30.0, ShutterCatalog.parseNikonShutterSpeed((30L shl 16) or 1L)!!, 1e-9)
+        // 2/5 = 0.4s（机身标称 0.4\"" 档）
+        assertEquals(0.4, ShutterCatalog.parseNikonShutterSpeed((2L shl 16) or 5L)!!, 1e-9)
+        // 13/10 = 1.3s
+        assertEquals(1.3, ShutterCatalog.parseNikonShutterSpeed((13L shl 16) or 10L)!!, 1e-9)
+    }
+
+    @Test
+    fun `0xD100 非法值返回null`() {
+        assertNull(ShutterCatalog.parseNikonShutterSpeed(0L))
+        assertNull(ShutterCatalog.parseNikonShutterSpeed(0xFFFFFFFFL))          // B 门哨兵
+        assertNull(ShutterCatalog.parseNikonShutterSpeed(125L))                 // 分子=0
+        assertNull(ShutterCatalog.parseNikonShutterSpeed(1L shl 16))            // 分母=0
+        assertNull(ShutterCatalog.parseNikonShutterSpeed((9999L shl 16) or 1L)) // 9999s 超范围
+    }
+
+    @Test
+    fun `0xD100 打包与解析互逆`() {
+        listOf(2, 3, 8, 10, 40, 80, 160, 800, 1000, 2500, 4000, 5000, 10000, 13000, 300000)
+            .forEach { raw ->
+                val packed = ShutterCatalog.packedNikonShutterSpeed(raw)
+                assertEquals("raw=$raw 应可打包", true, packed != null)
+                val seconds = ShutterCatalog.parseNikonShutterSpeed(packed!!)
+                assertEquals("raw=$raw 打包往返应还原同一档", raw, ShutterCatalog.matchBySeconds(seconds!!))
+            }
+    }
+
+    // ---------- 0x500D 有效性 ----------
+
+    @Test
+    fun `0x500D 哨兵与异常值判无效`() {
+        assert(ShutterCatalog.isValidExposureTime(80))
+        assert(ShutterCatalog.isValidExposureTime(300000))
+        assert(!ShutterCatalog.isValidExposureTime(-1))       // 0xFFFFFFFF（B 门）
+        assert(!ShutterCatalog.isValidExposureTime(0))
+        assert(!ShutterCatalog.isValidExposureTime(2000000))  // 200s 超出 60s 上限
+    }
+
     private fun assertNotContains(actual: String, forbidden: String) {
         assert(!actual.contains(forbidden)) { "'$actual' 不应包含 '$forbidden'" }
     }
