@@ -24,6 +24,7 @@ import com.nikonlink.app.shared.common.AppEventLogger
 import com.nikonlink.app.shared.common.AppSettings
 import com.nikonlink.app.shared.ui.pressEffect
 import com.nikonlink.app.shared.update.UpdateChecker
+import com.nikonlink.app.shared.update.UpdatePrompt
 import com.nikonlink.app.shared.update.UpdateResult
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
@@ -38,7 +39,8 @@ import javax.inject.Inject
  * 功能整改: 移除无实际逻辑的入口（账号/固件更新/语言/RAW处理/GPS同步），
  * 落地画质/保存路径/连接偏好/5GHz优先/自动下载设置项（AppSettings 读写一体），
  * 意见反馈改为系统邮件意图，通用设置新增「导出日志」（AppEventLogger 链路日志）、
- * 「检查更新」（UpdateChecker 查 GitHub Releases + 失败降级，不做 APK 自下载安装）。
+ * 「检查更新」（UpdateChecker 查 GitHub Releases + 失败降级，不做 APK 自下载安装）、
+ * 「夸克网盘下载」（与 GitHub 并列的国内直连下载入口，PRD 夸克网盘更新通道）。
  */
 @AndroidEntryPoint
 class SettingsFragment : Fragment() {
@@ -112,6 +114,18 @@ class SettingsFragment : Fragment() {
         binding.tvCacheValue.text = formatCacheSize(requireContext())
         binding.tvUpdateValue.text = BuildConfig.VERSION_NAME
         binding.tvUpdateValue.setTextColor(resolveColor(R.color.text_tertiary))
+        restoreQuarkRow()
+    }
+
+    /** 夸克网盘入口副文案（PRD 夸克网盘更新通道 §4.2）：优先展示缓存版本，无缓存给引导提示 */
+    private fun restoreQuarkRow() {
+        val cached = updateChecker.cachedQuarkLink()
+        binding.tvQuarkValue.text = when {
+            cached == null -> "暂无网盘链接"
+            cached.versionLabel != null -> "可下载 ${cached.versionLabel}"
+            else -> "可下载"
+        }
+        binding.tvQuarkValue.setTextColor(resolveColor(R.color.text_tertiary))
     }
 
     private fun setupRows() {
@@ -218,6 +232,10 @@ class SettingsFragment : Fragment() {
         // 检查更新：查 GitHub Releases latest，任何失败只降级提示、不误报新版本
         binding.rowCheckUpdate.pressEffect()
         binding.rowCheckUpdate.setOnClickListener { checkUpdate() }
+
+        // 夸克网盘下载：与 GitHub 通道并列的国内直连下载入口（PRD 夸克网盘更新通道 §4.2）
+        binding.rowQuarkUpdate.pressEffect()
+        binding.rowQuarkUpdate.setOnClickListener { openQuarkDownload() }
 
         binding.rowAbout.pressEffect()
         binding.rowAbout.setOnClickListener {
@@ -360,6 +378,10 @@ class SettingsFragment : Fragment() {
                 is UpdateResult.Available -> {
                     b.tvUpdateValue.text = "发现 ${result.versionLabel}"
                     b.tvUpdateValue.setTextColor(resolveColor(R.color.accent))
+                    // 本次解析到夸克链接时顺带刷新网盘入口副文案（缓存已在 UpdateChecker 落盘）
+                    if (result.quarkUrl != null) {
+                        b.tvQuarkValue.text = "可下载 ${result.versionLabel}"
+                    }
                     showUpdateDialog(result)
                 }
 
@@ -374,26 +396,30 @@ class SettingsFragment : Fragment() {
         }
     }
 
-    /** 新版本对话框（F6）：版本号 + 发布日期 + 更新说明 + 更新/稍后/查看完整日志 */
-    private fun showUpdateDialog(result: UpdateResult.Available) {
-        val message = buildString {
-            append("新版本：").append(result.versionLabel)
-            result.publishedAtLabel?.let { append(" · 发布于 ").append(it) }
-            if (result.versionUnknown) append("\n（无法自动判断版本高低，请到发布页确认后再更新）")
-            append("\n\n").append(result.notes.ifBlank { "暂无更新说明。" })
+    /**
+     * 夸克网盘下载入口（PRD 夸克网盘更新通道 §4.2）。
+     * 链接来源：最近一次检查更新解析到的缓存；无缓存时只明确提示，不影响任何其他流程。
+     */
+    private fun openQuarkDownload() {
+        val link = updateChecker.cachedQuarkLink()
+        if (link == null) {
+            toast("暂无网盘链接，请先检查更新")
+            return
         }
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle("发现新版本")
-            .setMessage(message)
-            .setPositiveButton("更新") { _, _ -> openUrl(result.url) }
-            .setNegativeButton("稍后", null)
-            // F6：无网络时隐藏跳转（PRD AC-2），有 Release 网页才提供完整日志入口
-            .apply {
-                if (!result.releaseUrl.isNullOrBlank()) {
-                    setNeutralButton("查看完整日志") { _, _ -> openUrl(result.releaseUrl) }
-                }
-            }
-            .show()
+        eventLogger.event(
+            "update_check",
+            "action" to "quark_open",
+            "version" to link.versionLabel
+        )
+        openUrl(link.url)
+    }
+
+    /**
+     * 新版本对话框（F6 + 夸克网盘更新通道 §4.3）：实现收敛在 [UpdatePrompt]，
+     * 供设置页手动检查与 MainActivity 启动自动检查共用（含防重入）。
+     */
+    private fun showUpdateDialog(result: UpdateResult.Available) {
+        UpdatePrompt.showIfNotShowing(requireContext(), eventLogger, result)
     }
 
     /** 检查失败后的兜底入口：引导用户自己去发布页看（PRD S5） */
@@ -408,24 +434,10 @@ class SettingsFragment : Fragment() {
 
     /**
      * 跳转下载：优先 apk 直链，无 apk 时是 release 页面（PRD S4）。
-     * 无浏览器等场景退化成对话框展示完整 URL 供复制。
+     * 无浏览器等场景退化成对话框展示完整 URL 供复制。实现收敛在 [UpdatePrompt]。
      */
     private fun openUrl(url: String) {
-        eventLogger.event("update_check", "action" to "open_url", "url" to url)
-        val opened = runCatching {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE)
-            startActivity(intent)
-        }.onFailure { e ->
-            Timber.w(e, "Open update url failed: $url")
-        }.isSuccess
-        if (opened) return
-
-        val b = _binding ?: return
-        MaterialAlertDialogBuilder(b.root.context)
-            .setTitle("无法打开链接")
-            .setMessage("请手动复制以下地址到浏览器打开：\n\n$url")
-            .setPositiveButton("确定", null)
-            .show()
+        UpdatePrompt.openUrl(requireContext(), eventLogger, url)
     }
 
     private fun resolveColor(resId: Int): Int = ContextCompat.getColor(requireContext(), resId)

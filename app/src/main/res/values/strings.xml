@@ -26,4 +26,13 @@
     <!-- 相册按日期分组 -->
     <string name="album_group_select_all">全选</string>
     <string name="album_group_deselect_all">取消全选</string>
+
+    <!-- 参数手动输入 -->
+    <!-- 优化项 4：遥控拍摄界面直方图开关 -->
+    <string name="histogram_toggle">亮度直方图开关</string>
+
+    <string name="param_input_hint">手动输入</string>
+    <string name="param_input_hint_shutter">可填 1/250、250、0.6 或 30s；无此档位时自动切到最接近档</string>
+    <string name="param_input_hint_aperture">可填 f/2.8、F8 或 8；按当前镜头档位就近匹配</string>
+    <string name="param_input_hint_iso">可填 800、ISO 6400 或 auto；无此档位时自动切到最接近档</string>
 </resources>

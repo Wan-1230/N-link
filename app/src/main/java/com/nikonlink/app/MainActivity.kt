@@ -19,15 +19,23 @@ import androidx.annotation.DrawableRes
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.withResumed
 import com.nikonlink.app.databinding.ActivityMainBinding
 import com.nikonlink.app.device.DashboardFragment
 import com.nikonlink.app.capture.RemoteFragment
 import com.nikonlink.app.settings.SettingsFragment
 import com.nikonlink.app.camera.gallery.TransferFragment
 import com.nikonlink.app.device.service.ConnectionService
+import com.nikonlink.app.shared.common.AppEventLogger
 import com.nikonlink.app.shared.ui.pressEffect
+import com.nikonlink.app.shared.update.UpdateChecker
+import com.nikonlink.app.shared.update.UpdatePrompt
+import com.nikonlink.app.shared.update.UpdateResult
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 import timber.log.Timber
+import javax.inject.Inject
 
 /**
  * 主 Activity — 黑白极简四 Tab 框架
@@ -47,9 +55,19 @@ class MainActivity : AppCompatActivity() {
 
         /** 双击退出的时间窗：2 秒内再次按返回键才退出，超时重新计时 */
         private const val BACK_EXIT_INTERVAL_MS = 2_000L
+
+        /** 启动自动检查更新：每进程只跑一次（旋转/重建 Activity 不重跑） */
+        @Volatile
+        private var autoCheckStarted = false
     }
 
     private lateinit var binding: ActivityMainBinding
+
+    @Inject
+    lateinit var updateChecker: UpdateChecker
+
+    @Inject
+    lateinit var eventLogger: AppEventLogger
 
     /** 上一次按下返回键的时间戳；0 表示当前不在「待退出」窗口内 */
     private var lastBackPressedAt = 0L
@@ -101,6 +119,7 @@ class MainActivity : AppCompatActivity() {
         setupBackExit()
         handleOpenTab(intent)
         checkPermissionsAndStart()
+        maybeAutoCheckUpdate()
     }
 
     /**
@@ -244,5 +263,47 @@ class MainActivity : AppCompatActivity() {
     private fun startConnectionService() {
         ContextCompat.startForegroundService(this, Intent(this, ConnectionService::class.java))
         Timber.tag(TAG).i("ConnectionService started")
+    }
+
+    /**
+     * 启动自动检查更新（PRD 夸克网盘更新通道 §4.5）。
+     *
+     * - 每进程一次：onCreate 触发，与主界面加载并行，不阻塞首帧
+     * - 有新版本 → 等主界面 resumed 后弹更新弹窗（UpdatePrompt 内置防重入，
+     *   与设置页手动检查互不叠加）；已是最新 → 静默；失败 → 只记日志不打扰
+     */
+    private fun maybeAutoCheckUpdate() {
+        if (autoCheckStarted) return
+        autoCheckStarted = true
+        eventLogger.event("update_check", "action" to "auto_start")
+        lifecycleScope.launch {
+            val result = updateChecker.check(BuildConfig.VERSION_NAME)
+            if (isFinishing || isDestroyed) return@launch
+            when (result) {
+                is UpdateResult.Available -> {
+                    eventLogger.event(
+                        "update_check",
+                        "action" to "auto_available",
+                        "tag" to result.versionLabel
+                    )
+                    // 检查完成时通常早已 resumed；withResumed 仅防御离线短路等极快返回
+                    lifecycle.withResumed {
+                        UpdatePrompt.showIfNotShowing(this@MainActivity, eventLogger, result)
+                    }
+                }
+
+                UpdateResult.UpToDate -> eventLogger.event(
+                    "update_check",
+                    "action" to "auto_up_to_date",
+                    "current" to BuildConfig.VERSION_NAME
+                )
+
+                is UpdateResult.Failed -> eventLogger.event(
+                    "update_check",
+                    "action" to "auto_failed",
+                    "reason" to result.reason.name
+                )
+            }
+        }
     }
 }
