@@ -190,6 +190,19 @@ object PtpConstants {
     const val PROP_STILL_CAPTURE_MODE = 0x5013
     const val PROP_FOCUS_METERING_MODE = 0x501C
 
+    /**
+     * Nikon 厂商属性: ShutterSpeed (0xD100)。
+     *
+     * 部分机身（尤其 Z 系列）在遥控模式下只通过该属性上报/接受快门速度，
+     * 标准 0x500D 可能只读、不刷新甚至缺报。值布局为 **高 16 位 = 分子，低 16 位 = 分母**
+     * 的打包分数（如 1/125 → 0x0001_007D），与 0x500D 的 1/10000s 定点数不同；
+     * 解析见 CameraParameterManager。
+     */
+    const val PROP_NIKON_SHUTTER_SPEED = 0xD100
+
+    /** Nikon 厂商属性: 快门速度数据包中的无效哨兵（B 门等），只用于合法性判断 */
+    const val NIKON_SHUTTER_SPEED_INVALID = 0xFFFFFFFFL
+
     // Nikon 厂商镜头属性（PTP 扩展定义）
     const val PROP_NIKON_LENS_ID = 0xD0E0
     const val PROP_NIKON_LENS_SORT = 0xD0E1

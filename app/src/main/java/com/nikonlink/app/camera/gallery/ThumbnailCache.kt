@@ -33,10 +33,17 @@ class ThumbnailCache @Inject constructor(
     companion object {
         private const val TAG = "ThumbCache"
         private const val MAX_MEMORY_KB = 64 * 1024   // 64MB
-        private const val MAX_EDGE_PX = 512
+
+        /**
+         * 解码目标长边。相册网格单格 300px+（高 dpi 下更高），旧值 512 之下源图常常只有
+         * 160×120，放大显示必然模糊；配合 0x90C4 高清缩略图提到 1024，同时保留
+         * inSampleSize 降采样控制内存。
+         */
+        private const val MAX_EDGE_PX = 1024
     }
 
-    private val diskDir = File(context.cacheDir, "thumbnails").apply { mkdirs() }
+    // v2：旧目录缓存的是 0x100A 小图字节，升级后整体作废，避免新代码读到旧的小图
+    private val diskDir = File(context.cacheDir, "thumbnails_v2").apply { mkdirs() }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 

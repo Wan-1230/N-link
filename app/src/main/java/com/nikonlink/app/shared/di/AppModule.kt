@@ -16,6 +16,7 @@ import com.nikonlink.app.shared.data.PairedDeviceDao
 import com.nikonlink.app.shared.data.TransferHistoryDao
 import com.nikonlink.app.device.data.DeviceRepository
 import com.nikonlink.app.camera.data.TransferRepository
+import com.nikonlink.app.camera.gallery.ThumbnailCache
 import com.nikonlink.app.camera.liveview.LiveViewManager
 import com.nikonlink.app.capture.RemoteShootingManager
 import com.nikonlink.app.camera.params.CameraParameterManager
@@ -100,8 +101,9 @@ object AppModule {
     @Singleton
     fun provideRemoteShootingManager(
         ptpSessionManager: PtpSessionManager,
-        usbPtpManager: UsbPtpManager
-    ): RemoteShootingManager = RemoteShootingManager(ptpSessionManager, usbPtpManager)
+        usbPtpManager: UsbPtpManager,
+        liveViewManager: LiveViewManager
+    ): RemoteShootingManager = RemoteShootingManager(ptpSessionManager, usbPtpManager, liveViewManager)
 
     @Provides
     @Singleton
@@ -126,6 +128,7 @@ object AppModule {
         ptpSessionManager: PtpSessionManager,
         usbPtpManager: UsbPtpManager,
         transferRepository: TransferRepository,
+        thumbnailCache: ThumbnailCache,
         wifiManager: WifiManager,
         settings: AppSettings,
         eventLogger: AppEventLogger
@@ -134,6 +137,7 @@ object AppModule {
         ptpSessionManager,
         usbPtpManager,
         transferRepository,
+        thumbnailCache,
         wifiManager,
         settings,
         eventLogger

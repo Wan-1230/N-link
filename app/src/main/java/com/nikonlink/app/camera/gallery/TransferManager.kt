@@ -58,6 +58,7 @@ class TransferManager @Inject constructor(
     private val ptpSession: PtpSessionManager,
     private val usbPtpManager: UsbPtpManager,
     private val transferRepository: TransferRepository,
+    private val thumbnailCache: ThumbnailCache,
     private val wifiManager: WifiManager,
     private val settings: AppSettings,
     private val eventLogger: AppEventLogger
@@ -141,6 +142,10 @@ class TransferManager @Inject constructor(
     /** 全链路优化: 面向用户的消息流（成功/失败/通道切换都有反馈，不再静默） */
     private val _message = MutableStateFlow("")
     val message: StateFlow<String> = _message.asStateFlow()
+
+    /** 下载原图后本地高清缩略图生成完成的 handle 通知（UI 局部刷新用） */
+    private val _thumbnailUpgrades = MutableSharedFlow<Int>(extraBufferCapacity = 8)
+    val thumbnailUpgrades: SharedFlow<Int> = _thumbnailUpgrades.asSharedFlow()
 
     /** 当前传输速率（bytes/s），用于验证 5GHz 高速通道目标。 */
     private val _transferSpeedBps = MutableStateFlow(0L)
@@ -312,17 +317,58 @@ class TransferManager @Inject constructor(
     }
 
     /**
-     * 获取缩略图
-     * PRD 2.1: 支持缩略图预览
+     * 获取缩略图：优先 Nikon 高清缩略图（0x90C4），失败回退标准 0x100A。
+     *
+     * 标准 GetThumb 只返回 ~160×120 的小图，拉伸到相册网格（每格 300px+）必然模糊；
+     * 0x90C4 返回机身生成的大预览（不支持的机型返回错误响应，自动回退，行为不劣于旧版）。
      */
     suspend fun fetchThumbnail(handle: Int): ByteArray? {
         return withContext(Dispatchers.IO) {
             try {
-                currentTransport().thumbnail(handle)
+                currentTransport().largeThumbnail(handle)
+                    ?.takeIf { isPlausibleJpeg(it) }
+                    ?: currentTransport().thumbnail(handle)
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Failed to fetch thumbnail for handle=$handle")
                 null
             }
+        }
+    }
+
+    /** 粗验 JPEG 载荷：SOI 标记 + 大于标准小缩略图的体量（防止把错误数据当图缓存） */
+    private fun isPlausibleJpeg(data: ByteArray): Boolean {
+        return data.size > 2048 &&
+            data.size >= 2 &&
+            (data[0].toInt() and 0xFF) == 0xFF && (data[1].toInt() and 0xFF) == 0xD8
+    }
+
+    /**
+     * 下载原图成功后，从本地文件生成高清缩略图（长边 ≤ 1024）回填两级缓存。
+     * 仅处理 JPEG（RAW/视频交给既有本地相册 MediaStore 通道）；失败静默，
+     * 相册网格继续用 PTP 缩略图，不影响下载主流程。
+     */
+    private fun regenerateThumbnailFromLocal(handle: Int, localFile: File) {
+        if (!localFile.exists() || localFile.length() == 0L) return
+        try {
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeFile(localFile.absolutePath, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return
+            var sample = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) > 1024) sample *= 2
+            val options = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+            val bitmap = android.graphics.BitmapFactory.decodeFile(localFile.absolutePath, options)
+                ?: return
+            thumbnailCache.putBitmap(handle, bitmap)
+            _thumbnailUpgrades.tryEmit(handle)
+            // 磁盘缓存同步覆盖为高清版本，二次进相册不再回退 PTP 小图
+            runCatching {
+                java.io.ByteArrayOutputStream().use { out ->
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+                    thumbnailCache.diskFile(handle).writeBytes(out.toByteArray())
+                }
+            }
+        } catch (e: Exception) {
+            Timber.tag(TAG).w(e, "Regenerate thumbnail failed for handle=$handle")
         }
     }
 
@@ -435,6 +481,8 @@ class TransferManager @Inject constructor(
 
             val savedPath = saveFileToMediaStore(prepareFileToSave(tempFile, file), file.fileName)
             if (savedPath != null) {
+                // 已下载原图 → 用原图生成高清缩略图回填缓存（0x90C4/0x100A 的小图从此不再展示）
+                regenerateThumbnailFromLocal(file.handle, tempFile)
                 tempFile.delete()
                 transferRepository.recordTransfer(file.handle, file.fileName, file.size, savedPath)
                 _transferState.value = TransferState.Completed(file)
@@ -1304,6 +1352,7 @@ private interface CameraTransport {
         sink: OutputStream? = null
     ): ByteArray?
     suspend fun thumbnail(handle: Int): ByteArray?
+    suspend fun largeThumbnail(handle: Int): ByteArray?
     suspend fun partialObject(
         handle: Int,
         offset: Int,
@@ -1324,6 +1373,7 @@ private class PtpTransport(
     override suspend fun getObject(handle: Int, onProgress: ((Long, Long) -> Unit)?, sink: OutputStream?): ByteArray? =
         ptp.getObject(handle, onProgress, sink)
     override suspend fun thumbnail(handle: Int): ByteArray? = ptp.getThumbnail(handle)
+    override suspend fun largeThumbnail(handle: Int): ByteArray? = ptp.getLargeThumbnail(handle)
     override suspend fun partialObject(handle: Int, offset: Int, size: Int, sink: OutputStream?): ByteArray? =
         ptp.getPartialObject(handle, offset, size, sink)
     override suspend fun deleteObject(handle: Int): Boolean = ptp.deleteObject(handle)
@@ -1341,6 +1391,7 @@ private class UsbTransport(
     override suspend fun getObject(handle: Int, onProgress: ((Long, Long) -> Unit)?, sink: OutputStream?): ByteArray? =
         usb.getObject(handle, onProgress)
     override suspend fun thumbnail(handle: Int): ByteArray? = usb.getThumbnail(handle)
+    override suspend fun largeThumbnail(handle: Int): ByteArray? = usb.getLargeThumbnail(handle)
     override suspend fun partialObject(handle: Int, offset: Int, size: Int, sink: OutputStream?): ByteArray? =
         usb.getPartialObject(handle, offset, size)
     override suspend fun deleteObject(handle: Int): Boolean = usb.deleteObject(handle)

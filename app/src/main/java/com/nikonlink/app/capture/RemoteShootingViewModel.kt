@@ -24,6 +24,13 @@ class RemoteShootingViewModel @Inject constructor(
     val batteryLevel: StateFlow<Int> = remoteManager.batteryLevel
     val remainingShots: StateFlow<Int> = remoteManager.remainingShots
 
+    /** 拍摄动作结果提示（失败原因等），UI 呈现后调用 [consumeMessage] 消费 */
+    val shootingMessage: StateFlow<String?> = remoteManager.shootingMessage
+
+    fun consumeMessage() {
+        remoteManager.consumeMessage()
+    }
+
     init {
         remoteManager.start(viewModelScope)
     }
