@@ -210,6 +210,30 @@
             android:src="@drawable/ic_fullscreen"
             app:tint="@color/white" />
 
+        <!-- 亮度直方图开关（优化项 4）：与全屏按钮同规格，位于其左侧 -->
+        <ImageView
+            android:id="@+id/btnHistogram"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="48dp"
+            android:layout_marginEnd="54dp"
+            android:background="@drawable/bg_fullscreen_button"
+            android:contentDescription="@string/histogram_toggle"
+            android:padding="9dp"
+            android:src="@drawable/ic_histogram"
+            app:tint="@color/white" />
+
+        <!-- 实时亮度直方图（优化项 4）：贴取景区底部，随监看帧同步刷新 -->
+        <com.nikonlink.app.camera.liveview.HistogramView
+            android:id="@+id/viewHistogram"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_gravity="bottom"
+            android:layout_marginHorizontal="10dp"
+            android:layout_marginBottom="10dp"
+            android:visibility="gone" />
+
         <!-- 快门闪白反馈 -->
         <View
             android:id="@+id/viewFlash"

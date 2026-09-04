@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 import javax.inject.Inject
 
 /**
@@ -168,6 +169,86 @@ class CameraParamsViewModel @Inject constructor(
         viewModelScope.launch { paramManager.setIso(iso) }
     }
 
+    // ==================== 手动输入（就近匹配 + 生效值提示） ====================
+
+    /**
+     * 手动输入快门速度。
+     *
+     * 输入值若不在档位表中，自动切到**对数距离最近**的档位，并在 [ParamApplyResult.message]
+     * 里回告实际生效值；写完后回读相机，机身实际值与下发值不一致时一并提示。
+     */
+    suspend fun applyShutterInput(text: String): ParamApplyResult = withContext(Dispatchers.IO) {
+        val seconds = ShutterCatalog.parseSeconds(text)
+            ?: return@withContext ParamApplyResult(
+                false, "输入无效，可填 1/250、250、0.6 或 30s（1/8000 – 30s）"
+            )
+        // 优先按标称名精确命中（1/4000 等高速档的 raw 是取整值，只能按名字命中），
+        // 命中不了再按曝光时间就近匹配
+        val labelHit = ShutterCatalog.matchByLabel(text)
+        val target = labelHit ?: ShutterCatalog.matchNearest(seconds)
+        val snapped = labelHit == null && (seconds * 10000).roundToInt() != target
+        if (!paramManager.setShutterSpeed(target)) {
+            return@withContext ParamApplyResult(false, "参数已锁定，请先解锁后再调整")
+        }
+        val applied = paramManager.shutterSpeed.value
+        val label = ShutterCatalog.format(target)
+        when {
+            // 机身回读与下发不一致：以机身为准回告，避免界面显示假值
+            applied.rawValue > 0 && applied.rawValue != target ->
+                ParamApplyResult(true, "已下发 $label，相机实际为 ${applied.currentValue}")
+            snapped ->
+                ParamApplyResult(true, "无此档位，已切到最接近的 $label")
+            else ->
+                ParamApplyResult(true, "已设为 $label")
+        }
+    }
+
+    /** 手动输入光圈（f 值），档位与当前镜头联动，越界自动取最近合法档。 */
+    suspend fun applyApertureInput(text: String): ParamApplyResult = withContext(Dispatchers.IO) {
+        val fStopX100 = ApertureCatalog.parseFStop(text)
+            ?: return@withContext ParamApplyResult(
+                false, "输入无效，可填 f/2.8、F8 或 8（f/1.0 – f/64）"
+            )
+        val options = paramManager.apertureOptions()
+        val target = ApertureCatalog.clampToNearest(fStopX100, options)
+        if (!paramManager.setAperture(target)) {
+            return@withContext ParamApplyResult(false, "参数已锁定，请先解锁后再调整")
+        }
+        val applied = paramManager.aperture.value
+        val label = ApertureCatalog.format(target)
+        when {
+            applied.rawValue > 0 && applied.rawValue != target ->
+                ParamApplyResult(true, "已下发 $label，相机实际为 ${applied.currentValue}")
+            target != fStopX100 ->
+                ParamApplyResult(true, "该镜头无此档位，已切到最接近的 $label")
+            else ->
+                ParamApplyResult(true, "已设为 $label")
+        }
+    }
+
+    /** 手动输入 ISO，不在档位表时按对数距离就近匹配。 */
+    suspend fun applyIsoInput(text: String): ParamApplyResult = withContext(Dispatchers.IO) {
+        val isoValue = IsoCatalog.parse(text)
+            ?: return@withContext ParamApplyResult(
+                false, "输入无效，可填 800、ISO 6400 或 auto（50 – 819200）"
+            )
+        val options = paramManager.commonIsoValues
+        val target = IsoCatalog.matchNearest(isoValue, options)
+        if (!paramManager.setIso(target)) {
+            return@withContext ParamApplyResult(false, "参数已锁定，请先解锁后再调整")
+        }
+        val applied = paramManager.iso.value
+        val label = if (target == IsoCatalog.AUTO_ISO_RAW) "Auto" else "$target"
+        when {
+            applied.rawValue > 0 && applied.rawValue != target ->
+                ParamApplyResult(true, "已下发 $label，相机实际为 ${applied.currentValue}")
+            target != isoValue ->
+                ParamApplyResult(true, "无此档位，已切到最接近的 ISO $label")
+            else ->
+                ParamApplyResult(true, "已设为 ISO $label")
+        }
+    }
+
     /** 测光模式循环：矩阵 → 中央重点 → 点测光 → 高光重点 */
     fun cycleMeteringMode() {
         viewModelScope.launch {
@@ -206,3 +287,14 @@ class CameraParamsViewModel @Inject constructor(
         }
     }
 }
+
+/**
+ * 手动输入的应用结果。
+ *
+ * @param ok 是否成功下发（false 表示输入非法或参数被锁定，界面不应关闭输入面板）
+ * @param message 给用户的提示：非法原因 / 就近匹配后的档位 / 相机实际生效值
+ */
+data class ParamApplyResult(
+    val ok: Boolean,
+    val message: String
+)

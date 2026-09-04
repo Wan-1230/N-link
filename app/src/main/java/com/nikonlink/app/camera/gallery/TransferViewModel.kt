@@ -13,6 +13,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nikonlink.app.camera.data.PhotoMarkRepository
+import com.nikonlink.app.capture.RemoteShootingManager
 import com.nikonlink.app.device.model.ConnectionState
 import com.nikonlink.app.device.connect.ConnectionManager
 import com.nikonlink.app.device.ptp.PtpSessionManager
@@ -50,11 +51,23 @@ class TransferViewModel @Inject constructor(
     private val thumbnailCache: ThumbnailCache,
     private val settings: AppSettings,
     private val photoMarkRepository: PhotoMarkRepository,
-    private val previewShareExporter: PreviewShareExporter
+    private val previewShareExporter: PreviewShareExporter,
+    private val remoteShootingManager: RemoteShootingManager
 ) : ViewModel() {
 
     companion object {
         private const val TAG = "TransferVM"
+
+        /**
+         * 拍摄完成 → 拉取相册的合并窗口（优化项 3）。
+         *
+         * 两个作用，缺一不可：
+         * 1. **等相机落盘**：快门释放后相机还要把文件写进存储卡，立刻拉列表拿到的
+         *    仍是旧清单。留这段时间让 ObjectAdded 真正生效。
+         * 2. **合并连拍**：窗口内再次出片只会把窗口往后推。间隔/连拍期间因此
+         *    一次都不拉（不会抢 PTP 带宽拖慢拍摄），等一串拍完再统一刷新一次。
+         */
+        private const val CAPTURE_SYNC_WINDOW_MS = 800L
     }
 
     private val _photoList = MutableStateFlow<List<CameraFile>>(emptyList())
@@ -260,10 +273,23 @@ class TransferViewModel @Inject constructor(
     /** 上一次的就绪状态，用于只在「未就绪 → 就绪」上升沿触发一次自动加载 */
     private var lastReady = false
 
+    /** 拍摄后自动同步的合并窗口任务（优化项 3），新事件到来会取消并重排 */
+    private var captureSyncJob: Job? = null
+
+    /**
+     * 待补拉的脏标记（优化项 3）：出片时若不满足同步条件（不在相机相册页 /
+     * 会话未就绪），只置位不拉取，等条件满足时补一次，保证不漏照片。
+     */
+    private var pendingCaptureSync = false
+
     init {
         // F1：标记记录流驱动（打标/取消/指纹清理后自动广播到网格与「已标记」栏）
         viewModelScope.launch {
             photoMarkRepository.observeAll().collect { _markedRecords.value = it }
+        }
+        // 优化项 3：拍摄完成后自动同步相册，用户无需手动刷新
+        viewModelScope.launch {
+            remoteShootingManager.captureEvents.collect { scheduleCaptureSync() }
         }
         // F2 + F1 批量收尾：下载状态变化时刷新已下载集合；
         // 队列排空（Idle）且存在「已标记」栏发起的批量任务时，检查并弹「清除标记」确认
@@ -355,15 +381,18 @@ class TransferViewModel @Inject constructor(
     /**
      * @param force 为 true 时无条件打断进行中的加载并重新开始（手动刷新走此路径）；
      *              为 false 时若已有加载在途则直接返回，避免自动刷新与手动刷新叠加。
+     * @param silent 为 true 时为后台静默刷新（优化项 3 拍摄后自动同步专用）：
+     *               不翻转 [_isLoading]（否则会闪全屏进度条、下拉刷新圈），
+     *               不清空已勾选的待下载项，也不覆盖用户当前看到的提示文案。
      */
-    private fun loadPhotos(force: Boolean = false) {
+    private fun loadPhotos(force: Boolean = false, silent: Boolean = false) {
         if (!force && !loadingGuard.compareAndSet(false, true)) {
             Timber.tag(TAG).d("Photo loading already in progress, skip")
             return
         }
         loadingGuard.set(true)
         loadJob?.cancel()
-        _isLoading.value = true
+        if (!silent) _isLoading.value = true
         loadJob = viewModelScope.launch {
             try {
                 // 媒体列表按 limit=18 分页，每页完成后立即刷新网格，
@@ -374,8 +403,12 @@ class TransferViewModel @Inject constructor(
                     onPage = { page -> _photoList.value = page }
                 )
                 _photoList.value = photos
-                _selectedHandles.value = emptySet()
-                _message.value = if (photos.isEmpty()) "存储卡为空或未连接" else "共 ${photos.size} 个文件"
+                if (!silent) {
+                    // 静默刷新不能清勾选：用户可能正勾着一批待下载项在连拍，
+                    // 且 handle 是稳定的（新照片只会拿到新 handle），保留勾选是安全的。
+                    _selectedHandles.value = emptySet()
+                    _message.value = if (photos.isEmpty()) "存储卡为空或未连接" else "共 ${photos.size} 个文件"
+                }
                 if (photos.isNotEmpty()) {
                     // F1 失效自愈：全量列表到手后做指纹校验，清理机内已删除/换卡失效的标记。
                     // 仅在非空列表时校验——空列表可能是抓取失败，此时清理会把全部标记误删。
@@ -386,9 +419,40 @@ class TransferViewModel @Inject constructor(
                 // 后台渐进取预热缩略图；可见项由 Adapter 按需触发
                 prewarmThumbnails(photos.map { it.handle })
             } finally {
-                _isLoading.value = false
+                if (!silent) _isLoading.value = false
                 loadingGuard.set(false)
             }
+        }
+    }
+
+    /**
+     * 拍摄完成后排一次相册同步（优化项 3）。
+     *
+     * 合并语义：窗口内再次出片会取消上一个未执行的任务并重排，
+     * 因此连拍/间隔拍摄期间一次都不拉，一串拍完（间隔 > [CAPTURE_SYNC_WINDOW_MS]）才刷新。
+     *
+     * 不满足条件时只置 [pendingCaptureSync] 脏标记、不拉取：
+     * - 用户在看本地相册 / 已标记栏：切回相机相册时补（见 [setAlbum]）；
+     * - PTP 会话未就绪：不在这里触发重连——重连是有副作用的重动作，
+     *   交给连接页和手动刷新；等会话就绪后由 [onCameraReadyChanged] 兜底补拉。
+     */
+    private fun scheduleCaptureSync() {
+        if (_activeAlbum.value != AlbumSource.CAMERA) {
+            pendingCaptureSync = true
+            Timber.tag(TAG).d("Capture sync deferred: not on camera album")
+            return
+        }
+        if (!transferManager.hasActiveSession()) {
+            pendingCaptureSync = true
+            Timber.tag(TAG).d("Capture sync deferred: no active PTP session")
+            return
+        }
+        pendingCaptureSync = false
+        captureSyncJob?.cancel()
+        captureSyncJob = viewModelScope.launch {
+            delay(CAPTURE_SYNC_WINDOW_MS)
+            Timber.tag(TAG).i("Auto syncing album after capture")
+            loadPhotos(force = false, silent = true)
         }
     }
 
@@ -403,6 +467,8 @@ class TransferViewModel @Inject constructor(
         if (!rising) return
         if (_activeAlbum.value != AlbumSource.CAMERA) return
         _message.value = "相机已连接，正在加载相册…"
+        // 这次全量加载已包含所有新照片，清掉此前累积的补拉脏标记
+        pendingCaptureSync = false
         loadPhotos(force = true)
     }
 
@@ -420,7 +486,8 @@ class TransferViewModel @Inject constructor(
                 // 首次进入标记栏时刷新一次已下载判定，保证「跳过已下载」开关立即生效
                 viewModelScope.launch { refreshDownloadedHandles() }
             }
-            AlbumSource.CAMERA -> Unit
+            // 优化项 3：拍摄时若不在本页而留下了补拉标记，切回来时立刻补上
+            AlbumSource.CAMERA -> if (pendingCaptureSync) scheduleCaptureSync()
         }
     }
 

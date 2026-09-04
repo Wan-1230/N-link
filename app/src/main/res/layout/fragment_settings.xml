@@ -37,6 +37,44 @@
             android:paddingHorizontal="@dimen/page_margin"
             android:paddingVertical="@dimen/module_gap">
 
+            <!-- 优化项 5：支持开发 · 独立强调卡片置顶。
+                 反色黑底 + 15sp 加粗，与下方常规灰白卡片拉开层级；
+                 行高 60dp（常规 52dp），复用 dark_card/on_dark_card 既有色板 -->
+            <LinearLayout
+                android:id="@+id/rowSupport"
+                android:layout_width="match_parent"
+                android:layout_height="60dp"
+                android:background="@drawable/bg_card_dark"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingHorizontal="18dp">
+
+                <ImageView
+                    android:layout_width="20dp"
+                    android:layout_height="20dp"
+                    android:contentDescription="支持开发"
+                    android:src="@drawable/ic_coffee"
+                    app:tint="@color/on_dark_card" />
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:fontFamily="sans-serif"
+                    android:text="支持开发 · 请喝杯咖啡"
+                    android:textColor="@color/on_dark_card"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <ImageView
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:contentDescription="进入"
+                    android:src="@drawable/ic_chevron_right"
+                    app:tint="@color/on_dark_card" />
+            </LinearLayout>
+
             <!-- 传输设置组 -->
             <TextView
                 style="@style/NlText.GroupTitle"
@@ -487,6 +525,45 @@
                     android:background="@color/divider" />
 
                 <LinearLayout
+                    android:id="@+id/rowQuarkUpdate"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="18dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="夸克网盘下载"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+
+                    <TextView
+                        android:id="@+id/tvQuarkValue"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="暂无网盘链接"
+                        android:textColor="@color/text_tertiary"
+                        android:textSize="13sp" />
+
+                    <ImageView
+                        android:layout_width="16dp"
+                        android:layout_height="16dp"
+                        android:layout_marginStart="4dp"
+                        android:contentDescription="下载"
+                        android:src="@drawable/ic_chevron_right"
+                        app:tint="@color/text_tertiary" />
+                </LinearLayout>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/divider_height"
+                    android:layout_marginStart="18dp"
+                    android:background="@color/divider" />
+
+                <LinearLayout
                     android:id="@+id/rowAbout"
                     android:layout_width="match_parent"
                     android:layout_height="52dp"
@@ -499,37 +576,6 @@
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
                         android:text="关于应用"
-                        android:textColor="@color/text_primary"
-                        android:textSize="14sp" />
-
-                    <ImageView
-                        android:layout_width="16dp"
-                        android:layout_height="16dp"
-                        android:contentDescription="进入"
-                        android:src="@drawable/ic_chevron_right"
-                        app:tint="@color/text_tertiary" />
-                </LinearLayout>
-
-                <View
-                    android:layout_width="match_parent"
-                    android:layout_height="@dimen/divider_height"
-                    android:layout_marginStart="18dp"
-                    android:background="@color/divider" />
-
-                <!-- F7 打赏支持页：开源免费声明 + 自愿打赏 -->
-                <LinearLayout
-                    android:id="@+id/rowSupport"
-                    android:layout_width="match_parent"
-                    android:layout_height="52dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal"
-                    android:paddingHorizontal="18dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="支持开发（请喝杯咖啡）"
                         android:textColor="@color/text_primary"
                         android:textSize="14sp" />
 

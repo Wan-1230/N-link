@@ -4,6 +4,7 @@ import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.usb.UsbPtpManager
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.*
 import timber.log.Timber
 import javax.inject.Inject
@@ -62,6 +63,24 @@ class RemoteShootingManager @Inject constructor(
     /** 定时器倒计时 */
     private val _timerCountdown = MutableStateFlow(0)
     val timerCountdown: StateFlow<Int> = _timerCountdown.asStateFlow()
+
+    /**
+     * 拍摄完成事件（优化项 3：相册自动同步的触发源）。
+     *
+     * 载荷 = 完成时刻（[System.currentTimeMillis]），订阅方可据此去重。
+     * 单张 / 定时 / 间隔 / B 门四条路径最终都收敛到 [capture] 或 [bulbStop]，
+     * 所以订阅者监听这一个流即可覆盖所有出片场景，无需逐处埋点。
+     *
+     * 用 [MutableSharedFlow] 而不是 Channel：
+     * - 支持多个订阅者（相册 ViewModel 等）同时监听；
+     * - 无人订阅时 [tryEmit] 直接丢弃，不会像 Channel 那样堆积或挂起发射方，
+     *   拍摄主流程永远不会被"没人接事件"这件事阻塞。
+     */
+    private val _captureEvents = MutableSharedFlow<Long>(
+        extraBufferCapacity = 4,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val captureEvents: SharedFlow<Long> = _captureEvents.asSharedFlow()
 
     /** 相机剩余存储空间 */
     private val _remainingShots = MutableStateFlow(-1)
@@ -131,6 +150,8 @@ class RemoteShootingManager @Inject constructor(
                 }
                 if (success) {
                     _shotCount.value++
+                    // 通知相册自动同步（优化项 3）
+                    _captureEvents.tryEmit(System.currentTimeMillis())
                     Timber.tag(TAG).i("Capture success (total: ${_shotCount.value})")
                 }
                 _shootingState.value = ShootingState.IDLE
@@ -311,6 +332,7 @@ class RemoteShootingManager @Inject constructor(
                 }
                 _shootingState.value = ShootingState.IDLE
                 _shotCount.value++
+                if (ok) _captureEvents.tryEmit(System.currentTimeMillis())
                 Timber.tag(TAG).i("Bulb exposure ended: ${_bulbExposureTime.value}ms")
                 ok
             } catch (e: Exception) {
