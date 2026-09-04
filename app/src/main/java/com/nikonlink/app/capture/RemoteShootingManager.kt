@@ -1,5 +1,6 @@
 package com.nikonlink.app.capture
 
+import com.nikonlink.app.camera.liveview.LiveViewManager
 import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.usb.UsbPtpManager
@@ -26,7 +27,8 @@ import javax.inject.Singleton
 @Singleton
 class RemoteShootingManager @Inject constructor(
     private val ptpSession: PtpSessionManager,
-    private val usbPtpManager: UsbPtpManager
+    private val usbPtpManager: UsbPtpManager,
+    private val liveViewManager: LiveViewManager
 ) {
     companion object {
         private const val TAG = "RemoteShooting"
@@ -37,6 +39,12 @@ class RemoteShootingManager @Inject constructor(
         /** 长按对焦重触发间隔：必须大于单次 AF Drive 对焦周期，
          *  否则会打断相机正在进行的对焦（旧值 600ms 导致对焦反复中断） */
         private const val AF_HOLD_INTERVAL_MS = 1200L
+
+        /** 录像启动前的监看收敛等待：StartLiveView 验帧成功后画面仍需短暂稳定 */
+        private const val VIDEO_LV_SETTLE_MS = 800L
+
+        /** 录像命令 DeviceBusy 时的重试上限 */
+        private const val VIDEO_BUSY_RETRIES = 3
     }
 
     private var scope: CoroutineScope? = null
@@ -47,6 +55,17 @@ class RemoteShootingManager @Inject constructor(
 
     private val _shootingState = MutableStateFlow(ShootingState.IDLE)
     val shootingState: StateFlow<ShootingState> = _shootingState.asStateFlow()
+
+    /**
+     * 拍摄动作的用户可读结果（失败原因 / 前置动作提示）。
+     * UI 收到后以 Toast 呈现并随即消费；null 表示无可展示内容。
+     */
+    private val _shootingMessage = MutableStateFlow<String?>(null)
+    val shootingMessage: StateFlow<String?> = _shootingMessage.asStateFlow()
+
+    fun consumeMessage() {
+        _shootingMessage.value = null
+    }
 
     /** 拍摄计数器 */
     private val _shotCount = MutableStateFlow(0)
@@ -354,47 +373,140 @@ class RemoteShootingManager @Inject constructor(
     // ==================== 视频录制 ====================
 
     /**
-     * 开始视频录制
-     * PRD 2.2: 远程开始/停止视频录制 (P2)
+     * 开始视频录制（Nikon 0x920A StartMovieRecInCard）。
+     *
+     * 旧版直接裸发 0x920A，机身在未开实时取景时以 NotLiveView 拒绝且 UI 无任何反馈，
+     * 表现为「点录制没反应」。新版对齐影犀 / SnapBridge 的遥控录像流程：
+     * 1. 未开监看时先自动启动（依赖实时取景的录像链路）；
+     * 2. 收到 NotLiveView → 重启监看后重试；
+     * 3. DeviceBusy → 等待就绪后重试；
+     * 4. 其余失败码给出可操作的中文化提示（如拨盘未切到视频模式）。
      */
     suspend fun startVideoRecording(): Boolean {
-        if (!isRemoteReady()) return false
+        if (!isRemoteReady()) {
+            _shootingMessage.value = "相机尚未连接"
+            return false
+        }
         return withContext(Dispatchers.IO) {
             try {
-                val ok = if (usbPtpManager.isConnected()) {
-                    usbPtpManager.startMovieRecording()
+                // 前置：录像依赖 LiveView。未开启（或启动中）则等待/拉起（全流程状态反馈）
+                if (!liveViewManager.isRunning()) {
+                    _shootingState.value = ShootingState.VIDEO_PREPARING
+                    _shootingMessage.value = "正在启动监看…"
+                    if (!liveViewManager.ensureRunning()) {
+                        _shootingState.value = ShootingState.IDLE
+                        _shootingMessage.value = "监看启动失败，无法开始录制"
+                        return@withContext false
+                    }
+                    delay(VIDEO_LV_SETTLE_MS)
                 } else {
-                    ptpSession.startMovieRecording()
+                    _shootingState.value = ShootingState.VIDEO_PREPARING
                 }
-                if (ok) {
-                    _shootingState.value = ShootingState.VIDEO_RECORDING
+
+                var attempt = 0
+                while (true) {
+                    val (ok, code) = movieRecordingCommand(start = true)
+                    when {
+                        ok -> {
+                            _shootingState.value = ShootingState.VIDEO_RECORDING
+                            _shootingMessage.value = null
+                            Timber.tag(TAG).i("Video recording started")
+                            return@withContext true
+                        }
+                        code == PtpConstants.RESPONSE_NIKON_NOT_LIVE_VIEW && attempt == 0 -> {
+                            // 机身认为不在取景状态（假成功/中途退出）：重启监看后重试一次
+                            Timber.tag(TAG).w("Movie start rejected NotLiveView, restarting LV")
+                            liveViewManager.startLiveView()
+                            delay(VIDEO_LV_SETTLE_MS)
+                            attempt++
+                        }
+                        code == PtpConstants.RESPONSE_DEVICE_BUSY && attempt < VIDEO_BUSY_RETRIES -> {
+                            delay(500)
+                            attempt++
+                        }
+                        else -> {
+                            _shootingState.value = ShootingState.IDLE
+                            _shootingMessage.value = describeMovieRejection(code)
+                            return@withContext false
+                        }
+                    }
                 }
-                ok
+                // 不可达：循环内所有路径均已 return，仅为满足类型检查
+                error("unreachable")
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Video start failed")
+                _shootingState.value = ShootingState.IDLE
+                _shootingMessage.value = "录制启动异常：${e.message ?: "未知错误"}"
                 false
             }
         }
     }
 
     /**
-     * 停止视频录制
+     * 停止视频录制（Nikon 0x920B EndMovieRec）
      */
     suspend fun stopVideoRecording(): Boolean {
-        if (!isRemoteReady()) return false
+        if (!isRemoteReady()) {
+            _shootingMessage.value = "相机尚未连接"
+            return false
+        }
         return withContext(Dispatchers.IO) {
             try {
-                val ok = if (usbPtpManager.isConnected()) {
-                    usbPtpManager.stopMovieRecording()
-                } else {
-                    ptpSession.stopMovieRecording()
+                var attempt = 0
+                while (true) {
+                    val (ok, code) = movieRecordingCommand(start = false)
+                    when {
+                        ok -> {
+                            _shootingState.value = ShootingState.IDLE
+                            Timber.tag(TAG).i("Video recording stopped")
+                            return@withContext true
+                        }
+                        code == PtpConstants.RESPONSE_DEVICE_BUSY && attempt < VIDEO_BUSY_RETRIES -> {
+                            delay(500)
+                            attempt++
+                        }
+                        else -> {
+                            // 停止失败也回归空闲，避免 UI 永远停在「录制中」
+                            _shootingState.value = ShootingState.IDLE
+                            _shootingMessage.value = describeMovieRejection(code)
+                            return@withContext false
+                        }
+                    }
                 }
-                _shootingState.value = ShootingState.IDLE
-                ok
+                // 不可达：循环内所有路径均已 return，仅为满足类型检查
+                error("unreachable")
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Video stop failed")
+                _shootingState.value = ShootingState.IDLE
+                _shootingMessage.value = "停止录制异常：${e.message ?: "未知错误"}"
                 false
             }
+        }
+    }
+
+    /** 按当前通道发录像命令，返回 (是否成功, 响应码) */
+    private suspend fun movieRecordingCommand(start: Boolean): Pair<Boolean, Int> {
+        return if (usbPtpManager.isConnected()) {
+            if (start) usbPtpManager.startMovieRecordingResult()
+            else usbPtpManager.stopMovieRecordingResult()
+        } else {
+            if (start) ptpSession.startMovieRecordingResult()
+            else ptpSession.stopMovieRecordingResult()
+        }
+    }
+
+    /** 录像被拒绝时给用户可操作的提示 */
+    private fun describeMovieRejection(code: Int): String {
+        return when (code) {
+            PtpConstants.RESPONSE_NIKON_NOT_LIVE_VIEW ->
+                "相机未处于实时取景状态，请重新开始录制"
+            PtpConstants.RESPONSE_ACCESS_DENIED ->
+                "相机拒绝录制：请确认拨盘已切到视频模式，且未开启点测白平衡等占用功能"
+            PtpConstants.RESPONSE_OPERATION_NOT_SUPPORTED ->
+                "当前机型不支持远程录制"
+            PtpConstants.RESPONSE_STORE_FULL ->
+                "存储卡已满，无法录制"
+            else -> "录制失败：${PtpConstants.describeResponseCode(code)}"
         }
     }
 
@@ -452,6 +564,7 @@ enum class ShootingState {
     TIMER_COUNTDOWN,
     INTERVAL_SHOOTING,
     BULB_EXPOSING,
+    VIDEO_PREPARING,
     VIDEO_RECORDING
 }
 
