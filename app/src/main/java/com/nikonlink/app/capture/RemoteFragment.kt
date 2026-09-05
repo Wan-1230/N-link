@@ -12,6 +12,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
 import androidx.fragment.app.Fragment
@@ -61,6 +62,9 @@ class RemoteFragment : Fragment() {
     private var recording = false
     private var recordTimerJob: Job? = null
     private val paramCells = mutableMapOf<String, TextView>()
+
+    /** 参数单元格容器（PRD D3：B 门曝光中统一禁用，点击与按压反馈一并关闭） */
+    private val paramCellContainers = mutableListOf<LinearLayout>()
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentRemoteBinding.inflate(inflater, container, false)
@@ -176,6 +180,7 @@ class RemoteFragment : Fragment() {
                 (cell.first.layoutParams as LinearLayout.LayoutParams).marginStart = dp(8f).toInt()
             }
             paramCells[label] = cell.second
+            paramCellContainers.add(cell.first)
             binding.paramRow.addView(cell.first)
             cell.first.setOnClickListener { onParamClick(label, flow.value) }
 
@@ -221,17 +226,39 @@ class RemoteFragment : Fragment() {
             // 光圈档位与镜头联动，打开滚轮前先刷新一次（内部会读一次当前焦距）
             "光圈" -> openAperturePicker(param)
             "快门" -> {
-                val rawValues = paramsViewModel.commonShutterSpeeds
+                // B 门作为独立档追加在 30s 之后（digiCamControl/ZRelay「Bulb/Time」同款模型）；
+                // raw 0xFFFFFFFF 会被常规档位钳位吞掉，确认时走 setShutterBulb 专用路径
+                val bulbRaw = BulbPolicy.SHUTTER_BULB_RAW
+                val rawValues = paramsViewModel.commonShutterSpeeds + bulbRaw
                 showWheelPicker(
                     title = "快门速度",
                     param = param,
-                    displayValues = rawValues.map { paramsViewModel.formatShutter(it) },
+                    displayValues = rawValues.map { raw ->
+                        if (raw == bulbRaw) "B门" else paramsViewModel.formatShutter(raw)
+                    },
                     rawValues = rawValues,
                     // 档位表按曝光时间升序，向上滚 = 更快
-                    hint = "↑ 更快 / ↓ 更慢（可手动输入）",
+                    hint = "↑ 更快 / ↓ 更慢（可手动输入，末档为 B门）",
                     manualHintRes = R.string.param_input_hint_shutter,
                     onManualInput = { text -> paramsViewModel.applyShutterInput(text) },
-                    onConfirm = { idx -> paramsViewModel.setShutterByValue(rawValues[idx]) }
+                    onConfirm = { idx ->
+                        val raw = rawValues.getOrNull(idx) ?: return@showWheelPicker
+                        if (raw == bulbRaw) {
+                            viewLifecycleOwner.lifecycleScope.launch {
+                                val ok = paramsViewModel.setShutterBulb()
+                                if (_binding != null) {
+                                    Toast.makeText(
+                                        requireContext(),
+                                        if (ok) "已切到 B 门档，可在「更多动作」开始曝光"
+                                        else "切换 B 门被拒：请将相机拨盘切到 M 档且快门可调",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            }
+                        } else {
+                            paramsViewModel.setShutterByValue(raw)
+                        }
+                    }
                 )
             }
             "ISO" -> {
@@ -440,11 +467,33 @@ class RemoteFragment : Fragment() {
                 .show()
         }
 
-        // 间隔拍摄（仅照片模式可用；视频模式隐藏该按钮）
+        // 间隔拍摄（仅照片模式可用；视频模式隐藏该按钮）。
+        // v1.0.2 起 btnModeAction 升级为「更多动作」菜单：间隔拍摄 / B 门长曝光共用入口
         binding.btnModeAction.pressEffect()
-        binding.btnModeAction.setOnClickListener {
-            showIntervalDialog()
+        binding.btnModeAction.setOnClickListener { showMoreActionMenu() }
+    }
+
+    /**
+     * 更多动作菜单：间隔拍摄 / B 门长曝光。
+     * B 门在曝光中时显示「结束 B 门曝光」，再次点击收门（PRD D3：不允许重复触发）。
+     */
+    private fun showMoreActionMenu() {
+        val bulbExposing = viewModel.shootingState.value == ShootingState.BULB_EXPOSING
+        val popup = PopupMenu(requireContext(), binding.btnModeAction)
+        popup.menu.add(0, 1, 0, "间隔拍摄")
+        popup.menu.add(0, 2, 0, if (bulbExposing) "结束 B 门曝光" else "B 门 / 长曝光")
+        popup.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                1 -> showIntervalDialog()
+                2 -> {
+                    viewLifecycleOwner.lifecycleScope.launch {
+                        if (bulbExposing) viewModel.bulbStop() else viewModel.bulbStart()
+                    }
+                }
+            }
+            true
         }
+        popup.show()
     }
 
     private fun showIntervalDialog() {
@@ -463,6 +512,11 @@ class RemoteFragment : Fragment() {
     }
 
     private fun onShutterPressed() {
+        // PRD D3：B 门曝光中快门按钮语义 = 结束曝光（计时继续，其余参数控件已禁用）
+        if (viewModel.shootingState.value == ShootingState.BULB_EXPOSING) {
+            viewLifecycleOwner.lifecycleScope.launch { viewModel.bulbStop() }
+            return
+        }
         if (videoMode) {
             if (!recording) {
                 viewModel.startVideo()
@@ -508,7 +562,7 @@ class RemoteFragment : Fragment() {
             binding.ivShutterIcon.setImageResource(R.drawable.ic_shutter_white)
             binding.ivShutterIcon.clearColorFilter()
             binding.btnModeAction.visibility = View.VISIBLE
-            binding.btnModeAction.text = "间隔拍摄"
+            binding.btnModeAction.text = "更多动作"
         }
     }
 
@@ -596,10 +650,24 @@ class RemoteFragment : Fragment() {
                     ShootingState.VIDEO_PREPARING -> "正在启动监看…"
                     ShootingState.VIDEO_RECORDING -> "录制中"
                 }
+                // PRD D3：B 门曝光中禁用参数控件与其它拍摄入口，快门按钮转为「结束曝光」
+                val bulbBusy = state == ShootingState.BULB_EXPOSING
+                applyBulbLock(bulbBusy)
                 val nowRecording = state == ShootingState.VIDEO_RECORDING
                 if (nowRecording != recording) {
                     recording = nowRecording
                     if (nowRecording) startRecordTimer() else stopRecordTimer()
+                }
+            }
+        }
+
+        // B 门已曝光时长（PRD 2.2）：随秒表刷新叠加在状态行，不与其它状态互斥
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.bulbExposureTime.collect { ms ->
+                if (viewModel.shootingState.value == ShootingState.BULB_EXPOSING) {
+                    val sec = ms / 1000
+                    binding.tvRemoteStatus.text =
+                        String.format("B门曝光中 · %02d:%02d", sec / 60, sec % 60)
                 }
             }
         }
@@ -624,8 +692,25 @@ class RemoteFragment : Fragment() {
 
     }
 
-    private fun startRecordTimer() {
-        binding.layoutRecordBadge.visibility = View.VISIBLE
+    /** PRD D3：B 门曝光中禁用参数滚轮入口与其它拍摄动作（半透明 + 点击无效） */
+    private fun applyBulbLock(busy: Boolean) {
+        paramCellContainers.forEach { cell ->
+            cell.isEnabled = !busy
+            cell.isClickable = !busy
+            cell.alpha = if (busy) 0.4f else 1f
+        }
+        listOf(binding.btnTimer, binding.btnModeAction, binding.btnModePhoto, binding.btnModeVideo)
+            .forEach { view ->
+                view.isEnabled = !busy
+                view.isClickable = !busy
+                view.alpha = if (busy) 0.4f else 1f
+            }
+        if (!busy && _binding != null) {
+            binding.btnModeAction.text = "更多动作"
+        }
+    }
+
+    private fun startRecordTimer() {        binding.layoutRecordBadge.visibility = View.VISIBLE
         val startAt = System.currentTimeMillis()
         recordTimerJob = viewLifecycleOwner.lifecycleScope.launch {
             while (isActive) {

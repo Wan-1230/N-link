@@ -45,6 +45,9 @@ class RemoteShootingManager @Inject constructor(
 
         /** 录像命令 DeviceBusy 时的重试上限 */
         private const val VIDEO_BUSY_RETRIES = 3
+
+        /** 切到 Bulb 档后等待机身应用的间隔：立刻发拍摄命令会被 DeviceBusy 拒绝 */
+        private const val BULB_APPLY_DELAY_MS = 600L
     }
 
     private var scope: CoroutineScope? = null
@@ -306,60 +309,229 @@ class RemoteShootingManager @Inject constructor(
 
     // ==================== B 门遥控 ====================
 
+    // B 门链路状态（v1.0.2 全链路修复）：
+    // - shutterWasSwitched：本次曝光是否由 App 把 0x500D 切到了 Bulb（收门时恢复原值）
+    // - previousShutterRaw：切档前的 0x500D 值（null = 未知，不可恢复式收门）
+    // - openCaptureStarted：本次曝光是否经 0x100F 开启（收门需补 0x1010）
+    @Volatile
+    private var shutterWasSwitched = false
+    private var previousShutterRaw: Int? = null
+    private var openCaptureStarted = false
+
+    /** 双通道读 0x500D ExposureTime（4 字节 u32 LE）；读不到返回 null */
+    private suspend fun readShutterRaw(): Int? {
+        val data = if (usbPtpManager.isConnected()) {
+            usbPtpManager.getDevicePropValue(PtpConstants.PROP_EXPOSURE_TIME)
+        } else {
+            ptpSession.getDevicePropValue(PtpConstants.PROP_EXPOSURE_TIME)
+        }
+        if (data == null || data.size < 4) return null
+        return java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN).int
+    }
+
+    /** 双通道写 0x500D；返回是否成功 */
+    private suspend fun writeShutterRaw(value: Int): Boolean {
+        val data = java.nio.ByteBuffer.allocate(4)
+            .order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(value).array()
+        return if (usbPtpManager.isConnected()) {
+            usbPtpManager.setDevicePropValue(PtpConstants.PROP_EXPOSURE_TIME, data)
+        } else {
+            ptpSession.setDevicePropValue(PtpConstants.PROP_EXPOSURE_TIME, data)
+        }
+    }
+
+    /** 按通道发一条开启/收门命令，返回 (是否成功, 响应码) */
+    private suspend fun bulbCommand(opcode: Int, params: List<Int>): Pair<Boolean, Int> {
+        return if (usbPtpManager.isConnected()) {
+            val response = usbPtpManager.sendCommand(opcode, params)
+            if (response == null) false to 0 else (response.isOk) to response.responseCode
+        } else {
+            val response = ptpSession.sendCommand(opcode, params)
+            response.isOk to response.responseCode
+        }
+    }
+
     /**
-     * B 门开始曝光
-     * PRD 2.2: 长按开始曝光，松开结束，显示已曝光时长
+     * B 门开始曝光（v1.0.2 全链路修复）。
+     *
+     * 1. 前置校验：读 0x500D，非 Bulb 档时**自动切档**（digiCamControl 同款）；
+     *    写不进去（只读 / 非 M·S 档）给出可操作提示后中止，不再裸发必败命令。
+     * 2. 开启曝光：0x9207 → 0x100E → 0x100F 多级降级，busy（0x2019/0xA200）短暂等待重试。
+     * 3. 全程响应码可见：失败中文化 + 忙态可重试，不再「点了没反应」。
+     * 4. PRD D3：曝光中重复触发直接忽略；失败时恢复快门档位，不留脏状态。
      */
     suspend fun bulbStart(): Boolean {
-        if (!isRemoteReady()) return false
+        if (!isRemoteReady()) {
+            _shootingMessage.value = "相机尚未连接"
+            return false
+        }
+        if (_shootingState.value == ShootingState.BULB_EXPOSING) {
+            // PRD D3：不允许重复触发
+            _shootingMessage.value = "B 门曝光中"
+            return true
+        }
+        if (_shootingState.value == ShootingState.INTERVAL_SHOOTING ||
+            _shootingState.value == ShootingState.TIMER_COUNTDOWN ||
+            _shootingState.value == ShootingState.VIDEO_RECORDING
+        ) {
+            _shootingMessage.value = "请先停止当前拍摄任务再使用 B 门"
+            return false
+        }
+
         return withContext(Dispatchers.IO) {
             try {
-                val ok = if (usbPtpManager.isConnected()) {
-                    usbPtpManager.initiateOpenCapture()
-                } else {
-                    ptpSession.sendCommand(
-                        PtpConstants.OP_INITIATE_OPEN_CAPTURE, listOf(0)
-                    ).isOk
+                // ---- 前置：确保机身快门在 Bulb 档 ----
+                previousShutterRaw = readShutterRaw()
+                shutterWasSwitched = false
+                if (previousShutterRaw != BulbPolicy.SHUTTER_BULB_RAW) {
+                    if (!writeShutterRaw(BulbPolicy.SHUTTER_BULB_RAW)) {
+                        _shootingMessage.value =
+                            "无法切换到 B 门：请将相机拨盘切到 M 档并确认快门速度可调，再重试"
+                        Timber.tag(TAG).w("Bulb aborted: 0x500D write rejected (prev=$previousShutterRaw)")
+                        return@withContext false
+                    }
+                    shutterWasSwitched = true
+                    // 机身应用档位需要短暂时间，立刻发拍摄命令会被 DeviceBusy 拒绝
+                    delay(BULB_APPLY_DELAY_MS)
                 }
-                if (ok) {
-                    _shootingState.value = ShootingState.BULB_EXPOSING
-                    bulbStartTime = System.currentTimeMillis()
-                    startBulbTimer()
-                    Timber.tag(TAG).i("Bulb exposure started")
+                openCaptureStarted = false
+
+                // ---- 开启曝光：多级降级 + busy 重试 ----
+                val channel =
+                    if (usbPtpManager.isConnected()) BulbPolicy.Channel.USB else BulbPolicy.Channel.WIFI
+                var lastCode = 0
+                for (command in BulbPolicy.startPlan(channel)) {
+                    var attempt = 0
+                    while (true) {
+                        val (ok, code) = bulbCommand(command.opcode, command.params)
+                        if (ok) {
+                            openCaptureStarted = command.usesOpenCapture
+                            _shootingState.value = ShootingState.BULB_EXPOSING
+                            bulbStartTime = System.currentTimeMillis()
+                            _bulbExposureTime.value = 0L
+                            startBulbTimer()
+                            _shootingMessage.value = null
+                            Timber.tag(TAG).i("Bulb exposure started via ${command.label}")
+                            return@withContext true
+                        }
+                        lastCode = code
+                        if (BulbPolicy.isBusy(code) && attempt < BulbPolicy.MAX_BUSY_RETRIES) {
+                            delay(BulbPolicy.BUSY_RETRY_DELAY_MS)
+                            attempt++
+                            continue
+                        }
+                        Timber.tag(TAG).w("Bulb start rejected by ${command.label}: 0x${code.toString(16)}")
+                        break
+                    }
                 }
-                ok
+
+                // ---- 全部策略失败：恢复快门档位并给可操作提示 ----
+                val switched = shutterWasSwitched
+                if (shutterWasSwitched) {
+                    previousShutterRaw?.let { runCatching { writeShutterRaw(it) } }
+                    shutterWasSwitched = false
+                }
+                _shootingMessage.value = BulbPolicy.describeRejection(lastCode, switched)
+                false
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Bulb start failed")
+                _shootingMessage.value = "开启曝光异常：${e.message ?: "未知错误"}"
+                if (shutterWasSwitched) {
+                    previousShutterRaw?.let { runCatching { writeShutterRaw(it) } }
+                    shutterWasSwitched = false
+                }
                 false
             }
         }
     }
 
     /**
-     * B 门结束曝光
+     * B 门结束曝光（v1.0.2 全链路修复）。
+     *
+     * 收门策略：① 恢复切档前的快门值（改快门值即结束曝光，digiCamControl 模型）；
+     * ② OpenCapture 路径补发 0x1010 TerminateOpenCapture；busy（写卡中）等待重试。
+     * 失败时**保持曝光态**并提示重试——旧版失败也置 IDLE，用户以为已收门，
+     * 实际机身还在曝光，是最危险的静默失败。
      */
     suspend fun bulbStop(): Boolean {
-        if (!isRemoteReady()) return false
+        if (!isRemoteReady()) {
+            _shootingMessage.value = "相机尚未连接，请重新连接后结束曝光或直接操作机身快门"
+            return false
+        }
+        if (_shootingState.value != ShootingState.BULB_EXPOSING) return false
+
         return withContext(Dispatchers.IO) {
             try {
-                val ok = if (usbPtpManager.isConnected()) {
-                    usbPtpManager.terminateOpenCapture()
-                } else {
-                    ptpSession.sendCommand(
-                        PtpConstants.OP_TERMINATE_OPEN_CAPTURE, listOf(0)
-                    ).isOk
+                // ---- 策略①：恢复原快门值收门（仅 App 切过档时有意义） ----
+                var closed = false
+                if (shutterWasSwitched && previousShutterRaw != null) {
+                    var attempt = 0
+                    while (true) {
+                        if (writeShutterRaw(previousShutterRaw!!)) {
+                            shutterWasSwitched = false
+                            closed = true
+                            break
+                        }
+                        if (attempt >= BulbPolicy.MAX_BUSY_RETRIES) break
+                        delay(BulbPolicy.BUSY_RETRY_DELAY_MS)
+                        attempt++
+                    }
                 }
-                _shootingState.value = ShootingState.IDLE
-                _shotCount.value++
-                if (ok) _captureEvents.tryEmit(System.currentTimeMillis())
-                Timber.tag(TAG).i("Bulb exposure ended: ${_bulbExposureTime.value}ms")
-                ok
+
+                // ---- 策略②：恢复快门失败或未切档时，0x1010 收门 ----
+                if (!closed) {
+                    var attempt = 0
+                    while (true) {
+                        val (terminated, code) = bulbCommand(
+                            BulbPolicy.StopCommand.TERMINATE_OPEN_CAPTURE,
+                            listOf(BulbPolicy.StopCommand.TERMINATE_PARAMS)
+                        )
+                        if (terminated) {
+                            closed = true
+                            break
+                        }
+                        lastBulbStopCode = code
+                        if (BulbPolicy.isBusy(code) && attempt < BulbPolicy.MAX_BUSY_RETRIES) {
+                            delay(BulbPolicy.BUSY_RETRY_DELAY_MS)
+                            attempt++
+                            continue
+                        }
+                        break
+                    }
+                } else if (openCaptureStarted) {
+                    // 快门恢复已收门，OpenCapture 会话仍需显式终止（尽力而为，不阻塞收门结果）
+                    runCatching {
+                        bulbCommand(
+                            BulbPolicy.StopCommand.TERMINATE_OPEN_CAPTURE,
+                            listOf(BulbPolicy.StopCommand.TERMINATE_PARAMS)
+                        )
+                    }
+                }
+
+                if (closed) {
+                    shutterWasSwitched = false
+                    openCaptureStarted = false
+                    _shootingState.value = ShootingState.IDLE
+                    _shotCount.value++
+                    _captureEvents.tryEmit(System.currentTimeMillis())
+                    Timber.tag(TAG).i("Bulb exposure ended: ${_bulbExposureTime.value}ms")
+                    true
+                } else {
+                    // 保持曝光态：用户可重试，机身端仍在曝光是真实状态
+                    _shootingMessage.value =
+                        "结束曝光失败：${PtpConstants.describeResponseCode(lastBulbStopCode)}，请重试或直接轻按机身快门"
+                    Timber.tag(TAG).w("Bulb stop failed, keep exposing: 0x${lastBulbStopCode.toString(16)}")
+                    false
+                }
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Bulb stop failed")
+                _shootingMessage.value = "结束曝光异常：${e.message ?: "未知错误"}，请重试"
                 false
             }
         }
     }
+
+    private var lastBulbStopCode = 0
 
     private fun startBulbTimer() {
         scope?.launch {

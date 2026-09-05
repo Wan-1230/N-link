@@ -1,6 +1,7 @@
 package com.nikonlink.app.camera.params
 
 import android.content.Context
+import com.nikonlink.app.capture.BulbPolicy
 import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.usb.UsbPtpManager
@@ -395,13 +396,29 @@ class CameraParameterManager @Inject constructor(
                     return@launch
                 }
 
+                // 两级解析（可行性验证结论：尼康无快门计数 PTP 属性，只能走照片 MakerNotes）：
+                // ① 本地解析 MakerNotes 0x00A7——离线、私密、零流量；
+                // ② 本地失败（旧机型加密 MakerNote / 结构变体）→ Digeeker 云端解析兜底。
+                val local = NikonShutterCountParser.parseFile(target)
+                if (local != null && local >= 0) {
+                    _cameraInfo.value = _cameraInfo.value.copy(
+                        shutterCount = local,
+                        shutterCountSource = "本机解析",
+                        shutterQueryState = ShutterCountState.SUCCESS
+                    )
+                    Timber.tag(TAG).i("Shutter count resolved locally: $local")
+                    target.delete()
+                    return@launch
+                }
+
                 val count = digeekerClient.queryShutterCount(target)
                 if (count != null && count >= 0) {
                     _cameraInfo.value = _cameraInfo.value.copy(
                         shutterCount = count,
+                        shutterCountSource = "云端解析",
                         shutterQueryState = ShutterCountState.SUCCESS
                     )
-                    Timber.tag(TAG).i("Shutter count resolved: $count")
+                    Timber.tag(TAG).i("Shutter count resolved via digeeker: $count")
                 } else {
                     markShutterQueryFailed()
                 }
@@ -822,6 +839,22 @@ class CameraParameterManager @Inject constructor(
                 writeDeviceProp(PtpConstants.PROP_NIKON_SHUTTER_SPEED, nikonData)
             }
         }
+        if (success) readShutterSpeed()
+        return success
+    }
+
+    /**
+     * 切到 B 门档（0x500D = 0xFFFFFFFF，digiCamControl Bulb 模型）。
+     *
+     * 必须绕过 [setShutterSpeed] 的 0.5s–30s 档位钳位——那是长曝光失效的隐性阻断之一：
+     * 即使 UI 提供了 B 门档，经过钳位后写下去的也永远是 30s。
+     * 写入失败（0x500D 只读 / 拨盘不在 M·S 档）返回 false，由调用方给出可操作提示。
+     */
+    suspend fun setShutterBulb(): Boolean {
+        if (_paramsLocked.value) return false
+        val data = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(BulbPolicy.SHUTTER_BULB_RAW).array()
+        val success = writeDeviceProp(PtpConstants.PROP_EXPOSURE_TIME, data)
         if (success) readShutterSpeed()
         return success
     }
@@ -1368,6 +1401,8 @@ fun resolvePickerIndex(rawValues: List<Int>, currentRaw: Int): Int {
 data class CameraInfo(
     val batteryLevel: Int = -1,
     val shutterCount: Int = -1,
+    /** 快门次数来源标注：本机解析 / 云端解析（空串 = 尚未查询成功） */
+    val shutterCountSource: String = "",
     val storageFreeMb: Long = -1,
     val storageTotalMb: Long = -1,
     val storageDescription: String = "",
