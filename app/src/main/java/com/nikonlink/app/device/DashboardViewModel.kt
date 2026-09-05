@@ -45,6 +45,9 @@ class DashboardViewModel @Inject constructor(
     val usbState: StateFlow<UsbConnectionState> = usbPtpManager.usbState
     val usbDeviceInfo: StateFlow<UsbCameraInfo?> = usbPtpManager.deviceInfo
 
+    /** 模块 6：USB 失败分类提示（物理未识别/无权限/接口占用/会话失败/链路超时） */
+    val usbErrorMessage: StateFlow<String?> = usbPtpManager.usbErrorMessage
+
     /** 扫描到的设备列表（去重） */
     private val _deviceList = MutableStateFlow<List<CameraDevice>>(emptyList())
     val deviceList: StateFlow<List<CameraDevice>> = _deviceList.asStateFlow()
