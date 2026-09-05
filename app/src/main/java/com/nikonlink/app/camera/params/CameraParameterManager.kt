@@ -140,8 +140,41 @@ class CameraParameterManager @Inject constructor(
 
     fun stop() {
         stopPolling()
+        stopModeWatch()
         scope = null
     }
+
+    /** 全参数轮询任务（2s 全量，startPolling/stopPolling 控制） */
+    private var pollJob: Job? = null
+
+    /**
+     * 模式快轮询（模块 2：机身拨盘切换模式 → 手机端 ≤500ms 同步）。
+     *
+     * 只读单一属性 0x500E（ExposureProgramMode），不复用 2s 全参数轮询——
+     * 全量读 9 项在 500ms 周期下会挤占 PTP 命令通道。事件通道（0x4006
+     * DevicePropChanged）作为主同步路径已在 [start] 中接入，本快轮询是其兜底：
+     * 覆盖事件丢失、USB 事件轮询间隙等场景。
+     * 由拍摄页 / 全屏监看页在可见期间启动，离开时 [stopModeWatch] 停止。
+     */
+    fun startModeWatch(intervalMs: Long = 500L) {
+        if (modeWatchJob?.isActive == true) return
+        modeWatchJob = scope?.launch {
+            while (isActive) {
+                if (ptpSession.isConnected() || usbPtpManager.isConnected()) {
+                    runCatching { readExposureProgram() }
+                        .onFailure { Timber.tag(TAG).w(it, "Mode watch read failed") }
+                }
+                delay(intervalMs)
+            }
+        }
+    }
+
+    fun stopModeWatch() {
+        modeWatchJob?.cancel()
+        modeWatchJob = null
+    }
+
+    private var modeWatchJob: Job? = null
 
     fun toggleLock() {
         _paramsLocked.value = !_paramsLocked.value
