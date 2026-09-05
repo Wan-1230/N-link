@@ -280,6 +280,25 @@ class DashboardFragment : Fragment() {
                             paramsViewModel.readAll()
                         }
                     }
+                    UsbConnectionState.ERROR -> {
+                        // 模块 6：细分失败原因，禁止统一报「未检测到 USB 相机」
+                        binding.tvUsbDevice.text =
+                            viewModel.usbErrorMessage.value ?: "USB 连接失败，正在重试…"
+                    }
+
+                    UsbConnectionState.PERMISSION_DENIED -> {
+                        binding.tvUsbDevice.text =
+                            viewModel.usbErrorMessage.value ?: "USB 权限被拒绝"
+                    }
+
+                    UsbConnectionState.REQUESTING_PERMISSION -> {
+                        binding.tvUsbDevice.text = "正在请求 USB 访问权限…"
+                    }
+
+                    UsbConnectionState.CONNECTING -> {
+                        binding.tvUsbDevice.text = "正在建立 USB 连接…"
+                    }
+
                     UsbConnectionState.DISCONNECTED -> {
                         binding.tvUsbDevice.text = "未检测到 USB 相机"
                         // 切回 WiFi 链路：恢复频段卡，具体频段由指标刷新补齐
@@ -307,6 +326,17 @@ class DashboardFragment : Fragment() {
                 if (info != null) {
                     binding.tvCameraName.text = info.cameraModel
                     binding.tvUsbDevice.text = "${info.cameraModel} · 已连接 USB"
+                }
+            }
+        }
+
+        // 模块 6：分类错误文案变化时即时上屏（重试成功 → 清空恢复连接文案）
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.usbErrorMessage.collect { message ->
+                if (viewModel.usbState.value == UsbConnectionState.ERROR ||
+                    viewModel.usbState.value == UsbConnectionState.PERMISSION_DENIED
+                ) {
+                    binding.tvUsbDevice.text = message ?: "USB 连接失败，正在重试…"
                 }
             }
         }
