@@ -88,6 +88,20 @@ class LiveViewFragment : Fragment() {
         if (arguments?.getBoolean(EXTRA_AUTO_START, false) == true) {
             viewModel.startLiveView()
         }
+        // 模块 2：全屏监看页可见期间开启 0x500E 快轮询（机身拨盘切模式 ≤500ms 同步）
+        paramsViewModel.startModeWatch()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 全屏页是独立 Activity，标准生命周期即可；回到前台续上快轮询
+        paramsViewModel.startModeWatch()
+    }
+
+    override fun onPause() {
+        // 离开前台停止快轮询，避免后台仍占用 PTP 命令通道
+        paramsViewModel.stopModeWatch()
+        super.onPause()
     }
 
     // ---------------- 顶部与辅助控件 ----------------
@@ -213,8 +227,8 @@ class LiveViewFragment : Fragment() {
     }
 
     /**
-     * 拍摄模式远程切换（0x500E）。
-     * 与遥控页共用同一套档位；机身不接受时以回读值提示实际模式。
+     * 拍摄模式远程切换（0x500E，模块 2：失败显式回调）。
+     * 与遥控页共用同一套档位与回读流（单一数据源）。
      */
     private fun showModePicker() {
         val modes = paramsViewModel.exposureProgramModes
@@ -225,12 +239,16 @@ class LiveViewFragment : Fragment() {
             .setMessage("当前: ${current.currentValue.ifBlank { "--" }}")
             .setSingleChoiceItems(labels, -1) { dialog, which ->
                 dialog.dismiss()
-                paramsViewModel.setExposureProgram(modes[which].first)
-                Toast.makeText(
-                    requireContext(),
-                    "已下发 ${modes[which].second}，以相机实际模式为准",
-                    Toast.LENGTH_SHORT
-                ).show()
+                viewLifecycleOwner.lifecycleScope.launch {
+                    val ok = paramsViewModel.setExposureProgramResult(modes[which].first)
+                    if (_binding == null) return@launch
+                    Toast.makeText(
+                        requireContext(),
+                        if (ok) "已切换到 ${modes[which].second}"
+                        else "相机拒绝切换（模式可能只读），请用机身拨盘调整",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
             .setNegativeButton("取消", null)
             .show()

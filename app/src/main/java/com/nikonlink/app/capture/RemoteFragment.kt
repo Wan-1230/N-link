@@ -80,6 +80,30 @@ class RemoteFragment : Fragment() {
         // 轻量一次性读取，避免抢占 PTP 通道（P0-1 修复经验）
         viewModel.refreshStatus()
         paramsViewModel.readAll()
+        // 模块 2：页面可见期间开启 0x500E 快轮询，机身拨盘切模式 ≤500ms 同步到 UI
+        paramsViewModel.startModeWatch()
+    }
+
+    /** 模块 2：Tab 隐藏/显示与模式快轮询联动（MainActivity 四 Fragment 常驻，hide/show 不走 onPause） */
+    override fun onHiddenChanged(hidden: Boolean) {
+        super.onHiddenChanged(hidden)
+        if (hidden) {
+            paramsViewModel.stopModeWatch()
+            // 切离拍摄页停止 LiveView，释放 PTP 通道（防断联）——与旧 onHiddenChanged 行为一致
+            if (liveViewViewModel.liveViewState.value == LiveViewState.RUNNING) {
+                liveViewViewModel.stopLiveView()
+            }
+        } else {
+            paramsViewModel.startModeWatch()
+        }
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        paramsViewModel.stopModeWatch()
+        liveViewViewModel.stopLiveView()
+        recordTimerJob?.cancel()
+        _binding = null
     }
 
     // ---------------- 监看区域 ----------------
@@ -286,8 +310,8 @@ class RemoteFragment : Fragment() {
     }
 
     /**
-     * 拍摄模式远程切换（0x500E ExposureProgramMode）。
-     * 机身不接受远程切换时（部分模式拨盘机型只读），以回读值提示实际模式。
+     * 拍摄模式远程切换（0x500E，模块 2：失败显式回调）。
+     * 机身不接受时给出可操作提示；UI 展示值仍以 exposureProgram 回读流为准（单一数据源）。
      */
     private fun showModePicker(param: CameraParam) {
         val modes = paramsViewModel.exposureProgramModes
@@ -297,12 +321,16 @@ class RemoteFragment : Fragment() {
             .setMessage("当前: ${param.currentValue.ifBlank { "--" }}")
             .setSingleChoiceItems(labels, -1) { dialog, which ->
                 dialog.dismiss()
-                paramsViewModel.setExposureProgram(modes[which].first)
-                Toast.makeText(
-                    requireContext(),
-                    "已下发 ${modes[which].second}，以相机实际模式为准",
-                    Toast.LENGTH_SHORT
-                ).show()
+                viewLifecycleOwner.lifecycleScope.launch {
+                    val ok = paramsViewModel.setExposureProgramResult(modes[which].first)
+                    if (_binding == null) return@launch
+                    Toast.makeText(
+                        requireContext(),
+                        if (ok) "已切换到 ${modes[which].second}"
+                        else "相机拒绝切换（模式可能只读），请用机身拨盘调整",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
             .setNegativeButton("取消", null)
             .show()
@@ -792,20 +820,5 @@ class RemoteFragment : Fragment() {
     private fun formatClock(ms: Long): String {
         val sec = ms / 1000
         return String.format("%02d:%02d", sec / 60, sec % 60)
-    }
-
-    override fun onHiddenChanged(hidden: Boolean) {
-        super.onHiddenChanged(hidden)
-        // 切离拍摄页停止 LiveView，释放 PTP 通道（防断联）
-        if (hidden && liveViewViewModel.liveViewState.value == LiveViewState.RUNNING) {
-            liveViewViewModel.stopLiveView()
-        }
-    }
-
-    override fun onDestroyView() {
-        super.onDestroyView()
-        liveViewViewModel.stopLiveView()
-        recordTimerJob?.cancel()
-        _binding = null
     }
 }
