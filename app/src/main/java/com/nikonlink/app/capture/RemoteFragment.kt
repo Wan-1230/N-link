@@ -467,33 +467,79 @@ class RemoteFragment : Fragment() {
                 .show()
         }
 
-        // 间隔拍摄（仅照片模式可用；视频模式隐藏该按钮）。
-        // v1.0.2 起 btnModeAction 升级为「更多动作」菜单：间隔拍摄 / B 门长曝光共用入口
+        // 模块 3 入口迁移：按钮 = 执行当前动作；长按 = 弹菜单切换动作（记住上次选择）。
+        // 全屏监看页「⋮」菜单的 B 门入口已移除，统一收敛到本按钮
         binding.btnModeAction.pressEffect()
-        binding.btnModeAction.setOnClickListener { showMoreActionMenu() }
+        binding.btnModeAction.setOnClickListener { executeCurrentAction() }
+        binding.btnModeAction.setOnLongClickListener {
+            showActionModeMenu()
+            true
+        }
+        renderActionModeLabel()
+    }
+
+    /** 按当前选中的动作执行：间隔拍摄 → 既有对话框流程（保持不变）；B 门 → 开始/结束 */
+    private fun executeCurrentAction() {
+        when (settings.remoteActionMode) {
+            AppSettings.ACTION_BULB -> executeBulbAction()
+            else -> showIntervalDialog()
+        }
     }
 
     /**
-     * 更多动作菜单：间隔拍摄 / B 门长曝光。
-     * B 门在曝光中时显示「结束 B 门曝光」，再次点击收门（PRD D3：不允许重复触发）。
+     * B 门动作：曝光中 → 结束（可提前取消定时）；未曝光 → 弹时长选择（定时模式为主）。
      */
-    private fun showMoreActionMenu() {
-        val bulbExposing = viewModel.shootingState.value == ShootingState.BULB_EXPOSING
-        val popup = PopupMenu(requireContext(), binding.btnModeAction)
-        popup.menu.add(0, 1, 0, "间隔拍摄")
-        popup.menu.add(0, 2, 0, if (bulbExposing) "结束 B 门曝光" else "B 门 / 长曝光")
-        popup.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                1 -> showIntervalDialog()
-                2 -> {
-                    viewLifecycleOwner.lifecycleScope.launch {
-                        if (bulbExposing) viewModel.bulbStop() else viewModel.bulbStart()
-                    }
+    private fun executeBulbAction() {
+        if (viewModel.shootingState.value == ShootingState.BULB_EXPOSING) {
+            viewLifecycleOwner.lifecycleScope.launch { viewModel.bulbStop() }
+            return
+        }
+        val presets = listOf("手动开始 / 结束" to 0) +
+            listOf(15, 30, 60, 120, 300).map {
+                "${if (it >= 60) "${it / 60} 分" else "$it 秒"}（自动收门）" to it
+            }
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("B 门 / 长曝光（上次 ${settings.bulbDurationSeconds} 秒）")
+            .setItems(presets.map { it.first }.toTypedArray()) { _, which ->
+                val seconds = presets[which].second
+                if (seconds <= 0) {
+                    viewLifecycleOwner.lifecycleScope.launch { viewModel.bulbStart() }
+                } else {
+                    settings.bulbDurationSeconds = seconds
+                    viewModel.bulbStartTimed(seconds)
                 }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /** 长按菜单：切换「间隔拍摄 / B 门长曝光」，勾选当前模式并持久化 */
+    private fun showActionModeMenu() {
+        val popup = PopupMenu(requireContext(), binding.btnModeAction)
+        val items = listOf("间隔拍摄" to AppSettings.ACTION_INTERVAL, "B 门长曝光" to AppSettings.ACTION_BULB)
+        items.forEachIndexed { index, (label, mode) ->
+            popup.menu.add(0, index + 1, 0, label).isChecked = settings.remoteActionMode == mode
+        }
+        popup.menu.setGroupCheckable(0, true, true)
+        popup.setOnMenuItemClickListener { item ->
+            val mode = items.getOrNull(item.itemId - 1)?.second ?: return@setOnMenuItemClickListener false
+            if (mode != settings.remoteActionMode) {
+                settings.remoteActionMode = mode
+                renderActionModeLabel()
+                Toast.makeText(requireContext(), "已切换为「${items[item.itemId - 1].first}」", Toast.LENGTH_SHORT).show()
             }
             true
         }
         popup.show()
+    }
+
+    /** 按钮文案随当前动作切换（模块 3：图标/文案随之切换） */
+    private fun renderActionModeLabel() {
+        binding.btnModeAction.text = if (settings.remoteActionMode == AppSettings.ACTION_BULB) {
+            "B门长曝光"
+        } else {
+            "间隔拍摄"
+        }
     }
 
     private fun showIntervalDialog() {
@@ -562,7 +608,7 @@ class RemoteFragment : Fragment() {
             binding.ivShutterIcon.setImageResource(R.drawable.ic_shutter_white)
             binding.ivShutterIcon.clearColorFilter()
             binding.btnModeAction.visibility = View.VISIBLE
-            binding.btnModeAction.text = "更多动作"
+            renderActionModeLabel()
         }
     }
 
@@ -661,13 +707,14 @@ class RemoteFragment : Fragment() {
             }
         }
 
-        // B 门已曝光时长（PRD 2.2）：随秒表刷新叠加在状态行，不与其它状态互斥
+        // B 门曝光计时（模块 3）：定时模式显示剩余时长（可提前收门），手动模式显示已用时长
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.bulbExposureTime.collect { ms ->
                 if (viewModel.shootingState.value == ShootingState.BULB_EXPOSING) {
-                    val sec = ms / 1000
-                    binding.tvRemoteStatus.text =
-                        String.format("B门曝光中 · %02d:%02d", sec / 60, sec % 60)
+                    binding.tvRemoteStatus.text = when (val duration = viewModel.bulbDurationMs.value) {
+                        null -> "B门曝光中 · 已用 ${formatClock(ms)}"
+                        else -> "B门曝光中 · 剩余 ${formatClock((duration - ms).coerceAtLeast(0))}（可提前收门）"
+                    }
                 }
             }
         }
@@ -706,7 +753,7 @@ class RemoteFragment : Fragment() {
                 view.alpha = if (busy) 0.4f else 1f
             }
         if (!busy && _binding != null) {
-            binding.btnModeAction.text = "更多动作"
+            renderActionModeLabel()
         }
     }
 
@@ -740,6 +787,12 @@ class RemoteFragment : Fragment() {
 
     private fun dp(value: Float): Float =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics)
+
+    /** mm:ss 时钟格式（B 门剩余/已用时长） */
+    private fun formatClock(ms: Long): String {
+        val sec = ms / 1000
+        return String.format("%02d:%02d", sec / 60, sec % 60)
+    }
 
     override fun onHiddenChanged(hidden: Boolean) {
         super.onHiddenChanged(hidden)

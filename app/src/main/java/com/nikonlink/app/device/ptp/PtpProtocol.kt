@@ -96,7 +96,22 @@ object PtpConstants {
     const val RESPONSE_SESSION_ALREADY_OPEN = 0x201E
     const val RESPONSE_TRANSACTION_CANCELLED = 0x201F
     const val RESPONSE_NIKON_NOT_LIVE_VIEW = 0xA00B
-    const val RESPONSE_NIKON_LV_ENABLE_FAILED = 0xA004
+
+    /**
+     * Nikon 0xA004 = **InvalidStatus**（libgphoto2 ptp.h: `PTP_RC_NIKON_InvalidStatus`）。
+     * 旧代码误标为「拒绝开启实时取景」——真实语义是「相机当前状态不允许该操作」：
+     * 录制/监看场景下最常见的触发是**模式拨盘不在所需位置**（录制需视频档、
+     * 监看需照片档）或机身停留在回放/菜单界面。
+     */
+    const val RESPONSE_NIKON_INVALID_STATUS = 0xA004
+
+    /**
+     * Nikon 厂商操作码 0x90C2 ChangeCameraMode（libgphoto2: `PTP_OC_NIKON_ChangeCameraMode`，
+     * digiCamControl NikonBase.LockCamera/UnLockCamera 同款）：参数 1 = 进入机身控制模式，
+     * 参数 0 = 退出。digiCamControl 的录像时序为 ChangeCameraMode(1) → StartMovieRecInCard(0x920A)，
+     * 结束后 ChangeCameraMode(0) 恢复，避免相机滞留控制模式影响后续拍照/下载。
+     */
+    const val OP_NIKON_CHANGE_CAMERA_MODE = 0x90C2
 
     /**
      * Nikon 厂商响应码 0xA200：B 门收门时机身正在处理曝光写卡（ZRelay 同名证据
@@ -132,7 +147,8 @@ object PtpConstants {
         RESPONSE_SESSION_ALREADY_OPEN -> "会话已打开"
         RESPONSE_TRANSACTION_CANCELLED -> "事务已取消"
         RESPONSE_NIKON_NOT_LIVE_VIEW -> "相机未处于实时取景状态"
-        RESPONSE_NIKON_LV_ENABLE_FAILED -> "相机拒绝开启实时取景（Nikon 0xA004）"
+        RESPONSE_NIKON_INVALID_STATUS ->
+            "相机当前状态不允许该操作（Nikon 0xA004）：录制请把拨盘切到视频档、监看请切到照片档，且不要停留在回放/菜单界面"
         RESPONSE_NIKON_BULB_BUSY -> "相机正在结束 B 门曝光，请稍候"
         else -> "0x${code.toString(16).uppercase()}"
     }
