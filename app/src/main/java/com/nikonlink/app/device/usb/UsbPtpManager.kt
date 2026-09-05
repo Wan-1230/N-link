@@ -70,6 +70,17 @@ class UsbPtpManager @Inject constructor(
     private val _usbState = MutableStateFlow(UsbConnectionState.DISCONNECTED)
     val usbState: StateFlow<UsbConnectionState> = _usbState.asStateFlow()
 
+    /**
+     * 模块 6：USB 失败的分类提示（设备页按状态展示，禁止统一报「未检测到相机」）。
+     * 物理未识别 / 无权限 / 接口被占用 / 会话打开失败 / 链路超时各有独立文案；
+     * 进入 CONNECTED 或用户拔出（DETACHED → disconnect）时清空。
+     */
+    private val _usbErrorMessage = MutableStateFlow<String?>(null)
+    val usbErrorMessage: StateFlow<String?> = _usbErrorMessage.asStateFlow()
+
+    /** 失败后的退避重连任务（1s/2s/4s 三次）；物理拔出或手动断开时撤销 */
+    private var reconnectJob: Job? = null
+
     private val _deviceInfo = MutableStateFlow<UsbCameraInfo?>(null)
     val deviceInfo: StateFlow<UsbCameraInfo?> = _deviceInfo.asStateFlow()
 
@@ -89,6 +100,10 @@ class UsbPtpManager @Inject constructor(
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     Timber.tag(TAG).w("USB device detached")
+                    // 物理拔出：撤销退避重连并清空错误提示（属正常断开而非故障）
+                    reconnectJob?.cancel()
+                    reconnectJob = null
+                    _usbErrorMessage.value = null
                     disconnect()
                 }
                 ACTION_USB_PERMISSION -> {
@@ -99,6 +114,9 @@ class UsbPtpManager @Inject constructor(
                         openConnection(device)
                     } else {
                         Timber.tag(TAG).w("USB permission denied")
+                        // 模块 6：无权限 ≠ 未检测到相机，单独提示
+                        _usbErrorMessage.value =
+                            "USB 权限被拒绝：请在弹窗中允许访问 USB 设备，或到系统设置授予"
                         _usbState.value = UsbConnectionState.PERMISSION_DENIED
                     }
                 }
@@ -170,16 +188,23 @@ class UsbPtpManager @Inject constructor(
     }
 
     /**
-     * 打开 USB 连接，建立 PTP 会话
+     * 打开 USB 连接，建立 PTP 会话。
+     * 模块 6：每个失败点写入 [usbErrorMessage] 分类提示，并安排带退避的重连
+     * （OTG 枚举延迟 / 相机休眠等瞬时失败 1s/2s/4s 内自动恢复）。
      */
     private fun openConnection(device: UsbDevice) {
+        reconnectJob?.cancel()
+        reconnectJob = null
         _usbState.value = UsbConnectionState.CONNECTING
 
         try {
             val connection = usbManager.openDevice(device) ?: run {
                 Timber.tag(TAG).e("Failed to open USB device")
                 eventLogger.event("usb_open", "ok" to false, "reason" to "openDevice_null")
+                _usbErrorMessage.value =
+                    "USB 设备打开失败：OTG 线/供电异常，请重新插拔数据线后重试"
                 _usbState.value = UsbConnectionState.ERROR
+                scheduleReconnect()
                 return
             }
 
@@ -214,12 +239,24 @@ class UsbPtpManager @Inject constructor(
             if (ptpInterface == null || outEndpoint == null || inEndpoint == null) {
                 Timber.tag(TAG).e("PTP interface/endpoints not found")
                 eventLogger.event("usb_open", "ok" to false, "reason" to "no_ptp_interface")
+                _usbErrorMessage.value =
+                    "未识别到相机 PTP 接口：请使用数据线（非仅充电线）连接，并确认相机 USB 模式为 PTP/MTP"
                 connection.close()
                 _usbState.value = UsbConnectionState.ERROR
+                scheduleReconnect()
                 return
             }
 
-            connection.claimInterface(ptpInterface, true)
+            runCatching { connection.claimInterface(ptpInterface, true) }.onFailure { e ->
+                Timber.tag(TAG).e(e, "Claim USB interface failed")
+                eventLogger.event("usb_open", "ok" to false, "reason" to "claim_failed")
+                _usbErrorMessage.value =
+                    "USB 接口被占用：请关闭其它正在使用相机的应用后重新插拔"
+                connection.close()
+                _usbState.value = UsbConnectionState.ERROR
+                scheduleReconnect()
+                return
+            }
 
             usbConnection = connection
             usbInterface = ptpInterface
@@ -248,20 +285,67 @@ class UsbPtpManager @Inject constructor(
                     // 会话建立后向相机反馈，保持相机处于持续连接状态
                     val ready = sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
                     Timber.tag(TAG).d("USB DeviceReady response=${ready?.responseCode}")
+                    // 模块 6：取流管线预初始化——会话就绪即下发 LiveView 图像配置
+                    // （0xD1AC=3，与 LiveViewManager.startLiveView 同一口径），
+                    // 解决「显示连接成功但监看无画面」的首帧时序竞争
+                    runCatching {
+                        setDevicePropValue(PtpConstants.PROP_NIKON_LV_IMAGE_PROFILE, byteArrayOf(3))
+                    }.onSuccess { ok ->
+                        Timber.tag(TAG).i("USB LV pipeline pre-init 0xD1AC=3: $ok")
+                    }
+                    _usbErrorMessage.value = null
                     _usbState.value = UsbConnectionState.CONNECTED
                     startEventPolling()
                     startKeepAlive()
                     Timber.tag(TAG).i("✓ USB PTP connected: ${_deviceInfo.value?.cameraModel}")
                 } else {
                     eventLogger.event("usb_session", "ok" to false)
+                    _usbErrorMessage.value =
+                        "PTP 会话打开失败：相机无响应，请点亮相机屏幕并确认 USB 模式为 PTP/MTP 后重试"
                     _usbState.value = UsbConnectionState.ERROR
-                    disconnect()
+                    disconnect(silent = true)
+                    scheduleReconnect()
                 }
             }
 
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "USB connection failed")
+            _usbErrorMessage.value = "USB 连接异常：${e.message ?: "未知错误"}（接口可能被占用，请重新插拔）"
             _usbState.value = UsbConnectionState.ERROR
+            scheduleReconnect()
+        }
+    }
+
+    /**
+     * 模块 6：失败后带退避的自动重连（1s/2s/4s，最多 3 次）。
+     * 仅当设备仍在 USB 总线上时重试；期间用户拔出（DETACHED）或手动断开会撤销任务。
+     */
+    private fun scheduleReconnect() {
+        if (reconnectJob?.isActive == true) return
+        val scope = this.scope ?: return
+        reconnectJob = scope.launch {
+            val delays = longArrayOf(1000, 2000, 4000)
+            delays.forEachIndexed { attempt, delayMs ->
+                delay(delayMs)
+                if (_usbState.value == UsbConnectionState.CONNECTED ||
+                    _usbState.value == UsbConnectionState.CONNECTING
+                ) return@launch
+                val device = usbManager.deviceList.values.firstOrNull {
+                    UsbPtpProtocol.isNikonCamera(it.vendorId, it.productId)
+                }
+                if (device == null) {
+                    Timber.tag(TAG).i("Reconnect attempt ${attempt + 1}: no camera on bus, stop")
+                    return@launch
+                }
+                Timber.tag(TAG).i("USB reconnect attempt ${attempt + 1}/3")
+                if (usbManager.hasPermission(device)) {
+                    openConnection(device)
+                } else {
+                    requestPermissionAndConnect(device)
+                }
+                // openConnection 为异步会话建立；失败会再次 scheduleReconnect 排队
+                if (_usbState.value == UsbConnectionState.CONNECTING) return@launch
+            }
         }
     }
 
@@ -681,6 +765,7 @@ class UsbPtpManager @Inject constructor(
 
     /**
      * 定期向相机发送 DeviceReady，保持会话不被相机判定失效。
+     * 模块 6：连续失败判定断联后，标记链路超时文案并触发退避重连。
      */
     private fun startKeepAlive() {
         keepAliveJob?.cancel()
@@ -698,7 +783,10 @@ class UsbPtpManager @Inject constructor(
                     } else {
                         consecutiveFailures++
                         if (consecutiveFailures >= 2) {
+                            _usbErrorMessage.value =
+                                "USB 链路超时断开：相机未响应保活，正在尝试自动重连…"
                             _usbState.value = UsbConnectionState.ERROR
+                            scheduleReconnect()
                             break
                         }
                     }
@@ -706,7 +794,10 @@ class UsbPtpManager @Inject constructor(
                     Timber.tag(TAG).w(e, "USB keep-alive failed")
                     consecutiveFailures++
                     if (consecutiveFailures >= 2) {
+                        _usbErrorMessage.value =
+                            "USB 链路超时断开：相机未响应保活，正在尝试自动重连…"
                         _usbState.value = UsbConnectionState.ERROR
+                        scheduleReconnect()
                         break
                     }
                 }
@@ -715,9 +806,10 @@ class UsbPtpManager @Inject constructor(
     }
 
     /**
-     * 断开 USB 连接
+     * 断开 USB 连接。
+     * @param silent true = 故障路径的清理（不清错误提示、不改状态，由调用方决定 UI 呈现）
      */
-    fun disconnect() {
+    fun disconnect(silent: Boolean = false) {
         keepAliveJob?.cancel()
         keepAliveJob = null
         eventPollJob?.cancel()
@@ -737,9 +829,12 @@ class UsbPtpManager @Inject constructor(
         lastCommandOkAtMs = 0L
         lvFrameOkLogged = false
         _deviceInfo.value = null
-        _usbState.value = UsbConnectionState.DISCONNECTED
+        if (!silent) {
+            _usbErrorMessage.value = null
+            _usbState.value = UsbConnectionState.DISCONNECTED
+        }
         eventLogger.event("usb_session", "ok" to false, "reason" to "disconnected")
-        Timber.tag(TAG).i("USB disconnected")
+        Timber.tag(TAG).i("USB disconnected (silent=$silent)")
     }
 
     fun isConnected(): Boolean = _usbState.value == UsbConnectionState.CONNECTED
