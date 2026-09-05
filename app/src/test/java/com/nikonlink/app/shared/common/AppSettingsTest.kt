@@ -29,6 +29,8 @@ class AppSettingsTest {
         // relaxed mock 对 String 返回空串而非 null，需显式按“未存储”行为 stub
         every { prefs.getString(any(), any()) } returns null
         every { prefs.getBoolean(any(), any()) } returns false
+        // Int 未存储时返回调用方给的默认值（SharedPreferences 真实语义）
+        every { prefs.getInt(any(), any()) } answers { secondArg() }
         settings = AppSettings(context)
     }
 
@@ -42,6 +44,9 @@ class AppSettingsTest {
         // F1/F4 新增开关的默认态：全部关闭（PRD 约定）
         assertFalse(settings.markAutoDownload)
         assertFalse(settings.shareKeepGps)
+        // 模块 3：「更多动作」默认间隔拍摄（既有流程不因入口迁移改变），B 门默认 30s
+        assertEquals(AppSettings.ACTION_INTERVAL, settings.remoteActionMode)
+        assertEquals(30, settings.bulbDurationSeconds)
     }
 
     @Test
@@ -53,6 +58,8 @@ class AppSettingsTest {
         settings.autoDownload = true
         settings.markAutoDownload = true
         settings.shareKeepGps = true
+        settings.remoteActionMode = AppSettings.ACTION_BULB
+        settings.bulbDurationSeconds = 60
 
         verify { editor.putString("quality", AppSettings.QUALITY_COMPRESSED) }
         verify { editor.putString("save_path", AppSettings.SAVE_PATH_DOWNLOAD) }
@@ -61,5 +68,7 @@ class AppSettingsTest {
         verify { editor.putBoolean("auto_download", true) }
         verify { editor.putBoolean("mark_auto_download", true) }
         verify { editor.putBoolean("share_keep_gps", true) }
+        verify { editor.putString("remote_action_mode", AppSettings.ACTION_BULB) }
+        verify { editor.putInt("bulb_duration_seconds", 60) }
     }
 }
