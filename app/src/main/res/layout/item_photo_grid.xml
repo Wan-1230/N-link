@@ -50,7 +50,7 @@
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toTopOf="parent" />
 
-        <!-- 右上角星形标记（F1）：常驻角标，多选对勾在其上层绘制 -->
+        <!-- 左上角星形标记（模块 4.2：与右上角多选对勾分离，选中态不再重叠） -->
         <ImageView
             android:id="@+id/ivMarkBadge"
             android:layout_width="18dp"
@@ -59,7 +59,7 @@
             android:contentDescription="已标记"
             android:src="@drawable/ic_star"
             android:visibility="gone"
-            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toTopOf="parent" />
 
         <!-- 右上角黑色对勾标记 -->
