@@ -76,6 +76,14 @@ class RemoteShootingViewModel @Inject constructor(
         viewModelScope.launch { remoteManager.bulbStop() }
     }
 
+    /** 定时 B 门总时长 (ms)；null = 手动模式（模块 3） */
+    val bulbDurationMs: StateFlow<Long?> = remoteManager.bulbDurationMs
+
+    /** 定时 B 门：曝光 durationSec 秒后自动收门，曝光中可随时 bulbStop 提前结束 */
+    fun bulbStartTimed(durationSec: Int) {
+        viewModelScope.launch { remoteManager.bulbStartTimed(durationSec) }
+    }
+
     fun startVideo() {
         viewModelScope.launch { remoteManager.startVideoRecording() }
     }
