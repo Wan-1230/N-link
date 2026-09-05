@@ -314,7 +314,7 @@
                 android:background="@drawable/bg_chip"
                 android:gravity="center"
                 android:paddingHorizontal="16dp"
-                android:text="间隔拍摄"
+                android:text="更多动作"
                 android:textColor="@color/text_primary"
                 android:textSize="12sp"
                 android:textStyle="bold" />
