@@ -158,18 +158,22 @@ class DashboardFragment : Fragment() {
                 if (info.modelName.isNotBlank()) binding.tvCameraName.text = info.modelName
                 if (info.lensName.isNotBlank()) binding.tvLens.text = info.lensName
 
+                // 快门次数行：连接后常驻可点（未查询/失败/成功均可点击触发或刷新）。
+                // 可行性：尼康无快门计数 PTP 属性 → 采样照片 MakerNotes 本地解析，失败走云端兜底
+                val shutterRowVisible = info.shutterQueryState != ShutterCountState.NONE ||
+                        info.modelName.isNotBlank()
                 binding.rowShutterCount.visibility =
-                    if (info.shutterQueryState == ShutterCountState.NONE) View.GONE else View.VISIBLE
+                    if (shutterRowVisible) View.VISIBLE else View.GONE
                 binding.tvShutterCount.text = when (info.shutterQueryState) {
-                    ShutterCountState.QUERYING -> "查询中"
-                    ShutterCountState.SUCCESS -> "${info.shutterCount} 次"
+                    ShutterCountState.QUERYING -> "查询中…"
+                    ShutterCountState.SUCCESS -> "${info.shutterCount} 次" +
+                            if (info.shutterCountSource.isNotBlank()) "（${info.shutterCountSource}）" else ""
                     ShutterCountState.FAILED -> "查询失败，点击重试"
-                    ShutterCountState.NONE -> ""
+                    ShutterCountState.NONE -> "未查询 · 点击查询"
                 }
+                binding.tvShutterCount.isClickable = shutterRowVisible
                 binding.tvShutterCount.setOnClickListener {
-                    if (info.shutterQueryState == ShutterCountState.FAILED) {
-                        paramsViewModel.retryShutterCountQuery()
-                    }
+                    paramsViewModel.retryShutterCountQuery()
                 }
 
                 binding.rowFirmware.visibility =

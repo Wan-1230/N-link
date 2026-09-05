@@ -99,6 +99,15 @@ object PtpConstants {
     const val RESPONSE_NIKON_LV_ENABLE_FAILED = 0xA004
 
     /**
+     * Nikon 厂商响应码 0xA200：B 门收门时机身正在处理曝光写卡（ZRelay 同名证据
+     * `0xA200 BulbReleaseBusy`）。结束 B 门遇此码应短暂等待后重试，而非报错。
+     *
+     * 注：0x9207 InitiateCaptureRecInMedia 常量在本文件上方已有定义（快门多源归一化时引入），
+     * B 门链路复用同一操作码——快门处于 Bulb 档时它就是开启曝光的入口。
+     */
+    const val RESPONSE_NIKON_BULB_BUSY = 0xA200
+
+    /**
      * PTP 响应码中文化描述（日志与用户提示统一使用）。
      * 未知码返回十六进制形式，便于扩展排查。
      */
@@ -124,6 +133,7 @@ object PtpConstants {
         RESPONSE_TRANSACTION_CANCELLED -> "事务已取消"
         RESPONSE_NIKON_NOT_LIVE_VIEW -> "相机未处于实时取景状态"
         RESPONSE_NIKON_LV_ENABLE_FAILED -> "相机拒绝开启实时取景（Nikon 0xA004）"
+        RESPONSE_NIKON_BULB_BUSY -> "相机正在结束 B 门曝光，请稍候"
         else -> "0x${code.toString(16).uppercase()}"
     }
 

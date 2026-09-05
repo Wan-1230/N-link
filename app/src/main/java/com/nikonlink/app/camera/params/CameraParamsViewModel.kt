@@ -173,6 +173,15 @@ class CameraParamsViewModel @Inject constructor(
         viewModelScope.launch { paramManager.setShutterSpeed(exposureTime) }
     }
 
+    /**
+     * 切到 B 门档（B 门 / 长曝光的参数化入口，滚轮「B门」项调用）。
+     * 与 [setShutterByValue] 分离：0xFFFFFFFF 会被档位钳位吞掉，必须走专用写入路径。
+     * @return false = 写入被拒（0x500D 只读 / 非 M·S 档），由 UI 给可操作提示
+     */
+    suspend fun setShutterBulb(): Boolean = withContext(Dispatchers.IO) {
+        paramManager.setShutterBulb()
+    }
+
     fun setIsoByValue(iso: Int) {
         viewModelScope.launch { paramManager.setIso(iso) }
     }
