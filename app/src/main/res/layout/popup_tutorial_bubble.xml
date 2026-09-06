@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 「更多动作」长按使用教程气泡（深色圆角底 + 白字，按钮上方弹出） -->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_tutorial_bubble"
+    android:gravity="center"
+    android:lineSpacingExtra="4dp"
+    android:paddingHorizontal="16dp"
+    android:paddingVertical="10dp"
+    android:text="长按此按钮可切换\n间隔拍摄 / B门长曝光"
+    android:textColor="@color/white"
+    android:textSize="13sp" />
