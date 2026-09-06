@@ -84,6 +84,33 @@ object UsbPtpProtocol {
     }
 
     /**
+     * 容器头解析结果。
+     *
+     * USB PTP 的 bulk IN 是无消息边界的字节流：一个容器可能跨多次 bulkTransfer
+     * 到达，响应容器也可能与数据容器粘连在同一次读取里。事务层必须先读头、
+     * 再按 [length] 组装/流式消费整个容器，不能假设「一次读取 = 一个容器」。
+     */
+    data class ContainerHeader(
+        val length: Int,
+        val type: Int,
+        val code: Int,
+        val transactionId: Int
+    )
+
+    /**
+     * 解析容器头（12 字节）。数据不足 12 字节返回 null（等待更多字节）。
+     */
+    fun parseContainerHeader(data: ByteArray): ContainerHeader? {
+        if (data.size < HEADER_SIZE) return null
+        val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        val length = buffer.int
+        val type = buffer.short.toInt() and 0xFFFF
+        val code = buffer.short.toInt() and 0xFFFF
+        val transactionId = buffer.int
+        return ContainerHeader(length, type, code, transactionId)
+    }
+
+    /**
      * 解析 USB PTP 响应容器
      */
     fun parseResponseContainer(data: ByteArray): UsbPtpResponse? {
