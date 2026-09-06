@@ -133,22 +133,24 @@ class ConnectionService : LifecycleService() {
     private fun observeConnectionState() {
         lifecycleScope.launch {
             connectionManager.connectionState.collectLatest { state ->
+                // v1.0.2 反馈：未连接相机时状态栏也显示「N-Link 已连接」——
+                // 旧版标题是常量，与正文状态脱节。现在标题随真实状态机状态变化。
                 val (title, text) = when (state) {
                     ConnectionState.DISCONNECTED ->
-                        getString(R.string.notification_connection_title) to
+                        getString(R.string.notification_title_disconnected) to
                                 getString(R.string.notification_connection_text_disconnected)
                     ConnectionState.CONNECTING ->
-                        getString(R.string.notification_connection_title) to "正在连接相机..."
+                        getString(R.string.notification_title_connecting) to "正在连接相机..."
                     ConnectionState.BLE_CONNECTED ->
                         getString(R.string.notification_connection_title) to
                                 getString(R.string.notification_connection_text_ble)
                     ConnectionState.WIFI_UPGRADING ->
-                        getString(R.string.notification_connection_title) to "正在建立高速通道..."
+                        getString(R.string.notification_title_connecting) to "正在建立高速通道..."
                     ConnectionState.FULLY_CONNECTED ->
                         getString(R.string.notification_connection_title) to
                                 getString(R.string.notification_connection_text_full)
                     ConnectionState.ERROR_WAITING_RETRY ->
-                        getString(R.string.notification_connection_title) to "连接中断，正在自动恢复..."
+                        getString(R.string.notification_title_recovering) to "连接中断，正在自动恢复..."
                 }
                 updateNotification(title, text)
             }

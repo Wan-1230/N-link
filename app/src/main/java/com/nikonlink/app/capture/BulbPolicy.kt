@@ -71,11 +71,32 @@ object BulbPolicy {
         )
     )
 
-    /** 收门命令：优先恢复快门值（digiCamControl 模型），OpenCapture 路径再补 0x1010 */
-    object StopCommand {
-        const val TERMINATE_OPEN_CAPTURE = PtpConstants.OP_TERMINATE_OPEN_CAPTURE
-        const val TERMINATE_PARAMS = 0
-    }
+    /** 一条收门命令 */
+    data class StopCommand(
+        val opcode: Int,
+        val params: List<Int>,
+        val label: String
+    )
+
+    /**
+     * 收门命令降级序列（配合「恢复切档前快门值」之后使用）：
+     * ① 0x920C(0,0) TerminateCapture —— gphoto2 `_put_Nikon_Bulb` 收门的权威实现
+     *    （`ptp_nikon_terminatecapture(params, 0, 0)`），是 0x9207 长曝光的官方配套结束命令；
+     * ② 0x1010(0) TerminateOpenCapture —— 0x100F 路径的配套，保留兜底。
+     * v1.0.2 只有 0x1010 一条路，Z 系无线普遍不支持 → 收门必败 → 定时曝光远超设定值。
+     */
+    fun stopPlan(): List<StopCommand> = listOf(
+        StopCommand(
+            opcode = PtpConstants.OP_NIKON_TERMINATE_CAPTURE,
+            params = listOf(0, 0),
+            label = "0x920C TerminateCapture"
+        ),
+        StopCommand(
+            opcode = PtpConstants.OP_TERMINATE_OPEN_CAPTURE,
+            params = listOf(0),
+            label = "0x1010 TerminateOpenCapture"
+        )
+    )
 
     /**
      * 失败原因中文化。[shutterSwitched] = 本次是否已把机身快门切到了 Bulb 档
