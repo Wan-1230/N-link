@@ -70,6 +70,12 @@ class TransferViewModel @Inject constructor(
          *    一次都不拉（不会抢 PTP 带宽拖慢拍摄），等一串拍完再统一刷新一次。
          */
         private const val CAPTURE_SYNC_WINDOW_MS = 800L
+
+        /**
+         * 相册整体加载硬顶：任何单请求卡顿叠加都不允许把加载圈挂到天荒地老。
+         * 超时后保留旧列表、复位加载态并给出可操作提示（下拉重试）。
+         */
+        private const val LOAD_HARD_DEADLINE_MS = 60_000L
     }
 
     private val _photoList = MutableStateFlow<List<CameraFile>>(emptyList())
@@ -452,21 +458,50 @@ class TransferViewModel @Inject constructor(
         loadJob?.cancel()
         if (!silent) _isLoading.value = true
         loadJob = viewModelScope.launch {
-            var result: List<CameraFile> = emptyList()
+            var fetched: List<CameraFile> = emptyList()
+            var fetchedViaHoldPages = false
             try {
                 // 媒体列表按 limit=18 分页，每页完成后立即刷新网格，
                 // 避免照片多时等待整份列表返回才看到内容。
                 // 这里存原始顺序即可：分页期间排序没有意义（数据不完整），
                 // 且每页重排会让列表不断跳动；排序统一由 filteredPhotos 在加载完成后做全量处理。
-                result = transferManager.fetchPhotoList(
-                    onPage = if (holdPages) null else ({ page -> _photoList.value = page })
-                )
+                //
+                // 失败兜底（转圈修复的 UI 侧闭环）：
+                // 1. 总体硬顶 60s——超时保留旧列表、复位加载态、给出可操作提示；
+                // 2. 「整体失败」（通道在线、句柄有货却一条元数据都读不到）静默重试一次，
+                //    覆盖插拔瞬间/相机刚唤醒的瞬时抖动，仍失败才以失败文案示人；
+                // 3. 部分失败保留已读到的文件并提示缺口，不再静默吞掉。
+                var fetch: TransferManager.PhotoListFetch? = null
+                for (attempt in 0 until 2) {
+                    fetch = withTimeoutOrNull(LOAD_HARD_DEADLINE_MS) {
+                        transferManager.fetchPhotoListDetailed(
+                            onPage = if (holdPages) null else ({ page -> _photoList.value = page })
+                        )
+                    } ?: run {
+                        if (!silent) _message.value = "相册加载超时，请检查连接后下拉重试"
+                        null
+                    }
+                    if (fetch == null || !fetch.totalFailure) break
+                    if (attempt == 0) delay(800)
+                }
+                val outcome = fetch ?: return@launch
+                val result = outcome.files
+                fetched = result
+                fetchedViaHoldPages = holdPages
                 if (!holdPages) _photoList.value = result
                 if (!silent) {
                     // 静默刷新不能清勾选：用户可能正勾着一批待下载项在连拍，
                     // 且 handle 是稳定的（新照片只会拿到新 handle），保留勾选是安全的。
                     _selectedHandles.value = emptySet()
-                    _message.value = if (result.isEmpty()) "存储卡为空或未连接" else "共 ${result.size} 个文件"
+                    _message.value = when {
+                        outcome.totalFailure ->
+                            "相册加载失败（${outcome.totalHandles} 个文件元数据不可读），请下拉重试"
+                        outcome.nothingDisplayable -> "未发现可展示的照片或视频"
+                        result.isEmpty() -> "存储卡为空或未连接"
+                        outcome.partialFailure ->
+                            "共 ${result.size} 个文件，${outcome.failedInfoCount} 个读取失败，可下拉重试"
+                        else -> "共 ${result.size} 个文件"
+                    }
                 }
                 if (result.isNotEmpty()) {
                     // F1 失效自愈：全量列表到手后做指纹校验，清理机内已删除/换卡失效的标记。
@@ -481,7 +516,7 @@ class TransferViewModel @Inject constructor(
                 if (!silent) _isLoading.value = false
                 // holdPages：loading 复位后再写列表 → 这一次发射会直接走排序管线，
                 // 网格只看到一次「排序后的最终列表」提交，不再有中间态跳动
-                if (holdPages && result.isNotEmpty()) _photoList.value = result
+                if (fetchedViaHoldPages && fetched.isNotEmpty()) _photoList.value = fetched
                 loadingGuard.set(false)
             }
         }

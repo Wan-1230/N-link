@@ -156,11 +156,15 @@ class LiveViewManager @Inject constructor(
                 if (success) {
                     _liveViewState.value = LiveViewState.RUNNING
                     consecutiveErrors = 0
+                    // USB 监看期间暂停 DeviceReady 保活：帧流量本身即保活，
+                    // 保活命令只会与帧竞争命令串行通道、拉高帧延迟
+                    if (usbPtpManager.isConnected()) usbPtpManager.setKeepAlivePaused(true)
                     startFrameLoop()
                     Timber.tag(TAG).i("✓ Live View started")
                 } else {
                     // 全链路优化: 启动失败时恢复原曝光模式，
                     // 避免相机卡在无线控制模式导致后续下载被拒绝
+                    usbPtpManager.setKeepAlivePaused(false)
                     restoreExposureModeIfNeeded()
                     Timber.tag(TAG).e("Failed to start Live View")
                     _liveViewState.value = LiveViewState.ERROR
@@ -316,6 +320,8 @@ class LiveViewManager @Inject constructor(
         frameJob?.cancel()
         frameJob = null
         _errorMessage.value = null
+        // 无论此前走哪条通道，恢复 USB 保活（无 USB 连接时该调用无副作用）
+        usbPtpManager.setKeepAlivePaused(false)
         if (_liveViewState.value == LiveViewState.RUNNING) {
             scope?.launch(Dispatchers.IO) {
                 try {
@@ -450,6 +456,8 @@ class LiveViewManager @Inject constructor(
             Timber.tag(TAG).e("Too many errors, stopping Live View")
             _liveViewState.value = LiveViewState.ERROR
             _errorMessage.value = "实时取景长时间无画面，已自动停止，请重试"
+            // 帧循环自停路径不走 stopLiveView()，保活需在此恢复
+            usbPtpManager.setKeepAlivePaused(false)
             frameJob?.cancel()
         } else {
             delay(100)  // 短暂等待后重试
