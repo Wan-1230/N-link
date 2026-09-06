@@ -170,6 +170,9 @@ class WifiDirectConnector @Inject constructor(
                     delay(BACKOFF_MS[(attempt - 1).coerceAtMost(BACKOFF_MS.size - 1)])
                     continue
                 }
+                // ZDROP 同款：进程级绑定到 WiFi 网络，杜绝双卡手机蜂窝默认路由
+                // 抢走 PTP/IP 通道（socket 级绑定无法覆盖所有创建点）
+                networkMonitor.bindProcessTo(network)
 
                 val ok = ptpSession.connect(
                     endpoint.host,
@@ -213,6 +216,8 @@ class WifiDirectConnector @Inject constructor(
             throw e
         } finally {
             networkMonitor.releaseLocks()
+            // 连接结束恢复系统默认路由（进程级绑定的对称操作）
+            networkMonitor.bindProcessTo(null)
             // 任何异常出口都保证会话被清干净，不残留半开 socket
             if (gen == generation && !ptpSession.isConnected()) {
                 runCatching { ptpSession.closeSession() }

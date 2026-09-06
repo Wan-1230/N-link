@@ -4,6 +4,9 @@
     <string name="notification_channel_connection">连接状态</string>
     <string name="notification_channel_transfer">文件传输</string>
     <string name="notification_connection_title">N-Link 已连接</string>
+    <string name="notification_title_disconnected">N-Link 未连接</string>
+    <string name="notification_title_connecting">N-Link 连接中</string>
+    <string name="notification_title_recovering">N-Link 重连中</string>
     <string name="notification_connection_text_ble">BLE 已连接</string>
     <string name="notification_connection_text_full">BLE + WiFi 已连接</string>
     <string name="notification_connection_text_disconnected">未连接</string>
