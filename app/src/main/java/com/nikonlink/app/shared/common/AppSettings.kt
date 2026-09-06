@@ -26,6 +26,10 @@ class AppSettings @Inject constructor(
 
         const val CONN_PREF_USB = "USB 优先"
         const val CONN_PREF_WIFI = "WiFi 优先"
+
+        /** 「更多动作」按钮的动作模式（模块 3）：间隔拍摄 / B 门长曝光 */
+        const val ACTION_INTERVAL = "interval"
+        const val ACTION_BULB = "bulb"
     }
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -94,4 +98,17 @@ class AppSettings @Inject constructor(
     var shareKeepGps: Boolean
         get() = prefs.getBoolean("share_keep_gps", false)
         set(value) = prefs.edit().putBoolean("share_keep_gps", value).apply()
+
+    /**
+     * 拍摄页「更多动作」按钮的当前动作（模块 3 入口迁移）。
+     * 点击执行当前动作，长按弹出菜单切换；记住用户上次选择。
+     */
+    var remoteActionMode: String
+        get() = prefs.getString("remote_action_mode", ACTION_INTERVAL) ?: ACTION_INTERVAL
+        set(value) = prefs.edit().putString("remote_action_mode", value).apply()
+
+    /** B 门默认曝光时长（秒），定时模式使用；记住上次选择 */
+    var bulbDurationSeconds: Int
+        get() = prefs.getInt("bulb_duration_seconds", 30)
+        set(value) = prefs.edit().putInt("bulb_duration_seconds", value).apply()
 }

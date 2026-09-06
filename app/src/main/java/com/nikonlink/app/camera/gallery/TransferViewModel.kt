@@ -214,6 +214,23 @@ class TransferViewModel @Inject constructor(
         }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    /**
+     * 模块 4.1：Tab 切换的单一数据源。
+     *
+     * 旧实现里网格收集器分别订阅 filteredPhotos / markedDisplayList，并用
+     * activeAlbum.value 做条件过滤——切 Tab 时目标列表 flow 若没有新值
+     * （StateFlow 不重发旧值），收集器永远不会执行，界面停留在上一个 Tab。
+     * 现在把「按源取列表」收敛进 combine：_activeAlbum 一变，combine 必然重发，
+     * 点击 Tab 后选中态、列表内容原子切换（收集器不再有任何条件判断）。
+     */
+    val uiPhotos: StateFlow<List<CameraFile>> = combine(
+        _activeAlbum,
+        filteredPhotos,
+        markedDisplayList
+    ) { source, filtered, marked ->
+        if (source == AlbumSource.MARKED) marked else filtered
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     val transferState: StateFlow<TransferState> = transferManager.transferState
     val queue: StateFlow<List<TransferTask>> = transferManager.queue
     val transferSpeedBps: StateFlow<Long> = transferManager.transferSpeedBps
@@ -740,6 +757,17 @@ class TransferViewModel @Inject constructor(
         if (!current.add(handle)) {
             current.remove(handle)
         }
+        _selectedHandles.value = current
+    }
+
+    /**
+     * 模块 4.4 长按滑动多选：批量选中/取消一段连续项。
+     * 一次调用一次状态发射，DiffUtil 以 payload 批量播放勾选动画（滑动过程中连续反馈）。
+     */
+    fun setSelectionRange(handles: List<Int>, select: Boolean) {
+        if (handles.isEmpty()) return
+        val current = _selectedHandles.value.toMutableSet()
+        if (select) current.addAll(handles) else current.removeAll(handles.toSet())
         _selectedHandles.value = current
     }
 
