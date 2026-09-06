@@ -183,9 +183,12 @@
                 android:background="@drawable/bg_chip"
                 android:padding="3dp">
 
+                <!-- 初始宽度 0dp：宽度由 renderAlbumTabs 按行宽/Tab 数运行时设置。
+                     旧值 match_parent 会在 Fragment 处于 hidden（GONE 不布局）时
+                     保持全宽黑胶囊，未选中 Tab 的黑字叠黑底不可见 →「只见 1 个 Tab」 -->
                 <View
                     android:id="@+id/tabIndicator"
-                    android:layout_width="match_parent"
+                    android:layout_width="0dp"
                     android:layout_height="match_parent"
                     android:background="@drawable/bg_chip_selected" />
 

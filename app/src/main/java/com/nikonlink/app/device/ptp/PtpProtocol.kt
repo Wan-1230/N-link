@@ -71,6 +71,13 @@ object PtpConstants {
     const val OP_NIKON_INITIATE_CAPTURE_REC_IN_SDRAM = 0x90C0
     const val OP_NIKON_AF_CAPTURE_SDRAM = 0x90CB
 
+    /**
+     * Nikon 应用模式切换（gphoto2: ChangeApplicationMode，1 参数）。
+     * 影犀的录像链路：开录前 0x9435(1) 进入应用模式，收录后 0x9435(0) 退出。
+     * 相机端表现为短暂弹出「已连接到智能设备」——进入遥控应用态的正常提示。
+     */
+    const val OP_NIKON_CHANGE_APPLICATION_MODE = 0x9435
+
     // PTP Response Codes
     const val RESPONSE_OK = 0x2001
     const val RESPONSE_GENERAL_ERROR = 0x2002

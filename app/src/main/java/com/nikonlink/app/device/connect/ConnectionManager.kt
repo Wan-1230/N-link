@@ -8,6 +8,7 @@ import com.nikonlink.app.device.model.ConnectionMetrics
 import com.nikonlink.app.device.model.ChannelType
 import com.nikonlink.app.device.model.ConnectionState
 import com.nikonlink.app.device.model.ConnectionEvent
+import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.ptp.PtpSessionState
 import com.nikonlink.app.device.ptp.PtpIpProbe
@@ -606,8 +607,18 @@ class ConnectionManager @Inject constructor(
      */
     private suspend fun establishPtpSession() {
         if (ptpSession.isConnected()) {
-            stateMachine.dispatch(ConnectionEvent.WifiConnected)
-            return
+            // isConnected() 只是内存标志，半开 TCP（相机已休眠/链路已死）时仍为 true——
+            // 旧版直接凭脏标志 dispatch WifiConnected，状态栏「未连接却显示已连接」的根因。
+            // 现在先探活（DeviceReady 轻量命令），探不通就拆掉脏会话走完整建链。
+            val alive = runCatching {
+                ptpSession.sendCommand(PtpConstants.OP_NIKON_DEVICE_READY).isOk
+            }.getOrDefault(false)
+            if (alive) {
+                stateMachine.dispatch(ConnectionEvent.WifiConnected)
+                return
+            }
+            Timber.tag(TAG).w("Stale PTP session detected (DeviceReady failed), rebuilding")
+            runCatching { ptpSession.closeSession() }
         }
         // 等待 WiFi 网络稳定
         delay(500)
