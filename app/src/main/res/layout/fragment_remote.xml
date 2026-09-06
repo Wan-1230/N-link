@@ -49,10 +49,24 @@
             android:layout_height="0dp"
             android:layout_weight="1" />
 
+        <!-- 画面模式下拉（v1.0.2 从长按菜单迁入）：收起显示当前模式，
+             展开显示带说明的选项（联动=相机屏同显 / 遥控=相机屏熄） -->
+        <TextView
+            android:id="@+id/chipDisplayMode"
+            android:layout_width="wrap_content"
+            android:layout_height="34dp"
+            android:background="@drawable/bg_chip"
+            android:gravity="center"
+            android:paddingHorizontal="14dp"
+            android:text="联动画面 ▾"
+            android:textColor="@color/text_primary"
+            android:textSize="13sp" />
+
         <TextView
             android:id="@+id/tvRemoteStatus"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
             android:text="未连接"
             android:textColor="@color/text_tertiary"
             android:textSize="12sp" />
