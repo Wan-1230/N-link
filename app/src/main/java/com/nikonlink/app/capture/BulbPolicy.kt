@@ -46,30 +46,48 @@ object BulbPolicy {
 
     /**
      * 开启曝光的多级尝试序列（逐级降级，任一级成功即进入曝光态）：
-     * ① 0x9207 厂商静音拍摄（USB/WiFi 通用，Z 系无线协议的主通道）；
-     * ② 0x100E 标准单张拍摄（老机型兜底）；
-     * ③ 0x100F InitiateOpenCapture（现状路径，仅部分 USB 会话支持，保留兜底）。
+     * ① 0x9207 存储参数=0xFFFFFFFF（gphoto2 capture2 语义：no-AF + 存到卡）；
+     * ② 0x9207 存储参数=真实存储 ID——v1.0.2 真机反馈"存储 ID 无效"：部分机身把
+     *    该参数按**存储 ID** 解释且不接受 0xFFFFFFFF，需用 GetStorageIDs 的实际值重试；
+     * ③ 0x100E 标准单张拍摄（老机型兜底）；
+     * ④ 0x100F InitiateOpenCapture（仅部分 USB 会话支持，保留兜底）。
      */
-    fun startPlan(channel: Channel): List<StartCommand> = listOf(
-        StartCommand(
-            opcode = PtpConstants.OP_NIKON_INITIATE_CAPTURE_REC_IN_MEDIA,
-            params = listOf(-1, 0),
-            usesOpenCapture = false,
-            label = "0x9207 RecInMedia"
-        ),
-        StartCommand(
-            opcode = PtpConstants.OP_INITIATE_CAPTURE,
-            params = if (channel == Channel.WIFI) listOf(0, 0) else listOf(0),
-            usesOpenCapture = false,
-            label = "0x100E InitiateCapture"
-        ),
-        StartCommand(
-            opcode = PtpConstants.OP_INITIATE_OPEN_CAPTURE,
-            params = listOf(0),
-            usesOpenCapture = true,
-            label = "0x100F OpenCapture"
+    fun startPlan(channel: Channel, storageIds: List<Int> = emptyList()): List<StartCommand> = buildList {
+        add(
+            StartCommand(
+                opcode = PtpConstants.OP_NIKON_INITIATE_CAPTURE_REC_IN_MEDIA,
+                params = listOf(-1, 0),
+                usesOpenCapture = false,
+                label = "0x9207 RecInMedia(自动存储)"
+            )
         )
-    )
+        storageIds.filter { it != 0 && it != -1 }.forEach { id ->
+            add(
+                StartCommand(
+                    opcode = PtpConstants.OP_NIKON_INITIATE_CAPTURE_REC_IN_MEDIA,
+                    params = listOf(id, 0),
+                    usesOpenCapture = false,
+                    label = "0x9207 RecInMedia(存储=0x${id.toString(16)})"
+                )
+            )
+        }
+        add(
+            StartCommand(
+                opcode = PtpConstants.OP_INITIATE_CAPTURE,
+                params = if (channel == Channel.WIFI) listOf(0, 0) else listOf(0),
+                usesOpenCapture = false,
+                label = "0x100E InitiateCapture"
+            )
+        )
+        add(
+            StartCommand(
+                opcode = PtpConstants.OP_INITIATE_OPEN_CAPTURE,
+                params = listOf(0),
+                usesOpenCapture = true,
+                label = "0x100F OpenCapture"
+            )
+        )
+    }
 
     /** 一条收门命令 */
     data class StopCommand(

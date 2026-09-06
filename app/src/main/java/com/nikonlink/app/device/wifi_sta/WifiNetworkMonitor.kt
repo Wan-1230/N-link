@@ -123,6 +123,54 @@ class WifiNetworkMonitor @Inject constructor(
     }
 
     /**
+     * 等待一个**子网覆盖 [host]** 的 WiFi 网络并返回（ZDROP 同款路由匹配）。
+     *
+     * 双卡手机/开热点场景下 `awaitWifiNetwork` 返回的"任意 WiFi 网络"可能不是
+     * 通向相机的那张网（如手机自己开热点时，相机在热点子网而非上游 WiFi 子网），
+     * 逐 socket 绑定也救不了路由。这里按 ZDROP t1.q 的做法：遍历网络的
+     * LinkProperties，选"链路地址与相机 IP 同网段"的那个网络。
+     * 找不到精确匹配时回退任意 WiFi 网络；超时返回 null。
+     */
+    suspend fun awaitWifiNetworkFor(host: String, timeoutMs: Long): Network? {
+        val target = hostToInt(host) ?: return awaitWifiNetwork(timeoutMs)
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var anyWifi: Network? = null
+        while (System.currentTimeMillis() < deadline) {
+            for (network in connectivityManager.allNetworks) {
+                val caps = connectivityManager.getNetworkCapabilities(network)
+                if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) != true) continue
+                val properties = connectivityManager.getLinkProperties(network) ?: continue
+                val coversHost = properties.linkAddresses.any { address ->
+                    val inet = address.address as? java.net.Inet4Address ?: return@any false
+                    val base = inetToInt(inet) ?: return@any false
+                    val mask = if (address.prefixLength <= 0) 0
+                    else (0xFFFFFFFFL shl (32 - address.prefixLength)).toInt()
+                    (base and mask) == (target and mask)
+                }
+                if (coversHost) return network
+                if (anyWifi == null) anyWifi = network
+            }
+            _currentNetwork.value?.let { if (anyWifi == null) anyWifi = it }
+            if (anyWifi != null && System.currentTimeMillis() + 1000 >= deadline) break
+            delay(POLL_INTERVAL_MS)
+        }
+        return anyWifi
+    }
+
+    private fun hostToInt(host: String): Int? {
+        val parts = host.split(".").mapNotNull { it.toIntOrNull() }
+        if (parts.size != 4 || parts.any { it < 0 || it > 255 }) return null
+        return (parts[0] shl 24) or (parts[1] shl 16) or (parts[2] shl 8) or parts[3]
+    }
+
+    private fun inetToInt(inet: java.net.Inet4Address): Int? {
+        val b = inet.address
+        if (b.size != 4) return null
+        return ((b[0].toInt() and 0xFF) shl 24) or ((b[1].toInt() and 0xFF) shl 16) or
+            ((b[2].toInt() and 0xFF) shl 8) or (b[3].toInt() and 0xFF)
+    }
+
+    /**
      * 连接生命周期内持有 WifiLock + MulticastLock。
      * RC-5：`WIFI_MODE_FULL_HIGH_PERF` 是 ZRelay/影犀/ZDROP 三方共识。
      */

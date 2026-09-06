@@ -561,7 +561,13 @@ class RemoteFragment : Fragment() {
             .show()
     }
 
-    /** 长按菜单：切换「间隔拍摄 / B 门长曝光」，勾选当前模式并持久化 */
+    /**
+     * 长按菜单：两组勾选项。
+     * 组1 动作：间隔拍摄 / B 门长曝光（点击按钮执行）；
+     * 组2 画面模式（v1.0.2 用户提议的连接策略两档化）：
+     *   联动 = 相机屏与手机同时显示画面；遥控 = 手机监看、相机屏熄并显示「已连接到智能设备」
+     *   （0x90C2 机身控制模式，B 门等远程操作的推荐模式）。
+     */
     private fun showActionModeMenu() {
         val popup = PopupMenu(requireContext(), binding.btnModeAction)
         val items = listOf("间隔拍摄" to AppSettings.ACTION_INTERVAL, "B 门长曝光" to AppSettings.ACTION_BULB)
@@ -569,14 +575,47 @@ class RemoteFragment : Fragment() {
             popup.menu.add(0, index + 1, 0, label).isChecked = settings.remoteActionMode == mode
         }
         popup.menu.setGroupCheckable(0, true, true)
+        popup.menu.add(1, 11, 1, "──── 画面模式 ────").isEnabled = false
+        val displayItems = listOf(
+            "联动画面（相机屏与手机同显）" to false,
+            "遥控画面（相机屏熄·已连接字样）" to true
+        )
+        displayItems.forEachIndexed { index, (label, remote) ->
+            popup.menu.add(1, index + 12, 2, label).isChecked =
+                (settings.remoteDisplayMode == AppSettings.DISPLAY_MODE_REMOTE) == remote
+        }
+        popup.menu.setGroupCheckable(1, true, true)
         popup.setOnMenuItemClickListener { item ->
-            val mode = items.getOrNull(item.itemId - 1)?.second ?: return@setOnMenuItemClickListener false
-            if (mode != settings.remoteActionMode) {
-                settings.remoteActionMode = mode
-                renderActionModeLabel()
-                Toast.makeText(requireContext(), "已切换为「${items[item.itemId - 1].first}」", Toast.LENGTH_SHORT).show()
+            when (item.itemId) {
+                1, 2 -> {
+                    val mode = items.getOrNull(item.itemId - 1)?.second
+                        ?: return@setOnMenuItemClickListener false
+                    if (mode != settings.remoteActionMode) {
+                        settings.remoteActionMode = mode
+                        renderActionModeLabel()
+                        Toast.makeText(requireContext(), "已切换为「${items[item.itemId - 1].first}」", Toast.LENGTH_SHORT).show()
+                    }
+                    true
+                }
+                12, 13 -> {
+                    val remote = displayItems.getOrNull(item.itemId - 12)?.second
+                        ?: return@setOnMenuItemClickListener false
+                    val changed = (settings.remoteDisplayMode == AppSettings.DISPLAY_MODE_REMOTE) != remote
+                    settings.remoteDisplayMode =
+                        if (remote) AppSettings.DISPLAY_MODE_REMOTE else AppSettings.DISPLAY_MODE_LINKED
+                    if (changed) {
+                        viewModel.setCameraDisplayMode(remote)
+                        Toast.makeText(
+                            requireContext(),
+                            if (remote) "正在进入遥控模式：相机屏将熄灭并显示「已连接到智能设备」"
+                            else "正在恢复联动模式：相机屏将重新显示画面",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    true
+                }
+                else -> false
             }
-            true
         }
         popup.show()
     }
@@ -798,7 +837,9 @@ class RemoteFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.intervalProgress.collect { p ->
                 if (p.totalShots > 0 && p.completedShots < p.totalShots) {
-                    binding.tvRemoteStatus.text = "间隔 ${p.completedShots}/${p.totalShots}"
+                    binding.tvRemoteStatus.text =
+                        if (p.failedShots > 0) "间隔 ${p.completedShots}/${p.totalShots}（失败 ${p.failedShots}）"
+                        else "间隔 ${p.completedShots}/${p.totalShots}"
                 }
             }
         }

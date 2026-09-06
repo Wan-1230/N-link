@@ -8,6 +8,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.*
 import timber.log.Timber
+import com.nikonlink.app.shared.common.AppSettings
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -28,7 +29,8 @@ import javax.inject.Singleton
 class RemoteShootingManager @Inject constructor(
     private val ptpSession: PtpSessionManager,
     private val usbPtpManager: UsbPtpManager,
-    private val liveViewManager: LiveViewManager
+    private val liveViewManager: LiveViewManager,
+    private val settings: AppSettings
 ) {
     companion object {
         private const val TAG = "RemoteShooting"
@@ -55,11 +57,25 @@ class RemoteShootingManager @Inject constructor(
         /** 定时 B 门自动收门的重试上限（每秒一次，≈30s 窗口） */
         private const val BULB_AUTO_STOP_RETRIES = 30
 
+        /** 控制模式进入/退出失败的重试次数与间隔 */
+        private const val CONTROL_MODE_EXIT_RETRIES = 2
+        private const val CONTROL_MODE_EXIT_RETRY_DELAY_MS = 400L
+
         /** 切到 Bulb 档后等待机身应用的间隔：立刻发拍摄命令会被 DeviceBusy 拒绝 */
         private const val BULB_APPLY_DELAY_MS = 600L
     }
 
-    private var scope: CoroutineScope? = null
+    /**
+     * 自持的应用级 scope。
+     *
+     * v1.0.2 的 start(viewModelScope) 把外部 VM 的 scope 存进来，而本单例被
+     * 遥控页与全屏监看页两个 ViewModel 先后注入：后创建的 VM（如退出全屏监看页）
+     * 销毁时其 viewModelScope 取消，此后 intervalJob/bulbTimeoutJob 在已取消的
+     * scope 上 launch 全部静默死亡——间隔拍摄"完全失效"的根因。
+     * 本单例与应用同生命周期，任务一律落在自持 scope 上，与任何 VM 生命周期解耦。
+     */
+    private val managerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     private var intervalJob: Job? = null
     private var timerJob: Job? = null
     private var focusJob: Job? = null
@@ -133,15 +149,14 @@ class RemoteShootingManager @Inject constructor(
     private val _batteryLevel = MutableStateFlow(-1)
     val batteryLevel: StateFlow<Int> = _batteryLevel.asStateFlow()
 
+    /** 兼容保留：scope 已自持，外部注入仅做日志（避免旧调用点报错） */
     fun start(scope: CoroutineScope) {
-        this.scope = scope
-        Timber.tag(TAG).i("RemoteShootingManager started")
+        Timber.tag(TAG).i("RemoteShootingManager started (self-owned scope, external scope ignored)")
     }
 
     fun stop() {
         cancelInterval()
         cancelTimer()
-        scope = null
     }
 
     // ==================== 远程快门 ====================
@@ -216,7 +231,7 @@ class RemoteShootingManager @Inject constructor(
      */
     fun startContinuousFocus() {
         if (focusJob?.isActive == true) return
-        focusJob = scope?.launch {
+        focusJob = managerScope.launch {
             // 按下立即启动对焦
             try {
                 if (usbPtpManager.isConnected()) usbPtpManager.afDrive()
@@ -243,7 +258,7 @@ class RemoteShootingManager @Inject constructor(
     fun stopContinuousFocus() {
         focusJob?.cancel()
         focusJob = null
-        scope?.launch {
+        managerScope.launch {
             runCatching {
                 if (usbPtpManager.isConnected()) usbPtpManager.afDriveCancel()
                 else ptpSession.afDriveCancel()
@@ -263,7 +278,7 @@ class RemoteShootingManager @Inject constructor(
         _shootingState.value = ShootingState.TIMER_COUNTDOWN
         _timerCountdown.value = delaySeconds
 
-        timerJob = scope?.launch {
+        timerJob = managerScope.launch {
             for (i in delaySeconds downTo 1) {
                 _timerCountdown.value = i
                 delay(1000)
@@ -298,14 +313,17 @@ class RemoteShootingManager @Inject constructor(
             intervalMs = config.intervalMs
         )
 
-        intervalJob = scope?.launch {
+        intervalJob = managerScope.launch {
+            var failures = 0
             for (i in 1..config.totalShots) {
                 if (!isActive) break
 
                 val success = capture()
+                if (!success) failures++
                 _intervalProgress.value = _intervalProgress.value.copy(
                     completedShots = i,
-                    lastShotSuccess = success
+                    lastShotSuccess = success,
+                    failedShots = failures
                 )
 
                 Timber.tag(TAG).i("Interval shot $i/${config.totalShots}: ${if (success) "OK" else "FAIL"}")
@@ -316,7 +334,11 @@ class RemoteShootingManager @Inject constructor(
                 }
             }
             _shootingState.value = ShootingState.IDLE
-            Timber.tag(TAG).i("Interval shooting completed")
+            if (failures > 0) {
+                _shootingMessage.value =
+                    "间隔拍摄结束：${config.totalShots} 张中 $failures 张失败（相机未响应或连接中断）"
+            }
+            Timber.tag(TAG).i("Interval shooting completed (failures=$failures)")
         }
     }
 
@@ -402,19 +424,27 @@ class RemoteShootingManager @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 // ---- 前置：进入远程控制模式并切到 M 档（gphoto2 _put_Nikon_Bulb 同款，best-effort）----
-                // gphoto2 开 B 门先 changecameramode(1) 再写 0x500E=1（Exposure Mode = Full Manual），
-                // 拨盘不在 M/S 档时也有机会远程完成；两步都允许失败（部分机身只读）。
-                changeCameraMode(enter = true)
-                runCatching {
-                    val modeData = java.nio.ByteBuffer.allocate(2)
-                        .order(java.nio.ByteOrder.LITTLE_ENDIAN).putShort(1).array()
-                    if (usbPtpManager.isConnected()) {
-                        usbPtpManager.setDevicePropValue(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE, modeData)
-                    } else {
-                        ptpSession.setDevicePropValue(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE, modeData)
+                // 画面模式=联动：曝光期间临时进入控制模式（0x90C2(1)，相机屏熄并显示
+                //   「已连接到智能设备」），收门后自动退出恢复相机屏显示；
+                // 画面模式=遥控：用户已显式进入控制模式，这里不再重复进出（收门后保持）。
+                // gphoto2 开 B 门先 changecameramode(1) 再写 0x500E=1（Exposure Mode = Full
+                // Manual），拨盘不在 M/S 档时也有机会远程完成；两步都允许失败（部分机身只读）。
+                if (settings.remoteDisplayMode == AppSettings.DISPLAY_MODE_REMOTE) {
+                    bulbControlModeEntered = false
+                } else {
+                    changeCameraMode(enter = true)
+                    bulbControlModeEntered = true
+                    runCatching {
+                        val modeData = java.nio.ByteBuffer.allocate(2)
+                            .order(java.nio.ByteOrder.LITTLE_ENDIAN).putShort(1).array()
+                        if (usbPtpManager.isConnected()) {
+                            usbPtpManager.setDevicePropValue(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE, modeData)
+                        } else {
+                            ptpSession.setDevicePropValue(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE, modeData)
+                        }
                     }
+                    delay(BULB_APPLY_DELAY_MS)
                 }
-                delay(BULB_APPLY_DELAY_MS)
 
                 // ---- 前置：确保机身快门在 Bulb 档 ----
                 previousShutterRaw = readShutterRaw()
@@ -433,10 +463,21 @@ class RemoteShootingManager @Inject constructor(
                 openCaptureStarted = false
 
                 // ---- 开启曝光：多级降级 + busy 重试 ----
+                // v1.0.2 真机"存储 ID 无效"：部分机身把 0x9207 的第一参数按存储 ID 解释，
+                // 不接受 0xFFFFFFFF——把 GetStorageIDs 的真实值加入候选重试。
+                val storageIds = runCatching {
+                    if (usbPtpManager.isConnected()) {
+                        usbPtpManager.getStorageIds()
+                    } else {
+                        ptpSession.getStorageIds()
+                    }
+                }.getOrDefault(emptyList())
                 val channel =
                     if (usbPtpManager.isConnected()) BulbPolicy.Channel.USB else BulbPolicy.Channel.WIFI
                 var lastCode = 0
-                for (command in BulbPolicy.startPlan(channel)) {
+                var firstCode = 0
+                var firstLabel = ""
+                for (command in BulbPolicy.startPlan(channel, storageIds)) {
                     var attempt = 0
                     while (true) {
                         val (ok, code) = bulbCommand(command.opcode, command.params)
@@ -453,6 +494,10 @@ class RemoteShootingManager @Inject constructor(
                             return@withContext true
                         }
                         lastCode = code
+                        if (firstCode == 0) {
+                            firstCode = code
+                            firstLabel = command.label
+                        }
                         if (BulbPolicy.isBusy(code) && attempt < BulbPolicy.MAX_BUSY_RETRIES) {
                             delay(BulbPolicy.BUSY_RETRY_DELAY_MS)
                             attempt++
@@ -464,14 +509,16 @@ class RemoteShootingManager @Inject constructor(
                 }
 
                 // ---- 全部策略失败：恢复快门档位并给可操作提示 ----
+                // 提示用**首个**策略的失败码（主通道语义最明确）；
+                // 旧版展示末位策略的码，把主通道的真实原因（如存储 ID 无效）掩盖掉了
                 val switched = shutterWasSwitched
                 if (shutterWasSwitched) {
                     previousShutterRaw?.let { runCatching { writeShutterRaw(it) } }
                     shutterWasSwitched = false
                 }
-                // 退出开 B 门时进入的远程控制模式（best-effort，与入口对称）
-                changeCameraMode(enter = false)
-                _shootingMessage.value = BulbPolicy.describeRejection(lastCode, switched)
+                // 退出本次曝光进入的远程控制模式（仅在遥控模式开启时主动退出；best-effort）
+                exitControlModeIfEntered()
+                _shootingMessage.value = BulbPolicy.describeRejection(firstCode, switched)
                 false
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Bulb start failed")
@@ -480,7 +527,7 @@ class RemoteShootingManager @Inject constructor(
                     previousShutterRaw?.let { runCatching { writeShutterRaw(it) } }
                     shutterWasSwitched = false
                 }
-                changeCameraMode(enter = false)
+                exitControlModeIfEntered()
                 false
             }
         }
@@ -562,8 +609,8 @@ class RemoteShootingManager @Inject constructor(
                     _captureEvents.tryEmit(System.currentTimeMillis())
                     Timber.tag(TAG).i("Bulb exposure ended: ${_bulbExposureTime.value}ms")
                     clearBulbTimeout()
-                    // 退出开 B 门时进入的远程控制模式（与 changeCameraMode(1) 对称；尽力而为）
-                    changeCameraMode(enter = false)
+                    // 仅退出"本次曝光临时进入"的控制模式；遥控模式下保持相机屏熄
+                    exitControlModeIfEntered()
                     true
                 } else {
                     // 保持曝光态：用户可重试，机身端仍在曝光是真实状态
@@ -582,6 +629,66 @@ class RemoteShootingManager @Inject constructor(
 
     private var lastBulbStopCode = 0
 
+    /** 本次 B 门曝光是否由 App 临时进入控制模式（遥控模式下为 false，收门后不退出） */
+    @Volatile
+    private var bulbControlModeEntered = false
+
+    /** 收门/失败后退出"本次临时进入"的控制模式；带重试（v1.0.2 反馈退出后相机仍滞留已连接画面） */
+    private suspend fun exitControlModeIfEntered() {
+        if (!bulbControlModeEntered) return
+        bulbControlModeEntered = false
+        var attempt = 0
+        while (attempt <= CONTROL_MODE_EXIT_RETRIES) {
+            val ok = changeCameraModeResult(enter = false)
+            if (ok) return
+            delay(CONTROL_MODE_EXIT_RETRY_DELAY_MS)
+            attempt++
+        }
+    }
+
+    /** 发 0x90C2 并返回是否 OK（带响应码日志） */
+    private suspend fun changeCameraModeResult(enter: Boolean): Boolean {
+        val param = if (enter) 1 else 0
+        return runCatching {
+            val response = if (usbPtpManager.isConnected()) {
+                usbPtpManager.sendCommand(PtpConstants.OP_NIKON_CHANGE_CAMERA_MODE, listOf(param))
+            } else {
+                ptpSession.sendCommand(PtpConstants.OP_NIKON_CHANGE_CAMERA_MODE, listOf(param))
+            }
+            val code = when (response) {
+                is com.nikonlink.app.device.usb.UsbPtpResponse -> response.responseCode
+                is com.nikonlink.app.device.ptp.CommandResponsePacket -> response.responseCode
+                else -> null
+            }
+            Timber.tag(TAG).d("ChangeCameraMode($param) response=${code?.toString(16)}")
+            code == PtpConstants.RESPONSE_OK || code == null
+        }.getOrDefault(false)
+    }
+
+    /**
+     * 显式切换画面模式（用户在长按菜单选择）。
+     *
+     * 两种模式对应用户提议的连接策略：
+     * - 联动（remote=false）：相机屏与手机同时显示画面（默认）；
+     * - 遥控（remote=true）：手机显示监看画面、相机屏熄并显示「已连接到智能设备」
+     *   （0x90C2(1) 进入机身控制模式，B 门等远程控制操作的建议模式）。
+     * 退出失败时自动重试，避免相机滞留「已连接」画面导致后续快门无响应。
+     */
+    suspend fun setCameraDisplayMode(remote: Boolean): Boolean {
+        if (!isRemoteReady()) {
+            _shootingMessage.value = "相机尚未连接"
+            return false
+        }
+        var attempt = 0
+        while (attempt <= CONTROL_MODE_EXIT_RETRIES) {
+            if (changeCameraModeResult(enter = remote)) return true
+            delay(CONTROL_MODE_EXIT_RETRY_DELAY_MS)
+            attempt++
+        }
+        _shootingMessage.value = if (remote) "进入遥控模式失败，请重试" else "退出遥控模式失败，请重试或重启相机 WiFi"
+        return false
+    }
+
     /**
      * 定时 B 门：开始曝光并调度 [durationSec] 后自动收门。
      * 曝光中可随时 [bulbStop] 提前结束（定时任务一并撤销）。
@@ -595,7 +702,7 @@ class RemoteShootingManager @Inject constructor(
             return false
         }
         _bulbDurationMs.value = durationSec * 1000L
-        bulbTimeoutJob = scope?.launch {
+        bulbTimeoutJob = managerScope.launch {
             // 逐段检查而非单次 delay(duration)：曝光中取消/协程取消都能正确收敛
             val total = durationSec * 1000L
             while (isActive && _shootingState.value == ShootingState.BULB_EXPOSING) {
@@ -632,7 +739,7 @@ class RemoteShootingManager @Inject constructor(
     }
 
     private fun startBulbTimer() {
-        scope?.launch {
+        managerScope.launch {
             while (_shootingState.value == ShootingState.BULB_EXPOSING) {
                 _bulbExposureTime.value = System.currentTimeMillis() - bulbStartTime
                 delay(100)  // 100ms 更新频率
@@ -910,7 +1017,9 @@ data class IntervalProgress(
     val totalShots: Int = 0,
     val completedShots: Int = 0,
     val intervalMs: Long = 0L,
-    val lastShotSuccess: Boolean = true
+    val lastShotSuccess: Boolean = true,
+    /** 累计失败张数（v1.0.2 反馈"间隔拍摄失效"时用于 UI 透出真实失败原因） */
+    val failedShots: Int = 0
 ) {
     val progressPercent: Float
         get() = if (totalShots > 0) completedShots.toFloat() / totalShots else 0f
