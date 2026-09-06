@@ -53,6 +53,26 @@ class CameraParamsViewModel @Inject constructor(
         viewModelScope.launch { paramManager.setExposureProgram(mode) }
     }
 
+    /**
+     * 远程切换拍摄模式并回传结果（模块 2：失败显式回调）。
+     * false = 机身拒绝（0x500E 只读 / 拨盘机型不可远程切）——调用方需给出可操作提示，
+     * UI 展示值仍以 [exposureProgram] 回读流为准（单一数据源，不落本地假状态）。
+     */
+    suspend fun setExposureProgramResult(mode: Int): Boolean =
+        withContext(Dispatchers.IO) { paramManager.setExposureProgram(mode) }
+
+    /**
+     * 模式快轮询开关（模块 2：机身侧切模式 ≤500ms 同步）。
+     * 拍摄页 / 全屏监看页可见期间开启，隐藏或销毁时停止。
+     */
+    fun startModeWatch(intervalMs: Long = 500L) {
+        paramManager.startModeWatch(intervalMs)
+    }
+
+    fun stopModeWatch() {
+        paramManager.stopModeWatch()
+    }
+
     /** 快门显示文本（与相机回读值同一口径，见 [CameraParameterManager.formatShutter]） */
     fun formatShutter(rawX10000: Int): String = paramManager.formatShutter(rawX10000)
 
@@ -171,6 +191,15 @@ class CameraParamsViewModel @Inject constructor(
 
     fun setShutterByValue(exposureTime: Int) {
         viewModelScope.launch { paramManager.setShutterSpeed(exposureTime) }
+    }
+
+    /**
+     * 切到 B 门档（B 门 / 长曝光的参数化入口，滚轮「B门」项调用）。
+     * 与 [setShutterByValue] 分离：0xFFFFFFFF 会被档位钳位吞掉，必须走专用写入路径。
+     * @return false = 写入被拒（0x500D 只读 / 非 M·S 档），由 UI 给可操作提示
+     */
+    suspend fun setShutterBulb(): Boolean = withContext(Dispatchers.IO) {
+        paramManager.setShutterBulb()
     }
 
     fun setIsoByValue(iso: Int) {

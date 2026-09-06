@@ -68,8 +68,6 @@ class LiveViewFragment : Fragment() {
     private var controlsVisible = true
     private var gridVisible = true
     private var levelVisible = false
-    private var baseZoom = 1f
-    private var scaleDetector: ScaleGestureDetector? = null
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentLiveviewBinding.inflate(inflater, container, false)
@@ -90,6 +88,20 @@ class LiveViewFragment : Fragment() {
         if (arguments?.getBoolean(EXTRA_AUTO_START, false) == true) {
             viewModel.startLiveView()
         }
+        // 模块 2：全屏监看页可见期间开启 0x500E 快轮询（机身拨盘切模式 ≤500ms 同步）
+        paramsViewModel.startModeWatch()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 全屏页是独立 Activity，标准生命周期即可；回到前台续上快轮询
+        paramsViewModel.startModeWatch()
+    }
+
+    override fun onPause() {
+        // 离开前台停止快轮询，避免后台仍占用 PTP 命令通道
+        paramsViewModel.stopModeWatch()
+        super.onPause()
     }
 
     // ---------------- 顶部与辅助控件 ----------------
@@ -186,32 +198,16 @@ class LiveViewFragment : Fragment() {
         popup.menu.add(0, 3, 0, "画面放大")
         popup.menu.add(0, 4, 0, "画面缩小")
         popup.menu.add(0, 5, 0, "重置缩放")
-        val bulbRunning = shootingViewModel.shootingState.value == ShootingState.BULB_EXPOSING
-        popup.menu.add(0, 6, 0, if (bulbRunning) "结束 B 门 / 长曝光" else "B 门 / 长曝光")
+        // 模块 3 入口迁移：B 门长曝光入口已移至遥控页「更多动作」按钮（可定时/手动），
+        // 全屏监看菜单不再提供，避免同一功能两处入口状态不同步
         popup.menu.add(0, 7, 0, "测光模式")
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> binding.btnStartStop.performClick()
                 2 -> binding.btnGridToggle.performClick()
-                3 -> {
-                    val zoom = (binding.ivLiveView.scaleX * 1.25f).coerceAtMost(5f)
-                    binding.ivLiveView.animate().scaleX(zoom).scaleY(zoom).setDuration(120).start()
-                }
-                4 -> {
-                    val zoom = (binding.ivLiveView.scaleX / 1.25f).coerceAtLeast(1f)
-                    binding.ivLiveView.animate().scaleX(zoom).scaleY(zoom).setDuration(120).start()
-                }
-                5 -> {
-                    binding.ivLiveView.scaleX = 1f
-                    binding.ivLiveView.scaleY = 1f
-                }
-                6 -> {
-                    if (shootingViewModel.shootingState.value == ShootingState.BULB_EXPOSING) {
-                        shootingViewModel.bulbStop()
-                    } else {
-                        shootingViewModel.bulbStart()
-                    }
-                }
+                3 -> zoomController?.zoomBy(1.25f)
+                4 -> zoomController?.zoomBy(0.8f)
+                5 -> zoomController?.reset()
                 7 -> showMeteringMenu()
             }
             true
@@ -231,8 +227,8 @@ class LiveViewFragment : Fragment() {
     }
 
     /**
-     * 拍摄模式远程切换（0x500E）。
-     * 与遥控页共用同一套档位；机身不接受时以回读值提示实际模式。
+     * 拍摄模式远程切换（0x500E，模块 2：失败显式回调）。
+     * 与遥控页共用同一套档位与回读流（单一数据源）。
      */
     private fun showModePicker() {
         val modes = paramsViewModel.exposureProgramModes
@@ -243,12 +239,16 @@ class LiveViewFragment : Fragment() {
             .setMessage("当前: ${current.currentValue.ifBlank { "--" }}")
             .setSingleChoiceItems(labels, -1) { dialog, which ->
                 dialog.dismiss()
-                paramsViewModel.setExposureProgram(modes[which].first)
-                Toast.makeText(
-                    requireContext(),
-                    "已下发 ${modes[which].second}，以相机实际模式为准",
-                    Toast.LENGTH_SHORT
-                ).show()
+                viewLifecycleOwner.lifecycleScope.launch {
+                    val ok = paramsViewModel.setExposureProgramResult(modes[which].first)
+                    if (_binding == null) return@launch
+                    Toast.makeText(
+                        requireContext(),
+                        if (ok) "已切换到 ${modes[which].second}"
+                        else "相机拒绝切换（模式可能只读），请用机身拨盘调整",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
             .setNegativeButton("取消", null)
             .show()
@@ -413,38 +413,23 @@ class LiveViewFragment : Fragment() {
         dialog.show()
     }
 
-    // ---------------- 触摸对焦与缩放 ----------------
+    // ---------------- 触摸对焦与缩放（模块 1：imageMatrix 统一变换） ----------------
+
+    private var zoomController: LiveViewZoomController? = null
 
     @SuppressLint("ClickableViewAccessibility")
     private fun setupTouchAndScale() {
-        scaleDetector = ScaleGestureDetector(
-            requireContext(),
-            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-                override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
-                    baseZoom = binding.ivLiveView.scaleX
-                    hideFocusIndicator()
-                    return true
-                }
-
-                override fun onScale(detector: ScaleGestureDetector): Boolean {
-                    val zoom = (baseZoom * detector.scaleFactor).coerceIn(1f, 5f)
-                    binding.ivLiveView.scaleX = zoom
-                    binding.ivLiveView.scaleY = zoom
-                    return true
-                }
+        zoomController = LiveViewZoomController(binding.ivLiveView) { x, y ->
+            // DISP 纯净模式：单击先唤醒控件，不消耗本次点击做对焦
+            if (!controlsVisible) {
+                showControls()
+            } else {
+                handleFocusTap(x, y)
             }
-        )
+        }
 
-        binding.ivLiveView.setOnTouchListener { v, event ->
-            scaleDetector?.onTouchEvent(event)
-            if (event.actionMasked == MotionEvent.ACTION_UP) {
-                if (scaleDetector?.isInProgress == true) return@setOnTouchListener true
-                if (!controlsVisible) {
-                    showControls()
-                    return@setOnTouchListener true
-                }
-                handleFocusTap(event.x, event.y)
-            }
+        binding.ivLiveView.setOnTouchListener { _, event ->
+            zoomController?.onTouchEvent(event)
             true
         }
     }
@@ -561,7 +546,9 @@ class LiveViewFragment : Fragment() {
                 val bitmap = BitmapFactory.decodeByteArray(data, start, data.size - start)
                 if (bitmap != null) {
                     binding.ivLiveView.setImageBitmap(bitmap)
-                    binding.viewGridOverlay.setImageSource(binding.ivLiveView)
+                    // 模块 1：分辨率变化时重算 fitCenter 基准并保持缩放状态，
+                    // 网格/对焦读同一 imageMatrix，自动像素级同步
+                    zoomController?.onFrameChanged()
                     binding.viewGridOverlay.invalidate()
                     // 优化项 4/修复：直方图与取景画面同帧刷新；关闭时跳过统计，零开销
                     if (settings.histogramEnabled) binding.viewHistogram.setFrame(bitmap)

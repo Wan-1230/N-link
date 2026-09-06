@@ -58,7 +58,8 @@ sealed interface PhotoGridItem {
 class PhotoGridAdapter(
     private val cache: ThumbnailCache,
     private val onItemClick: (CameraFile, Int) -> Unit,
-    private val onItemLongClick: (CameraFile) -> Unit,
+    /** 长按回调带 adapterPosition：模块 4.4 滑动多选以它为锚点 */
+    private val onItemLongClick: (CameraFile, Int) -> Unit,
     private val onRequestThumb: (CameraFile) -> Unit,
     private val onToggleGroupSelection: (List<Int>) -> Unit
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
@@ -377,7 +378,7 @@ class PhotoGridAdapter(
 
             binding.root.setOnClickListener { onItemClick(file, adapterPosition) }
             binding.root.setOnLongClickListener {
-                onItemLongClick(file)
+                onItemLongClick(file, adapterPosition)
                 true
             }
         }

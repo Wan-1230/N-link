@@ -44,8 +44,15 @@ class TransferFragment : Fragment() {
     private lateinit var adapter: PhotoGridAdapter
     private val chipViews = mutableMapOf<PhotoFilter, TextView>()
     private var chipNotDownloaded: TextView? = null
+    private var chipSkipDownloaded: TextView? = null
     private var multiSelectMode = false
     private var lastToastMsg: String? = null
+
+    /** 模块 4.4：长按滑动多选控制器（未激活时事件完全透传） */
+    private var dragSelect: DragSelectController? = null
+
+    /** 模块 4.3：用户主动刷新后，数据合并完成时强制回列表顶部 */
+    private var pendingScrollToTop = false
 
     /**
      * 排序锚点：切换排序前记下首屏第一项的 handle，
@@ -110,9 +117,11 @@ class TransferFragment : Fragment() {
                     PreviewActivity.start(requireContext(), file)
                 }
             },
-            onItemLongClick = { file ->
+            onItemLongClick = { file, position ->
+                // 模块 4.4：长按进入多选并选中起点，随后不抬手滑动即进入拖动多选
                 if (!multiSelectMode) setMultiSelectMode(true)
                 viewModel.toggleSelection(file.handle)
+                dragSelect?.onDragStart(position)
             },
             onRequestThumb = { file -> viewModel.requestThumbnail(file.handle) },
             // 日期分组标题行的「全选 / 取消全选」：
@@ -130,6 +139,13 @@ class TransferFragment : Fragment() {
             }
         }
         binding.gridPhotos.adapter = adapter
+        // 模块 4.4：滑动多选事件接管（未激活时完全透传，不影响滚动/点击）
+        dragSelect = DragSelectController(
+            recyclerView = binding.gridPhotos,
+            itemAt = { position -> adapter.itemAt(position) },
+            onRange = { handles, select -> viewModel.setSelectionRange(handles, select) }
+        )
+        binding.gridPhotos.addOnItemTouchListener(dragSelect!!)
     }
 
     /**
@@ -199,6 +215,26 @@ class TransferFragment : Fragment() {
         }
         chipNotDownloaded = notDownloadedChip
         binding.chipRow.addView(notDownloadedChip)
+
+        // 模块 4.2：「跳过已下载」从底栏迁移到 chip 行（已标记源可见）——
+        // 底栏按钮过多会在窄屏上挤压重叠
+        val skipDownloadedChip = TextView(requireContext()).apply {
+            text = "跳过已下载"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            maxLines = 1
+            setPadding(dp(16), dp(7), dp(16), dp(7))
+            val lp = android.widget.LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            lp.marginStart = dp(4)
+            layoutParams = lp
+            setOnClickListener {
+                viewModel.setSkipDownloadedInMarks(!viewModel.skipDownloadedInMarks.value)
+            }
+            pressEffect()
+        }
+        chipSkipDownloaded = skipDownloadedChip
+        binding.chipRow.addView(skipDownloadedChip)
     }
 
     private fun renderChips(current: PhotoFilter) {
@@ -220,6 +256,23 @@ class TransferFragment : Fragment() {
         val chip = chipNotDownloaded ?: return
         chip.visibility =
             if (viewModel.activeAlbum.value == AlbumSource.CAMERA) View.VISIBLE else View.GONE
+        chip.setBackgroundResource(if (enabled) R.drawable.bg_chip_selected else R.drawable.bg_chip)
+        chip.setTextColor(
+            ContextCompat.getColor(
+                requireContext(),
+                if (enabled) R.color.on_primary else R.color.text_primary
+            )
+        )
+        renderSkipDownloadedChip(viewModel.skipDownloadedInMarks.value)
+    }
+
+    /** 模块 4.2：「跳过已下载」chip 选中态渲染；仅已标记源可见 */
+    private fun renderSkipDownloadedChip(enabled: Boolean) {
+        val chip = chipSkipDownloaded ?: return
+        chip.visibility =
+            if (viewModel.activeAlbum.value == AlbumSource.MARKED) View.VISIBLE else View.GONE
+        val prefix = if (enabled) "✓ " else ""
+        chip.text = "${prefix}跳过已下载"
         chip.setBackgroundResource(if (enabled) R.drawable.bg_chip_selected else R.drawable.bg_chip)
         chip.setTextColor(
             ContextCompat.getColor(
@@ -255,9 +308,10 @@ class TransferFragment : Fragment() {
             AlbumSource.MARKED to binding.tabMarkedPhotos,
             AlbumSource.LOCAL to binding.tabLocalPhotos
         )
+        var selectedIndex = 0
         tabs.forEach { (tabSource, tab) ->
             val selected = tabSource == source
-            tab.setBackgroundResource(if (selected) R.drawable.bg_chip_selected else 0)
+            if (selected) selectedIndex = tabs.keys.indexOf(tabSource)
             tab.setTextColor(
                 ContextCompat.getColor(
                     requireContext(),
@@ -268,7 +322,28 @@ class TransferFragment : Fragment() {
                 if (selected) android.graphics.Typeface.DEFAULT_BOLD
                 else android.graphics.Typeface.DEFAULT
         }
+        // 模块 4.5：选中胶囊滑动到目标 Tab（180ms）；首次渲染直接落位不平移动画。
+        // 指示器宽度 = 行宽 / Tab 数（运行时设置），translationX = 序号 × 段宽
+        // （FrameLayout 子 View 已落在 padding 内侧，无需再加 paddingLeft）
+        val row = binding.tabCameraPhotos.parent as? android.view.ViewGroup ?: return
+        binding.tabIndicator.post {
+            if (_binding == null) return@post
+            val rowWidth = row.width - row.paddingLeft - row.paddingRight
+            if (rowWidth <= 0) return@post
+            val segWidth = rowWidth / tabs.size
+            if (binding.tabIndicator.layoutParams.width != segWidth) {
+                binding.tabIndicator.layoutParams.width = segWidth
+                binding.tabIndicator.requestLayout()
+            }
+            binding.tabIndicator.animate()
+                .translationX(selectedIndex * segWidth.toFloat())
+                .setDuration(if (tabIndicatorInitialized) 180L else 0L)
+                .start()
+            tabIndicatorInitialized = true
+        }
     }
+
+    private var tabIndicatorInitialized = false
 
     private fun setupPullRefresh() {
         binding.swipeRefresh.setColorSchemeColors(
@@ -279,6 +354,8 @@ class TransferFragment : Fragment() {
             binding.gridPhotos.canScrollVertically(-1)
         }
         binding.swipeRefresh.setOnRefreshListener {
+            // 模块 4.3：用户主动刷新 → 数据合并完成后强制回列表顶部
+            pendingScrollToTop = true
             viewModel.refreshActiveAlbum()
         }
     }
@@ -313,6 +390,8 @@ class TransferFragment : Fragment() {
             if (viewModel.activeAlbum.value == AlbumSource.LOCAL && !hasMediaPermission()) {
                 requestMediaPermission()
             } else {
+                // 模块 4.3：手动刷新同样在数据合并完成后回顶部
+                pendingScrollToTop = true
                 viewModel.refreshActiveAlbum()
             }
         }
@@ -322,6 +401,7 @@ class TransferFragment : Fragment() {
         binding.btnSort.pressEffect()
         binding.btnSort.setOnClickListener { showSortMenu() }
 
+        binding.btnMultiSelect.pressEffect()
         binding.btnMultiSelect.setOnClickListener {
             // Fix 真机反馈: 长按已选中照片后再点「多选」，旧逻辑会直接退出多选并清空选中，
             // 用户感知为「没有反馈」。新逻辑：已处于多选态时，有选中先清选中、保持多选；无选中才退出
@@ -334,6 +414,7 @@ class TransferFragment : Fragment() {
             }
         }
 
+        binding.btnSelectAll.pressEffect()
         binding.btnSelectAll.setOnClickListener {
             when (viewModel.activeAlbum.value) {
                 AlbumSource.MARKED -> viewModel.selectAllMarked()
@@ -348,13 +429,6 @@ class TransferFragment : Fragment() {
                 viewModel.toggleMarkSelection()
                 renderActionButtons()
             }
-        }
-
-        // F2：已标记栏「跳过已下载」开关
-        binding.btnSkipDownloaded.pressEffect()
-        binding.btnSkipDownloaded.setOnClickListener {
-            viewModel.setSkipDownloadedInMarks(!viewModel.skipDownloadedInMarks.value)
-            renderActionButtons()
         }
 
         binding.btnDownload.pressEffect()
@@ -381,6 +455,7 @@ class TransferFragment : Fragment() {
             }
         }
 
+        binding.btnDelete.pressEffect()
         binding.btnDelete.setOnClickListener {
             val count = viewModel.selectedHandles.value.size
             val isLocal = viewModel.activeAlbum.value == AlbumSource.LOCAL
@@ -513,18 +588,15 @@ class TransferFragment : Fragment() {
                 binding.btnShare.visibility = View.VISIBLE
                 binding.btnDelete.text = "删除本地"
                 binding.btnMark.visibility = View.GONE
-                binding.btnSkipDownloaded.visibility = View.GONE
             }
 
             AlbumSource.MARKED -> {
-                // F1：标记栏工作台 —— 下载 + 删除 + 标记切换 + 跳过已下载
+                // F1：标记栏工作台 —— 下载 + 删除 + 标记切换（跳过已下载已迁至 chip 行）
                 binding.btnDownload.visibility = View.VISIBLE
                 binding.btnShare.visibility = View.GONE
                 binding.btnDelete.text = "删除"
                 binding.btnMark.visibility = View.VISIBLE
-                binding.btnSkipDownloaded.visibility = View.VISIBLE
                 renderMarkButton()
-                renderSkipDownloadedButton()
             }
 
             AlbumSource.CAMERA -> {
@@ -533,7 +605,6 @@ class TransferFragment : Fragment() {
                 binding.btnShare.visibility = View.VISIBLE
                 binding.btnDelete.text = "删除"
                 binding.btnMark.visibility = View.VISIBLE
-                binding.btnSkipDownloaded.visibility = View.GONE
                 renderMarkButton()
             }
         }
@@ -544,21 +615,6 @@ class TransferFragment : Fragment() {
         val selected = viewModel.selectedHandles.value
         val allMarked = selected.isNotEmpty() && selected.all { it in viewModel.markedHandles.value }
         binding.btnMark.text = if (allMarked) "取消标记" else "标记"
-    }
-
-    /** F2：「跳过已下载」开关的选中态渲染 */
-    private fun renderSkipDownloadedButton() {
-        val on = viewModel.skipDownloadedInMarks.value
-        binding.btnSkipDownloaded.text = if (on) "✓ 跳过已下载" else "跳过已下载"
-        binding.btnSkipDownloaded.setTextColor(
-            ContextCompat.getColor(
-                requireContext(),
-                if (on) R.color.on_primary else R.color.text_tertiary
-            )
-        )
-        binding.btnSkipDownloaded.setBackgroundResource(
-            if (on) R.drawable.bg_chip_selected else 0
-        )
     }
 
     private fun observe() {
@@ -607,60 +663,41 @@ class TransferFragment : Fragment() {
             }
         }
 
-        // 网格数据：列表 + 选中 + 缩略图 + 标记/已下载角标（F1/F2）
-        // 「已标记」源提交 markedDisplayList，其余源提交 filteredPhotos
+        // 网格数据（模块 4.1）：全部收集器只订阅 uiPhotos 单一数据源。
+        // 切 Tab 时 _activeAlbum 变化必然触发 uiPhotos 重发，选中态/列表/加载态原子切换，
+        // 不再存在「目标 flow 无新值导致界面停留」的竞态；快速连点天然由最后的 emit 收敛。
         viewLifecycleOwner.lifecycleScope.launch {
-            fun displayList(): List<CameraFile> =
-                if (viewModel.activeAlbum.value == AlbumSource.MARKED) {
-                    viewModel.markedDisplayList.value
-                } else {
-                    viewModel.filteredPhotos.value
-                }
-
             launch {
-                viewModel.filteredPhotos.collect { list ->
-                    if (viewModel.activeAlbum.value != AlbumSource.MARKED) {
-                        adapter.submit(
-                            list,
-                            viewModel.selectedHandles.value,
-                            viewModel.thumbnails.value,
-                            viewModel.markedHandles.value,
-                            viewModel.downloadedHandles.value,
-                            groupByDate = shouldGroupByDate()
-                        )
-                        binding.layoutEmpty.visibility =
-                            if (list.isEmpty()) View.VISIBLE else View.GONE
-                        restoreScrollAnchor(list)
-                    }
-                }
-            }
-            launch {
-                viewModel.markedDisplayList.collect { list ->
-                    if (viewModel.activeAlbum.value == AlbumSource.MARKED) {
-                        adapter.submit(
-                            list,
-                            viewModel.selectedHandles.value,
-                            viewModel.thumbnails.value,
-                            viewModel.markedHandles.value,
-                            viewModel.downloadedHandles.value,
-                            groupByDate = shouldGroupByDate()
-                        )
-                        binding.layoutEmpty.visibility =
-                            if (list.isEmpty()) View.VISIBLE else View.GONE
-                        if (list.isEmpty()) {
-                            binding.tvMessage.text = if (viewModel.markedRecords.value.isEmpty()) {
+                viewModel.uiPhotos.collect { list ->
+                    adapter.submit(
+                        list,
+                        viewModel.selectedHandles.value,
+                        viewModel.thumbnails.value,
+                        viewModel.markedHandles.value,
+                        viewModel.downloadedHandles.value,
+                        groupByDate = shouldGroupByDate()
+                    )
+                    binding.layoutEmpty.visibility =
+                        if (list.isEmpty()) View.VISIBLE else View.GONE
+                    if (list.isEmpty()) {
+                        binding.tvMessage.text = when (viewModel.activeAlbum.value) {
+                            AlbumSource.MARKED -> if (viewModel.markedRecords.value.isEmpty()) {
                                 "暂无标记照片：在相机相册长按多选后点「标记」"
                             } else {
                                 "标记的照片都已下载，或相机尚未连接"
                             }
+
+                            AlbumSource.CAMERA -> "连接相机后查看相册"
+                            AlbumSource.LOCAL -> "尚未下载照片到手机"
                         }
                     }
+                    restoreScrollAnchor(list)
                 }
             }
             launch {
                 viewModel.selectedHandles.collect { selected ->
                     adapter.submit(
-                        displayList(),
+                        viewModel.uiPhotos.value,
                         selected,
                         viewModel.thumbnails.value,
                         viewModel.markedHandles.value,
@@ -679,7 +716,7 @@ class TransferFragment : Fragment() {
             launch {
                 viewModel.thumbnails.collect { thumbs ->
                     adapter.submit(
-                        displayList(),
+                        viewModel.uiPhotos.value,
                         viewModel.selectedHandles.value,
                         thumbs,
                         viewModel.markedHandles.value,
@@ -691,7 +728,7 @@ class TransferFragment : Fragment() {
             launch {
                 viewModel.markedHandles.collect {
                     adapter.submit(
-                        displayList(),
+                        viewModel.uiPhotos.value,
                         viewModel.selectedHandles.value,
                         viewModel.thumbnails.value,
                         it,
@@ -703,7 +740,7 @@ class TransferFragment : Fragment() {
             launch {
                 viewModel.downloadedHandles.collect {
                     adapter.submit(
-                        displayList(),
+                        viewModel.uiPhotos.value,
                         viewModel.selectedHandles.value,
                         viewModel.thumbnails.value,
                         viewModel.markedHandles.value,
@@ -713,7 +750,7 @@ class TransferFragment : Fragment() {
                 }
             }
             launch {
-                viewModel.skipDownloadedInMarks.collect { renderSkipDownloadedButton() }
+                viewModel.skipDownloadedInMarks.collect { renderSkipDownloadedChip(it) }
             }
         }
 
@@ -754,7 +791,17 @@ class TransferFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.isLoading.collect { loading ->
                 binding.progressLoading.visibility = if (loading) View.VISIBLE else View.GONE
-                if (!loading) binding.swipeRefresh.isRefreshing = false
+                if (!loading) {
+                    binding.swipeRefresh.isRefreshing = false
+                    // 模块 4.3：刷新数据合并完成后强制复位到列表顶部（滚动放 post，
+                    // 等 DiffUtil 更新派发完成后再定位，做到不重复、不丢失、不跳动）
+                    if (pendingScrollToTop) {
+                        pendingScrollToTop = false
+                        binding.gridPhotos.post {
+                            if (_binding != null) binding.gridPhotos.scrollToPosition(0)
+                        }
+                    }
+                }
             }
         }
 
