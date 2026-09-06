@@ -82,6 +82,23 @@ class RemoteFragment : Fragment() {
         paramsViewModel.readAll()
         // 模块 2：页面可见期间开启 0x500E 快轮询，机身拨盘切模式 ≤500ms 同步到 UI
         paramsViewModel.startModeWatch()
+        showActionModeHintOnce()
+    }
+
+    /** 「更多动作」长按可切换间隔/B门——一次性提示（v1.0.2 反馈：切换入口不可发现） */
+    private fun showActionModeHintOnce() {
+        if (settings.actionModeHintShown) return
+        settings.actionModeHintShown = true
+        viewLifecycleOwner.lifecycleScope.launch {
+            kotlinx.coroutines.delay(1200)  // 等首帧稳定后再提示，避免与其它 Toast 抢时序
+            if (_binding != null) {
+                Toast.makeText(
+                    requireContext(),
+                    "「更多动作」按钮：点击执行，长按可切换 间隔拍摄 / B门长曝光",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
     }
 
     /** 模块 2：Tab 隐藏/显示与模式快轮询联动（MainActivity 四 Fragment 常驻，hide/show 不走 onPause） */
@@ -525,16 +542,19 @@ class RemoteFragment : Fragment() {
         val presets = listOf("手动开始 / 结束" to 0) +
             listOf(15, 30, 60, 120, 300).map {
                 "${if (it >= 60) "${it / 60} 分" else "$it 秒"}（自动收门）" to it
-            }
+            } +
+            listOf("切换为「间隔拍摄」" to -1)
         MaterialAlertDialogBuilder(requireContext())
             .setTitle("B 门 / 长曝光（上次 ${settings.bulbDurationSeconds} 秒）")
             .setItems(presets.map { it.first }.toTypedArray()) { _, which ->
                 val seconds = presets[which].second
-                if (seconds <= 0) {
-                    viewLifecycleOwner.lifecycleScope.launch { viewModel.bulbStart() }
-                } else {
-                    settings.bulbDurationSeconds = seconds
-                    viewModel.bulbStartTimed(seconds)
+                when {
+                    seconds == -1 -> switchActionMode(AppSettings.ACTION_INTERVAL)
+                    seconds <= 0 -> viewLifecycleOwner.lifecycleScope.launch { viewModel.bulbStart() }
+                    else -> {
+                        settings.bulbDurationSeconds = seconds
+                        viewModel.bulbStartTimed(seconds)
+                    }
                 }
             }
             .setNegativeButton("取消", null)
@@ -571,7 +591,11 @@ class RemoteFragment : Fragment() {
     }
 
     private fun showIntervalDialog() {
-        val options = arrayOf("间隔 3s × 30 张", "间隔 5s × 50 张", "间隔 10s × 100 张", "停止间隔拍摄")
+        val options = arrayOf(
+            "间隔 3s × 30 张", "间隔 5s × 50 张", "间隔 10s × 100 张",
+            "停止间隔拍摄",
+            "切换为「B 门长曝光」"
+        )
         MaterialAlertDialogBuilder(requireContext())
             .setTitle("间隔拍摄")
             .setItems(options) { _, which ->
@@ -580,9 +604,23 @@ class RemoteFragment : Fragment() {
                     1 -> viewModel.startInterval(IntervalConfig(5000, 50))
                     2 -> viewModel.startInterval(IntervalConfig(10000, 100))
                     3 -> viewModel.cancelInterval()
+                    4 -> switchActionMode(AppSettings.ACTION_BULB)
                 }
             }
             .show()
+    }
+
+    /** 切换「更多动作」当前动作并即时反馈（对话框内切换 = 下拉菜单式显式入口） */
+    private fun switchActionMode(mode: String) {
+        if (mode == settings.remoteActionMode) return
+        settings.remoteActionMode = mode
+        renderActionModeLabel()
+        Toast.makeText(
+            requireContext(),
+            if (mode == AppSettings.ACTION_BULB) "已切换为「B 门长曝光」，点击按钮开始"
+            else "已切换为「间隔拍摄」，点击按钮开始",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     private fun onShutterPressed() {

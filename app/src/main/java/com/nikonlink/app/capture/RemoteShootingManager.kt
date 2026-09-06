@@ -46,8 +46,14 @@ class RemoteShootingManager @Inject constructor(
         /** 录像命令 DeviceBusy 时的重试上限 */
         private const val VIDEO_BUSY_RETRIES = 3
 
-        /** 0x90C2 进入/退出控制模式后等待机身应用的时间 */
+        /** 0x9435 进入/退出应用模式后等待机身生效的时间 */
         private const val VIDEO_MODE_SETTLE_MS = 300L
+
+        /** 收门策略①（恢复快门值）在曝光中的重试上限：曝光中机身可能持续回忙 */
+        private const val BULB_STOP_WRITE_RETRIES = 6
+
+        /** 定时 B 门自动收门的重试上限（每秒一次，≈30s 窗口） */
+        private const val BULB_AUTO_STOP_RETRIES = 30
 
         /** 切到 Bulb 档后等待机身应用的间隔：立刻发拍摄命令会被 DeviceBusy 拒绝 */
         private const val BULB_APPLY_DELAY_MS = 600L
@@ -395,6 +401,21 @@ class RemoteShootingManager @Inject constructor(
 
         return withContext(Dispatchers.IO) {
             try {
+                // ---- 前置：进入远程控制模式并切到 M 档（gphoto2 _put_Nikon_Bulb 同款，best-effort）----
+                // gphoto2 开 B 门先 changecameramode(1) 再写 0x500E=1（Exposure Mode = Full Manual），
+                // 拨盘不在 M/S 档时也有机会远程完成；两步都允许失败（部分机身只读）。
+                changeCameraMode(enter = true)
+                runCatching {
+                    val modeData = java.nio.ByteBuffer.allocate(2)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN).putShort(1).array()
+                    if (usbPtpManager.isConnected()) {
+                        usbPtpManager.setDevicePropValue(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE, modeData)
+                    } else {
+                        ptpSession.setDevicePropValue(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE, modeData)
+                    }
+                }
+                delay(BULB_APPLY_DELAY_MS)
+
                 // ---- 前置：确保机身快门在 Bulb 档 ----
                 previousShutterRaw = readShutterRaw()
                 shutterWasSwitched = false
@@ -448,6 +469,8 @@ class RemoteShootingManager @Inject constructor(
                     previousShutterRaw?.let { runCatching { writeShutterRaw(it) } }
                     shutterWasSwitched = false
                 }
+                // 退出开 B 门时进入的远程控制模式（best-effort，与入口对称）
+                changeCameraMode(enter = false)
                 _shootingMessage.value = BulbPolicy.describeRejection(lastCode, switched)
                 false
             } catch (e: Exception) {
@@ -457,16 +480,23 @@ class RemoteShootingManager @Inject constructor(
                     previousShutterRaw?.let { runCatching { writeShutterRaw(it) } }
                     shutterWasSwitched = false
                 }
+                changeCameraMode(enter = false)
                 false
             }
         }
     }
 
     /**
-     * B 门结束曝光（v1.0.2 全链路修复）。
+     * B 门结束曝光（v1.0.3 全链路修复）。
      *
-     * 收门策略：① 恢复切档前的快门值（改快门值即结束曝光，digiCamControl 模型）；
-     * ② OpenCapture 路径补发 0x1010 TerminateOpenCapture；busy（写卡中）等待重试。
+     * 收门策略（逐级降级，任一成功即收门）：
+     * ① 恢复切档前的快门值（改快门值即结束曝光，digiCamControl 模型）——
+     *    曝光中机身可能持续回 DeviceBusy，重试放宽到 6×600ms；
+     * ② **0x920C(0,0) TerminateCapture**——gphoto2 `_put_Nikon_Bulb` 收门的权威实现，
+     *    是 0x9207 开启的长曝光的官方配套结束命令（v1.0.2 缺失它导致 15s 定时曝光
+     *    实际远超设定值：旧版只有恢复快门 + 0x1010 两条路，Z 系无线对两者都回忙/不支持）；
+     * ③ 0x1010 TerminateOpenCapture（0x100F 路径的配套，保留兜底）。
+     *
      * 失败时**保持曝光态**并提示重试——旧版失败也置 IDLE，用户以为已收门，
      * 实际机身还在曝光，是最危险的静默失败。
      */
@@ -478,9 +508,9 @@ class RemoteShootingManager @Inject constructor(
         if (_shootingState.value != ShootingState.BULB_EXPOSING) return false
 
         return withContext(Dispatchers.IO) {
+            var closed = false
             try {
                 // ---- 策略①：恢复原快门值收门（仅 App 切过档时有意义） ----
-                var closed = false
                 if (shutterWasSwitched && previousShutterRaw != null) {
                     var attempt = 0
                     while (true) {
@@ -489,39 +519,38 @@ class RemoteShootingManager @Inject constructor(
                             closed = true
                             break
                         }
-                        if (attempt >= BulbPolicy.MAX_BUSY_RETRIES) break
+                        if (attempt >= BULB_STOP_WRITE_RETRIES) break
                         delay(BulbPolicy.BUSY_RETRY_DELAY_MS)
                         attempt++
                     }
                 }
 
-                // ---- 策略②：恢复快门失败或未切档时，0x1010 收门 ----
+                // ---- 策略②/③：0x920C TerminateCapture → 0x1010（OpenCapture 路径配套） ----
                 if (!closed) {
-                    var attempt = 0
-                    while (true) {
-                        val (terminated, code) = bulbCommand(
-                            BulbPolicy.StopCommand.TERMINATE_OPEN_CAPTURE,
-                            listOf(BulbPolicy.StopCommand.TERMINATE_PARAMS)
-                        )
-                        if (terminated) {
-                            closed = true
+                    for (command in BulbPolicy.stopPlan()) {
+                        var attempt = 0
+                        while (true) {
+                            val (ok, code) = bulbCommand(command.opcode, command.params)
+                            if (ok) {
+                                closed = true
+                                break
+                            }
+                            lastBulbStopCode = code
+                            if (BulbPolicy.isBusy(code) && attempt < BulbPolicy.MAX_BUSY_RETRIES) {
+                                delay(BulbPolicy.BUSY_RETRY_DELAY_MS)
+                                attempt++
+                                continue
+                            }
+                            Timber.tag(TAG).w("Bulb stop rejected by ${command.label}: 0x${code.toString(16)}")
                             break
                         }
-                        lastBulbStopCode = code
-                        if (BulbPolicy.isBusy(code) && attempt < BulbPolicy.MAX_BUSY_RETRIES) {
-                            delay(BulbPolicy.BUSY_RETRY_DELAY_MS)
-                            attempt++
-                            continue
-                        }
-                        break
+                        if (closed) break
                     }
                 } else if (openCaptureStarted) {
                     // 快门恢复已收门，OpenCapture 会话仍需显式终止（尽力而为，不阻塞收门结果）
                     runCatching {
-                        bulbCommand(
-                            BulbPolicy.StopCommand.TERMINATE_OPEN_CAPTURE,
-                            listOf(BulbPolicy.StopCommand.TERMINATE_PARAMS)
-                        )
+                        val terminate = BulbPolicy.stopPlan().last()
+                        bulbCommand(terminate.opcode, terminate.params)
                     }
                 }
 
@@ -533,6 +562,8 @@ class RemoteShootingManager @Inject constructor(
                     _captureEvents.tryEmit(System.currentTimeMillis())
                     Timber.tag(TAG).i("Bulb exposure ended: ${_bulbExposureTime.value}ms")
                     clearBulbTimeout()
+                    // 退出开 B 门时进入的远程控制模式（与 changeCameraMode(1) 对称；尽力而为）
+                    changeCameraMode(enter = false)
                     true
                 } else {
                     // 保持曝光态：用户可重试，机身端仍在曝光是真实状态
@@ -570,8 +601,21 @@ class RemoteShootingManager @Inject constructor(
             while (isActive && _shootingState.value == ShootingState.BULB_EXPOSING) {
                 val elapsed = System.currentTimeMillis() - bulbStartTime
                 if (elapsed >= total) {
+                    // 自动收门必须重试到成功为止（v1.0.2 的 15s 过曝根因之一：
+                    // 收门失败时旧版直接放弃，曝光无限延长且 UI 永久置灰）。
+                    // 机身收门期间可能持续回忙，每秒重试一次，最多 30s；
+                    // 仍失败则把 bulbStop 的失败提示交给 UI（手动重试通道保持可用）。
                     Timber.tag(TAG).i("Timed bulb duration reached ($durationSec s), auto stop")
-                    bulbStop()
+                    var retries = 0
+                    while (isActive &&
+                        _shootingState.value == ShootingState.BULB_EXPOSING &&
+                        retries < BULB_AUTO_STOP_RETRIES
+                    ) {
+                        val stopped = bulbStop()
+                        if (stopped || _shootingState.value != ShootingState.BULB_EXPOSING) return@launch
+                        delay(1000)
+                        retries++
+                    }
                     return@launch
                 }
                 delay(200)
@@ -601,18 +645,16 @@ class RemoteShootingManager @Inject constructor(
     /**
      * 开始视频录制（Nikon 0x920A StartMovieRecInCard）。
      *
-     * v1.0.x 旧版**总是先启动监看**再发 0x920A：拨盘不在视频档时 StartLiveView 被
-     * 0xA004（InvalidStatus）拒绝，用户只看到「相机拒绝开启实时取景」，无法定位。
-     *
-     * 新时序对齐 digiCamControl（NikonBase.StartRecordMovie 前置 LockCamera）与
-     * 影犀 / SnapBridge 的实测链路：
-     * 1. **0x90C2(1) 进入机身控制模式**（ChangeCameraMode，digiCamControl LockCamera 同款）；
+     * 对齐影犀的实测链路（其 STA 录像可正常跑通）：
+     * 1. **0x9435(1) 进入应用模式**（gphoto2 ChangeApplicationMode）；
      * 2. **直接发 0x920A**——多数 Z 系机身录像是「录像优先」，不强制监看；
-     * 3. 仅当机身以 0xA00B（NotLiveView）拒绝时，才启动监看后重试（复用现有 LV
-     *    启动链：禁止条件预读 / busy 重试 / 验帧，见 LiveViewManager）；
-     * 4. 0xA004 → 明确提示「拨盘切到视频档」，不再转译成「拒绝实时取景」；
-     * 5. DeviceBusy → 等待重试；结束/失败路径统一退出控制模式（0x90C2(0)），
-     *    避免相机滞留控制模式影响后续拍照与下载。
+     * 3. 仅当机身以 0xA00B（NotLiveView）拒绝时，才启动监看后重试（复用 LiveViewManager
+     *    的禁止条件预读 / busy 重试 / 验帧链路）；
+     * 4. DeviceBusy → 等待重试；结束/失败路径统一退出应用模式（0x9435(0)）。
+     *
+     * v1.0.2 的 0x90C2(ChangeCameraMode) 序列在真机上表现为：相机闪现「已连接到智能设备」
+     * 不到一秒即退出且未开录——0x90C2 是 B 门/拍照的远程控制入口（gphoto2 仅在 B 门使用），
+     * 不属于录像链路，本版已从录像路径移除。
      */
     suspend fun startVideoRecording(): Boolean {
         if (!isRemoteReady()) {
@@ -623,8 +665,8 @@ class RemoteShootingManager @Inject constructor(
             try {
                 _shootingState.value = ShootingState.VIDEO_PREPARING
 
-                // ① 进入控制模式（digiCamControl LockCamera；失败不阻断——部分机型不需要）
-                changeCameraMode(enter = true)
+                // ① 进入应用模式（影犀 ChangeApplicationMode(1)；失败不阻断——部分机型不需要）
+                changeApplicationMode(enter = true)
                 delay(VIDEO_MODE_SETTLE_MS)
 
                 var lvStartedHere = false
@@ -647,7 +689,7 @@ class RemoteShootingManager @Inject constructor(
                             if (!liveViewManager.isRunning() && !liveViewManager.ensureRunning()) {
                                 _shootingState.value = ShootingState.IDLE
                                 _shootingMessage.value = describeMovieRejection(code)
-                                changeCameraMode(enter = false)
+                                changeApplicationMode(enter = false)
                                 return@withContext false
                             }
                             delay(VIDEO_LV_SETTLE_MS)
@@ -660,7 +702,7 @@ class RemoteShootingManager @Inject constructor(
                         else -> {
                             _shootingState.value = ShootingState.IDLE
                             _shootingMessage.value = describeMovieRejection(code)
-                            changeCameraMode(enter = false)
+                            changeApplicationMode(enter = false)
                             return@withContext false
                         }
                     }
@@ -672,14 +714,14 @@ class RemoteShootingManager @Inject constructor(
                 Timber.tag(TAG).e(e, "Video start failed")
                 _shootingState.value = ShootingState.IDLE
                 _shootingMessage.value = "录制启动异常：${e.message ?: "未知错误"}"
-                changeCameraMode(enter = false)
+                changeApplicationMode(enter = false)
                 false
             }
         }
     }
 
     /**
-     * 停止视频录制（Nikon 0x920B EndMovieRec），结束后退出控制模式并恢复拍照链路。
+     * 停止视频录制（Nikon 0x920B EndMovieRec），结束后退出应用模式并恢复拍照链路。
      */
     suspend fun stopVideoRecording(): Boolean {
         if (!isRemoteReady()) {
@@ -694,8 +736,8 @@ class RemoteShootingManager @Inject constructor(
                     when {
                         ok -> {
                             _shootingState.value = ShootingState.IDLE
-                            // 退出控制模式（digiCamControl UnLockCamera），恢复拍照链路
-                            changeCameraMode(enter = false)
+                            // 退出应用模式（影犀 ChangeApplicationMode(0)）
+                            changeApplicationMode(enter = false)
                             Timber.tag(TAG).i("Video recording stopped")
                             return@withContext true
                         }
@@ -707,7 +749,7 @@ class RemoteShootingManager @Inject constructor(
                             // 停止失败也回归空闲，避免 UI 永远停在「录制中」
                             _shootingState.value = ShootingState.IDLE
                             _shootingMessage.value = describeMovieRejection(code)
-                            changeCameraMode(enter = false)
+                            changeApplicationMode(enter = false)
                             return@withContext false
                         }
                     }
@@ -719,9 +761,30 @@ class RemoteShootingManager @Inject constructor(
                 Timber.tag(TAG).e(e, "Video stop failed")
                 _shootingState.value = ShootingState.IDLE
                 _shootingMessage.value = "停止录制异常：${e.message ?: "未知错误"}"
-                changeCameraMode(enter = false)
+                changeApplicationMode(enter = false)
                 false
             }
+        }
+    }
+
+    /** 双通道发 0x9435 ChangeApplicationMode（1=进入应用模式，0=退出）；失败不抛出 */
+    private suspend fun changeApplicationMode(enter: Boolean) {
+        val param = if (enter) 1 else 0
+        runCatching {
+            if (usbPtpManager.isConnected()) {
+                usbPtpManager.sendCommand(PtpConstants.OP_NIKON_CHANGE_APPLICATION_MODE, listOf(param))
+            } else {
+                ptpSession.sendCommand(PtpConstants.OP_NIKON_CHANGE_APPLICATION_MODE, listOf(param))
+            }
+        }.onSuccess { response ->
+            val code = when (response) {
+                is com.nikonlink.app.device.usb.UsbPtpResponse -> response.responseCode
+                is com.nikonlink.app.device.ptp.CommandResponsePacket -> response.responseCode
+                else -> null
+            }
+            Timber.tag(TAG).d("ChangeApplicationMode($param) response=${code?.toString(16)}")
+        }.onFailure { e ->
+            Timber.tag(TAG).w(e, "ChangeApplicationMode($param) failed")
         }
     }
 

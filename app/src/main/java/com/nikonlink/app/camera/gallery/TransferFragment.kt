@@ -326,10 +326,17 @@ class TransferFragment : Fragment() {
         // 指示器宽度 = 行宽 / Tab 数（运行时设置），translationX = 序号 × 段宽
         // （FrameLayout 子 View 已落在 padding 内侧，无需再加 paddingLeft）
         val row = binding.tabCameraPhotos.parent as? android.view.ViewGroup ?: return
-        binding.tabIndicator.post {
-            if (_binding == null) return@post
+        fun applyIndicator(retries: Int) {
+            if (_binding == null) return
+            // MainActivity 四 Fragment 常驻、本页初始 hidden（GONE 不参与布局），
+            // onViewCreated 阶段 row.width 必为 0——旧版此时静默放弃，指示器永远
+            // 停在全宽黑胶囊（表现为「底部只见 1 个 Tab」）。这里改为有限次重试，
+            // 直到页面 show() 后完成首次布局再落位。
             val rowWidth = row.width - row.paddingLeft - row.paddingRight
-            if (rowWidth <= 0) return@post
+            if (rowWidth <= 0) {
+                if (retries > 0) binding.tabIndicator.postDelayed({ applyIndicator(retries - 1) }, 64)
+                return
+            }
             val segWidth = rowWidth / tabs.size
             if (binding.tabIndicator.layoutParams.width != segWidth) {
                 binding.tabIndicator.layoutParams.width = segWidth
@@ -341,9 +348,18 @@ class TransferFragment : Fragment() {
                 .start()
             tabIndicatorInitialized = true
         }
+        binding.tabIndicator.post { applyIndicator(24) }
     }
 
     private var tabIndicatorInitialized = false
+
+    /** Tab show/hide 不走 onResume：显示时补一次 Tab 指示器渲染（首帧只有 1 个 Tab 的修复） */
+    override fun onHiddenChanged(hidden: Boolean) {
+        super.onHiddenChanged(hidden)
+        if (!hidden && _binding != null) {
+            renderAlbumTabs(viewModel.activeAlbum.value)
+        }
+    }
 
     private fun setupPullRefresh() {
         binding.swipeRefresh.setColorSchemeColors(
@@ -677,6 +693,14 @@ class TransferFragment : Fragment() {
                         viewModel.downloadedHandles.value,
                         groupByDate = shouldGroupByDate()
                     )
+                    // 模块 4.3：滚动复位必须在「最终（排序后）列表」submit 之后再执行，
+                    // 否则会被后续提交再次移动视口（跳底→弹回的两段运动）
+                    if (pendingScrollToTop) {
+                        pendingScrollToTop = false
+                        binding.gridPhotos.post {
+                            if (_binding != null) binding.gridPhotos.scrollToPosition(0)
+                        }
+                    }
                     binding.layoutEmpty.visibility =
                         if (list.isEmpty()) View.VISIBLE else View.GONE
                     if (list.isEmpty()) {
@@ -791,17 +815,9 @@ class TransferFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.isLoading.collect { loading ->
                 binding.progressLoading.visibility = if (loading) View.VISIBLE else View.GONE
-                if (!loading) {
-                    binding.swipeRefresh.isRefreshing = false
-                    // 模块 4.3：刷新数据合并完成后强制复位到列表顶部（滚动放 post，
-                    // 等 DiffUtil 更新派发完成后再定位，做到不重复、不丢失、不跳动）
-                    if (pendingScrollToTop) {
-                        pendingScrollToTop = false
-                        binding.gridPhotos.post {
-                            if (_binding != null) binding.gridPhotos.scrollToPosition(0)
-                        }
-                    }
-                }
+                // 仅收起下拉刷新圈；滚动复位挪到 uiPhotos 最终提交之后（见下方 collector）——
+                // 旧版在这里滚顶会插在「排序后的最终列表 submit」之前，产生「跳底再弹回」两段运动
+                if (!loading) binding.swipeRefresh.isRefreshing = false
             }
         }
 

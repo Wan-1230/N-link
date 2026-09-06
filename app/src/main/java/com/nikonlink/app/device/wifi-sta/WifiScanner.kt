@@ -66,11 +66,24 @@ class WifiScanner @Inject constructor(
         network: Network? = null
     ): List<WifiCameraCandidate> {
         val results = ConcurrentHashMap.newKeySet<WifiCameraCandidate>()
-        withContext(Dispatchers.IO) {
-            val mdnsJob = async { collectMdns(timeoutMs, results, network) }
-            val subnetJob = async { scanSubnet(timeoutMs, results, network) }
-            val nsdJob = async { collectNsd(timeoutMs, results) }
-            awaitAll(mdnsJob, subnetJob, nsdJob)
+        // ZDROP 同款：扫描期间进程级绑定到 WiFi 网络。双卡手机默认路由在蜂窝时，
+        // 组播/NSD/网段探测 socket 的路由都可能被抢，仅靠逐 socket 绑定不可靠。
+        val monitor = runCatching {
+            context.getSystemService(android.net.ConnectivityManager::class.java)
+        }.getOrNull()
+        if (network != null) {
+            runCatching { monitor?.bindProcessToNetwork(network) }
+        }
+        try {
+            withContext(Dispatchers.IO) {
+                val mdnsJob = async { collectMdns(timeoutMs, results, network) }
+                val subnetJob = async { scanSubnet(timeoutMs, results, network) }
+                val nsdJob = async { collectNsd(timeoutMs, results) }
+                awaitAll(mdnsJob, subnetJob, nsdJob)
+            }
+        } finally {
+            // 恢复默认路由，避免应用流量滞留在无 Internet 的相机网络
+            if (network != null) runCatching { monitor?.bindProcessToNetwork(null) }
         }
         // 任务2: 同一台相机会产生多个同名/异名条目（mDNS+网段扫描），按 IP 去重，
         // 优先保留相机自定义名称条目，隐藏通用占位名称的重复项

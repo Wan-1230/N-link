@@ -16,6 +16,7 @@ import com.nikonlink.app.camera.data.PhotoMarkRepository
 import com.nikonlink.app.capture.RemoteShootingManager
 import com.nikonlink.app.device.model.ConnectionState
 import com.nikonlink.app.device.connect.ConnectionManager
+import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.usb.UsbConnectionState
 import com.nikonlink.app.device.usb.UsbPtpManager
@@ -308,6 +309,20 @@ class TransferViewModel @Inject constructor(
         viewModelScope.launch {
             remoteShootingManager.captureEvents.collect { scheduleCaptureSync() }
         }
+        // v1.0.2 反馈：机身实体快门拍的照片相册不刷新——captureEvents 只覆盖 App 内
+        // 遥控拍摄，机身拍照只会以 PTP ObjectAdded(0x4002) 事件上报（WiFi/USB 两条
+        // 事件通道都在发，此前无人消费）。这里对齐 ZDROP 的实时刷新机制：收到即排一次同步，
+        // 连拍/间隔由 scheduleCaptureSync 的 800ms 合并窗口去抖，不会拉爆 PTP 通道。
+        viewModelScope.launch {
+            ptpSession.events.collect { event ->
+                if (event.eventCode == PtpConstants.EVENT_OBJECT_ADDED) scheduleCaptureSync()
+            }
+        }
+        viewModelScope.launch {
+            usbPtpManager.events.collect { event ->
+                if (event.eventCode == PtpConstants.EVENT_OBJECT_ADDED) scheduleCaptureSync()
+            }
+        }
         // 高清缩略图升级：下载原图后本地重生成，网格局部重绑展示清晰版
         viewModelScope.launch {
             transferManager.thumbnailUpgrades.collect { handle ->
@@ -351,8 +366,9 @@ class TransferViewModel @Inject constructor(
     /**
      * 获取相机照片列表
      * @param force 透传给 [loadPhotos]，手动刷新时为 true
+     * @param holdPages 透传给 [loadPhotos]，下拉刷新/手动刷新置 true（防跳底）
      */
-    fun fetchPhotos(force: Boolean = false) {
+    fun fetchPhotos(force: Boolean = false, holdPages: Boolean = false) {
         if (!transferManager.hasActiveSession()) {
             val usbConnected = usbPtpManager.isConnected()
             if (usbConnected) {
@@ -409,8 +425,16 @@ class TransferViewModel @Inject constructor(
      * @param silent 为 true 时为后台静默刷新（优化项 3 拍摄后自动同步专用）：
      *               不翻转 [_isLoading]（否则会闪全屏进度条、下拉刷新圈），
      *               不清空已勾选的待下载项，也不覆盖用户当前看到的提示文案。
+     * @param holdPages 为 true 时（手动刷新专用）不在分页途中逐页发射，仅在全量
+     *               拉取完成、[_isLoading] 复位之后一次性写入列表：旧版刷新途中会把
+     *               「handle 原始序」的中间分页直接推给网格（与刷新前的倒序展示几乎
+     *               完全逆序），视口被 DiffUtil 锚点拖到底部、排序完成后再弹回顶部。
      */
-    private fun loadPhotos(force: Boolean = false, silent: Boolean = false) {
+    private fun loadPhotos(
+        force: Boolean = false,
+        silent: Boolean = false,
+        holdPages: Boolean = false
+    ) {
         if (!force && !loadingGuard.compareAndSet(false, true)) {
             Timber.tag(TAG).d("Photo loading already in progress, skip")
             return
@@ -419,32 +443,36 @@ class TransferViewModel @Inject constructor(
         loadJob?.cancel()
         if (!silent) _isLoading.value = true
         loadJob = viewModelScope.launch {
+            var result: List<CameraFile> = emptyList()
             try {
                 // 媒体列表按 limit=18 分页，每页完成后立即刷新网格，
                 // 避免照片多时等待整份列表返回才看到内容。
                 // 这里存原始顺序即可：分页期间排序没有意义（数据不完整），
                 // 且每页重排会让列表不断跳动；排序统一由 filteredPhotos 在加载完成后做全量处理。
-                val photos = transferManager.fetchPhotoList(
-                    onPage = { page -> _photoList.value = page }
+                result = transferManager.fetchPhotoList(
+                    onPage = if (holdPages) null else ({ page -> _photoList.value = page })
                 )
-                _photoList.value = photos
+                if (!holdPages) _photoList.value = result
                 if (!silent) {
                     // 静默刷新不能清勾选：用户可能正勾着一批待下载项在连拍，
                     // 且 handle 是稳定的（新照片只会拿到新 handle），保留勾选是安全的。
                     _selectedHandles.value = emptySet()
-                    _message.value = if (photos.isEmpty()) "存储卡为空或未连接" else "共 ${photos.size} 个文件"
+                    _message.value = if (result.isEmpty()) "存储卡为空或未连接" else "共 ${result.size} 个文件"
                 }
-                if (photos.isNotEmpty()) {
+                if (result.isNotEmpty()) {
                     // F1 失效自愈：全量列表到手后做指纹校验，清理机内已删除/换卡失效的标记。
                     // 仅在非空列表时校验——空列表可能是抓取失败，此时清理会把全部标记误删。
-                    runCatching { photoMarkRepository.reconcile(photos) }
+                    runCatching { photoMarkRepository.reconcile(result) }
                         .onFailure { Timber.tag(TAG).w(it, "Photo mark reconcile failed") }
                     refreshDownloadedHandles()
                 }
                 // 后台渐进取预热缩略图；可见项由 Adapter 按需触发
-                prewarmThumbnails(photos.map { it.handle })
+                prewarmThumbnails(result.map { it.handle })
             } finally {
                 if (!silent) _isLoading.value = false
+                // holdPages：loading 复位后再写列表 → 这一次发射会直接走排序管线，
+                // 网格只看到一次「排序后的最终列表」提交，不再有中间态跳动
+                if (holdPages && result.isNotEmpty()) _photoList.value = result
                 loadingGuard.set(false)
             }
         }
@@ -523,8 +551,9 @@ class TransferViewModel @Inject constructor(
     fun refreshActiveAlbum() {
         when (_activeAlbum.value) {
             AlbumSource.LOCAL -> fetchLocalPhotos()
-            // 手动刷新永远打断进行中的自动加载，保证用户主动操作必有响应
-            else -> fetchPhotos(force = true)
+            // 手动刷新永远打断进行中的自动加载，保证用户主动操作必有响应；
+            // holdPages：刷新全程保持旧列表可见，最终一次性提交排序结果（防跳底）
+            else -> fetchPhotos(force = true, holdPages = true)
         }
     }
 
