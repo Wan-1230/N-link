@@ -88,6 +88,21 @@ class WifiNetworkMonitor @Inject constructor(
     }
 
     /**
+     * 把整个进程绑定到 [network]（null = 恢复系统默认路由）。
+     *
+     * ZDROP 的 STA 链路即采用进程级绑定（bindProcessToNetwork）：相机 AP/STA 网络
+     * 无 Internet 能力时，部分机型的默认路由仍指向蜂窝网，仅靠逐 socket bindSocket
+     * 覆盖不全（mDNS、NSD、探测 socket、三方库自建的 socket 都可能漏绑）。
+     * 进程级绑定一次性解决所有 socket 的路由问题；连接/扫描结束务必传 null 恢复，
+     * 否则应用流量会一直走无 Internet 的相机网络。
+     */
+    fun bindProcessTo(network: Network?): Boolean = runCatching {
+        connectivityManager.bindProcessToNetwork(network)
+    }.onFailure {
+        Timber.tag(TAG).w(it, "bindProcessToNetwork failed (network=$network)")
+    }.getOrDefault(false)
+
+    /**
      * 等待 WiFi 网络就绪并返回当前 [Network]；超时返回 null。
      * RC-4：调用方每次连接尝试都应重新调用，绝不缓存旧句柄。
      */

@@ -111,4 +111,9 @@ class AppSettings @Inject constructor(
     var bulbDurationSeconds: Int
         get() = prefs.getInt("bulb_duration_seconds", 30)
         set(value) = prefs.edit().putInt("bulb_duration_seconds", value).apply()
+
+    /** 「更多动作」长按切换的一次性提示是否已展示过 */
+    var actionModeHintShown: Boolean
+        get() = prefs.getBoolean("action_mode_hint_shown", false)
+        set(value) = prefs.edit().putBoolean("action_mode_hint_shown", value).apply()
 }
