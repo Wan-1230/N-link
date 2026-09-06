@@ -45,6 +45,12 @@ class RemoteShootingManager @Inject constructor(
 
         /** 录像命令 DeviceBusy 时的重试上限 */
         private const val VIDEO_BUSY_RETRIES = 3
+
+        /** 0x90C2 进入/退出控制模式后等待机身应用的时间 */
+        private const val VIDEO_MODE_SETTLE_MS = 300L
+
+        /** 切到 Bulb 档后等待机身应用的间隔：立刻发拍摄命令会被 DeviceBusy 拒绝 */
+        private const val BULB_APPLY_DELAY_MS = 600L
     }
 
     private var scope: CoroutineScope? = null
@@ -78,6 +84,18 @@ class RemoteShootingManager @Inject constructor(
     /** B门已曝光时长 (ms) */
     private val _bulbExposureTime = MutableStateFlow(0L)
     val bulbExposureTime: StateFlow<Long> = _bulbExposureTime.asStateFlow()
+
+    /**
+     * 定时 B 门的总时长 (ms)；null = 手动模式（开始/结束全手动）。
+     * 模块 3 选型：定时模式为主（长曝光动辄 30s~数分钟，要求手指按住屏幕不现实，
+     * 且按住期间锁屏/误触都会中断曝光——ZRelay BulbTimeConfigUi(durationSeconds=30)
+     * 同款交互）；手动「开始/结束」保留为次要方式。
+     */
+    private val _bulbDurationMs = MutableStateFlow<Long?>(null)
+    val bulbDurationMs: StateFlow<Long?> = _bulbDurationMs.asStateFlow()
+
+    /** 定时 B 门的自动收门任务；手动 bulbStop / 取消时一并撤销 */
+    private var bulbTimeoutJob: Job? = null
 
     /** 定时器倒计时 */
     private val _timerCountdown = MutableStateFlow(0)
@@ -306,59 +324,267 @@ class RemoteShootingManager @Inject constructor(
 
     // ==================== B 门遥控 ====================
 
+    // B 门链路状态（v1.0.2 全链路修复）：
+    // - shutterWasSwitched：本次曝光是否由 App 把 0x500D 切到了 Bulb（收门时恢复原值）
+    // - previousShutterRaw：切档前的 0x500D 值（null = 未知，不可恢复式收门）
+    // - openCaptureStarted：本次曝光是否经 0x100F 开启（收门需补 0x1010）
+    @Volatile
+    private var shutterWasSwitched = false
+    private var previousShutterRaw: Int? = null
+    private var openCaptureStarted = false
+
+    /** 双通道读 0x500D ExposureTime（4 字节 u32 LE）；读不到返回 null */
+    private suspend fun readShutterRaw(): Int? {
+        val data = if (usbPtpManager.isConnected()) {
+            usbPtpManager.getDevicePropValue(PtpConstants.PROP_EXPOSURE_TIME)
+        } else {
+            ptpSession.getDevicePropValue(PtpConstants.PROP_EXPOSURE_TIME)
+        }
+        if (data == null || data.size < 4) return null
+        return java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN).int
+    }
+
+    /** 双通道写 0x500D；返回是否成功 */
+    private suspend fun writeShutterRaw(value: Int): Boolean {
+        val data = java.nio.ByteBuffer.allocate(4)
+            .order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(value).array()
+        return if (usbPtpManager.isConnected()) {
+            usbPtpManager.setDevicePropValue(PtpConstants.PROP_EXPOSURE_TIME, data)
+        } else {
+            ptpSession.setDevicePropValue(PtpConstants.PROP_EXPOSURE_TIME, data)
+        }
+    }
+
+    /** 按通道发一条开启/收门命令，返回 (是否成功, 响应码) */
+    private suspend fun bulbCommand(opcode: Int, params: List<Int>): Pair<Boolean, Int> {
+        return if (usbPtpManager.isConnected()) {
+            val response = usbPtpManager.sendCommand(opcode, params)
+            if (response == null) false to 0 else (response.isOk) to response.responseCode
+        } else {
+            val response = ptpSession.sendCommand(opcode, params)
+            response.isOk to response.responseCode
+        }
+    }
+
     /**
-     * B 门开始曝光
-     * PRD 2.2: 长按开始曝光，松开结束，显示已曝光时长
+     * B 门开始曝光（v1.0.2 全链路修复）。
+     *
+     * 1. 前置校验：读 0x500D，非 Bulb 档时**自动切档**（digiCamControl 同款）；
+     *    写不进去（只读 / 非 M·S 档）给出可操作提示后中止，不再裸发必败命令。
+     * 2. 开启曝光：0x9207 → 0x100E → 0x100F 多级降级，busy（0x2019/0xA200）短暂等待重试。
+     * 3. 全程响应码可见：失败中文化 + 忙态可重试，不再「点了没反应」。
+     * 4. PRD D3：曝光中重复触发直接忽略；失败时恢复快门档位，不留脏状态。
      */
     suspend fun bulbStart(): Boolean {
-        if (!isRemoteReady()) return false
+        if (!isRemoteReady()) {
+            _shootingMessage.value = "相机尚未连接"
+            return false
+        }
+        if (_shootingState.value == ShootingState.BULB_EXPOSING) {
+            // PRD D3：不允许重复触发
+            _shootingMessage.value = "B 门曝光中"
+            return true
+        }
+        if (_shootingState.value == ShootingState.INTERVAL_SHOOTING ||
+            _shootingState.value == ShootingState.TIMER_COUNTDOWN ||
+            _shootingState.value == ShootingState.VIDEO_RECORDING
+        ) {
+            _shootingMessage.value = "请先停止当前拍摄任务再使用 B 门"
+            return false
+        }
+
         return withContext(Dispatchers.IO) {
             try {
-                val ok = if (usbPtpManager.isConnected()) {
-                    usbPtpManager.initiateOpenCapture()
-                } else {
-                    ptpSession.sendCommand(
-                        PtpConstants.OP_INITIATE_OPEN_CAPTURE, listOf(0)
-                    ).isOk
+                // ---- 前置：确保机身快门在 Bulb 档 ----
+                previousShutterRaw = readShutterRaw()
+                shutterWasSwitched = false
+                if (previousShutterRaw != BulbPolicy.SHUTTER_BULB_RAW) {
+                    if (!writeShutterRaw(BulbPolicy.SHUTTER_BULB_RAW)) {
+                        _shootingMessage.value =
+                            "无法切换到 B 门：请将相机拨盘切到 M 档并确认快门速度可调，再重试"
+                        Timber.tag(TAG).w("Bulb aborted: 0x500D write rejected (prev=$previousShutterRaw)")
+                        return@withContext false
+                    }
+                    shutterWasSwitched = true
+                    // 机身应用档位需要短暂时间，立刻发拍摄命令会被 DeviceBusy 拒绝
+                    delay(BULB_APPLY_DELAY_MS)
                 }
-                if (ok) {
-                    _shootingState.value = ShootingState.BULB_EXPOSING
-                    bulbStartTime = System.currentTimeMillis()
-                    startBulbTimer()
-                    Timber.tag(TAG).i("Bulb exposure started")
+                openCaptureStarted = false
+
+                // ---- 开启曝光：多级降级 + busy 重试 ----
+                val channel =
+                    if (usbPtpManager.isConnected()) BulbPolicy.Channel.USB else BulbPolicy.Channel.WIFI
+                var lastCode = 0
+                for (command in BulbPolicy.startPlan(channel)) {
+                    var attempt = 0
+                    while (true) {
+                        val (ok, code) = bulbCommand(command.opcode, command.params)
+                        if (ok) {
+                            openCaptureStarted = command.usesOpenCapture
+                            _shootingState.value = ShootingState.BULB_EXPOSING
+                            bulbStartTime = System.currentTimeMillis()
+                            _bulbExposureTime.value = 0L
+                            // 手动模式语义：不带定时（bulbStartTimed 在返回后登记时长）
+                            _bulbDurationMs.value = null
+                            startBulbTimer()
+                            _shootingMessage.value = null
+                            Timber.tag(TAG).i("Bulb exposure started via ${command.label}")
+                            return@withContext true
+                        }
+                        lastCode = code
+                        if (BulbPolicy.isBusy(code) && attempt < BulbPolicy.MAX_BUSY_RETRIES) {
+                            delay(BulbPolicy.BUSY_RETRY_DELAY_MS)
+                            attempt++
+                            continue
+                        }
+                        Timber.tag(TAG).w("Bulb start rejected by ${command.label}: 0x${code.toString(16)}")
+                        break
+                    }
                 }
-                ok
+
+                // ---- 全部策略失败：恢复快门档位并给可操作提示 ----
+                val switched = shutterWasSwitched
+                if (shutterWasSwitched) {
+                    previousShutterRaw?.let { runCatching { writeShutterRaw(it) } }
+                    shutterWasSwitched = false
+                }
+                _shootingMessage.value = BulbPolicy.describeRejection(lastCode, switched)
+                false
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Bulb start failed")
+                _shootingMessage.value = "开启曝光异常：${e.message ?: "未知错误"}"
+                if (shutterWasSwitched) {
+                    previousShutterRaw?.let { runCatching { writeShutterRaw(it) } }
+                    shutterWasSwitched = false
+                }
                 false
             }
         }
     }
 
     /**
-     * B 门结束曝光
+     * B 门结束曝光（v1.0.2 全链路修复）。
+     *
+     * 收门策略：① 恢复切档前的快门值（改快门值即结束曝光，digiCamControl 模型）；
+     * ② OpenCapture 路径补发 0x1010 TerminateOpenCapture；busy（写卡中）等待重试。
+     * 失败时**保持曝光态**并提示重试——旧版失败也置 IDLE，用户以为已收门，
+     * 实际机身还在曝光，是最危险的静默失败。
      */
     suspend fun bulbStop(): Boolean {
-        if (!isRemoteReady()) return false
+        if (!isRemoteReady()) {
+            _shootingMessage.value = "相机尚未连接，请重新连接后结束曝光或直接操作机身快门"
+            return false
+        }
+        if (_shootingState.value != ShootingState.BULB_EXPOSING) return false
+
         return withContext(Dispatchers.IO) {
             try {
-                val ok = if (usbPtpManager.isConnected()) {
-                    usbPtpManager.terminateOpenCapture()
-                } else {
-                    ptpSession.sendCommand(
-                        PtpConstants.OP_TERMINATE_OPEN_CAPTURE, listOf(0)
-                    ).isOk
+                // ---- 策略①：恢复原快门值收门（仅 App 切过档时有意义） ----
+                var closed = false
+                if (shutterWasSwitched && previousShutterRaw != null) {
+                    var attempt = 0
+                    while (true) {
+                        if (writeShutterRaw(previousShutterRaw!!)) {
+                            shutterWasSwitched = false
+                            closed = true
+                            break
+                        }
+                        if (attempt >= BulbPolicy.MAX_BUSY_RETRIES) break
+                        delay(BulbPolicy.BUSY_RETRY_DELAY_MS)
+                        attempt++
+                    }
                 }
-                _shootingState.value = ShootingState.IDLE
-                _shotCount.value++
-                if (ok) _captureEvents.tryEmit(System.currentTimeMillis())
-                Timber.tag(TAG).i("Bulb exposure ended: ${_bulbExposureTime.value}ms")
-                ok
+
+                // ---- 策略②：恢复快门失败或未切档时，0x1010 收门 ----
+                if (!closed) {
+                    var attempt = 0
+                    while (true) {
+                        val (terminated, code) = bulbCommand(
+                            BulbPolicy.StopCommand.TERMINATE_OPEN_CAPTURE,
+                            listOf(BulbPolicy.StopCommand.TERMINATE_PARAMS)
+                        )
+                        if (terminated) {
+                            closed = true
+                            break
+                        }
+                        lastBulbStopCode = code
+                        if (BulbPolicy.isBusy(code) && attempt < BulbPolicy.MAX_BUSY_RETRIES) {
+                            delay(BulbPolicy.BUSY_RETRY_DELAY_MS)
+                            attempt++
+                            continue
+                        }
+                        break
+                    }
+                } else if (openCaptureStarted) {
+                    // 快门恢复已收门，OpenCapture 会话仍需显式终止（尽力而为，不阻塞收门结果）
+                    runCatching {
+                        bulbCommand(
+                            BulbPolicy.StopCommand.TERMINATE_OPEN_CAPTURE,
+                            listOf(BulbPolicy.StopCommand.TERMINATE_PARAMS)
+                        )
+                    }
+                }
+
+                if (closed) {
+                    shutterWasSwitched = false
+                    openCaptureStarted = false
+                    _shootingState.value = ShootingState.IDLE
+                    _shotCount.value++
+                    _captureEvents.tryEmit(System.currentTimeMillis())
+                    Timber.tag(TAG).i("Bulb exposure ended: ${_bulbExposureTime.value}ms")
+                    clearBulbTimeout()
+                    true
+                } else {
+                    // 保持曝光态：用户可重试，机身端仍在曝光是真实状态
+                    _shootingMessage.value =
+                        "结束曝光失败：${PtpConstants.describeResponseCode(lastBulbStopCode)}，请重试或直接轻按机身快门"
+                    Timber.tag(TAG).w("Bulb stop failed, keep exposing: 0x${lastBulbStopCode.toString(16)}")
+                    false
+                }
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Bulb stop failed")
+                _shootingMessage.value = "结束曝光异常：${e.message ?: "未知错误"}，请重试"
                 false
             }
         }
+    }
+
+    private var lastBulbStopCode = 0
+
+    /**
+     * 定时 B 门：开始曝光并调度 [durationSec] 后自动收门。
+     * 曝光中可随时 [bulbStop] 提前结束（定时任务一并撤销）。
+     */
+    suspend fun bulbStartTimed(durationSec: Int): Boolean {
+        // 先启动再登记时长：bulbStart 成功路径会把时长清空（手动模式语义），
+        // 这里在其后写入，保证定时模式的剩余时长展示生效
+        val started = bulbStart()
+        if (!started) {
+            _bulbDurationMs.value = null
+            return false
+        }
+        _bulbDurationMs.value = durationSec * 1000L
+        bulbTimeoutJob = scope?.launch {
+            // 逐段检查而非单次 delay(duration)：曝光中取消/协程取消都能正确收敛
+            val total = durationSec * 1000L
+            while (isActive && _shootingState.value == ShootingState.BULB_EXPOSING) {
+                val elapsed = System.currentTimeMillis() - bulbStartTime
+                if (elapsed >= total) {
+                    Timber.tag(TAG).i("Timed bulb duration reached ($durationSec s), auto stop")
+                    bulbStop()
+                    return@launch
+                }
+                delay(200)
+            }
+        }
+        return true
+    }
+
+    /** 清理定时 B 门状态（收门成功/失败后的统一出口） */
+    private fun clearBulbTimeout() {
+        bulbTimeoutJob?.cancel()
+        bulbTimeoutJob = null
+        _bulbDurationMs.value = null
     }
 
     private fun startBulbTimer() {
@@ -375,12 +601,18 @@ class RemoteShootingManager @Inject constructor(
     /**
      * 开始视频录制（Nikon 0x920A StartMovieRecInCard）。
      *
-     * 旧版直接裸发 0x920A，机身在未开实时取景时以 NotLiveView 拒绝且 UI 无任何反馈，
-     * 表现为「点录制没反应」。新版对齐影犀 / SnapBridge 的遥控录像流程：
-     * 1. 未开监看时先自动启动（依赖实时取景的录像链路）；
-     * 2. 收到 NotLiveView → 重启监看后重试；
-     * 3. DeviceBusy → 等待就绪后重试；
-     * 4. 其余失败码给出可操作的中文化提示（如拨盘未切到视频模式）。
+     * v1.0.x 旧版**总是先启动监看**再发 0x920A：拨盘不在视频档时 StartLiveView 被
+     * 0xA004（InvalidStatus）拒绝，用户只看到「相机拒绝开启实时取景」，无法定位。
+     *
+     * 新时序对齐 digiCamControl（NikonBase.StartRecordMovie 前置 LockCamera）与
+     * 影犀 / SnapBridge 的实测链路：
+     * 1. **0x90C2(1) 进入机身控制模式**（ChangeCameraMode，digiCamControl LockCamera 同款）；
+     * 2. **直接发 0x920A**——多数 Z 系机身录像是「录像优先」，不强制监看；
+     * 3. 仅当机身以 0xA00B（NotLiveView）拒绝时，才启动监看后重试（复用现有 LV
+     *    启动链：禁止条件预读 / busy 重试 / 验帧，见 LiveViewManager）；
+     * 4. 0xA004 → 明确提示「拨盘切到视频档」，不再转译成「拒绝实时取景」；
+     * 5. DeviceBusy → 等待重试；结束/失败路径统一退出控制模式（0x90C2(0)），
+     *    避免相机滞留控制模式影响后续拍照与下载。
      */
     suspend fun startVideoRecording(): Boolean {
         if (!isRemoteReady()) {
@@ -389,20 +621,13 @@ class RemoteShootingManager @Inject constructor(
         }
         return withContext(Dispatchers.IO) {
             try {
-                // 前置：录像依赖 LiveView。未开启（或启动中）则等待/拉起（全流程状态反馈）
-                if (!liveViewManager.isRunning()) {
-                    _shootingState.value = ShootingState.VIDEO_PREPARING
-                    _shootingMessage.value = "正在启动监看…"
-                    if (!liveViewManager.ensureRunning()) {
-                        _shootingState.value = ShootingState.IDLE
-                        _shootingMessage.value = "监看启动失败，无法开始录制"
-                        return@withContext false
-                    }
-                    delay(VIDEO_LV_SETTLE_MS)
-                } else {
-                    _shootingState.value = ShootingState.VIDEO_PREPARING
-                }
+                _shootingState.value = ShootingState.VIDEO_PREPARING
 
+                // ① 进入控制模式（digiCamControl LockCamera；失败不阻断——部分机型不需要）
+                changeCameraMode(enter = true)
+                delay(VIDEO_MODE_SETTLE_MS)
+
+                var lvStartedHere = false
                 var attempt = 0
                 while (true) {
                     val (ok, code) = movieRecordingCommand(start = true)
@@ -410,40 +635,51 @@ class RemoteShootingManager @Inject constructor(
                         ok -> {
                             _shootingState.value = ShootingState.VIDEO_RECORDING
                             _shootingMessage.value = null
-                            Timber.tag(TAG).i("Video recording started")
+                            Timber.tag(TAG).i(
+                                "Video recording started (lvStartedHere=$lvStartedHere)"
+                            )
                             return@withContext true
                         }
-                        code == PtpConstants.RESPONSE_NIKON_NOT_LIVE_VIEW && attempt == 0 -> {
-                            // 机身认为不在取景状态（假成功/中途退出）：重启监看后重试一次
-                            Timber.tag(TAG).w("Movie start rejected NotLiveView, restarting LV")
-                            liveViewManager.startLiveView()
+                        code == PtpConstants.RESPONSE_NIKON_NOT_LIVE_VIEW && !lvStartedHere -> {
+                            // 录像依赖监看的机型：此时才启动监看并重试
+                            Timber.tag(TAG).i("Movie start needs live view, starting LV")
+                            _shootingMessage.value = "正在启动监看…"
+                            if (!liveViewManager.isRunning() && !liveViewManager.ensureRunning()) {
+                                _shootingState.value = ShootingState.IDLE
+                                _shootingMessage.value = describeMovieRejection(code)
+                                changeCameraMode(enter = false)
+                                return@withContext false
+                            }
                             delay(VIDEO_LV_SETTLE_MS)
-                            attempt++
+                            lvStartedHere = true
                         }
-                        code == PtpConstants.RESPONSE_DEVICE_BUSY && attempt < VIDEO_BUSY_RETRIES -> {
+                        BulbPolicy.isBusy(code) && attempt < VIDEO_BUSY_RETRIES -> {
                             delay(500)
                             attempt++
                         }
                         else -> {
                             _shootingState.value = ShootingState.IDLE
                             _shootingMessage.value = describeMovieRejection(code)
+                            changeCameraMode(enter = false)
                             return@withContext false
                         }
                     }
                 }
                 // 不可达：循环内所有路径均已 return，仅为满足类型检查
+                @Suppress("UNREACHABLE_CODE")
                 error("unreachable")
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Video start failed")
                 _shootingState.value = ShootingState.IDLE
                 _shootingMessage.value = "录制启动异常：${e.message ?: "未知错误"}"
+                changeCameraMode(enter = false)
                 false
             }
         }
     }
 
     /**
-     * 停止视频录制（Nikon 0x920B EndMovieRec）
+     * 停止视频录制（Nikon 0x920B EndMovieRec），结束后退出控制模式并恢复拍照链路。
      */
     suspend fun stopVideoRecording(): Boolean {
         if (!isRemoteReady()) {
@@ -458,10 +694,12 @@ class RemoteShootingManager @Inject constructor(
                     when {
                         ok -> {
                             _shootingState.value = ShootingState.IDLE
+                            // 退出控制模式（digiCamControl UnLockCamera），恢复拍照链路
+                            changeCameraMode(enter = false)
                             Timber.tag(TAG).i("Video recording stopped")
                             return@withContext true
                         }
-                        code == PtpConstants.RESPONSE_DEVICE_BUSY && attempt < VIDEO_BUSY_RETRIES -> {
+                        BulbPolicy.isBusy(code) && attempt < VIDEO_BUSY_RETRIES -> {
                             delay(500)
                             attempt++
                         }
@@ -469,18 +707,42 @@ class RemoteShootingManager @Inject constructor(
                             // 停止失败也回归空闲，避免 UI 永远停在「录制中」
                             _shootingState.value = ShootingState.IDLE
                             _shootingMessage.value = describeMovieRejection(code)
+                            changeCameraMode(enter = false)
                             return@withContext false
                         }
                     }
                 }
                 // 不可达：循环内所有路径均已 return，仅为满足类型检查
+                @Suppress("UNREACHABLE_CODE")
                 error("unreachable")
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Video stop failed")
                 _shootingState.value = ShootingState.IDLE
                 _shootingMessage.value = "停止录制异常：${e.message ?: "未知错误"}"
+                changeCameraMode(enter = false)
                 false
             }
+        }
+    }
+
+    /** 双通道发 0x90C2 ChangeCameraMode（1=进入控制模式，0=退出）；失败不抛出 */
+    private suspend fun changeCameraMode(enter: Boolean) {
+        val param = if (enter) 1 else 0
+        runCatching {
+            if (usbPtpManager.isConnected()) {
+                usbPtpManager.sendCommand(PtpConstants.OP_NIKON_CHANGE_CAMERA_MODE, listOf(param))
+            } else {
+                ptpSession.sendCommand(PtpConstants.OP_NIKON_CHANGE_CAMERA_MODE, listOf(param))
+            }
+        }.onSuccess { response ->
+            val code = when (response) {
+                is com.nikonlink.app.device.usb.UsbPtpResponse -> response.responseCode
+                is com.nikonlink.app.device.ptp.CommandResponsePacket -> response.responseCode
+                else -> null
+            }
+            Timber.tag(TAG).d("ChangeCameraMode($param) response=${code?.toString(16)}")
+        }.onFailure { e ->
+            Timber.tag(TAG).w(e, "ChangeCameraMode($param) failed")
         }
     }
 
@@ -499,7 +761,9 @@ class RemoteShootingManager @Inject constructor(
     private fun describeMovieRejection(code: Int): String {
         return when (code) {
             PtpConstants.RESPONSE_NIKON_NOT_LIVE_VIEW ->
-                "相机未处于实时取景状态，请重新开始录制"
+                "该机型录像依赖监看，且监看启动失败：请确认拨盘已切到视频档后重试"
+            PtpConstants.RESPONSE_NIKON_INVALID_STATUS ->
+                "相机当前状态不允许录制（Nikon 0xA004）：请将模式拨盘切到视频档，且不要停留在回放/菜单界面"
             PtpConstants.RESPONSE_ACCESS_DENIED ->
                 "相机拒绝录制：请确认拨盘已切到视频模式，且未开启点测白平衡等占用功能"
             PtpConstants.RESPONSE_OPERATION_NOT_SUPPORTED ->

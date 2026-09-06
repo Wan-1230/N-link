@@ -158,18 +158,22 @@ class DashboardFragment : Fragment() {
                 if (info.modelName.isNotBlank()) binding.tvCameraName.text = info.modelName
                 if (info.lensName.isNotBlank()) binding.tvLens.text = info.lensName
 
+                // 快门次数行：连接后常驻可点（未查询/失败/成功均可点击触发或刷新）。
+                // 可行性：尼康无快门计数 PTP 属性 → 采样照片 MakerNotes 本地解析，失败走云端兜底
+                val shutterRowVisible = info.shutterQueryState != ShutterCountState.NONE ||
+                        info.modelName.isNotBlank()
                 binding.rowShutterCount.visibility =
-                    if (info.shutterQueryState == ShutterCountState.NONE) View.GONE else View.VISIBLE
+                    if (shutterRowVisible) View.VISIBLE else View.GONE
                 binding.tvShutterCount.text = when (info.shutterQueryState) {
-                    ShutterCountState.QUERYING -> "查询中"
-                    ShutterCountState.SUCCESS -> "${info.shutterCount} 次"
+                    ShutterCountState.QUERYING -> "查询中…"
+                    ShutterCountState.SUCCESS -> "${info.shutterCount} 次" +
+                            if (info.shutterCountSource.isNotBlank()) "（${info.shutterCountSource}）" else ""
                     ShutterCountState.FAILED -> "查询失败，点击重试"
-                    ShutterCountState.NONE -> ""
+                    ShutterCountState.NONE -> "未查询 · 点击查询"
                 }
+                binding.tvShutterCount.isClickable = shutterRowVisible
                 binding.tvShutterCount.setOnClickListener {
-                    if (info.shutterQueryState == ShutterCountState.FAILED) {
-                        paramsViewModel.retryShutterCountQuery()
-                    }
+                    paramsViewModel.retryShutterCountQuery()
                 }
 
                 binding.rowFirmware.visibility =
@@ -276,6 +280,25 @@ class DashboardFragment : Fragment() {
                             paramsViewModel.readAll()
                         }
                     }
+                    UsbConnectionState.ERROR -> {
+                        // 模块 6：细分失败原因，禁止统一报「未检测到 USB 相机」
+                        binding.tvUsbDevice.text =
+                            viewModel.usbErrorMessage.value ?: "USB 连接失败，正在重试…"
+                    }
+
+                    UsbConnectionState.PERMISSION_DENIED -> {
+                        binding.tvUsbDevice.text =
+                            viewModel.usbErrorMessage.value ?: "USB 权限被拒绝"
+                    }
+
+                    UsbConnectionState.REQUESTING_PERMISSION -> {
+                        binding.tvUsbDevice.text = "正在请求 USB 访问权限…"
+                    }
+
+                    UsbConnectionState.CONNECTING -> {
+                        binding.tvUsbDevice.text = "正在建立 USB 连接…"
+                    }
+
                     UsbConnectionState.DISCONNECTED -> {
                         binding.tvUsbDevice.text = "未检测到 USB 相机"
                         // 切回 WiFi 链路：恢复频段卡，具体频段由指标刷新补齐
@@ -303,6 +326,17 @@ class DashboardFragment : Fragment() {
                 if (info != null) {
                     binding.tvCameraName.text = info.cameraModel
                     binding.tvUsbDevice.text = "${info.cameraModel} · 已连接 USB"
+                }
+            }
+        }
+
+        // 模块 6：分类错误文案变化时即时上屏（重试成功 → 清空恢复连接文案）
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.usbErrorMessage.collect { message ->
+                if (viewModel.usbState.value == UsbConnectionState.ERROR ||
+                    viewModel.usbState.value == UsbConnectionState.PERMISSION_DENIED
+                ) {
+                    binding.tvUsbDevice.text = message ?: "USB 连接失败，正在重试…"
                 }
             }
         }
