@@ -250,11 +250,14 @@ class ConnectionManager @Inject constructor(
     /**
      * 扫描当前 WiFi 网络中的尼康相机（UDP 5353 + TCP 15740 探测）。
      */
-    suspend fun scanWifiCameras(timeoutMs: Long = 12000L): List<WifiCameraCandidate> {
+    suspend fun scanWifiCameras(
+        timeoutMs: Long = 12000L,
+        hotspotMode: Boolean = false
+    ): List<WifiCameraCandidate> {
         // STA: 显式拿到 WiFi Network，让 scan() 内部的 mDNS/探测 Socket 绑定到 WiFi，
         // 避免手机蜂窝数据等其它网络抢走默认路由导致扫描失败。
         val network = wifiManager.currentWifiNetwork()
-        val candidates = wifiScanner.scan(timeoutMs, network).toMutableList()
+        val candidates = wifiScanner.scan(timeoutMs, network, hotspotMode).toMutableList()
         // 扫描失败时直接复用历史 IP 发起 PTP/IP，避免每次都全段盲扫。
         // RC-3：地址统一走 WifiEndpoint 归一化（前导零校正、非法段拦截）
         val last = runCatching { deviceRepository.getLastAutoConnectDevice() }.getOrNull()

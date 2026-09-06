@@ -162,8 +162,9 @@ class WifiDirectConnector @Inject constructor(
                 attempt++
 
                 // RC-4: 每次尝试都等待并重新解析 Network，不用循环外缓存的旧句柄；
-                // 网络未就绪（息屏被回收/正在重连）就等待而不是拿 null 硬连
-                val network = networkMonitor.awaitWifiNetwork(AWAIT_NETWORK_MS)
+                // v1.0.2: 按相机 IP 的子网匹配选网（ZDROP 同款）——手机热点模式下
+                // 相机在热点子网而非上游 WiFi 子网，"任意 WiFi 网络"会绑错路由
+                val network = networkMonitor.awaitWifiNetworkFor(endpoint.host, AWAIT_NETWORK_MS)
                     ?: wifiManager.bindToActiveWifi()
                 if (network == null) {
                     lastErr = "no_wifi_network"

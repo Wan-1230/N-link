@@ -176,6 +176,17 @@
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent">
 
+            <!-- v1.0.2 反馈：「跳过已下载」移到底部（仅已标记栏可见）。
+                 放在 albumTabRow 容器内部而不是单独一行：多选底栏 bottomBar 也约束在
+                 albumTabRow 之上，独立行会与之重叠；放进容器则天然互斥不重叠 -->
+            <LinearLayout
+                android:id="@+id/chipSkipRow"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_horizontal"
+                android:orientation="horizontal"
+                android:visibility="gone" />
+
             <!-- 模块 4.5：滑动指示器（选中胶囊随 Tab 切换平移动画 180ms） -->
             <FrameLayout
                 android:layout_width="match_parent"

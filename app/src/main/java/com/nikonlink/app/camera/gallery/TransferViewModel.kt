@@ -14,6 +14,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nikonlink.app.camera.data.PhotoMarkRepository
 import com.nikonlink.app.capture.RemoteShootingManager
+import com.nikonlink.app.capture.ShootingState
 import com.nikonlink.app.device.model.ConnectionState
 import com.nikonlink.app.device.connect.ConnectionManager
 import com.nikonlink.app.device.ptp.PtpConstants
@@ -323,6 +324,14 @@ class TransferViewModel @Inject constructor(
                 if (event.eventCode == PtpConstants.EVENT_OBJECT_ADDED) scheduleCaptureSync()
             }
         }
+        // 拍摄任务（间隔/定时）结束后补一次挂起的同步
+        viewModelScope.launch {
+            remoteShootingManager.shootingState.collect { state ->
+                if (state == ShootingState.IDLE && pendingCaptureSync) {
+                    scheduleCaptureSync()
+                }
+            }
+        }
         // 高清缩略图升级：下载原图后本地重生成，网格局部重绑展示清晰版
         viewModelScope.launch {
             transferManager.thumbnailUpgrades.collect { handle ->
@@ -500,12 +509,24 @@ class TransferViewModel @Inject constructor(
             Timber.tag(TAG).d("Capture sync deferred: no active PTP session")
             return
         }
+        // 拍摄进行中不拉列表：间隔/定时拍摄期间每次出片都触发同步会与下一张的
+        // AF+快门抢占 PTP 通道（表现为间隔拍摄被拖慢甚至超时失败）。
+        // 挂起为脏标记，拍摄结束（状态回到 IDLE）后统一补一次。
+        val shooting = remoteShootingManager.shootingState.value
+        if (shooting == ShootingState.INTERVAL_SHOOTING || shooting == ShootingState.TIMER_COUNTDOWN) {
+            pendingCaptureSync = true
+            Timber.tag(TAG).d("Capture sync deferred: shooting in progress ($shooting)")
+            return
+        }
         pendingCaptureSync = false
         captureSyncJob?.cancel()
         captureSyncJob = viewModelScope.launch {
             delay(CAPTURE_SYNC_WINDOW_MS)
             Timber.tag(TAG).i("Auto syncing album after capture")
-            loadPhotos(force = false, silent = true)
+            // holdPages：全程保持旧列表可见、结束时一次性提交排序结果——
+            // v1.0.2 反馈"拍摄后自动刷新滚到最底部"的根因即静默刷新的逐页
+            // 中间发射与当前倒序展示几乎完全逆序，DiffUtil 把视口拖到底部
+            loadPhotos(force = false, silent = true, holdPages = true)
         }
     }
 

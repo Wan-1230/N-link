@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
@@ -63,7 +64,8 @@ class WifiScanner @Inject constructor(
      */
     suspend fun scan(
         timeoutMs: Long = DEFAULT_SCAN_TIMEOUT_MS,
-        network: Network? = null
+        network: Network? = null,
+        hotspotMode: Boolean = false
     ): List<WifiCameraCandidate> {
         val results = ConcurrentHashMap.newKeySet<WifiCameraCandidate>()
         // ZDROP 同款：扫描期间进程级绑定到 WiFi 网络。双卡手机默认路由在蜂窝时，
@@ -77,9 +79,10 @@ class WifiScanner @Inject constructor(
         try {
             withContext(Dispatchers.IO) {
                 val mdnsJob = async { collectMdns(timeoutMs, results, network) }
-                val subnetJob = async { scanSubnet(timeoutMs, results, network) }
-                val nsdJob = async { collectNsd(timeoutMs, results) }
-                awaitAll(mdnsJob, subnetJob, nsdJob)
+                val subnetJob = async { scanSubnet(timeoutMs, results, network, hotspotMode) }
+                val nsdJob = async { collectNsd(timeoutMs, results, network) }
+                val arpJob = async { collectArp(timeoutMs, results, network) }
+                awaitAll(mdnsJob, subnetJob, nsdJob, arpJob)
             }
         } finally {
             // 恢复默认路由，避免应用流量滞留在无 Internet 的相机网络
@@ -158,7 +161,8 @@ class WifiScanner @Inject constructor(
     private suspend fun scanSubnet(
         timeoutMs: Long,
         results: MutableSet<WifiCameraCandidate>,
-        network: Network?
+        network: Network?,
+        hotspotMode: Boolean = false
     ) {
         val networks = currentIpv4Addresses()
         if (networks.isEmpty()) return
@@ -172,7 +176,16 @@ class WifiScanner @Inject constructor(
             "192.168.31.1", "192.168.2.1", "192.168.10.1", "192.168.50.1",
             "192.168.137.1", "172.16.0.1", "10.0.1.1"
         )
-        val hosts = (subnetHosts + knownGatewayHosts).filter { WifiEndpoint.isValidHost(it) }.distinct()
+        // 热点模式：手机热点网段（现代 Android 随机化，旧版固定 192.168.43.x）。
+        // 本机热点接口多数机型不在 allNetworks 里，无法枚举真实网段时用常见值兜底；
+        // ARP 采集器负责覆盖真实网段（相机入网后必然出现在 ARP 表）。
+        val hotspotHosts = if (hotspotMode) {
+            (1 until 255).map { "192.168.43.$it" }
+        } else {
+            emptyList()
+        }
+        val hosts = (subnetHosts + knownGatewayHosts + hotspotHosts)
+            .filter { WifiEndpoint.isValidHost(it) }.distinct()
         if (hosts.isEmpty()) return
 
         val semaphore = Semaphore(MAX_SCAN_CONCURRENCY)
@@ -200,7 +213,11 @@ class WifiScanner @Inject constructor(
      * 部分机型/路由器会过滤组播包，自绘 mDNS 收不到相机广播；系统 NSD 走
      * daemon 通道可以绕开这类过滤。发现结果仍需通过 PTP/IP Init Ack 确认。
      */
-    private suspend fun collectNsd(timeoutMs: Long, results: MutableSet<WifiCameraCandidate>) {
+    private suspend fun collectNsd(
+        timeoutMs: Long,
+        results: MutableSet<WifiCameraCandidate>,
+        network: Network?
+    ) {
         val nsdManager = context.getSystemService(Context.NSD_SERVICE) as? NsdManager
         if (nsdManager == null) {
             Timber.tag(TAG).w("NsdManager unavailable, NSD discovery skipped")
@@ -210,11 +227,34 @@ class WifiScanner @Inject constructor(
         val discovered = ConcurrentHashMap.newKeySet<String>()  // "host:port"
         val done = CompletableDeferred<Unit>()
 
-        val resolveListener = object : NsdManager.ResolveListener {
-            override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {}
-            override fun onServiceResolved(info: NsdServiceInfo) {
-                val host = info.host?.hostAddress
-                if (!host.isNullOrEmpty()) discovered.add("$host:${info.port}")
+        // v1.0.2 修复：NsdManager 同一时刻只允许一个 resolve 在途，旧版对两个服务
+        // 类型的发现结果并发 resolveService，部分 resolve 静默失败 → 同一WiFi下
+        // "搜索不到相机" 的主因之一。改为单飞队列串行 resolve（ZDROP 的 NSD 用法）。
+        val resolveQueue = java.util.concurrent.ConcurrentLinkedQueue<NsdServiceInfo>()
+        val resolving = java.util.concurrent.atomic.AtomicBoolean(false)
+        fun tryResolveNext() {
+            if (!resolving.compareAndSet(false, true)) return
+            val info = resolveQueue.poll() ?: run {
+                resolving.set(false)
+                return
+            }
+            runCatching {
+                nsdManager.resolveService(info, object : NsdManager.ResolveListener {
+                    override fun onResolveFailed(p1: NsdServiceInfo?, errorCode: Int) {
+                        resolving.set(false)
+                        tryResolveNext()
+                    }
+
+                    override fun onServiceResolved(p1: NsdServiceInfo?) {
+                        val host = p1?.host?.hostAddress
+                        val port = p1?.port ?: 0
+                        if (!host.isNullOrEmpty() && port > 0) discovered.add("$host:$port")
+                        resolving.set(false)
+                        tryResolveNext()
+                    }
+                })
+            }.onFailure {
+                resolving.set(false)
             }
         }
 
@@ -225,7 +265,8 @@ class WifiScanner @Inject constructor(
                 done.complete(Unit)
             }
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                runCatching { nsdManager.resolveService(serviceInfo, resolveListener) }
+                resolveQueue.add(serviceInfo)
+                tryResolveNext()
             }
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {}
             override fun onDiscoveryStopped(serviceType: String) {}
@@ -254,7 +295,7 @@ class WifiScanner @Inject constructor(
                     val endpoint = WifiEndpoint.parse("wifi:$entry")
                     if (endpoint != null &&
                         results.none { it.ipAddress == endpoint.host } &&
-                        PtpIpProbe.probe(endpoint)
+                        PtpIpProbe.probe(endpoint, timeoutMs = 1200L, network = network)
                     ) {
                         results.add(
                             WifiCameraCandidate(endpoint.host, endpoint.port, GENERIC_NAME, "WiFi")
@@ -264,6 +305,58 @@ class WifiScanner @Inject constructor(
                 }
             }.awaitAll()
         }
+    }
+
+    /**
+     * ARP 表候选（v1.0.2 新增）：手机热点模式下本机热点接口多数不可枚举，
+     * 无法确定真实网段做全段扫描；相机入网后必然出现在 ARP 表里，直接读表探测。
+     * 同一WiFi 模式下也能兜底覆盖"路由器过滤组播导致 mDNS 全挂"的场景。
+     */
+    private suspend fun collectArp(
+        timeoutMs: Long,
+        results: MutableSet<WifiCameraCandidate>,
+        network: Network?
+    ) {
+        // 给 ARP 表一点学习时间（相机刚入网时表里可能还没有它）
+        delay(1500)
+        val hosts = readArpHosts()
+        if (hosts.isEmpty()) return
+        val semaphore = Semaphore(16)
+        coroutineScope {
+            hosts.map { host ->
+                async(Dispatchers.IO) {
+                    semaphore.acquire()
+                    try {
+                        if (results.any { it.ipAddress == host }) return@async
+                        if (PtpIpProbe.probe(host, PTP_PORT, 900L, network)) {
+                            results.add(WifiCameraCandidate(host, PTP_PORT, GENERIC_NAME, "WiFi-arp"))
+                            Timber.tag(TAG).i("ARP candidate: $host")
+                        }
+                    } finally {
+                        semaphore.release()
+                    }
+                }
+            }.awaitAll()
+        }
+    }
+
+    /** 读 /proc/net/arp 中"已解析完成"(flags 含 0x2) 的 IPv4 条目 */
+    private fun readArpHosts(): List<String> {
+        return runCatching {
+            java.io.File("/proc/net/arp").readLines()
+                .drop(1)
+                .mapNotNull { line ->
+                    val cols = line.trim().split(Regex("\\s+"))
+                    if (cols.size < 6) return@mapNotNull null
+                    val ip = cols[0]
+                    val flags = cols[2].toIntOrNull(16) ?: return@mapNotNull null
+                    if (flags and 0x2 == 0) return@mapNotNull null
+                    if (!WifiEndpoint.isValidHost(ip)) return@mapNotNull null
+                    ip
+                }
+                .filterNot { it.startsWith("127.") }
+                .distinct()
+        }.getOrDefault(emptyList())
     }
 
     private fun parseMdnsResponse(data: ByteArray, sourceIp: String): MdnsCandidate? {

@@ -33,7 +33,8 @@ import javax.inject.Inject
 class DashboardViewModel @Inject constructor(
     private val connectionManager: ConnectionManager,
     private val usbPtpManager: UsbPtpManager,
-    private val deviceRepository: DeviceRepository
+    private val deviceRepository: DeviceRepository,
+    val settings: com.nikonlink.app.shared.common.AppSettings
 ) : ViewModel() {
 
     val connectionState: StateFlow<ConnectionState> = connectionManager.connectionState
@@ -90,9 +91,10 @@ class DashboardViewModel @Inject constructor(
     fun scanWifi() {
         _isWifiScanning.value = true
         _wifiDeviceList.value = emptyList()
+        val hotspotMode = settings.staSubMode == com.nikonlink.app.shared.common.AppSettings.STA_MODE_PHONE_HOTSPOT
         viewModelScope.launch {
             try {
-                val candidates = connectionManager.scanWifiCameras()
+                val candidates = connectionManager.scanWifiCameras(hotspotMode = hotspotMode)
                 _wifiDeviceList.value = candidates
             } catch (e: Exception) {
                 _wifiDeviceList.value = emptyList()

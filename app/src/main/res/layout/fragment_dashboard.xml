@@ -237,6 +237,40 @@
                                 android:text="1. 相机与手机连接同一个路由器 / 局域网\n2. 点「扫描相机」自动发现相机\n3. 点「连接相机」完成 PTP/IP 配对"
                                 android:textColor="@color/text_secondary"
                                 android:textSize="13sp" />
+
+                            <!-- v1.0.2 拆分：两种 STA 子模式（发现与路由策略不同） -->
+                            <LinearLayout
+                                android:id="@+id/staModeRow"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="12dp"
+                                android:orientation="horizontal">
+
+                                <TextView
+                                    android:id="@+id/chipStaSameWifi"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:background="@drawable/bg_chip_selected"
+                                    android:gravity="center"
+                                    android:paddingVertical="8dp"
+                                    android:text="同一 WiFi"
+                                    android:textColor="@color/on_primary"
+                                    android:textSize="13sp" />
+
+                                <TextView
+                                    android:id="@+id/chipStaHotspot"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginStart="10dp"
+                                    android:layout_weight="1"
+                                    android:background="@drawable/bg_chip"
+                                    android:gravity="center"
+                                    android:paddingVertical="8dp"
+                                    android:text="连接手机热点"
+                                    android:textColor="@color/text_primary"
+                                    android:textSize="13sp" />
+                            </LinearLayout>
                         </LinearLayout>
 
                         <TextView

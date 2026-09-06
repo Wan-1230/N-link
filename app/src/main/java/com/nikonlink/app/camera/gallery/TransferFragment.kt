@@ -216,25 +216,23 @@ class TransferFragment : Fragment() {
         chipNotDownloaded = notDownloadedChip
         binding.chipRow.addView(notDownloadedChip)
 
-        // 模块 4.2：「跳过已下载」从底栏迁移到 chip 行（已标记源可见）——
-        // 底栏按钮过多会在窄屏上挤压重叠
+        // v1.0.2 反馈：「跳过已下载」移到底部独立行（albumTabRow 容器内、三栏 Tab 上方，
+        // 仅已标记源可见）——顶部 chip 行在已标记源下位置隐蔽且与日期头视觉重叠
         val skipDownloadedChip = TextView(requireContext()).apply {
             text = "跳过已下载"
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             maxLines = 1
             setPadding(dp(16), dp(7), dp(16), dp(7))
-            val lp = android.widget.LinearLayout.LayoutParams(
+            layoutParams = android.widget.LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
             )
-            lp.marginStart = dp(4)
-            layoutParams = lp
             setOnClickListener {
                 viewModel.setSkipDownloadedInMarks(!viewModel.skipDownloadedInMarks.value)
             }
             pressEffect()
         }
         chipSkipDownloaded = skipDownloadedChip
-        binding.chipRow.addView(skipDownloadedChip)
+        binding.chipSkipRow.addView(skipDownloadedChip)
     }
 
     private fun renderChips(current: PhotoFilter) {

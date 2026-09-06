@@ -424,6 +424,51 @@ class DashboardFragment : Fragment() {
             }
         }
         updateModePanels()
+        setupStaSubModes()
+    }
+
+    /**
+     * WiFi STA 子模式（v1.0.2 拆分）：同一WiFi / 连接手机热点。
+     * 两种模式的发现与路由策略不同（热点模式下相机在热点子网，NSD+ARP 兜底，
+     * 连接时按相机 IP 子网匹配路由）；切换即持久化并更新教程文案。
+     */
+    private fun setupStaSubModes() {
+        val chipSame = binding.chipStaSameWifi
+        val chipHotspot = binding.chipStaHotspot
+        chipSame.pressEffect()
+        chipHotspot.pressEffect()
+
+        fun render() {
+            val hotspot = viewModel.settings.staSubMode ==
+                com.nikonlink.app.shared.common.AppSettings.STA_MODE_PHONE_HOTSPOT
+            chipSame.setBackgroundResource(
+                if (!hotspot) R.drawable.bg_chip_selected else R.drawable.bg_chip
+            )
+            chipSame.setTextColor(
+                ContextCompat.getColor(requireContext(), if (!hotspot) R.color.on_primary else R.color.text_primary)
+            )
+            chipHotspot.setBackgroundResource(
+                if (hotspot) R.drawable.bg_chip_selected else R.drawable.bg_chip
+            )
+            chipHotspot.setTextColor(
+                ContextCompat.getColor(requireContext(), if (hotspot) R.color.on_primary else R.color.text_primary)
+            )
+            binding.tvStaGuide.text = if (hotspot) {
+                "1. 手机开启个人热点（相机需已记住该热点）\n2. 相机连接到手机热点\n3. 点「扫描相机」自动发现相机（NSD/ARP）\n4. 点「连接相机」完成 PTP/IP 配对"
+            } else {
+                "1. 相机与手机连接同一个路由器 / 局域网\n2. 点「扫描相机」自动发现相机\n3. 点「连接相机」完成 PTP/IP 配对"
+            }
+        }
+
+        chipSame.setOnClickListener {
+            viewModel.settings.staSubMode = com.nikonlink.app.shared.common.AppSettings.STA_MODE_SAME_WIFI
+            render()
+        }
+        chipHotspot.setOnClickListener {
+            viewModel.settings.staSubMode = com.nikonlink.app.shared.common.AppSettings.STA_MODE_PHONE_HOTSPOT
+            render()
+        }
+        render()
     }
 
     private fun selectMode(mode: ConnectMode) {

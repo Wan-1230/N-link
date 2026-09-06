@@ -102,8 +102,10 @@ object AppModule {
     fun provideRemoteShootingManager(
         ptpSessionManager: PtpSessionManager,
         usbPtpManager: UsbPtpManager,
-        liveViewManager: LiveViewManager
-    ): RemoteShootingManager = RemoteShootingManager(ptpSessionManager, usbPtpManager, liveViewManager)
+        liveViewManager: LiveViewManager,
+        settings: AppSettings
+    ): RemoteShootingManager =
+        RemoteShootingManager(ptpSessionManager, usbPtpManager, liveViewManager, settings)
 
     @Provides
     @Singleton

@@ -31,6 +31,11 @@ class RemoteShootingViewModel @Inject constructor(
         remoteManager.consumeMessage()
     }
 
+    /** 切换画面模式（联动/遥控）；结果由 shootingMessage 透出 */
+    fun setCameraDisplayMode(remote: Boolean) {
+        viewModelScope.launch { remoteManager.setCameraDisplayMode(remote) }
+    }
+
     init {
         remoteManager.start(viewModelScope)
     }

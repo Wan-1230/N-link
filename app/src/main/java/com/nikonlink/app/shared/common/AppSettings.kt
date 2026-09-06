@@ -30,6 +30,18 @@ class AppSettings @Inject constructor(
         /** 「更多动作」按钮的动作模式（模块 3）：间隔拍摄 / B 门长曝光 */
         const val ACTION_INTERVAL = "interval"
         const val ACTION_BULB = "bulb"
+
+        /** 画面模式：联动（相机屏与手机同时显示） */
+        const val DISPLAY_MODE_LINKED = "linked"
+
+        /** 画面模式：遥控（手机监看，相机屏熄并显示「已连接到智能设备」） */
+        const val DISPLAY_MODE_REMOTE = "remote"
+
+        /** WiFi STA 子模式：相机与手机连接同一 WiFi（默认） */
+        const val STA_MODE_SAME_WIFI = "same_wifi"
+
+        /** WiFi STA 子模式：相机连接手机热点（ZDROP 的 PHONE_HOTSPOT 模式） */
+        const val STA_MODE_PHONE_HOTSPOT = "phone_hotspot"
     }
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -116,4 +128,17 @@ class AppSettings @Inject constructor(
     var actionModeHintShown: Boolean
         get() = prefs.getBoolean("action_mode_hint_shown", false)
         set(value) = prefs.edit().putBoolean("action_mode_hint_shown", value).apply()
+
+    /**
+     * 画面模式（连接策略，v1.0.2 用户提议的两档化）。
+     * 联动为默认；遥控模式 = 0x90C2(1) 机身控制模式，B 门等远程操作的推荐模式。
+     */
+    var remoteDisplayMode: String
+        get() = prefs.getString("remote_display_mode", DISPLAY_MODE_LINKED) ?: DISPLAY_MODE_LINKED
+        set(value) = prefs.edit().putString("remote_display_mode", value).apply()
+
+    /** WiFi STA 子模式（v1.0.2 拆分：两种模式的发现/路由策略不同） */
+    var staSubMode: String
+        get() = prefs.getString("sta_sub_mode", STA_MODE_SAME_WIFI) ?: STA_MODE_SAME_WIFI
+        set(value) = prefs.edit().putString("sta_sub_mode", value).apply()
 }
