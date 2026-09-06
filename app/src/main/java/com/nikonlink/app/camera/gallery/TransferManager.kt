@@ -73,6 +73,14 @@ class TransferManager @Inject constructor(
         private const val PAGE_SIZE = 18
         /** ObjectInfo 读取并发窗口（PTP 命令通道本身串行，窗口用于 USB 多段与响应叠加） */
         private const val OBJECT_INFO_CONCURRENCY = 4
+
+        /** 单个 ObjectInfo/对象列表请求的兜底超时：坏句柄/链路抖动不允许拖死整页加载 */
+        private const val OBJECT_INFO_TIMEOUT_MS = 8000L
+        private const val OBJECT_HANDLES_TIMEOUT_MS = 15000L
+        private const val STORAGE_IDS_TIMEOUT_MS = 10000L
+
+        /** 缩略图单请求兜底超时（0x90C4 高清缩略图可达数百 KB，正常远快于该上限） */
+        private const val THUMBNAIL_TIMEOUT_MS = 8000L
         private const val SPEED_WINDOW_MS = 2000L
         /** 自动下载：单次同步上限与去抖间隔（防止相机连拍时涌进大量任务） */
         private const val AUTO_SYNC_MAX_FILES = 20
@@ -265,36 +273,92 @@ class TransferManager @Inject constructor(
      */
     suspend fun fetchPhotoList(
         onPage: ((List<CameraFile>) -> Unit)? = null
-    ): List<CameraFile> {
+    ): List<CameraFile> = fetchPhotoListDetailed(onPage).files
+
+    /**
+     * 相册列表拉取结果（失败兜底所需的结构化信息）。
+     * @param totalHandles 相机上报的对象句柄总数（0 = 相机在线但卡为空）
+     * @param failedInfoCount ObjectInfo 读取失败的句柄数（>0 且 files 非空 = 部分失败）
+     * @param transportOnline 拉取期间传输通道是否在线
+     */
+    data class PhotoListFetch(
+        val files: List<CameraFile>,
+        val totalHandles: Int,
+        val failedInfoCount: Int,
+        val transportOnline: Boolean
+    ) {
+        /** 通道在线、句柄有货却有读取失败且一无所获 = 整体失败（区别于「存储卡为空」与「全是不可展示格式」） */
+        val totalFailure: Boolean get() =
+            transportOnline && totalHandles > 0 && files.isEmpty() && failedInfoCount > 0
+
+        /** 通道在线、句柄有货且全部读取成功，但没有任何可展示的照片/视频 */
+        val nothingDisplayable: Boolean get() =
+            transportOnline && totalHandles > 0 && files.isEmpty() && failedInfoCount == 0
+        val partialFailure: Boolean get() = files.isNotEmpty() && failedInfoCount > 0
+    }
+
+    /**
+     * 相册列表拉取（带失败统计）。
+     *
+     * 每个请求都有独立超时：单个坏句柄/一次链路抖动只损失该条（计入 failedInfoCount），
+     * 不再允许把整页乃至整次加载拖死——旧版无任何超时与失败分类，一次 5s 级阻塞
+     * 叠加全量句柄后表现就是「转圈永远不结束」。
+     */
+    suspend fun fetchPhotoListDetailed(
+        onPage: ((List<CameraFile>) -> Unit)? = null
+    ): PhotoListFetch {
         val transport = currentTransport()
         if (!transport.isConnected) {
             Timber.tag(TAG).w("No camera transport connected, cannot fetch photo list")
-            return emptyList()
+            return PhotoListFetch(emptyList(), 0, 0, transportOnline = false)
         }
 
         return withContext(Dispatchers.IO) {
             try {
-                val storageIds = transport.storageIds()
+                val storageIds = runCatching {
+                    withTimeoutOrNull(STORAGE_IDS_TIMEOUT_MS) { transport.storageIds() }
+                }.getOrNull().orEmpty()
                 // 遍历所有存储（机身/双卡），避免只读第一张卡漏掉照片
-                val handles = storageIds.flatMap { storageId ->
-                    transport.objectHandles(storageId)
-                }.distinct().ifEmpty {
-                    transport.objectHandles(0xFFFFFFFF.toInt())
+                var handles = storageIds.flatMap { storageId ->
+                    runCatching {
+                        withTimeoutOrNull(OBJECT_HANDLES_TIMEOUT_MS) { transport.objectHandles(storageId) }
+                    }.getOrNull().orEmpty()
+                }.distinct()
+                if (handles.isEmpty()) {
+                    handles = runCatching {
+                        withTimeoutOrNull(OBJECT_HANDLES_TIMEOUT_MS) {
+                            transport.objectHandles(0xFFFFFFFF.toInt())
+                        }
+                    }.getOrNull().orEmpty()
                 }
                 Timber.tag(TAG).i("Found ${handles.size} objects on camera")
+                if (handles.isEmpty()) {
+                    return@withContext PhotoListFetch(emptyList(), 0, 0, transportOnline = true)
+                }
 
                 // 按 PAGE_SIZE=18 分页读取 ObjectInfo，逐页回调；
                 // 页内并发窗口 4，缩短大列表元数据读取时间
+                var failedInfoCount = 0
                 val result = mutableListOf<CameraFile>()
                 handles.chunked(PAGE_SIZE).forEach { page ->
                     val semaphore = Semaphore(OBJECT_INFO_CONCURRENCY)
                     val pageFiles = coroutineScope {
-                        page.map { handle ->
+                        page.map { handle: Int ->
                             async(Dispatchers.IO) {
                                 semaphore.acquire()
                                 try {
-                                    val infoBytes = transport.objectInfo(handle)
-                                    if (infoBytes != null) parseObjectInfo(handle, infoBytes) else null
+                                    val infoBytes = runCatching {
+                                        withTimeoutOrNull(OBJECT_INFO_TIMEOUT_MS) {
+                                            transport.objectInfo(handle)
+                                        }
+                                    }.getOrNull()
+                                    val parsed: CameraFile? =
+                                        if (infoBytes != null) parseObjectInfo(handle, infoBytes)
+                                        else {
+                                            failedInfoCount++
+                                            null
+                                        }
+                                    parsed
                                 } finally {
                                     semaphore.release()
                                 }
@@ -308,10 +372,10 @@ class TransferManager @Inject constructor(
                     result.addAll(pageFiles)
                     onPage?.invoke(result.toList())
                 }
-                result
+                PhotoListFetch(result, handles.size, failedInfoCount, transportOnline = true)
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Failed to fetch photo list")
-                emptyList()
+                PhotoListFetch(emptyList(), 0, 0, transportOnline = transport.isConnected)
             }
         }
     }
@@ -321,13 +385,14 @@ class TransferManager @Inject constructor(
      *
      * 标准 GetThumb 只返回 ~160×120 的小图，拉伸到相册网格（每格 300px+）必然模糊；
      * 0x90C4 返回机身生成的大预览（不支持的机型返回错误响应，自动回退，行为不劣于旧版）。
+     * 两级请求各自带兜底超时：高清缩略图不可达时快速回退小图，网格不会因单格卡死。
      */
     suspend fun fetchThumbnail(handle: Int): ByteArray? {
         return withContext(Dispatchers.IO) {
             try {
-                currentTransport().largeThumbnail(handle)
+                withTimeoutOrNull(THUMBNAIL_TIMEOUT_MS) { currentTransport().largeThumbnail(handle) }
                     ?.takeIf { isPlausibleJpeg(it) }
-                    ?: currentTransport().thumbnail(handle)
+                    ?: withTimeoutOrNull(THUMBNAIL_TIMEOUT_MS) { currentTransport().thumbnail(handle) }
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Failed to fetch thumbnail for handle=$handle")
                 null
@@ -546,35 +611,23 @@ class TransferManager @Inject constructor(
             val remaining = (file.size - totalReceived).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
             val size = minOf(chunkSize, remaining)
 
-            if (transport === ptpTransport) {
-                // WiFi PTP：sink 流式写盘，分块失败减半降级重试
-                val before = target.length()
-                var wrote = -1L
-                FileOutputStream(target, true).use { out ->
-                    val result = transport.partialObject(file.handle, totalReceived.toInt(), size, out)
-                    wrote = if (result == null) -1L else (target.length() - before)
-                }
-                if (wrote < 0L) {
-                    if (chunkSize > MIN_PARTIAL_CHUNK_SIZE) {
-                        chunkSize /= 2
-                        Timber.tag(TAG).w("Partial chunk degraded to ${chunkSize / 1024}KB for ${file.fileName}")
-                        continue
-                    }
-                    break
-                }
-                if (wrote == 0L) break  // 相机返回 OK 但无新数据，视为文件尾
-            } else {
-                // USB：分块缓冲写入；失败同样减半重试一次
-                val partial = transport.partialObject(file.handle, totalReceived.toInt(), size, null)
-                if (partial == null || partial.isEmpty()) {
-                    if (partial == null && chunkSize > MIN_PARTIAL_CHUNK_SIZE) {
-                        chunkSize /= 2
-                        continue
-                    }
-                    break
-                }
-                FileOutputStream(target, true).use { output -> output.write(partial) }
+            // WiFi 与 USB 统一流式写盘：partialObject 的数据阶段直接写入 sink，
+            // 内存 O(64KB)（USB 事务层按容器重组流式转发，不再整块缓冲）
+            val before = target.length()
+            var wrote = -1L
+            FileOutputStream(target, true).use { out ->
+                val result = transport.partialObject(file.handle, totalReceived.toInt(), size, out)
+                wrote = if (result == null) -1L else (target.length() - before)
             }
+            if (wrote < 0L) {
+                if (chunkSize > MIN_PARTIAL_CHUNK_SIZE) {
+                    chunkSize /= 2
+                    Timber.tag(TAG).w("Partial chunk degraded to ${chunkSize / 1024}KB for ${file.fileName}")
+                    continue
+                }
+                break
+            }
+            if (wrote == 0L) break  // 相机返回 OK 但无新数据，视为文件尾
 
             totalReceived = target.length()
             onProgress?.invoke(totalReceived, file.size)
@@ -590,32 +643,21 @@ class TransferManager @Inject constructor(
         return false
     }
 
-    /** 整文件下载（不支持部分传输时的兑底路径，WiFi PTP 同样走流式写盘） */
+    /** 整文件下载（不支持部分传输时的兜底路径；WiFi/USB 统一流式写盘） */
     private suspend fun downloadWhole(
         transport: CameraTransport,
         file: CameraFile,
         target: File,
         onProgress: ((Long, Long) -> Unit)?
     ): Boolean {
-        if (transport === ptpTransport) {
-            FileOutputStream(target, false).use { out ->
-                val result = transport.getObject(file.handle, { received, _ ->
-                    onProgress?.invoke(received, file.size)
-                }, out)
-                if (result == null) return false
-            }
-            onProgress?.invoke(target.length(), file.size)
-            return target.length() > 0
-        }
-        val full = transport.getObject(
-            file.handle,
-            onProgress = { received, _ ->
+        FileOutputStream(target, false).use { out ->
+            val result = transport.getObject(file.handle, { received, _ ->
                 onProgress?.invoke(received, file.size)
-            }
-        ) ?: return false
-        FileOutputStream(target, false).use { output -> output.write(full) }
+            }, out)
+            if (result == null) return false
+        }
         onProgress?.invoke(target.length(), file.size)
-        return full.isNotEmpty()
+        return target.length() > 0
     }
 
     /**
@@ -1387,12 +1429,12 @@ private class UsbTransport(
     override suspend fun objectHandles(storageId: Int): List<Int> =
         usb.getObjectHandles(storageId)
     override suspend fun objectInfo(handle: Int): ByteArray? = usb.getObjectInfo(handle)
-    // USB 通道暂用分块缓冲（单块 ≤ 4MB，内存可控），sink 参数预留不生效
+    // USB 事务层流式重组：sink 直接吃数据阶段字节流，内存 O(64KB)
     override suspend fun getObject(handle: Int, onProgress: ((Long, Long) -> Unit)?, sink: OutputStream?): ByteArray? =
-        usb.getObject(handle, onProgress)
+        usb.getObject(handle, onProgress, sink)
     override suspend fun thumbnail(handle: Int): ByteArray? = usb.getThumbnail(handle)
     override suspend fun largeThumbnail(handle: Int): ByteArray? = usb.getLargeThumbnail(handle)
     override suspend fun partialObject(handle: Int, offset: Int, size: Int, sink: OutputStream?): ByteArray? =
-        usb.getPartialObject(handle, offset, size)
+        usb.getPartialObject(handle, offset, size, sink)
     override suspend fun deleteObject(handle: Int): Boolean = usb.deleteObject(handle)
 }
