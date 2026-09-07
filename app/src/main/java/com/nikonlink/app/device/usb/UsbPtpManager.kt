@@ -7,6 +7,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.*
 import android.os.Build
+import com.nikonlink.app.device.ptp.MtpObjectPropListParser
+import com.nikonlink.app.device.ptp.MtpObjectProps
 import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.shared.common.AppEventLogger
 import kotlinx.coroutines.*
@@ -289,6 +291,16 @@ class UsbPtpManager @Inject constructor(
                 val sessionOk = openPtpSession()
                 if (sessionOk) {
                     eventLogger.event("usb_session", "ok" to true)
+                    // 相机名称以**机身自报的 Model** 为准：PID 映射表覆盖不全且存在
+                    // 一 PID 多机型，用它做显示名必然出现「名称不正确」。
+                    // 拿到 Model 即回填，拿不到就保留 PID 兜底名，行为不劣于旧版。
+                    runCatching {
+                        getDeviceInfo()?.let { UsbPtpProtocol.parseDeviceInfoModel(it) }
+                    }.getOrNull()?.takeIf { it.isNotBlank() }?.let { model ->
+                        val old = _deviceInfo.value?.cameraModel
+                        _deviceInfo.value = _deviceInfo.value?.copy(cameraModel = model)
+                        Timber.tag(TAG).i("USB camera model from DeviceInfo: $model (pid fallback was $old)")
+                    }
                     // 会话建立后向相机反馈，保持相机处于持续连接状态
                     val ready = sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
                     Timber.tag(TAG).d("USB DeviceReady response=${ready?.responseCode}")
@@ -659,6 +671,47 @@ class UsbPtpManager @Inject constructor(
         return (0 until count).mapNotNull {
             if (buffer.remaining() >= 4) buffer.int else null
         }
+    }
+
+    /**
+     * MTP 批量元数据：0x9805 GetObjectPropList，**一次事务**取回全部对象的
+     * 文件名/大小/日期/格式等属性。
+     *
+     * 这是相册首屏速度的关键：逐个 GetObjectInfo 需要 N 次串行往返（PTP 命令通道
+     * 被 commandMutex 强制串行），2000 个对象约 80~200 秒，远超任何合理等待；
+     * 批量路径把它压缩成 1 次往返（数百 KB 载荷在 USB 2.0 上亚秒级返回）。
+     *
+     * 并非所有机身/USB 模式都支持 MTP 扩展，因此返回 null 是**正常结果而非错误**，
+     * 调用方必须回退到逐个 GetObjectInfo（行为与旧版一致，不会更差）。
+     *
+     * @return 解析后的对象属性列表；不支持/响应为空/载荷不可信时返回 null
+     */
+    suspend fun getObjectPropList(
+        handle: Int = -1,          // 0xFFFFFFFF = 全部对象
+        formatCode: Int = 0,       // 0 = 全部格式
+        propCode: Int = -1,        // 0xFFFFFFFF = 全部属性
+        groupCode: Int = 0,
+        depth: Int = -1            // 0xFFFFFFFF = 全部层级
+    ): List<MtpObjectProps>? {
+        val data = sendCommandWithData(
+            PtpConstants.OP_MTP_GET_OBJECT_PROP_LIST,
+            listOf(handle, formatCode, propCode, groupCode, depth),
+            allowRetry = true
+        ) ?: run {
+            Timber.tag(TAG).i("MTP 0x9805 unsupported/empty -> fallback to per-object GetObjectInfo")
+            return null
+        }
+        if (data.isEmpty()) {
+            Timber.tag(TAG).i("MTP 0x9805 empty payload -> fallback to per-object GetObjectInfo")
+            return null
+        }
+        val parsed = MtpObjectPropListParser.parse(data)
+        if (parsed == null) {
+            Timber.tag(TAG).w("MTP 0x9805 payload unparsable (${data.size}B) -> fallback")
+            return null
+        }
+        Timber.tag(TAG).i("MTP 0x9805 ok: ${parsed.size} objects / ${data.size}B in one round-trip")
+        return parsed
     }
 
     /**

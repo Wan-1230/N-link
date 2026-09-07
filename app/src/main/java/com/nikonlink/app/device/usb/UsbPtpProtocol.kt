@@ -197,10 +197,78 @@ object UsbPtpProtocol {
     }
 
     /**
-     * 获取相机型号名称
+     * 获取相机型号名称（**仅作兜底**）。
+     *
+     * USB PID 映射表不可能覆盖全部机身，且同一 PID 在不同批次/地区可能对应不同
+     * 市场名（例如 Z50II 出现过多个 PID），因此依赖它作为显示名必然出现「名称不对」。
+     * 正确名称来源是机身自报的 GetDeviceInfo.Model —— 见 [parseDeviceInfoModel]；
+     * 只有在拿不到 Model 时才回退到这里。
      */
     fun getCameraName(productId: Int): String {
-        return NIKON_PRODUCT_IDS[productId] ?: "Nikon Camera (0x${productId.toString(16)})"
+        return NIKON_PRODUCT_IDS[productId]
+            ?: if (NIKON_PRODUCT_IDS.isEmpty()) "Nikon Camera"
+            else "Nikon Camera (0x${productId.toString(16).uppercase()})"
+    }
+
+    /**
+     * 从 GetDeviceInfo（0x1001）载荷中解析 **Model 字段** —— 机身自报的真实型号。
+     *
+     * DeviceInfo 是变长结构，必须顺序解码到第 12 项才是 Model：
+     *   1 u16  StandardVersion
+     *   2 u32  VendorExtensionID
+     *   3 u16  VendorExtensionVersion
+     *   4 Str  VendorExtensionDesc
+     *   5 u16  FunctionalMode
+     *   6 Arr(u16) OperationsSupported
+     *   7 Arr(u16) EventsSupported
+     *   8 Arr(u16) DevicePropertiesSupported
+     *   9 Arr(u16) CaptureFormats
+     *  10 Arr(u16) ImageFormats
+     *  11 Str  Manufacturer
+     *  12 Str  Model          ← 目标
+     *
+     * PTP 字符串格式：u8 字符数 N（含结尾 null） + N×UTF-16LE。
+     *
+     * @return 型号字符串（如 "NIKON Z 50II"）；解析失败返回 null，由调用方回退到 PID 表。
+     */
+    fun parseDeviceInfoModel(data: ByteArray): String? {
+        return try {
+            if (data.size < 64) return null
+            val b = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+            b.short                       // StandardVersion
+            b.int                         // VendorExtensionID
+            b.short                       // VendorExtensionVersion
+            readPtpString(b) ?: return null // VendorExtensionDesc
+            b.short                       // FunctionalMode
+            repeat(5) { skipU16Array(b) ?: return null } // 五个 u16 数组
+            readPtpString(b) ?: return null // Manufacturer
+            val model = readPtpString(b) ?: return null
+            model.trim().takeIf { it.isNotBlank() }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** PTP 字符串：[u8 字符数] + N×UTF-16LE，去掉结尾 null。缓冲区不足返回 null。 */
+    private fun readPtpString(b: ByteBuffer): String? {
+        if (b.remaining() < 1) return null
+        val count = b.get().toInt() and 0xFF
+        if (count == 0) return ""
+        if (b.remaining() < count * 2) return null
+        val chars = CharArray(count)
+        repeat(count) { chars[it] = b.short.toInt().toChar() }
+        return chars.concatToString().trim('\u0000')
+    }
+
+    /** 跳过一个 [u32 个数] + N×u16 的数组。缓冲区不足返回 null。 */
+    private fun skipU16Array(b: ByteBuffer): Unit? {
+        if (b.remaining() < 4) return null
+        val count = b.int
+        if (count < 0 || count > 4096) return null
+        val bytes = count * 2
+        if (b.remaining() < bytes) return null
+        repeat(bytes) { b.get() }
+        return Unit
     }
 }
 

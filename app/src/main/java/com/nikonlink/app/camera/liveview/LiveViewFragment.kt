@@ -26,11 +26,15 @@ import com.nikonlink.app.capture.ShootingState
 import com.nikonlink.app.capture.RemoteShootingViewModel
 import com.nikonlink.app.camera.params.CameraParamsViewModel
 import com.nikonlink.app.camera.params.resolvePickerIndex
+import com.nikonlink.app.device.connect.ConnectionManager
+import com.nikonlink.app.device.usb.UsbPtpManager
 import com.nikonlink.app.shared.common.AppSettings
 import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 /**
@@ -65,6 +69,13 @@ class LiveViewFragment : Fragment() {
      */
     @Inject lateinit var settings: AppSettings
 
+    /** 相机连接判定（USB / WiFi PTP 任一通道连通即视为可远程控制） */
+    @Inject lateinit var connectionManager: ConnectionManager
+    @Inject lateinit var usbPtpManager: UsbPtpManager
+
+    /** 模式切换进行中标记：防止重复下发，下发期间入口置灰 */
+    private var modeSwitching = false
+
     private var controlsVisible = true
     private var gridVisible = true
     private var levelVisible = false
@@ -82,6 +93,7 @@ class LiveViewFragment : Fragment() {
         setupParams()
         setupTouchAndScale()
         observeState()
+        updateModeEntryState()
         binding.viewGridOverlay.setImageSource(binding.ivLiveView)
         paramsViewModel.readAll()
         shootingViewModel.refreshStatus()
@@ -113,7 +125,8 @@ class LiveViewFragment : Fragment() {
         binding.btnAfMode.pressEffect()
         binding.btnAfMode.setOnClickListener { paramsViewModel.cycleFocusMode() }
 
-        // 模式标签可点：监看中远程切换拍摄模式（0x500E）
+        // 模式标签可点：监看中远程切换拍摄模式（0x500E）。
+        // 仅在监看进行中可用（未监看 / 未连接时置灰，见 updateModeEntryState）。
         binding.tvModeTag.pressEffect()
         binding.tvModeTag.setOnClickListener { showModePicker() }
 
@@ -230,28 +243,92 @@ class LiveViewFragment : Fragment() {
      * 拍摄模式远程切换（0x500E，模块 2：失败显式回调）。
      * 与遥控页共用同一套档位与回读流（单一数据源）。
      */
+    /**
+     * 拍摄模式远程切换（0x500E，模块 2：失败显式回调 + 下发后回读校验）。
+     * 与遥控页共用同一套档位与回读流（单一数据源）：
+     * 1) 列表预选当前模式；2) 下发中禁用重复点击并显示 loading；
+     * 3) 下发后等 0x500E 快轮询（≤500ms）回读，3 秒内未切过去则明确提示失败，
+     *    UI 仍以 exposureProgram 回读流为准（不落本地假状态）。
+     */
     private fun showModePicker() {
+        // 边界：列表为空 / 切换进行中直接拦截（入口已置灰，这里再兜一层）
+        if (modeSwitching) return
         val modes = paramsViewModel.exposureProgramModes
-        val labels = modes.map { it.second }.toTypedArray()
+        if (modes.isEmpty()) {
+            Toast.makeText(requireContext(), "暂无可切换的拍摄模式", Toast.LENGTH_SHORT).show()
+            return
+        }
         val current = paramsViewModel.exposureProgram.value
+        val checkedIndex = modes.indexOfFirst { it.first == current.rawValue }
+        val labels = modes.map { it.second }.toTypedArray()
         MaterialAlertDialogBuilder(requireContext())
             .setTitle("拍摄模式（远程切换）")
             .setMessage("当前: ${current.currentValue.ifBlank { "--" }}")
-            .setSingleChoiceItems(labels, -1) { dialog, which ->
+            .setSingleChoiceItems(labels, checkedIndex) { dialog, which ->
+                if (modeSwitching) return@setSingleChoiceItems
                 dialog.dismiss()
-                viewLifecycleOwner.lifecycleScope.launch {
-                    val ok = paramsViewModel.setExposureProgramResult(modes[which].first)
-                    if (_binding == null) return@launch
-                    Toast.makeText(
-                        requireContext(),
-                        if (ok) "已切换到 ${modes[which].second}"
-                        else "相机拒绝切换（模式可能只读），请用机身拨盘调整",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
+                applyExposureProgram(modes[which].first, modes[which].second)
             }
             .setNegativeButton("取消", null)
             .show()
+    }
+
+    /**
+     * 下发拍摄模式并做回读校验。
+     * 写入被拒 → 提示参数锁定/只读；写入成功但 3 秒内 0x500E 没切过去 → 提示相机未响应，
+     * 二者都显式反馈，不把 UI 显示成已切换（显示值由回读流驱动）。
+     */
+    private fun applyExposureProgram(target: Int, label: String) {
+        modeSwitching = true
+        updateModeEntryState()
+        // 下发中先给一个轻量 loading 提示，避免「点了没反应」的错觉
+        Toast.makeText(requireContext(), "正在切换拍摄模式…", Toast.LENGTH_SHORT).show()
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val ok = paramsViewModel.setExposureProgramResult(target)
+                if (!ok) {
+                    if (_binding == null) return@launch
+                    Toast.makeText(
+                        requireContext(),
+                        "相机拒绝切换（参数可能已锁定或模式只读），请用机身拨盘调整",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@launch
+                }
+                // 回读校验：0x500E 快轮询（≤500ms）会刷新 exposureProgram 流，
+                // 最多等 3 秒确认相机确实切到了目标模式
+                val confirmed = withTimeoutOrNull(3000) {
+                    paramsViewModel.exposureProgram.first { it.rawValue == target }
+                } != null
+                if (_binding == null) return@launch
+                if (confirmed) {
+                    Toast.makeText(requireContext(), "已切换到 $label", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(
+                        requireContext(),
+                        "相机未响应：当前模式下可能不支持远程切换，请确认后用机身拨盘调整",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } finally {
+                modeSwitching = false
+                updateModeEntryState()
+            }
+        }
+    }
+
+    /**
+     * 根据监看状态 / 切换中标记 / 模式列表是否为空，更新模式入口可用性。
+     * 监看未开始、相机未连接、列表为空、切换进行中 → 置灰且点击无效（isEnabled=false）。
+     */
+    private fun updateModeEntryState() {
+        if (_binding == null) return
+        val enabled = viewModel.liveViewState.value == LiveViewState.RUNNING
+            && !modeSwitching
+            && paramsViewModel.exposureProgramModes.isNotEmpty()
+        binding.tvModeTag.isEnabled = enabled
+        binding.tvModeTag.isClickable = enabled
+        binding.tvModeTag.alpha = if (enabled) 1f else 0.5f
     }
 
     // ---------------- 快门 ----------------
@@ -528,6 +605,8 @@ class LiveViewFragment : Fragment() {
                     LiveViewState.ERROR -> "重试监看"
                     LiveViewState.STOPPED -> "开始监看"
                 }
+                // 监看启停同步模式入口可用性（未监看时置灰）
+                updateModeEntryState()
             }
         }
 
@@ -595,7 +674,8 @@ class LiveViewFragment : Fragment() {
         }
         viewLifecycleOwner.lifecycleScope.launch {
             paramsViewModel.exposureProgram.collect { param ->
-                binding.tvModeTag.text = compactMode(param.currentValue)
+                // 常驻显示当前模式（用 describeExposureProgram 的显示名，与选择器同口径）
+                binding.tvModeTag.text = param.currentValue.ifBlank { "P" }
             }
         }
     }
@@ -605,11 +685,6 @@ class LiveViewFragment : Fragment() {
         full.contains("AF-S") -> "AF-S"
         full.contains("MF") -> "MF"
         else -> full.ifBlank { "AF-S" }
-    }
-
-    private fun compactMode(full: String): String {
-        val first = full.substringBefore("(").trim().take(1)
-        return first.uppercase().ifBlank { "P" }
     }
 
     /** 定位 JPEG 起始标记 0xFF 0xD8（兼容 Nikon 1024 字节帧头） */

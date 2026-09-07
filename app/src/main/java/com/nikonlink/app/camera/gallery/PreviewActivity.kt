@@ -4,12 +4,21 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.net.Uri
 import android.os.Bundle
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.ProgressBar
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.exifinterface.media.ExifInterface
 import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.RecyclerView
+import androidx.viewpager2.widget.ViewPager2
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.nikonlink.app.R
@@ -27,29 +36,42 @@ import javax.inject.Inject
 
 /**
  * 全屏预览页（二级页面：右推入转场由主题 windowAnimationStyle 提供）
- * 顶部悬浮：返回 / 文件名 / 更多
+ * 顶部悬浮：返回 / 文件名 / 页码(N/M) / 更多
  * 底部悬浮：标记（F1）/ 下载（原图）/ 拍摄信息（F3 底部抽屉）/ 分享（F4 预览副本）
+ *
+ * 改造：用 ViewPager2 承载整组照片，左右滑动切换上一张/下一张；每页懒加载大图。
  */
 @AndroidEntryPoint
 class PreviewActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "Preview"
-        private const val EXTRA_HANDLE = "handle"
-        private const val EXTRA_NAME = "name"
-        private const val EXTRA_SIZE = "size"
-        private const val EXTRA_FORMAT_CODE = "format_code"
-        private const val EXTRA_STORAGE_ID = "storage_id"
-        private const val EXTRA_CAPTURE_TIME = "capture_time"
 
+        // 整组照片通过基本类型数组传递（CameraFile 非 Parcelable，且不允许修改其定义）
+        private const val EXTRA_HANDLES = "handles"
+        private const val EXTRA_NAMES = "names"
+        private const val EXTRA_SIZES = "sizes"
+        private const val EXTRA_FORMAT_CODES = "format_codes"
+        private const val EXTRA_STORAGE_IDS = "storage_ids"
+        private const val EXTRA_CAPTURE_TIMES = "capture_times"
+        private const val EXTRA_POSITION = "position"
+
+        /** 单张入口（兼容 TransferFragment 现有调用）：内部转成只含一张的列表 */
         fun start(context: Context, file: CameraFile) {
+            start(context, listOf(file), 0)
+        }
+
+        /** 整组入口：传入列表 + 起始位置 */
+        fun start(context: Context, files: List<CameraFile>, position: Int) {
+            val safePos = position.coerceIn(0, (files.size - 1).coerceAtLeast(0))
             context.startActivity(Intent(context, PreviewActivity::class.java).apply {
-                putExtra(EXTRA_HANDLE, file.handle)
-                putExtra(EXTRA_NAME, file.fileName)
-                putExtra(EXTRA_SIZE, file.size)
-                putExtra(EXTRA_FORMAT_CODE, file.formatCode)
-                putExtra(EXTRA_STORAGE_ID, file.storageId)
-                putExtra(EXTRA_CAPTURE_TIME, file.captureTimeMillis ?: 0L)
+                putExtra(EXTRA_HANDLES, files.map { it.handle }.toIntArray())
+                putExtra(EXTRA_NAMES, files.map { it.fileName }.toTypedArray())
+                putExtra(EXTRA_SIZES, files.map { it.size }.toLongArray())
+                putExtra(EXTRA_FORMAT_CODES, files.map { it.formatCode }.toIntArray())
+                putExtra(EXTRA_STORAGE_IDS, files.map { it.storageId }.toIntArray())
+                putExtra(EXTRA_CAPTURE_TIMES, files.map { it.captureTimeMillis ?: 0L }.toLongArray())
+                putExtra(EXTRA_POSITION, safePos)
             })
         }
     }
@@ -70,33 +92,35 @@ class PreviewActivity : AppCompatActivity() {
     lateinit var settings: AppSettings
 
     private lateinit var binding: ActivityPreviewBinding
-    private lateinit var file: CameraFile
-    private var downloaded = false
-    private var downloadedPath: String? = null
+
+    /** 整组照片（由 Intent 基本类型数组重建，format 用 classifyFormat 还原） */
+    private lateinit var files: List<CameraFile>
+
+    /** 当前展示的照片（随滑动更新，底部栏与信息均以它为准） */
+    private var file: CameraFile = CameraFile(0, "", 0, 0, 0)
+    private var currentPosition = 0
+
+    /** 每页下载结果缓存：position -> 已下载本地路径（避免滑动后丢失下载态） */
+    private val downloadResults = mutableMapOf<Int, String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityPreviewBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        file = CameraFile(
-            handle = intent.getIntExtra(EXTRA_HANDLE, 0),
-            fileName = intent.getStringExtra(EXTRA_NAME) ?: "",
-            size = intent.getLongExtra(EXTRA_SIZE, 0),
-            formatCode = intent.getIntExtra(EXTRA_FORMAT_CODE, 0),
-            storageId = intent.getIntExtra(EXTRA_STORAGE_ID, 0),
-            format = classifyFormat(
-                intent.getIntExtra(EXTRA_FORMAT_CODE, 0),
-                intent.getStringExtra(EXTRA_NAME) ?: ""
-            ),
-            captureTimeMillis = intent.getLongExtra(EXTRA_CAPTURE_TIME, 0L).takeIf { it > 0 }
-        )
-        binding.tvFileName.text = file.fileName
+        files = buildFilesFromIntent()
+        if (files.isEmpty()) {
+            // 极端兜底：没有任何数据直接关闭，避免空 ViewPager 崩溃
+            finish()
+            return
+        }
+        currentPosition = intent.getIntExtra(EXTRA_POSITION, 0).coerceIn(0, files.size - 1)
+        file = files[currentPosition]
 
-        loadPreview()
+        updateTopBar()
+        setupViewPager()
 
         binding.btnBack.setOnClickListener { finish() }
-
         binding.btnDownload.setOnClickListener { download() }
 
         binding.btnMark.pressEffect()
@@ -104,7 +128,6 @@ class PreviewActivity : AppCompatActivity() {
         observeMarkState()
 
         binding.btnExif.setOnClickListener { showInfoSheet() }
-
         binding.btnShare.setOnClickListener { showSharePanel() }
 
         binding.btnMore.setOnClickListener {
@@ -120,17 +143,154 @@ class PreviewActivity : AppCompatActivity() {
         }
     }
 
+    // ---------- 列表重建与 ViewPager ----------
+
+    private fun buildFilesFromIntent(): List<CameraFile> {
+        val handles = intent.getIntArrayExtra(EXTRA_HANDLES) ?: intArrayOf()
+        val names = intent.getStringArrayExtra(EXTRA_NAMES) ?: arrayOf()
+        val sizes = intent.getLongArrayExtra(EXTRA_SIZES) ?: longArrayOf()
+        val formatCodes = intent.getIntArrayExtra(EXTRA_FORMAT_CODES) ?: intArrayOf()
+        val storageIds = intent.getIntArrayExtra(EXTRA_STORAGE_IDS) ?: intArrayOf()
+        val captureTimes = intent.getLongArrayExtra(EXTRA_CAPTURE_TIMES) ?: longArrayOf()
+        return handles.indices.map { i ->
+            val name = names.getOrNull(i) ?: ""
+            val fc = formatCodes.getOrNull(i) ?: 0
+            CameraFile(
+                handle = handles.getOrNull(i) ?: 0,
+                fileName = name,
+                size = sizes.getOrNull(i) ?: 0,
+                formatCode = fc,
+                storageId = storageIds.getOrNull(i) ?: 0,
+                format = classifyFormat(fc, name),
+                captureTimeMillis = captureTimes.getOrNull(i)?.takeIf { it > 0 }
+            )
+        }
+    }
+
+    private fun setupViewPager() {
+        binding.vpPreview.adapter = PreviewPagerAdapter()
+        // 仅预载相邻 1 页，滑到才真正加载大图，避免一次性加载全部撑爆内存
+        binding.vpPreview.offscreenPageLimit = 1
+        binding.vpPreview.setCurrentItem(currentPosition, false)
+        binding.vpPreview.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
+            override fun onPageSelected(position: Int) {
+                currentPosition = position
+                file = files[position]
+                updateTopBar()
+                refreshMarkState()   // 切页立即刷新标记态（不等待 mark 变化事件）
+                syncDownloadUi(position)
+            }
+        })
+    }
+
+    private fun updateTopBar() {
+        binding.tvFileName.text = file.fileName
+        binding.tvPage.text = "${currentPosition + 1} / ${files.size}"
+    }
+
+    /** ViewPager2 每页：代码构造 ImageView + 进度 + 失败提示（不新增 XML 布局文件） */
+    private class PageViewHolder(val pv: PageViews) : RecyclerView.ViewHolder(pv.root)
+
+    private data class PageViews(
+        val root: FrameLayout,
+        val iv: ImageView,
+        val progress: ProgressBar,
+        val error: TextView
+    )
+
+    private fun createPageViews(): PageViews {
+        val root = FrameLayout(this).apply {
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        }
+        val iv = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            contentDescription = "影像预览"
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+            ).apply { gravity = Gravity.CENTER }
+        }
+        val progress = ProgressBar(this).apply {
+            isIndeterminate = true
+            indeterminateTintList = ColorStateList.valueOf(getColor(R.color.white))
+            layoutParams = FrameLayout.LayoutParams(dp(32), dp(32)).apply { gravity = Gravity.CENTER }
+        }
+        val error = TextView(this).apply {
+            setTextColor(getColor(R.color.white))
+            textSize = 13f
+            text = "预览加载失败"
+            visibility = View.GONE
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { gravity = Gravity.CENTER }
+        }
+        root.addView(iv)
+        root.addView(progress)
+        root.addView(error)
+        return PageViews(root, iv, progress, error)
+    }
+
+    private inner class PreviewPagerAdapter : RecyclerView.Adapter<PageViewHolder>() {
+        override fun getItemCount(): Int = files.size
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): PageViewHolder =
+            PageViewHolder(createPageViews())
+
+        override fun onBindViewHolder(holder: PageViewHolder, position: Int) {
+            val f = files[position]
+            holder.pv.error.visibility = View.GONE
+            holder.pv.progress.visibility = View.VISIBLE
+            holder.pv.iv.setImageBitmap(null)
+            loadInto(f, holder, position)
+        }
+    }
+
+    /**
+     * 单页懒加载：内存 → 磁盘缓存 → PTP（与网格页共享缓存）。
+     * 用 bindingAdapterPosition 校验，避免 ViewHolder 被回收复用到其他页后旧图串页。
+     */
+    private fun loadInto(f: CameraFile, holder: PageViewHolder, position: Int) {
+        lifecycleScope.launch {
+            var bitmap = withContext(Dispatchers.IO) { thumbnailCache.get(f.handle) }
+            if (bitmap == null) {
+                val bytes = withContext(Dispatchers.IO) {
+                    runCatching { transferManager.fetchThumbnail(f.handle) }.getOrNull()
+                }
+                if (bytes != null) {
+                    bitmap = withContext(Dispatchers.IO) { thumbnailCache.putBytes(f.handle, bytes) }
+                }
+            }
+            if (holder.bindingAdapterPosition != position) return@launch // 已被复用，丢弃结果
+            if (bitmap != null) {
+                holder.pv.iv.setImageBitmap(bitmap)
+                holder.pv.progress.visibility = View.GONE
+            } else {
+                holder.pv.progress.visibility = View.GONE
+                holder.pv.error.visibility = View.VISIBLE
+            }
+        }
+    }
+
     // ---------- F1：标记 ----------
 
+    /** 监听标记变化（实时反映当前页标记态） */
     private fun observeMarkState() {
         lifecycleScope.launch {
-            photoMarkRepository.observeAll().collect { marks ->
+            photoMarkRepository.observeAll().collect {
                 val marked = withContext(Dispatchers.Default) {
-                    marks.any { it.objectHandle == file.handle && it.fileName == file.fileName }
+                    photoMarkRepository.isMarked(file)
                 }
                 binding.tvMarkLabel.text = if (marked) "已标记" else "标记"
                 binding.iconMark.alpha = if (marked) 1f else 0.55f
             }
+        }
+    }
+
+    /** 切页时立即刷新标记态（不依赖 mark 变化事件） */
+    private fun refreshMarkState() {
+        lifecycleScope.launch {
+            val marked = photoMarkRepository.isMarked(file)
+            binding.tvMarkLabel.text = if (marked) "已标记" else "标记"
+            binding.iconMark.alpha = if (marked) 1f else 0.55f
         }
     }
 
@@ -142,7 +302,6 @@ class PreviewActivity : AppCompatActivity() {
                     photoMarkRepository.unmark(listOf(file))
                 } else {
                     photoMarkRepository.mark(listOf(file))
-                    // F1 可选增强：标记后自动入队（设置开关默认关）
                     if (settings.markAutoDownload && transferManager.hasActiveSession()) {
                         transferManager.enqueue(listOf(file))
                     }
@@ -229,15 +388,14 @@ class PreviewActivity : AppCompatActivity() {
             }
         }
         val exifSources = sequence<ExifInterface?> {
-            // 1) 缩略图磁盘缓存（Nikon 缩略图为内嵌 JPEG，部分机身带参数 EXIF）
             val thumbFile = runCatching { thumbnailCache.diskFile(file.handle) }.getOrNull()
             yield(thumbFile?.let { path ->
                 runCatching { java.io.FileInputStream(path).use { ExifInterface(it) } }.getOrNull()
             })
-            // 2) 已归档原图（完整 EXIF；ExifInterface 读取支持流，无需落盘中转）
-            if (downloadedPath != null) {
+            val localPath = downloadResults[currentPosition]
+            if (localPath != null) {
                 yield(runCatching {
-                    contentResolver.openInputStream(Uri.parse(downloadedPath))
+                    contentResolver.openInputStream(Uri.parse(localPath))
                         ?.use { stream -> ExifInterface(stream) }
                 }.getOrNull())
             }
@@ -334,12 +492,13 @@ class PreviewActivity : AppCompatActivity() {
 
     private fun shareOriginal() {
         lifecycleScope.launch {
-            if (!downloaded) {
+            val alreadyDownloaded = downloadResults.containsKey(currentPosition)
+            if (!alreadyDownloaded) {
                 binding.progressDownload.visibility = View.VISIBLE
                 binding.progressDownload.isIndeterminate = true
             }
             val uri = withContext(Dispatchers.IO) {
-                shareExporter.exportOriginalUri(file, downloadedPath)
+                shareExporter.exportOriginalUri(file, downloadResults[currentPosition])
             }
             binding.progressDownload.visibility = View.GONE
             binding.progressDownload.isIndeterminate = false
@@ -374,27 +533,11 @@ class PreviewActivity : AppCompatActivity() {
         }
     }
 
-    /** 用缩略图先行预览：内存 → 磁盘缓存 → PTP（与网格页共享缓存，不再重复拉取） */
-    private fun loadPreview() {
-        lifecycleScope.launch {
-            var bitmap = withContext(Dispatchers.IO) { thumbnailCache.get(file.handle) }
-            if (bitmap == null) {
-                val bytes = withContext(Dispatchers.IO) {
-                    runCatching { transferManager.fetchThumbnail(file.handle) }.getOrNull()
-                }
-                if (bytes != null) {
-                    bitmap = thumbnailCache.putBytes(file.handle, bytes)
-                }
-            }
-            if (bitmap != null) {
-                binding.ivPreview.setImageBitmap(bitmap)
-                binding.progressPreview.visibility = View.GONE
-            }
-        }
-    }
+    // ---------- 下载（按当前页维护状态） ----------
 
     private fun download() {
-        if (downloaded) return
+        val pos = currentPosition
+        if (downloadResults.containsKey(pos)) return // 已下载，避免重复
         binding.progressDownload.visibility = View.VISIBLE
         binding.tvDownloadLabel.text = "下载中"
         lifecycleScope.launch {
@@ -420,31 +563,59 @@ class PreviewActivity : AppCompatActivity() {
             }
             when (result) {
                 is TransferResult.Success -> {
-                    downloaded = true
-                    downloadedPath = result.path
-                    binding.progressDownload.isIndeterminate = false
-                    binding.progressDownload.progress = 100
-                    // 下载完成对勾收敛动画
-                    binding.iconDownload.setImageResource(R.drawable.ic_check)
-                    binding.iconDownload.scaleX = 0.5f
-                    binding.iconDownload.scaleY = 0.5f
-                    binding.iconDownload.animate().scaleX(1f).scaleY(1f).setDuration(250).start()
-                    binding.tvDownloadLabel.text = "已完成"
+                    // 仅当仍停留在同一页时才更新底部栏（切走则交由 syncDownloadUi 还原）
+                    downloadResults[pos] = result.path
+                    if (pos == currentPosition) {
+                        binding.progressDownload.isIndeterminate = false
+                        binding.progressDownload.progress = 100
+                        binding.iconDownload.setImageResource(R.drawable.ic_check)
+                        binding.iconDownload.scaleX = 0.5f
+                        binding.iconDownload.scaleY = 0.5f
+                        binding.iconDownload.animate().scaleX(1f).scaleY(1f).setDuration(250).start()
+                        binding.tvDownloadLabel.text = "已完成"
+                    }
                 }
 
                 is TransferResult.Failed -> {
-                    binding.progressDownload.visibility = View.GONE
-                    binding.tvDownloadLabel.text = "重试"
-                    Timber.tag(TAG).w("Download failed: ${result.reason}")
+                    if (pos == currentPosition) {
+                        binding.progressDownload.visibility = View.GONE
+                        binding.tvDownloadLabel.text = "重试"
+                        Timber.tag(TAG).w("Download failed: ${result.reason}")
+                    }
                 }
 
                 is TransferResult.Cancelled -> {
-                    binding.progressDownload.visibility = View.GONE
+                    if (pos == currentPosition) {
+                        binding.progressDownload.visibility = View.GONE
+                    }
                 }
             }
         }
     }
 
+    /** 切页时根据下载缓存同步底部下载栏（已下载显示完成，否则复位） */
+    private fun syncDownloadUi(position: Int) {
+        val path = downloadResults[position]
+        if (path != null) {
+            binding.progressDownload.visibility = View.GONE
+            binding.progressDownload.isIndeterminate = false
+            binding.progressDownload.progress = 100
+            binding.iconDownload.setImageResource(R.drawable.ic_check)
+            binding.iconDownload.scaleX = 1f
+            binding.iconDownload.scaleY = 1f
+            binding.tvDownloadLabel.text = "已完成"
+        } else {
+            binding.progressDownload.visibility = View.GONE
+            binding.progressDownload.isIndeterminate = false
+            binding.progressDownload.progress = 0
+            binding.iconDownload.setImageResource(R.drawable.ic_download)
+            binding.iconDownload.scaleX = 1f
+            binding.iconDownload.scaleY = 1f
+            binding.tvDownloadLabel.text = "下载"
+        }
+    }
+
+    /** 兼容旧逻辑：下载状态（当前页），主要由 downloadResults 维护 */
     private fun dp(value: Int): Int =
         android.util.TypedValue.applyDimension(
             android.util.TypedValue.COMPLEX_UNIT_DIP, value.toFloat(), resources.displayMetrics

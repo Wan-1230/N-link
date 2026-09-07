@@ -106,6 +106,8 @@ dependencies {
     // Navigation
     implementation(libs.navigation.fragment.ktx)
     implementation(libs.navigation.ui.ktx)
+    // 照片预览页左右滑动切换上一张/下一张
+    implementation(libs.viewpager2)
 
     // WorkManager
     implementation(libs.work.runtime.ktx)

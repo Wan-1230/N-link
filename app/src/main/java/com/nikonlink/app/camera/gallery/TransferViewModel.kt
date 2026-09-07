@@ -252,6 +252,23 @@ class TransferViewModel @Inject constructor(
     private val pendingThumbs = mutableSetOf<Int>()
     private var prewarmJob: Job? = null
 
+    /**
+     * 高清缩略图升级队列（渐进式加载的第二段）。
+     *
+     * 与小图通道**分离**是刻意的：高清预览（0x90C4）单张数百 KB，若与小图共用
+     * 3 并发窗口，会重新把首屏堵回「转圈」。这里用独立的小并发窗口在后台慢慢替换，
+     * 既不抢占首屏带宽，也不阻塞用户滚动。
+     */
+    private val hdThumbSemaphore = Semaphore(2)
+    private val pendingHdThumbs = mutableSetOf<Int>()
+
+    /**
+     * 缩略图「内容更新」计数器：高清替换小图时 handle 集合并未变化，
+     * Set 相等不会触发 StateFlow 发射，因此用递增计数通知 UI 重绘可见项。
+     */
+    private val _thumbUpgradeTick = MutableStateFlow(0L)
+    val thumbUpgradeTick: StateFlow<Long> = _thumbUpgradeTick.asStateFlow()
+
     private val _message = MutableStateFlow("")
     val message: StateFlow<String> = _message.asStateFlow()
 
@@ -797,25 +814,66 @@ class TransferViewModel @Inject constructor(
      * 按需加载缩略图（可见项优先，并发窗口 3）。
      * 两级缓存优先：内存 → 磁盘，未命中才走 PTP 网络请求。
      */
+    /**
+     * 缩略图请求（渐进式：缓存 → 小图秒出 → 后台升高清）。
+     *
+     * 旧实现只走「高清优先」，单张数百 KB 且并发窗口仅 3，首屏必然长时间转圈。
+     * 现在分两段：
+     *   1. 缓存命中直接返回；未命中先取 0x100A 小图（几 KB）立刻填满网格，消除转圈
+     *   2. 后台再用 0x90C4 高清覆盖同一缓存键并通知重绘
+     * **最终展示的仍是高清预览，画质不降低**，只是把等待从阻塞改为后台替换。
+     */
     fun requestThumbnail(handle: Int) {
         if (handle < 0) {
             viewModelScope.launch { loadLocalThumbnailSuspend(handle) }
             return
         }
-        if (_thumbnails.value.contains(handle) || !pendingThumbs.add(handle)) return
+        if (_thumbnails.value.contains(handle) || !pendingThumbs.add(handle)) {
+            // 已有图（哪怕是缓存的小图）→ 仍然尝试后台升高清，保证最终画质
+            if (_thumbnails.value.contains(handle)) upgradeThumbnailToHd(handle)
+            return
+        }
         viewModelScope.launch {
             thumbSemaphore.withPermit {
                 try {
                     if (_thumbnails.value.contains(handle)) return@withPermit
-                    val bitmap = thumbnailCache.fromMemory(handle)
+                    var bitmap = thumbnailCache.fromMemory(handle)
                         ?: thumbnailCache.get(handle)
-                        ?: transferManager.fetchThumbnail(handle)
+                    if (bitmap == null) {
+                        // 第一段：小图秒出
+                        bitmap = transferManager.fetchThumbnailFast(handle)
                             ?.let { thumbnailCache.putBytes(handle, it) }
+                    }
                     if (bitmap != null) {
                         _thumbnails.value = _thumbnails.value + handle
+                        // 第二段：后台升高清（不阻塞本通道）
+                        upgradeThumbnailToHd(handle)
                     }
                 } finally {
                     pendingThumbs.remove(handle)
+                }
+            }
+        }
+    }
+
+    /**
+     * 后台把某张缩略图升级为高清预览（0x90C4）。
+     * 失败静默——网格继续显示已到位的小图，不影响可用性。
+     */
+    private fun upgradeThumbnailToHd(handle: Int) {
+        if (handle < 0 || !pendingHdThumbs.add(handle)) return
+        viewModelScope.launch {
+            hdThumbSemaphore.withPermit {
+                try {
+                    val hd = transferManager.fetchThumbnail(handle) ?: return@withPermit
+                    if (thumbnailCache.putBytes(handle, hd) != null) {
+                        _thumbnails.value = _thumbnails.value + handle
+                        _thumbUpgradeTick.value = _thumbUpgradeTick.value + 1
+                    }
+                } catch (e: Exception) {
+                    Timber.tag("TransferVM").d("HD thumb upgrade failed handle=$handle: ${e.message}")
+                } finally {
+                    pendingHdThumbs.remove(handle)
                 }
             }
         }
