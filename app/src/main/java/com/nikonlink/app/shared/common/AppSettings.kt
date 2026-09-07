@@ -112,8 +112,8 @@ class AppSettings @Inject constructor(
         set(value) = prefs.edit().putBoolean("share_keep_gps", value).apply()
 
     /**
-     * 拍摄页「更多动作」按钮的当前动作（模块 3 入口迁移）。
-     * 点击执行当前动作，长按弹出菜单切换；记住用户上次选择。
+     * 拍摄页「更多动作」按钮的当前动作（模块 3）。
+     * 单击按钮弹出模式下拉切换并执行；记住用户上次选择，默认间隔拍摄。
      */
     var remoteActionMode: String
         get() = prefs.getString("remote_action_mode", ACTION_INTERVAL) ?: ACTION_INTERVAL
@@ -123,11 +123,6 @@ class AppSettings @Inject constructor(
     var bulbDurationSeconds: Int
         get() = prefs.getInt("bulb_duration_seconds", 30)
         set(value) = prefs.edit().putInt("bulb_duration_seconds", value).apply()
-
-    /** 「更多动作」长按切换的一次性提示是否已展示过 */
-    var actionModeHintShown: Boolean
-        get() = prefs.getBoolean("action_mode_hint_shown", false)
-        set(value) = prefs.edit().putBoolean("action_mode_hint_shown", value).apply()
 
     /**
      * 画面模式（连接策略，v1.0.2 用户提议的两档化）。
