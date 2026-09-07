@@ -80,9 +80,27 @@ class ThumbnailCache @Inject constructor(
         bitmap
     }
 
-    /** 已解码 Bitmap 入缓存（本地相册路径；LruCache 内部同步，跨线程安全） */
-    fun putBitmap(handle: Int, bitmap: Bitmap) {
+    /**
+     * 已解码 Bitmap 入缓存（本地相册路径；LruCache 内部同步，跨线程安全）。
+     *
+     * persist=true 时后台编码 JPEG 落盘：本地缩略图旧版只进内存，进程重启后
+     * 内存清空、磁盘又没有，二次打开必须逐张重走 MediaStore 解码——这是
+     * 「本地相册再次打开转圈」的成因之一。落盘后二次打开可直接读盘秒出。
+     */
+    fun putBitmap(handle: Int, bitmap: Bitmap, persist: Boolean = false) {
         memory.put(handle, bitmap)
+        if (!persist) return
+        scope.launch {
+            runCatching {
+                val bytes = java.io.ByteArrayOutputStream().use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+                    out.toByteArray()
+                }
+                diskFile(handle).writeBytes(bytes)
+            }.onFailure {
+                Timber.tag(TAG).w("thumb persist failed for $handle: ${it.message}")
+            }
+        }
     }
 
     fun diskFile(handle: Int): File = File(diskDir, "$handle.jpg")

@@ -747,23 +747,33 @@ class TransferViewModel @Inject constructor(
     }
 
     private suspend fun loadLocalThumbnailSuspend(handle: Int) {
-        if (_thumbnails.value.contains(handle)) return
-        val cached = thumbnailCache.fromMemory(handle) ?: thumbnailCache.get(handle)
-        if (cached == null) {
-            val bitmap = withContext(Dispatchers.IO) {
-                runCatching {
-                    context.contentResolver.loadThumbnail(
-                        localContentUri(handle),
-                        Size(512, 512),
-                        null
-                    )
-                }.getOrNull()
-            }
-            if (bitmap != null) {
-                thumbnailCache.putBitmap(handle, bitmap)
+        // 缓存命中即返回。**不能**用 _thumbnails.contains 判提前返回——
+        // 该集合记录的是「曾经加载过」，而网格的转圈判定看的是**内存缓存**
+        // （PhotoGridAdapter.applyThumb 用 cache.fromMemory）。内存项被 LruCache
+        // 驱逐后两者脱节：集合里有 handle、界面上却无图，旧逻辑第一行就返回、
+        // 永远不再加载 → 「再次打开本地相册全部转圈」。
+        if (thumbnailCache.fromMemory(handle) != null) return
+        val bitmap = thumbnailCache.get(handle) ?: withContext(Dispatchers.IO) {
+            runCatching {
+                context.contentResolver.loadThumbnail(
+                    localContentUri(handle),
+                    Size(512, 512),
+                    null
+                )
+            }.getOrNull()
+        }
+        if (bitmap != null) {
+            // 本地缩略图同时落盘：进程重启后二次打开直接读盘秒出，
+            // 不必再逐张走 MediaStore 解码
+            thumbnailCache.putBitmap(handle, bitmap, persist = true)
+            if (_thumbnails.value.contains(handle)) {
+                // handle 已在集合（此前加载过、内存被驱逐后重载）：Set 相等
+                // 不会触发 StateFlow 发射，用升级计数通知网格重绘可见项
+                _thumbUpgradeTick.value = _thumbUpgradeTick.value + 1
+            } else {
+                _thumbnails.value = _thumbnails.value + handle
             }
         }
-        _thumbnails.value = _thumbnails.value + handle
     }
 
     /** 本地照片的 MediaStore content URI */
