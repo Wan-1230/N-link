@@ -52,6 +52,25 @@ class LiveViewManager @Inject constructor(
     private var frameJob: Job? = null
     private var consecutiveErrors = 0
 
+    /**
+     * 进行中的异步停止作业（0x9202 EndLiveView）。
+     * stopLiveView 是 fire-and-forget，而 startLiveView 由另一协程发起——
+     * kotlin Mutex 互斥但不保证 FIFO，End 可能晚于 Start 才到相机：
+     * 相机先收到 Start（已在监看中）再收到 End（把监看关了），随后帧循环
+     * 全部取帧失败 → 全屏后画面异常。startLiveView 必须 join 该作业再启动。
+     */
+    private var stopJob: Job? = null
+
+    /**
+     * 帧错误宽限期截止时间（epoch ms）。
+     * 拍照（AF + 曝光 + 写卡）期间 0x9203 取不到帧是**正常现象**，
+     * 遥控模式下机身处理更久；按默认阈值连续 5 次无帧（约 0.3~1s）就会
+     * 误判「长时间无画面」自停监看——用户感知即「点快门后断连」。
+     * 拍照入口调用 [grantFrameErrorGrace] 开启宽限，宽限期内错误不累计。
+     */
+    @Volatile
+    private var errorGraceUntilMs = 0L
+
     private val _liveViewState = MutableStateFlow(LiveViewState.STOPPED)
     val liveViewState: StateFlow<LiveViewState> = _liveViewState.asStateFlow()
 
@@ -99,6 +118,12 @@ class LiveViewManager @Inject constructor(
      * PRD 2.3: 相机 Live View 画面实时传输至手机屏幕
      */
     suspend fun startLiveView(): Boolean {
+        // 幂等：已在监看中直接成功。供全屏入口复用——遥控页与全屏页共用同一
+        // LiveViewManager，监看进行中进全屏不重启，帧循环无缝延续。
+        if (_liveViewState.value == LiveViewState.RUNNING) return true
+        // 等待在途的 EndLiveView 收敛后再启动，杜绝 End/Start 到达相机的顺序颠倒
+        stopJob?.let { runCatching { it.join() } }
+        stopJob = null
         if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) {
             Timber.tag(TAG).w("PTP not connected")
             _liveViewState.value = LiveViewState.ERROR
@@ -323,7 +348,8 @@ class LiveViewManager @Inject constructor(
         // 无论此前走哪条通道，恢复 USB 保活（无 USB 连接时该调用无副作用）
         usbPtpManager.setKeepAlivePaused(false)
         if (_liveViewState.value == LiveViewState.RUNNING) {
-            scope?.launch(Dispatchers.IO) {
+            // 记录停止作业：startLiveView 会 join 它，保证 End 先于下一次 Start 到相机
+            stopJob = scope?.launch(Dispatchers.IO) {
                 try {
                     val ok = onActiveChannel(
                         wifi = {
@@ -450,7 +476,22 @@ class LiveViewManager @Inject constructor(
         }
     }
 
+    /**
+     * 开启帧错误宽限期：durationMs 内取帧失败不累计 consecutiveErrors。
+     * 拍照入口（capture）调用——AF/曝光/写卡期间无监看帧是正常现象，
+     * 不得据此判定「长时间无画面」而自停监看。
+     */
+    fun grantFrameErrorGrace(durationMs: Long = 6000L) {
+        errorGraceUntilMs = System.currentTimeMillis() + durationMs
+    }
+
     private suspend fun handleError() {
+        // 宽限期内（拍照等已知会暂停出帧的场景）错误不累计，但仍节流重试，
+        // 避免失败快速返回形成无间隔的紧密轮询加重命令通道负担
+        if (System.currentTimeMillis() < errorGraceUntilMs) {
+            delay(100)
+            return
+        }
         consecutiveErrors++
         if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
             Timber.tag(TAG).e("Too many errors, stopping Live View")

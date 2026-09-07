@@ -192,8 +192,11 @@ class RemoteFragment : Fragment() {
 
         binding.btnFullscreenLv.pressEffect()
         binding.btnFullscreenLv.setOnClickListener {
-            // 避免两个页面同时持有 LiveViewManager scope，先停止当前监看再进入全屏页。
-            liveViewViewModel.stopLiveView()
+            // 直接进入全屏，**不停当前监看**：遥控页与全屏页共用同一 LiveViewManager
+            // 单例，startLiveView 已幂等（RUNNING 直接返回），帧循环无缝延续。
+            // 旧流程先 stop 再让全屏页 start，两个协程的 EndLiveView/StartLiveView
+            // 在 commandMutex 上的到达顺序不保证，End 晚到会把刚开的监看关掉，
+            // 表现为「进全屏后画面异常」。
             LiveViewActivity.start(requireContext())
         }
 
