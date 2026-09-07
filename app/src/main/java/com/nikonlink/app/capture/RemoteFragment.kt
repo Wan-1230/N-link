@@ -788,12 +788,15 @@ class RemoteFragment : Fragment() {
         if (video) {
             binding.ivShutterIcon.setImageResource(R.drawable.ic_record_dot)
             binding.ivShutterIcon.setColorFilter(resources.getColor(R.color.white, null))
-            // 视频模式无对应“视频场景”PTP 能力，隐藏该按钮避免空操作
+            // 视频模式无对应“视频场景”PTP 能力，隐藏该按钮避免空操作；
+            // 右侧下拉箭头与主体同属分体按钮，一并隐藏（2026-09-07 反馈）
             binding.btnModeAction.visibility = View.GONE
+            binding.btnModeActionArrow.visibility = View.GONE
         } else {
             binding.ivShutterIcon.setImageResource(R.drawable.ic_shutter_white)
             binding.ivShutterIcon.clearColorFilter()
             binding.btnModeAction.visibility = View.VISIBLE
+            binding.btnModeActionArrow.visibility = View.VISIBLE
             renderActionModeLabel()
         }
     }
