@@ -190,6 +190,11 @@ class RemoteShootingManager @Inject constructor(
      */
     suspend fun capture(autofocus: Boolean = true, focusWaitMs: Long = AF_SETTLE_MS): Boolean {
         if (!isRemoteReady()) return false
+        // 拍照宽限期：AF（含等待收敛）+ 曝光 + 写卡期间 0x9203 取不到监看帧是
+        // 正常现象，遥控模式（0x90C2 机身控制）下相机处理更久。不宽限的话，
+        // 帧循环按「连续 5 次无帧」阈值在 ~1s 内自停监看——用户感知即
+        // 「遥控画面下点快门后监看经常断开」。
+        liveViewManager.grantFrameErrorGrace()
         return withContext(Dispatchers.IO) {
             try {
                 _shootingState.value = ShootingState.CAPTURING
