@@ -102,7 +102,6 @@ class RemoteFragment : Fragment() {
         // 模块 2：页面可见期间开启 0x500E 快轮询，机身拨盘切模式 ≤500ms 同步到 UI
         paramsViewModel.startModeWatch()
         setupDisplayModeChip()
-        showActionModeTutorialOnce()
     }
 
     /**
@@ -153,42 +152,6 @@ class RemoteFragment : Fragment() {
             if (remote) "遥控画面 ▾" else "联动画面 ▾"
     }
 
-    /** 教程气泡句柄：用户完成长按或离开页面时关闭 */
-    private var tutorialPopup: android.widget.PopupWindow? = null
-
-    /**
-     * 首次进入拍摄页时在「更多动作」按钮上方弹出教程气泡；
-     * 用户按教程完成一次长按（showActionModeMenu）后标记关闭、此后不再弹出。
-     */
-    private fun showActionModeTutorialOnce() {
-        if (settings.actionModeHintShown) return
-        viewLifecycleOwner.lifecycleScope.launch {
-            delay(800)  // 等首帧布局稳定，避免气泡量宽为 0
-            if (_binding == null || settings.actionModeHintShown) return@launch
-            val content = layoutInflater.inflate(R.layout.popup_tutorial_bubble, null)
-            val popup = android.widget.PopupWindow(
-                content,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                true  // focusable：点外部自动关闭
-            )
-            popup.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT))
-            tutorialPopup = popup
-            content.measure(
-                View.MeasureSpec.UNSPECIFIED,
-                View.MeasureSpec.UNSPECIFIED
-            )
-            // 弹在按钮上方：popup 顶边 = 按钮顶边 - 气泡高 - 间距
-            val offsetY = -(content.measuredHeight + binding.btnModeAction.height + dp(8f).toInt())
-            popup.showAsDropDown(binding.btnModeAction, 0, offsetY)
-        }
-    }
-
-    private fun dismissActionModeTutorial() {
-        tutorialPopup?.dismiss()
-        tutorialPopup = null
-    }
-
     /** 模块 2：Tab 隐藏/显示与模式快轮询联动（MainActivity 四 Fragment 常驻，hide/show 不走 onPause） */
     override fun onHiddenChanged(hidden: Boolean) {
         super.onHiddenChanged(hidden)
@@ -208,7 +171,6 @@ class RemoteFragment : Fragment() {
         paramsViewModel.stopModeWatch()
         liveViewViewModel.stopLiveView()
         recordTimerJob?.cancel()
-        dismissActionModeTutorial()
         _binding = null
     }
 
@@ -666,14 +628,14 @@ class RemoteFragment : Fragment() {
                 .show()
         }
 
-        // 模块 3 入口迁移：按钮 = 执行当前动作；长按 = 弹菜单切换动作（记住上次选择）。
-        // 全屏监看页「⋮」菜单的 B 门入口已移除，统一收敛到本按钮
+        // 模块 3 分体按钮：主体单击 = 执行当前动作；右侧箭头 = 弹下拉切换模式
+        // （间隔拍摄 / B 门长曝光，勾选当前并记住选择）。
+        // 旧「长按弹菜单 + 教程气泡」已删除；全屏监看页「⋮」菜单的 B 门入口
+        // 已移除，统一收敛到本按钮。
         binding.btnModeAction.pressEffect()
         binding.btnModeAction.setOnClickListener { executeCurrentAction() }
-        binding.btnModeAction.setOnLongClickListener {
-            showActionModeMenu()
-            true
-        }
+        binding.btnModeActionArrow.pressEffect()
+        binding.btnModeActionArrow.setOnClickListener { showActionModeMenu() }
         renderActionModeLabel()
     }
 
@@ -716,26 +678,21 @@ class RemoteFragment : Fragment() {
     }
 
     /**
-     * 长按菜单：切换「间隔拍摄 / B 门长曝光」，勾选当前模式并持久化。
-     * 首次长按即视为完成教程操作，关闭教程气泡且不再弹出。
-     * （画面模式切换已迁至顶部的下拉芯片。）
+     * 模式下拉菜单：点主体按钮右侧的箭头弹出，选中即切换模式
+     * （按钮文案即时刷新，参数面板随下次执行进入对应流程），当前模式带勾选。
      */
     private fun showActionModeMenu() {
-        settings.actionModeHintShown = true
-        dismissActionModeTutorial()
-        val popup = PopupMenu(requireContext(), binding.btnModeAction)
-        val items = listOf("间隔拍摄" to AppSettings.ACTION_INTERVAL, "B 门长曝光" to AppSettings.ACTION_BULB)
+        val popup = PopupMenu(requireContext(), binding.btnModeActionArrow)
+        val items = listOf(
+            "间隔拍摄" to AppSettings.ACTION_INTERVAL,
+            "B 门长曝光" to AppSettings.ACTION_BULB
+        )
         items.forEachIndexed { index, (label, mode) ->
             popup.menu.add(0, index + 1, 0, label).isChecked = settings.remoteActionMode == mode
         }
         popup.menu.setGroupCheckable(0, true, true)
         popup.setOnMenuItemClickListener { item ->
-            val mode = items.getOrNull(item.itemId - 1)?.second ?: return@setOnMenuItemClickListener false
-            if (mode != settings.remoteActionMode) {
-                settings.remoteActionMode = mode
-                renderActionModeLabel()
-                Toast.makeText(requireContext(), "已切换为「${items[item.itemId - 1].first}」", Toast.LENGTH_SHORT).show()
-            }
+            items.getOrNull(item.itemId - 1)?.second?.let { switchActionMode(it) }
             true
         }
         popup.show()
@@ -770,15 +727,15 @@ class RemoteFragment : Fragment() {
             .show()
     }
 
-    /** 切换「更多动作」当前动作并即时反馈（对话框内切换 = 下拉菜单式显式入口） */
+    /** 切换「更多动作」当前动作并即时反馈（按钮弹出的模式下拉 = 显式切换入口） */
     private fun switchActionMode(mode: String) {
         if (mode == settings.remoteActionMode) return
         settings.remoteActionMode = mode
         renderActionModeLabel()
         Toast.makeText(
             requireContext(),
-            if (mode == AppSettings.ACTION_BULB) "已切换为「B 门长曝光」，点击按钮开始"
-            else "已切换为「间隔拍摄」，点击按钮开始",
+            if (mode == AppSettings.ACTION_BULB) "已切换为「B 门长曝光」"
+            else "已切换为「间隔拍摄」",
             Toast.LENGTH_SHORT
         ).show()
     }
