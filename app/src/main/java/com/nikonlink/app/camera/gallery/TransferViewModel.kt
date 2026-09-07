@@ -457,10 +457,10 @@ class TransferViewModel @Inject constructor(
      * @param silent 为 true 时为后台静默刷新（优化项 3 拍摄后自动同步专用）：
      *               不翻转 [_isLoading]（否则会闪全屏进度条、下拉刷新圈），
      *               不清空已勾选的待下载项，也不覆盖用户当前看到的提示文案。
-     * @param holdPages 为 true 时（手动刷新专用）不在分页途中逐页发射，仅在全量
-     *               拉取完成、[_isLoading] 复位之后一次性写入列表：旧版刷新途中会把
-     *               「handle 原始序」的中间分页直接推给网格（与刷新前的倒序展示几乎
-     *               完全逆序），视口被 DiffUtil 锚点拖到底部、排序完成后再弹回顶部。
+     * @param holdPages 为 true 时不在分页途中逐页发射，仅在全量拉取完成、[_isLoading]
+     *               复位之后一次性写入列表：旧版刷新途中会把「handle 原始序」的中间分页
+     *               直接推给网格（与刷新前的倒序展示几乎完全逆序），视口被 DiffUtil
+     *               锚点拖到底部、排序完成后再弹回顶部。手动刷新与首连自动加载均启用。
      */
     private fun loadPhotos(
         force: Boolean = false,
@@ -595,7 +595,10 @@ class TransferViewModel @Inject constructor(
         _message.value = "相机已连接，正在加载相册…"
         // 这次全量加载已包含所有新照片，清掉此前累积的补拉脏标记
         pendingCaptureSync = false
-        loadPhotos(force = true)
+        // holdPages：首次就绪加载同样一次性提交排序结果——逐页中间发射是「handle 原始序」
+        // （≈拍摄时间正序），与倒序展示几乎完全逆序，DiffUtil 会把视口拖到底再弹回，
+        // 表现为「刚进相册页来回滚动/滚到最底」（2026-09-07 反馈）
+        loadPhotos(force = true, holdPages = true)
     }
 
     /**

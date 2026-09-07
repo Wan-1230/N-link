@@ -76,7 +76,9 @@ class TransferFragment : Fragment() {
         setupPullRefresh()
         setupActions()
         observe()
-        viewModel.fetchPhotos()
+        // holdPages：首进相册页不逐页发射中间态（handle 原始序与倒序展示几乎逆序，
+        // DiffUtil 会拖着视口来回跳动），等全量拉取完成后一次性提交排序后的最终列表
+        viewModel.fetchPhotos(holdPages = true)
         consumeDeepLink()
     }
 
