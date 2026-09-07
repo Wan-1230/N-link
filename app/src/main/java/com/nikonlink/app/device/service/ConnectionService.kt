@@ -104,15 +104,16 @@ class ConnectionService : LifecycleService() {
 
     /**
      * 启动前台通知
+     *
+     * 初始通知必须用**当前真实状态**渲染：旧版这里写死「N-Link 已连接」标题 +
+     * 「未连接」正文，服务一启动就会闪现甚至滞留自相矛盾的状态（用户截图即此）。
+     * 与 [observeConnectionState] 共用同一映射函数，任何时刻标题与正文都来自同一状态。
      */
     private fun startForegroundWithNotification() {
-        val notification = buildNotification(
-            title = getString(R.string.notification_connection_title),
-            text = getString(R.string.notification_connection_text_disconnected)
-        )
+        val (title, text) = renderNotification(connectionManager.connectionState.value)
         startForeground(
             NOTIFICATION_ID,
-            notification,
+            buildNotification(title, text),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
         )
@@ -133,28 +134,33 @@ class ConnectionService : LifecycleService() {
     private fun observeConnectionState() {
         lifecycleScope.launch {
             connectionManager.connectionState.collectLatest { state ->
-                // v1.0.2 反馈：未连接相机时状态栏也显示「N-Link 已连接」——
-                // 旧版标题是常量，与正文状态脱节。现在标题随真实状态机状态变化。
-                val (title, text) = when (state) {
-                    ConnectionState.DISCONNECTED ->
-                        getString(R.string.notification_title_disconnected) to
-                                getString(R.string.notification_connection_text_disconnected)
-                    ConnectionState.CONNECTING ->
-                        getString(R.string.notification_title_connecting) to "正在连接相机..."
-                    ConnectionState.BLE_CONNECTED ->
-                        getString(R.string.notification_connection_title) to
-                                getString(R.string.notification_connection_text_ble)
-                    ConnectionState.WIFI_UPGRADING ->
-                        getString(R.string.notification_title_connecting) to "正在建立高速通道..."
-                    ConnectionState.FULLY_CONNECTED ->
-                        getString(R.string.notification_connection_title) to
-                                getString(R.string.notification_connection_text_full)
-                    ConnectionState.ERROR_WAITING_RETRY ->
-                        getString(R.string.notification_title_recovering) to "连接中断，正在自动恢复..."
-                }
+                val (title, text) = renderNotification(state)
                 updateNotification(title, text)
             }
         }
+    }
+
+    /**
+     * 连接状态 → 通知标题/正文的**唯一映射**。
+     * startForeground 的初始通知与运行期刷新共用，杜绝「标题与正文各取一套」
+     * 导致的矛盾展示（v1.0.2 反馈的根因正是两处各自写死字符串）。
+     */
+    private fun renderNotification(state: ConnectionState): Pair<String, String> = when (state) {
+        ConnectionState.DISCONNECTED ->
+            getString(R.string.notification_title_disconnected) to
+                    getString(R.string.notification_connection_text_disconnected)
+        ConnectionState.CONNECTING ->
+            getString(R.string.notification_title_connecting) to "正在连接相机..."
+        ConnectionState.BLE_CONNECTED ->
+            getString(R.string.notification_connection_title) to
+                    getString(R.string.notification_connection_text_ble)
+        ConnectionState.WIFI_UPGRADING ->
+            getString(R.string.notification_title_connecting) to "正在建立高速通道..."
+        ConnectionState.FULLY_CONNECTED ->
+            getString(R.string.notification_connection_title) to
+                    getString(R.string.notification_connection_text_full)
+        ConnectionState.ERROR_WAITING_RETRY ->
+            getString(R.string.notification_title_recovering) to "连接中断，正在自动恢复..."
     }
 
     private fun updateNotification(title: String, text: String) {

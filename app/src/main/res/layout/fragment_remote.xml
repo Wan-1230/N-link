@@ -321,17 +321,36 @@
                     android:src="@drawable/ic_shutter_white" />
             </FrameLayout>
 
-            <TextView
-                android:id="@+id/btnModeAction"
+            <!-- 分体按钮：左侧主体单击执行当前模式；右侧箭头弹下拉切换模式
+                 （间隔拍摄 / B 门长曝光），取代旧「长按弹菜单 + 教程气泡」 -->
+            <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="40dp"
-                android:background="@drawable/bg_chip"
-                android:gravity="center"
-                android:paddingHorizontal="16dp"
-                android:text="间隔拍摄"
-                android:textColor="@color/text_primary"
-                android:textSize="12sp"
-                android:textStyle="bold" />
+                android:orientation="horizontal"
+                android:background="@drawable/bg_chip">
+
+                <TextView
+                    android:id="@+id/btnModeAction"
+                    android:layout_width="wrap_content"
+                    android:layout_height="match_parent"
+                    android:gravity="center"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="8dp"
+                    android:text="间隔拍摄"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <ImageView
+                    android:id="@+id/btnModeActionArrow"
+                    android:layout_width="26dp"
+                    android:layout_height="match_parent"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="切换拍摄模式"
+                    android:padding="6dp"
+                    android:src="@drawable/ic_chevron_down"
+                    app:tint="@color/text_primary" />
+            </LinearLayout>
         </LinearLayout>
 
         <!-- 底部信息行：拍摄计数 -->
