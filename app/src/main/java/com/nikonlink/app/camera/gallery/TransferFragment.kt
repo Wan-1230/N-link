@@ -18,11 +18,14 @@ import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.nikonlink.app.R
 import com.nikonlink.app.databinding.FragmentTransferBinding
 import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Locale
 import javax.inject.Inject
@@ -53,6 +56,13 @@ class TransferFragment : Fragment() {
     /** 模块 4.3：用户主动刷新后，数据合并完成时强制回列表顶部 */
     private var pendingScrollToTop = false
 
+    /**
+     * 需求 3：关闭「不重复下载已下载照片」后要回到原来的位置。
+     * 记的是**照片 handle**（不是 adapter 位置）—— 恢复后列表长度变了，位置会失效，
+     * 而 handle 稳定；找不到时退化为回顶部。
+     */
+    private var pendingRestoreAnchorHandle: Int? = null
+
     private val mediaPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
@@ -76,6 +86,7 @@ class TransferFragment : Fragment() {
         setupPullRefresh()
         setupActions()
         observe()
+        observeDownloadStats()
         // holdPages：首进相册页不逐页发射中间态（handle 原始序与倒序展示几乎逆序，
         // DiffUtil 会拖着视口来回跳动），等全量拉取完成后一次性提交排序后的最终列表
         viewModel.fetchPhotos(holdPages = true)
@@ -243,14 +254,32 @@ class TransferFragment : Fragment() {
                 if (enabled) R.color.on_primary else R.color.text_primary
             )
         )
-        renderSkipDownloadedChip(viewModel.skipDownloadedInMarks.value)
+        renderSkipDownloadedChip()
     }
 
-    /** 模块 4.2：「跳过已下载」按钮选中态渲染；仅已标记源可见 */
-    private fun renderSkipDownloadedChip(enabled: Boolean) {
+    /**
+     * 模块 4.2 + 2026-09-08（需求 2）：「不重复下载已下载照片」按钮选中态渲染。
+     *
+     * 可见性：已标记源（原逻辑）+ **相机照片源**（新增）。本地源仍隐藏——本地页
+     * 本身就是已下载集合，没有「跳过已下载」的语义。
+     *
+     * 选中态按源取自不同开关：已标记 → [TransferViewModel.skipDownloadedInMarks]（默认开），
+     * 相机 → [TransferViewModel.onlyNotDownloaded]（默认关，沿用相机页原有逻辑）。
+     */
+    private fun renderSkipDownloadedChip() {
         val btn = binding.btnSkipDownloaded
+        val source = viewModel.activeAlbum.value
         btn.visibility =
-            if (viewModel.activeAlbum.value == AlbumSource.MARKED) View.VISIBLE else View.GONE
+            if (source == AlbumSource.MARKED || source == AlbumSource.CAMERA) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
+        val enabled = if (source == AlbumSource.CAMERA) {
+            viewModel.onlyNotDownloaded.value
+        } else {
+            viewModel.skipDownloadedInMarks.value
+        }
         if (enabled) {
             // 开启过滤：黑底白字图标，一眼看出开关已拨到「跳过」
             btn.background = ContextCompat.getDrawable(requireContext(), R.drawable.bg_chip_selected)
@@ -401,10 +430,17 @@ class TransferFragment : Fragment() {
             }
         }
 
-        // 模块 4.2：「跳过已下载」开关，置于刷新键左侧；可见性与选中态由 renderSkipDownloadedChip 维护
+        // 模块 4.2（已标记源）+ 2026-09-08 需求 2/3（相机源）：同一按钮、按源切不同开关。
+        // 相机源：关闭（即将重新显示被隐藏的照片）前先记锚点，列表重发后回到原位置。
         binding.btnSkipDownloaded.pressEffect()
         binding.btnSkipDownloaded.setOnClickListener {
-            viewModel.setSkipDownloadedInMarks(!viewModel.skipDownloadedInMarks.value)
+            if (viewModel.activeAlbum.value == AlbumSource.CAMERA) {
+                val willShow = viewModel.onlyNotDownloaded.value
+                if (willShow) captureScrollAnchor()
+                viewModel.setOnlyNotDownloaded(!willShow)
+            } else {
+                viewModel.setSkipDownloadedInMarks(!viewModel.skipDownloadedInMarks.value)
+            }
         }
 
         // 排序入口：弹出下拉菜单，含「拍摄时间 / 文件类型」×「升序 / 降序」四项。
@@ -620,6 +656,7 @@ class TransferFragment : Fragment() {
                 binding.btnSort.visibility =
                     if (source == AlbumSource.MARKED) View.GONE else View.VISIBLE
                 renderNotDownloadedChip(viewModel.onlyNotDownloaded.value)
+                renderDownloadStats()
                 binding.tvMessage.text = when (source) {
                     AlbumSource.CAMERA -> "连接相机后查看相册"
                     AlbumSource.MARKED -> "暂无标记照片：在相机相册长按多选后点「标记」"
@@ -659,6 +696,21 @@ class TransferFragment : Fragment() {
                     )
                     // 模块 4.3：滚动复位必须在「最终（排序后）列表」submit 之后再执行，
                     // 否则会被后续提交再次移动视口（跳底→弹回的两段运动）
+                    // 需求 3：关闭隐藏开关后回到关闭前的第一个可见项（找不到则回顶部）
+                    pendingRestoreAnchorHandle?.let { anchor ->
+                        pendingRestoreAnchorHandle = null
+                        binding.gridPhotos.post {
+                            if (_binding == null) return@post
+                            // indexOfHandle 返回含日期标题行的 adapter 位置
+                            val index = adapter.indexOfHandle(anchor)
+                            val lm = binding.gridPhotos.layoutManager as? GridLayoutManager
+                            if (index >= 0 && lm != null) {
+                                lm.scrollToPositionWithOffset(index, 0)
+                            } else {
+                                binding.gridPhotos.scrollToPosition(0)
+                            }
+                        }
+                    }
                     if (pendingScrollToTop) {
                         pendingScrollToTop = false
                         binding.gridPhotos.post {
@@ -668,6 +720,21 @@ class TransferFragment : Fragment() {
                     binding.layoutEmpty.visibility =
                         if (list.isEmpty()) View.VISIBLE else View.GONE
                     if (list.isEmpty()) {
+                        // O4：筛选态空结果兜底——「未下载」筛选开着且列表为空，
+                        // 但原始列表有货 = 全部下载完了。自动关筛选并提示，
+                        // 避免「全下完之后反而看不到任何照片」。
+                        if (viewModel.activeAlbum.value == AlbumSource.CAMERA &&
+                            viewModel.onlyNotDownloaded.value &&
+                            viewModel.photoList.value.isNotEmpty()
+                        ) {
+                            viewModel.setOnlyNotDownloaded(false)
+                            Toast.makeText(
+                                requireContext(),
+                                "已全部下载，已显示全部照片",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            return@collect
+                        }
                         binding.tvMessage.text = when (viewModel.activeAlbum.value) {
                             AlbumSource.MARKED -> if (viewModel.markedRecords.value.isEmpty()) {
                                 "暂无标记照片：在相机相册长按多选后点「标记」"
@@ -701,15 +768,30 @@ class TransferFragment : Fragment() {
                 }
             }
             launch {
+                // B2：缩略图逐张到达，旧逻辑每来一张就全量 submit（主线程 buildItems + DiffUtil 各 O(n)），
+                // 快速滑动时几十张连发会把主线程占满 → 卡住 / 花屏 / 堆叠。
+                // 改为：先只重绘可见范围（十几项，廉价），静默 100ms 后再补一次全量 submit 收口。
+                var fullSubmitJob: Job? = null
                 viewModel.thumbnails.collect { thumbs ->
-                    adapter.submit(
-                        viewModel.uiPhotos.value,
-                        viewModel.selectedHandles.value,
-                        thumbs,
-                        viewModel.markedHandles.value,
-                        viewModel.downloadedHandles.value,
-                        groupByDate = shouldGroupByDate()
-                    )
+                    val lm = binding.gridPhotos.layoutManager as? GridLayoutManager
+                    val first = lm?.findFirstVisibleItemPosition() ?: -1
+                    val last = lm?.findLastVisibleItemPosition() ?: -1
+                    if (first >= 0 && last >= first) {
+                        adapter.notifyThumbRangeChanged(first, last - first + 1)
+                    }
+                    fullSubmitJob?.cancel()
+                    fullSubmitJob = launch {
+                        delay(THUMB_FULL_SUBMIT_DELAY_MS)
+                        if (_binding == null) return@launch
+                        adapter.submit(
+                            viewModel.uiPhotos.value,
+                            viewModel.selectedHandles.value,
+                            viewModel.thumbnails.value,
+                            viewModel.markedHandles.value,
+                            viewModel.downloadedHandles.value,
+                            groupByDate = shouldGroupByDate()
+                        )
+                    }
                 }
             }
             launch {
@@ -750,7 +832,7 @@ class TransferFragment : Fragment() {
                 }
             }
             launch {
-                viewModel.skipDownloadedInMarks.collect { renderSkipDownloadedChip(it) }
+                viewModel.skipDownloadedInMarks.collect { renderSkipDownloadedChip() }
             }
         }
 
@@ -873,6 +955,48 @@ class TransferFragment : Fragment() {
         }
     }
 
+    /** 需求 3：记下当前第一个可见照片的 handle，供关闭隐藏开关后恢复位置 */
+    private fun captureScrollAnchor() {
+        val layoutManager = binding.gridPhotos.layoutManager as? GridLayoutManager ?: return
+        val start = layoutManager.findFirstVisibleItemPosition()
+        if (start == RecyclerView.NO_POSITION) return
+        // adapter 位置含日期标题行，标题不是照片（itemAt 返回 null），向后找到第一个照片格
+        for (i in start until adapter.itemCount) {
+            val file = adapter.itemAt(i) ?: continue
+            pendingRestoreAnchorHandle = file.handle
+            return
+        }
+    }
+
+    /**
+     * O2：剩余下载进度 —— 「已下载 M/N · 剩余 K 张」。
+     * 只在**相机照片源**显示（本地页本就是已下载集合，无剩余概念）；下载中追加整体百分比。
+     */
+    private fun renderDownloadStats() {
+        if (_binding == null) return
+        val stats = viewModel.downloadStats.value
+        val camera = viewModel.activeAlbum.value == AlbumSource.CAMERA
+        val visible = camera && stats.total > 0
+        binding.tvDownloadStats.visibility = if (visible) View.VISIBLE else View.GONE
+        if (!visible) return
+        // 被「不重复下载已下载照片」隐藏的张数 = 剩余 K，两个功能互相印证
+        binding.tvDownloadStats.text = if (viewModel.transferState.value is TransferState.Downloading) {
+            "已下载 ${stats.downloaded}/${stats.total} · 剩余 ${stats.remaining} 张 · ${stats.percent}%"
+        } else {
+            "已下载 ${stats.downloaded}/${stats.total} · 剩余 ${stats.remaining} 张"
+        }
+    }
+
+    /** 收集剩余下载进度：数值变化与切源都要刷新 */
+    private fun observeDownloadStats() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.downloadStats.collect { renderDownloadStats() }
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.transferState.collect { renderDownloadStats() }
+        }
+    }
+
     private fun dp(value: Int): Int =
         TypedValue.applyDimension(
             TypedValue.COMPLEX_UNIT_DIP, value.toFloat(), resources.displayMetrics
@@ -892,5 +1016,11 @@ class TransferFragment : Fragment() {
     companion object {
         /** F1 大额保护阈值：全选超过该张数时批量下载前二次确认（PRD F1 AC-10） */
         private const val LARGE_SELECTION_WARNING = 200
+
+        /**
+         * B2：缩略图合并刷新窗口。窗口内只重绘可见范围，静默该时长后
+         * 再补一次全量 submit 收口（保证选中态/角标等最终一致）。
+         */
+        private const val THUMB_FULL_SUBMIT_DELAY_MS = 100L
     }
 }

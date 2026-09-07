@@ -103,6 +103,22 @@
             android:orientation="horizontal" />
     </HorizontalScrollView>
 
+    <!-- O2：剩余下载进度（已下载 M/N · 剩余 K 张）——仅相机照片源可见。
+         放在 chip 行下方、下载进度条上方，纵向线性约束，不与任何控件重叠。
+         注意：不能挂在 tvMessage 上——它在 layoutEmpty 空态内，列表非空时整个空态都是 GONE。 -->
+    <TextView
+        android:id="@+id/tvDownloadStats"
+        android:layout_width="0dp"
+        android:layout_height="40dp"
+        android:gravity="center_vertical|start"
+        android:layout_marginHorizontal="@dimen/page_margin"
+        android:textColor="@color/text_secondary"
+        android:textSize="13sp"
+        android:visibility="gone"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/chipScroll" />
+
     <!-- 下载确定进度条（0-100%） -->
     <ProgressBar
         android:id="@+id/progressDownload"
@@ -117,7 +133,7 @@
         android:visibility="gone"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/chipScroll" />
+        app:layout_constraintTop_toBottomOf="@id/tvDownloadStats" />
 
     <!-- 下拉刷新容器 + 影像网格：3 列等宽方形 -->
     <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
