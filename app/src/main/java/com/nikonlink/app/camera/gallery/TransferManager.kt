@@ -21,6 +21,10 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
+import com.nikonlink.app.device.ptp.MtpObjectPropListParser
+import com.nikonlink.app.device.ptp.MtpObjectProps
+import com.nikonlink.app.device.ptp.PtpDataResult
+import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.usb.UsbPtpManager
 import com.nikonlink.app.device.wifi_ap.WifiManager
@@ -79,8 +83,17 @@ class TransferManager @Inject constructor(
         private const val OBJECT_HANDLES_TIMEOUT_MS = 15000L
         private const val STORAGE_IDS_TIMEOUT_MS = 10000L
 
+        /**
+         * MTP 批量元数据（0x9805）整体兜底超时。
+         * 正常是一次亚秒级往返；超时只说明该机身不支持或载荷异常，直接回退逐个读取，
+         * 不做重试——回退路径本身就能给出完整结果，重试只会白白多等一轮。
+         */
+        private const val BATCH_PROP_LIST_TIMEOUT_MS = 15000L
+
         /** 缩略图单请求兜底超时（0x90C4 高清缩略图可达数百 KB，正常远快于该上限） */
         private const val THUMBNAIL_TIMEOUT_MS = 8000L
+        /** 快图（0x100A 小图）超时：几 KB 级载荷，给足 5s 已远超正常耗时 */
+        private const val THUMBNAIL_FAST_TIMEOUT_MS = 5000L
         private const val SPEED_WINDOW_MS = 2000L
         /** 自动下载：单次同步上限与去抖间隔（防止相机连拍时涌进大量任务） */
         private const val AUTO_SYNC_MAX_FILES = 20
@@ -336,9 +349,36 @@ class TransferManager @Inject constructor(
                     return@withContext PhotoListFetch(emptyList(), 0, 0, transportOnline = true)
                 }
 
-                // 按 PAGE_SIZE=18 分页读取 ObjectInfo，逐页回调；
-                // 页内并发窗口 4，缩短大列表元数据读取时间
                 var failedInfoCount = 0
+
+                // ---- 快路径：MTP 批量元数据，1 次往返取回全部属性 ----
+                // 逐个 GetObjectInfo 是 N 次串行往返，2000 个对象约 80~200 秒，
+                // 这是「相册持续转圈」的真正根因。批量路径把它压到 1 次往返。
+                val batchStart = System.currentTimeMillis()
+                val props = runCatching {
+                    withTimeoutOrNull(BATCH_PROP_LIST_TIMEOUT_MS) { transport.objectPropList() }
+                }.getOrNull()
+
+                if (!props.isNullOrEmpty()) {
+                    val byHandle = props.associateBy { it.handle }
+                    val batchFiles = handles.mapNotNull { h -> byHandle[h]?.let(::cameraFileFromProps) }
+                        .filter { it.format != CameraFileFormat.OTHER }
+                    val cost = System.currentTimeMillis() - batchStart
+                    if (batchFiles.isNotEmpty()) {
+                        Timber.tag(TAG).i(
+                            "photo list via MTP batch: ${batchFiles.size}/${handles.size} in ${cost}ms"
+                        )
+                        onPage?.invoke(batchFiles)
+                        return@withContext PhotoListFetch(
+                            batchFiles, handles.size,
+                            (handles.size - batchFiles.size).coerceAtLeast(0),
+                            transportOnline = true
+                        )
+                    }
+                    Timber.tag(TAG).w("MTP batch yielded no usable file (${cost}ms) -> fallback")
+                }
+
+                // ---- 回退路径：按 PAGE_SIZE 分页逐个读取 ObjectInfo（旧行为，页内并发 4）----
                 val result = mutableListOf<CameraFile>()
                 handles.chunked(PAGE_SIZE).forEach { page ->
                     val semaphore = Semaphore(OBJECT_INFO_CONCURRENCY)
@@ -405,6 +445,26 @@ class TransferManager @Inject constructor(
         return data.size > 2048 &&
             data.size >= 2 &&
             (data[0].toInt() and 0xFF) == 0xFF && (data[1].toInt() and 0xFF) == 0xD8
+    }
+
+    /**
+     * 快图通道：只取标准 GetThumb（0x100A 小图），用于**渐进式首屏**。
+     *
+     * 0x100A 是机身预生成的 ~160×120 小图，体积通常只有几 KB，单张往返远快于
+     * 0x90C4 高清预览（数百 KB）。渐进式策略先用它把网格填满、消除转圈，
+     * 再由 [fetchThumbnail] 在后台升级为高清——**最终展示仍是高清，画质不降低**，
+     * 只是把「等待高清」从阻塞式改成后台替换式。
+     */
+    suspend fun fetchThumbnailFast(handle: Int): ByteArray? {
+        return withContext(Dispatchers.IO) {
+            try {
+                withTimeoutOrNull(THUMBNAIL_FAST_TIMEOUT_MS) { currentTransport().thumbnail(handle) }
+                    ?.takeIf { it.size > 256 && it.size >= 2 && (it[0].toInt() and 0xFF) == 0xFF && (it[1].toInt() and 0xFF) == 0xD8 }
+            } catch (e: Exception) {
+                Timber.tag(TAG).d("fast thumbnail failed handle=$handle: ${e.message}")
+                null
+            }
+        }
     }
 
     /**
@@ -727,6 +787,28 @@ class TransferManager @Inject constructor(
             Timber.tag(TAG).e(e, "Failed to parse object info for handle=$handle")
             null
         }
+    }
+
+    /**
+     * 把 MTP 批量元数据（0x9805）条目转换成相册实体。
+     *
+     * 机身返回的属性集随机型而异，两个字段允许缺失并各有兜底：
+     * - 文件名缺失 → 传空串，改由 formatCode 判定格式（classifyFormat 已支持）
+     * - 时间缺失   → captureTimeMillis=null，按项目规则排在「有时间的文件」之后
+     */
+    private fun cameraFileFromProps(props: MtpObjectProps): CameraFile {
+        val name = props.fileName ?: ""
+        val formatCode = props.objectFormat ?: 0
+        return CameraFile(
+            handle = props.handle,
+            fileName = name,
+            size = props.objectSize ?: 0L,
+            formatCode = formatCode,
+            storageId = props.storageId ?: 0,
+            format = classifyFormat(formatCode, name),
+            captureTimeMillis = MtpObjectPropListParser.parseMtpDate(props.dateCreatedRaw)
+                ?: MtpObjectPropListParser.parseMtpDate(props.dateModifiedRaw)
+        )
     }
 
     /**
@@ -1388,6 +1470,11 @@ private interface CameraTransport {
     suspend fun storageIds(): List<Int>
     suspend fun objectHandles(storageId: Int): List<Int>
     suspend fun objectInfo(handle: Int): ByteArray?
+    /**
+     * MTP 批量元数据（0x9805 GetObjectPropList）：一次往返取回全部对象的属性。
+     * 返回 null 表示该通道/机身不支持，调用方回退到逐个 [objectInfo]。
+     */
+    suspend fun objectPropList(): List<MtpObjectProps>?
     suspend fun getObject(
         handle: Int,
         onProgress: ((Long, Long) -> Unit)? = null,
@@ -1412,6 +1499,13 @@ private class PtpTransport(
     override suspend fun objectHandles(storageId: Int): List<Int> =
         ptp.getObjectHandles(storageId)
     override suspend fun objectInfo(handle: Int): ByteArray? = ptp.getObjectInfo(handle)
+    override suspend fun objectPropList(): List<MtpObjectProps>? = runCatching {
+        val result = ptp.sendCommandWithData(
+            PtpConstants.OP_MTP_GET_OBJECT_PROP_LIST, listOf(-1, 0, -1, 0, -1)
+        )
+        val data = (result as? PtpDataResult.Success)?.data ?: return null
+        MtpObjectPropListParser.parse(data)
+    }.getOrNull()
     override suspend fun getObject(handle: Int, onProgress: ((Long, Long) -> Unit)?, sink: OutputStream?): ByteArray? =
         ptp.getObject(handle, onProgress, sink)
     override suspend fun thumbnail(handle: Int): ByteArray? = ptp.getThumbnail(handle)
@@ -1429,6 +1523,7 @@ private class UsbTransport(
     override suspend fun objectHandles(storageId: Int): List<Int> =
         usb.getObjectHandles(storageId)
     override suspend fun objectInfo(handle: Int): ByteArray? = usb.getObjectInfo(handle)
+    override suspend fun objectPropList(): List<MtpObjectProps>? = usb.getObjectPropList()
     // USB 事务层流式重组：sink 直接吃数据阶段字节流，内存 O(64KB)
     override suspend fun getObject(handle: Int, onProgress: ((Long, Long) -> Unit)?, sink: OutputStream?): ByteArray? =
         usb.getObject(handle, onProgress, sink)

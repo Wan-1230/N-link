@@ -52,6 +52,23 @@ object PtpConstants {
     const val OP_SET_DEVICE_PROP_VALUE = 0x1016
     const val OP_GET_PARTIAL_OBJECT = 0x101B
 
+    // ---- MTP（Media Transfer Protocol）扩展操作 ----
+    // MTP 是 PTP 的超集（PTP over USB 的「媒体传输」profile），尼康机身在 USB 连接
+    // 时普遍同时暴露 MTP 操作。价值在于 0x9805 GetObjectPropList：
+    //   一次事务即可取回**全部对象**的指定属性（文件名/大小/日期/格式）。
+    // 对比逐个 GetObjectInfo（0x1008）的 N 次往返——批量路径把元数据读取从
+    // 「N × RTT」压缩到「1 × RTT」，是相册首屏加载速度的胜负手。
+    // 参考：PixCake 内嵌的 com.truesight.cameraptp SDK 同样使用 MtpGetObjectPropList。
+    const val OP_MTP_GET_OBJECT_PROPS_SUPPORTED = 0x9801
+    const val OP_MTP_GET_OBJECT_PROP_DESC = 0x9802
+    const val OP_MTP_GET_OBJECT_PROP_VALUE = 0x9803
+    const val OP_MTP_SET_OBJECT_PROP_VALUE = 0x9804
+    const val OP_MTP_GET_OBJECT_PROP_LIST = 0x9805
+
+    const val RESPONSE_MTP_INVALID_OBJECT_PROP_CODE = 0xA801
+    const val RESPONSE_MTP_INVALID_OBJECT_PROP_FORMAT = 0xA802
+    const val RESPONSE_MTP_SPEC_BY_FORMAT_UNSUPPORTED = 0xA805
+
     // Nikon Vendor Extension Operations
     const val OP_NIKON_START_LIVE_VIEW = 0x9201
     const val OP_NIKON_END_LIVE_VIEW = 0x9202
@@ -255,6 +272,209 @@ object PtpConstants {
     // 不能用 64KB 之类的固定值截断，否则命令通道会失步。
     const val MAX_PACKET_SIZE = Int.MAX_VALUE
     const val PROTOCOL_VERSION = 0x00000100  // v1.0
+}
+
+/**
+ * MTP 对象属性码（ObjectPropCode）。
+ *
+ * 用于 0x9805 GetObjectPropList 的批量元数据读取。只取相册真正需要的
+ * 几个属性即可还原 CameraFile；不认识的条目在解析时跳过。
+ */
+object MtpObjectProp {
+    const val STORAGE_ID = 0xDC01
+    const val OBJECT_FORMAT = 0xDC02
+    const val PROTECTION_STATUS = 0xDC03
+    const val OBJECT_SIZE = 0xDC04
+    const val ASSOCIATION_TYPE = 0xDC05
+    const val OBJECT_FILE_NAME = 0xDC07
+    const val DATE_CREATED = 0xDC08
+    const val DATE_MODIFIED = 0xDC09
+    const val PARENT_OBJECT = 0xDC0B
+    const val PERSISTENT_UID = 0xDC41
+
+    /** 0x9805 的参数取值：请求全部属性 */
+    const val ALL = -1  // 0xFFFFFFFF
+}
+
+/**
+ * MTP 数据类型（DataType）——决定 0x9805 返回值的长度与读取方式。
+ * 数组类型以 0x4000 为基（如 0x4006 = AINT32），前 4 字节是元素个数。
+ */
+object MtpDataType {
+    const val UNDEF = 0x0000
+    const val INT8 = 0x0001
+    const val UINT8 = 0x0002
+    const val INT16 = 0x0003
+    const val UINT16 = 0x0004
+    const val INT32 = 0x0005
+    const val UINT32 = 0x0006
+    const val INT64 = 0x0007
+    const val UINT64 = 0x0008
+    const val INT128 = 0x0009
+    const val UINT128 = 0x000A
+    const val ARRAY_MASK = 0x4000
+    const val STRING = 0xFFFF
+}
+
+/**
+ * 单个对象的批量元数据（由 0x9805 GetObjectPropList 解析得到）。
+ * 字段均为可选——机身返回的属性集随机型/模式而异，缺哪一列就用对应的兜底策略。
+ */
+data class MtpObjectProps(
+    val handle: Int,
+    val storageId: Int? = null,
+    val objectFormat: Int? = null,
+    val objectSize: Long? = null,
+    val fileName: String? = null,
+    val dateCreatedRaw: String? = null,
+    val dateModifiedRaw: String? = null,
+    val parentObject: Int? = null
+) {
+    /** 目录（Association）而非照片：相册列表应当过滤掉 */
+    val isAssociation: Boolean get() = objectFormat == 0x3001 || objectFormat == 0x3000
+}
+
+/**
+ * 0x9805 GetObjectPropList 响应解析器。
+ *
+ * 载荷是**没有 count 前缀**的连续条目流：
+ *   u32 ObjectHandle + u16 PropCode + u16 DataType + Value(变长)，连续 N 条
+ * 因此只能顺序解码直到缓冲区耗尽；遇到无法识别的 DataType 即判为不可信并整体放弃
+ * （交由调用方回退到逐个 GetObjectInfo），避免解析错位产生脏数据。
+ */
+object MtpObjectPropListParser {
+
+    /**
+     * @return 解析结果；返回 null 表示载荷不可信（调用方应回退）。
+     */
+    fun parse(payload: ByteArray): List<MtpObjectProps>? {
+        if (payload.size < 8) return null
+        val buffer = java.nio.ByteBuffer.wrap(payload).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        // 按 handle 归并：同一对象的多个属性条目分散在流中
+        val acc = LinkedHashMap<Int, MutableBuilder>()
+        var entries = 0
+
+        while (buffer.remaining() >= 8) {
+            val handle = buffer.int
+            val propCode = buffer.short.toInt() and 0xFFFF
+            val dataType = buffer.short.toInt() and 0xFFFF
+
+            val value: Any? = readValue(buffer, dataType) ?: return null
+            val b = acc.getOrPut(handle) { MutableBuilder(handle) }
+            when (propCode) {
+                MtpObjectProp.STORAGE_ID -> (value as? Number)?.let { b.storageId = it.toInt() }
+                MtpObjectProp.OBJECT_FORMAT -> (value as? Number)?.let { b.objectFormat = it.toInt() }
+                MtpObjectProp.OBJECT_SIZE -> (value as? Number)?.let { b.objectSize = it.toLong() }
+                MtpObjectProp.OBJECT_FILE_NAME -> (value as? String)?.let { b.fileName = it }
+                MtpObjectProp.DATE_CREATED -> (value as? String)?.let { b.dateCreated = it }
+                MtpObjectProp.DATE_MODIFIED -> (value as? String)?.let { b.dateModified = it }
+                MtpObjectProp.PARENT_OBJECT -> (value as? Number)?.let { b.parentObject = it.toInt() }
+                else -> Unit // 其余属性（保护状态、PersistentUID 等）相册用不到，跳过
+            }
+            entries++
+            if (entries > 200_000) return null // 异常膨胀，判为脏数据
+        }
+
+        if (acc.isEmpty()) return null
+        return acc.values.map { it.build() }
+    }
+
+    /** 按 DataType 读一个值；无法识别/越界返回 null（触发整体放弃）。 */
+    private fun readValue(buffer: java.nio.ByteBuffer, dataType: Int): Any? {
+        return try {
+            when (dataType) {
+                MtpDataType.INT8, MtpDataType.UINT8 ->
+                    if (buffer.remaining() >= 1) buffer.get().toLong() else null
+                MtpDataType.INT16, MtpDataType.UINT16 ->
+                    if (buffer.remaining() >= 2) buffer.short.toLong() else null
+                MtpDataType.INT32, MtpDataType.UINT32 ->
+                    if (buffer.remaining() >= 4) buffer.int.toLong() else null
+                MtpDataType.INT64, MtpDataType.UINT64 ->
+                    if (buffer.remaining() >= 8) buffer.long else null
+                MtpDataType.INT128, MtpDataType.UINT128 -> {
+                    if (buffer.remaining() < 16) return null
+                    repeat(16) { buffer.get() }
+                    0L
+                }
+                MtpDataType.STRING -> readMtpString(buffer)
+                else -> {
+                    if (dataType and MtpDataType.ARRAY_MASK != 0) readArray(buffer, dataType and 0x0FFF)
+                    else null // 未知标量类型：宁可放弃也不猜
+                }
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** 数组类型：u32 元素个数 + 元素×N，整体跳过（相册不需要） */
+    private fun readArray(buffer: java.nio.ByteBuffer, baseType: Int): Any? {
+        if (buffer.remaining() < 4) return null
+        val count = buffer.int
+        if (count < 0 || count > 4096) return null
+        val unit = when (baseType) {
+            MtpDataType.INT8, MtpDataType.UINT8 -> 1
+            MtpDataType.INT16, MtpDataType.UINT16 -> 2
+            MtpDataType.INT32, MtpDataType.UINT32 -> 4
+            MtpDataType.INT64, MtpDataType.UINT64 -> 8
+            else -> return null
+        }
+        val bytes = count * unit
+        if (buffer.remaining() < bytes) return null
+        repeat(bytes) { buffer.get() }
+        return 0L
+    }
+
+    /**
+     * MTP 字符串：u8 字符数 N（含结尾 null） + N×UTF-16LE 字符。
+     * 部分机身会多给一个 u16 终止符，属于规范内的差异，这里兼容丢弃。
+     */
+    private fun readMtpString(buffer: java.nio.ByteBuffer): String? {
+        if (buffer.remaining() < 1) return null
+        val count = buffer.get().toInt() and 0xFF
+        if (count == 0) return ""
+        if (buffer.remaining() < count * 2) return null
+        val chars = CharArray(count)
+        repeat(count) { chars[it] = buffer.short.toInt().toChar() }
+        return chars.concatToString().trim('\u0000')
+    }
+
+    private class MutableBuilder(val handle: Int) {
+        var storageId: Int? = null
+        var objectFormat: Int? = null
+        var objectSize: Long? = null
+        var fileName: String? = null
+        var dateCreated: String? = null
+        var dateModified: String? = null
+        var parentObject: Int? = null
+        fun build() = MtpObjectProps(
+            handle, storageId, objectFormat, objectSize, fileName, dateCreated, dateModified, parentObject
+        )
+    }
+
+    /**
+     * MTP 日期字符串 → 毫秒时间戳。
+     * 支持 "YYYYMMDDThhmmss" 与 "YYYYMMDDThhmmss.s" 两种形态；解析失败返回 null，
+     * 由调用方决定兜底（本项目按「时间缺失排末尾」处理）。
+     */
+    fun parseMtpDate(raw: String?): Long? {
+        val s = raw ?: return null
+        return try {
+            val y = s.substring(0, 4).toInt()
+            val mo = s.substring(4, 6).toInt()
+            val d = s.substring(6, 8).toInt()
+            if (s.length < 15) return null
+            val h = s.substring(9, 11).toInt()
+            val mi = s.substring(11, 13).toInt()
+            val sec = s.substring(13, 15).toInt()
+            val cal = java.util.Calendar.getInstance()
+            cal.set(y, mo - 1, d, h, mi, sec)
+            cal.set(java.util.Calendar.MILLISECOND, 0)
+            cal.timeInMillis
+        } catch (e: Exception) {
+            null
+        }
+    }
 }
 
 /**

@@ -31,6 +31,8 @@ import com.nikonlink.app.camera.params.CameraParam
 import com.nikonlink.app.camera.params.CameraParamsViewModel
 import com.nikonlink.app.camera.params.ParamApplyResult
 import com.nikonlink.app.camera.params.resolvePickerIndex
+import com.nikonlink.app.device.connect.ConnectionManager
+import com.nikonlink.app.device.usb.UsbPtpManager
 import com.nikonlink.app.shared.common.AppSettings
 import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
@@ -39,6 +41,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Tab3 遥控拍摄（黑白极简）
@@ -58,6 +62,10 @@ class RemoteFragment : Fragment() {
     /** 优化项 4：直方图开关状态持久化（顺手保持跨页面/重启一致） */
     @Inject lateinit var settings: AppSettings
 
+    /** 相机连接判定（USB / WiFi PTP 任一通道连通即视为可远程控制） */
+    @Inject lateinit var connectionManager: ConnectionManager
+    @Inject lateinit var usbPtpManager: UsbPtpManager
+
     private var videoMode = false
     private var recording = false
     private var recordTimerJob: Job? = null
@@ -65,6 +73,15 @@ class RemoteFragment : Fragment() {
 
     /** 参数单元格容器（PRD D3：B 门曝光中统一禁用，点击与按压反馈一并关闭） */
     private val paramCellContainers = mutableListOf<LinearLayout>()
+
+    /** 「模式」参数单元格引用（用于按连接状态置灰） */
+    private var modeCell: LinearLayout? = null
+
+    /** B 门曝光中标记（PRD D3，与 applyBulbLock 同步） */
+    private var bulbBusy = false
+
+    /** 模式切换进行中标记：防止重复下发，下发期间入口置灰 */
+    private var modeSwitching = false
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentRemoteBinding.inflate(inflater, container, false)
@@ -77,6 +94,8 @@ class RemoteFragment : Fragment() {
         setupParamRow()
         setupShutter()
         observe()
+        // 初始按当前连接状态置灰「模式」入口（未连接时不可点）
+        updateModeCellState()
         // 轻量一次性读取，避免抢占 PTP 通道（P0-1 修复经验）
         viewModel.refreshStatus()
         paramsViewModel.readAll()
@@ -292,6 +311,7 @@ class RemoteFragment : Fragment() {
             }
             paramCells[label] = cell.second
             paramCellContainers.add(cell.first)
+            if (label == "模式") modeCell = cell.first
             binding.paramRow.addView(cell.first)
             cell.first.setOnClickListener { onParamClick(label, flow.value) }
 
@@ -392,35 +412,99 @@ class RemoteFragment : Fragment() {
                     onConfirm = { idx -> paramsViewModel.setWhiteBalance(presets[idx].first) }
                 )
             }
-            "模式" -> showModePicker(param)
+            "模式" -> showModePicker()
         }
     }
 
     /**
-     * 拍摄模式远程切换（0x500E，模块 2：失败显式回调）。
-     * 机身不接受时给出可操作提示；UI 展示值仍以 exposureProgram 回读流为准（单一数据源）。
+     * 拍摄模式远程切换（0x500E，模块 2：失败显式回调 + 下发后回读校验）。
+     * 与全屏监看页共用同一套档位与回读流（单一数据源）：列表预选当前模式、
+     * 下发中禁用重复点击并显示 loading、下发后等 0x500E 快轮询回读，
+     * 3 秒内未切过去则明确提示失败，UI 仍以 exposureProgram 回读流为准。
      */
-    private fun showModePicker(param: CameraParam) {
+    private fun showModePicker() {
+        // 边界：未连接 / 切换进行中直接拦截（入口已置灰，这里再兜一层）
+        if (!isCameraPtpConnected()) {
+            Toast.makeText(requireContext(), "相机未连接，无法切换拍摄模式", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (modeSwitching) return
         val modes = paramsViewModel.exposureProgramModes
+        if (modes.isEmpty()) {
+            Toast.makeText(requireContext(), "暂无可切换的拍摄模式", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val current = paramsViewModel.exposureProgram.value
+        val checkedIndex = modes.indexOfFirst { it.first == current.rawValue }
         val labels = modes.map { it.second }.toTypedArray()
         MaterialAlertDialogBuilder(requireContext())
             .setTitle("拍摄模式（远程切换）")
-            .setMessage("当前: ${param.currentValue.ifBlank { "--" }}")
-            .setSingleChoiceItems(labels, -1) { dialog, which ->
+            .setMessage("当前: ${current.currentValue.ifBlank { "--" }}")
+            .setSingleChoiceItems(labels, checkedIndex) { dialog, which ->
+                if (modeSwitching) return@setSingleChoiceItems
                 dialog.dismiss()
-                viewLifecycleOwner.lifecycleScope.launch {
-                    val ok = paramsViewModel.setExposureProgramResult(modes[which].first)
-                    if (_binding == null) return@launch
-                    Toast.makeText(
-                        requireContext(),
-                        if (ok) "已切换到 ${modes[which].second}"
-                        else "相机拒绝切换（模式可能只读），请用机身拨盘调整",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
+                applyExposureProgram(modes[which].first, modes[which].second)
             }
             .setNegativeButton("取消", null)
             .show()
+    }
+
+    /**
+     * 下发拍摄模式并做回读校验（与全屏监看页逻辑一致）。
+     * 写入被拒 → 提示参数锁定/只读；写入成功但 3 秒内 0x500E 没切过去 → 提示相机未响应，
+     * 二者都显式反馈，不把 UI 显示成已切换（显示值由回读流驱动）。
+     */
+    private fun applyExposureProgram(target: Int, label: String) {
+        modeSwitching = true
+        updateModeCellState()
+        Toast.makeText(requireContext(), "正在切换拍摄模式…", Toast.LENGTH_SHORT).show()
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val ok = paramsViewModel.setExposureProgramResult(target)
+                if (!ok) {
+                    if (_binding == null) return@launch
+                    Toast.makeText(
+                        requireContext(),
+                        "相机拒绝切换（参数可能已锁定或模式只读），请用机身拨盘调整",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@launch
+                }
+                val confirmed = withTimeoutOrNull(3000) {
+                    paramsViewModel.exposureProgram.first { it.rawValue == target }
+                } != null
+                if (_binding == null) return@launch
+                if (confirmed) {
+                    Toast.makeText(requireContext(), "已切换到 $label", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(
+                        requireContext(),
+                        "相机未响应：当前模式下可能不支持远程切换，请确认后用机身拨盘调整",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } finally {
+                modeSwitching = false
+                updateModeCellState()
+            }
+        }
+    }
+
+    /** 相机 PTP 通道是否可用（USB 或 WiFi PTP 任一连通） */
+    private fun isCameraPtpConnected(): Boolean =
+        usbPtpManager.isConnected() || connectionManager.getPtpSession().isConnected()
+
+    /**
+     * 根据连接状态 / B 门锁定 / 切换中标记 / 模式列表是否为空，更新「模式」入口可用性。
+     * 未连接、B 门曝光中、切换进行中、列表为空 → 置灰且点击无效。
+     */
+    private fun updateModeCellState() {
+        val cell = modeCell ?: return
+        val enabled = isCameraPtpConnected() && !bulbBusy && !modeSwitching
+            && paramsViewModel.exposureProgramModes.isNotEmpty()
+        cell.isEnabled = enabled
+        cell.isClickable = enabled
+        cell.alpha = if (enabled) 1f else 0.4f
     }
 
     /**
@@ -881,10 +965,19 @@ class RemoteFragment : Fragment() {
             }
         }
 
+        // 连接状态联动「模式」入口可用性（USB / WiFi PTP 任一通道变化都重新评估）
+        viewLifecycleOwner.lifecycleScope.launch {
+            connectionManager.connectionState.collect { updateModeCellState() }
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            usbPtpManager.usbState.collect { updateModeCellState() }
+        }
+
     }
 
     /** PRD D3：B 门曝光中禁用参数滚轮入口与其它拍摄动作（半透明 + 点击无效） */
     private fun applyBulbLock(busy: Boolean) {
+        bulbBusy = busy
         paramCellContainers.forEach { cell ->
             cell.isEnabled = !busy
             cell.isClickable = !busy
@@ -896,6 +989,8 @@ class RemoteFragment : Fragment() {
                 view.isClickable = !busy
                 view.alpha = if (busy) 0.4f else 1f
             }
+        // B 门锁定变化影响「模式」入口可用性（连接/切换态不变，仅叠加 busy）
+        updateModeCellState()
         if (!busy && _binding != null) {
             renderActionModeLabel()
         }

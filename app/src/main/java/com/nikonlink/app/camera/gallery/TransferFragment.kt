@@ -44,7 +44,6 @@ class TransferFragment : Fragment() {
     private lateinit var adapter: PhotoGridAdapter
     private val chipViews = mutableMapOf<PhotoFilter, TextView>()
     private var chipNotDownloaded: TextView? = null
-    private var chipSkipDownloaded: TextView? = null
     private var multiSelectMode = false
     private var lastToastMsg: String? = null
 
@@ -53,12 +52,6 @@ class TransferFragment : Fragment() {
 
     /** 模块 4.3：用户主动刷新后，数据合并完成时强制回列表顶部 */
     private var pendingScrollToTop = false
-
-    /**
-     * 排序锚点：切换排序前记下首屏第一项的 handle，
-     * 列表重排后把它滚回视野顶部，用户不会「被扔回列表开头」。
-     */
-    private var scrollAnchorHandle: Int? = null
 
     private val mediaPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -113,8 +106,13 @@ class TransferFragment : Fragment() {
                 } else if (viewModel.activeAlbum.value == AlbumSource.LOCAL) {
                     openLocalFile(file)
                 } else {
-                    // 进入全屏预览页（右推入转场，由主题 windowAnimationStyle 提供）
-                    PreviewActivity.start(requireContext(), file)
+                    // 进入全屏预览页（右推入转场，由主题 windowAnimationStyle 提供）。
+                    // 传**整组列表 + 起始位置**，预览页才能左右滑动切换上一张/下一张。
+                    // 注意不能用回调里的 position——它是含日期分组标题行的 adapter 位置，
+                    // 与 uiPhotos 的索引不是一回事；按 handle 反查才是可靠位置。
+                    val list = viewModel.uiPhotos.value
+                    val startPos = list.indexOfFirst { it.handle == file.handle }.coerceAtLeast(0)
+                    PreviewActivity.start(requireContext(), list, startPos)
                 }
             },
             onItemLongClick = { file, position ->
@@ -215,24 +213,6 @@ class TransferFragment : Fragment() {
         }
         chipNotDownloaded = notDownloadedChip
         binding.chipRow.addView(notDownloadedChip)
-
-        // v1.0.2 反馈：「跳过已下载」移到底部独立行（albumTabRow 容器内、三栏 Tab 上方，
-        // 仅已标记源可见）——顶部 chip 行在已标记源下位置隐蔽且与日期头视觉重叠
-        val skipDownloadedChip = TextView(requireContext()).apply {
-            text = "跳过已下载"
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            maxLines = 1
-            setPadding(dp(16), dp(7), dp(16), dp(7))
-            layoutParams = android.widget.LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-            setOnClickListener {
-                viewModel.setSkipDownloadedInMarks(!viewModel.skipDownloadedInMarks.value)
-            }
-            pressEffect()
-        }
-        chipSkipDownloaded = skipDownloadedChip
-        binding.chipSkipRow.addView(skipDownloadedChip)
     }
 
     private fun renderChips(current: PhotoFilter) {
@@ -264,20 +244,29 @@ class TransferFragment : Fragment() {
         renderSkipDownloadedChip(viewModel.skipDownloadedInMarks.value)
     }
 
-    /** 模块 4.2：「跳过已下载」chip 选中态渲染；仅已标记源可见 */
+    /** 模块 4.2：「跳过已下载」按钮选中态渲染；仅已标记源可见 */
     private fun renderSkipDownloadedChip(enabled: Boolean) {
-        val chip = chipSkipDownloaded ?: return
-        chip.visibility =
+        val btn = binding.btnSkipDownloaded
+        btn.visibility =
             if (viewModel.activeAlbum.value == AlbumSource.MARKED) View.VISIBLE else View.GONE
-        val prefix = if (enabled) "✓ " else ""
-        chip.text = "${prefix}跳过已下载"
-        chip.setBackgroundResource(if (enabled) R.drawable.bg_chip_selected else R.drawable.bg_chip)
-        chip.setTextColor(
-            ContextCompat.getColor(
-                requireContext(),
-                if (enabled) R.color.on_primary else R.color.text_primary
-            )
+        if (enabled) {
+            // 开启过滤：黑底白字图标，一眼看出开关已拨到「跳过」
+            btn.background = ContextCompat.getDrawable(requireContext(), R.drawable.bg_chip_selected)
+            btn.imageTintList = ContextCompat.getColorStateList(requireContext(), R.color.on_primary)
+        } else {
+            // 关闭：透明背景 + 黑色图标（与 btnRefresh 一致，保留按压涟漪）
+            btn.background = skipBtnBorderlessBg
+            btn.imageTintList = ContextCompat.getColorStateList(requireContext(), R.color.text_primary)
+        }
+    }
+
+    /** 「跳过已下载」关闭态背景：复用系统 borderless 按压涟漪，与 btnRefresh 一致 */
+    private val skipBtnBorderlessBg: android.graphics.drawable.Drawable? by lazy {
+        val tv = android.util.TypedValue()
+        requireContext().theme.resolveAttribute(
+            android.R.attr.selectableItemBackgroundBorderless, tv, true
         )
+        ContextCompat.getDrawable(requireContext(), tv.resourceId)
     }
 
     private fun setupAlbumTabs() {
@@ -410,6 +399,12 @@ class TransferFragment : Fragment() {
             }
         }
 
+        // 模块 4.2：「跳过已下载」开关，置于刷新键左侧；可见性与选中态由 renderSkipDownloadedChip 维护
+        binding.btnSkipDownloaded.pressEffect()
+        binding.btnSkipDownloaded.setOnClickListener {
+            viewModel.setSkipDownloadedInMarks(!viewModel.skipDownloadedInMarks.value)
+        }
+
         // 排序入口：弹出下拉菜单，含「拍摄时间 / 文件类型」×「升序 / 降序」四项。
         // 只改展示顺序，不重新拉取列表；相机相册与本地相册都可用（本地时间取 MediaStore 的 DATE_TAKEN）。
         binding.btnSort.pressEffect()
@@ -510,45 +505,14 @@ class TransferFragment : Fragment() {
         popup.setOnMenuItemClickListener { item ->
             val option = AlbumSort.OPTIONS.getOrNull(item.itemId - 1) ?: return@setOnMenuItemClickListener false
             if (option == current) return@setOnMenuItemClickListener true
-            // 先记锚点再改排序：重排后把这张图滚回原来的位置
-            captureScrollAnchor()
+            // 切换排序后始终回列表顶部（而非记录锚点）：排序维度变化时分组结构会重排，
+            // 若沿用锚点会把同项推到很靠后、表现为「翻到尾页」。复用 pendingScrollToTop
+            // 机制，在最终列表 submit 之后 post{scrollToPosition(0)}，避免「跳底再弹回」。
+            pendingScrollToTop = true
             viewModel.setSort(option)
             true
         }
         popup.show()
-    }
-
-    /**
-     * 记录当前首屏第一项作为排序后的滚动锚点。
-     *
-     * 网格现在是「标题行 + 照片」的扁平序列：首屏第一项是日期标题时，
-     * 取它后面那一张照片作锚点（标题行本身不参与排序，不能当锚）。
-     */
-    private fun captureScrollAnchor() {
-        val lm = binding.gridPhotos.layoutManager as? GridLayoutManager ?: return
-        val position = lm.findFirstVisibleItemPosition()
-        scrollAnchorHandle = adapter.itemAt(position)?.handle ?: adapter.itemAt(position + 1)?.handle
-    }
-
-    /**
-     * 列表刷新后把锚点项滚回视野顶部。
-     *
-     * 只在存在待恢复锚点时动作一次并立即清空，后续的缩略图加载、
-     * 选中态变化等常规刷新都不受影响。锚点文件被筛选掉时（找不到）不做滚动。
-     * 滚动放到 post 里执行，等 DiffUtil 的更新派发完成后再定位。
-     * 下标用 [PhotoGridAdapter.indexOfHandle] 换算，因为扁平序列里插了日期标题行。
-     */
-    private fun restoreScrollAnchor(list: List<CameraFile>) {
-        val handle = scrollAnchorHandle ?: return
-        scrollAnchorHandle = null
-        if (list.none { it.handle == handle }) return
-        val index = adapter.indexOfHandle(handle)
-        if (index < 0) return
-        binding.gridPhotos.post {
-            if (_binding == null) return@post
-            (binding.gridPhotos.layoutManager as? GridLayoutManager)
-                ?.scrollToPositionWithOffset(index, 0)
-        }
     }
 
     private fun shareLocalSelected() {
@@ -713,7 +677,6 @@ class TransferFragment : Fragment() {
                             AlbumSource.LOCAL -> "尚未下载照片到手机"
                         }
                     }
-                    restoreScrollAnchor(list)
                 }
             }
             launch {
@@ -745,6 +708,19 @@ class TransferFragment : Fragment() {
                         viewModel.downloadedHandles.value,
                         groupByDate = shouldGroupByDate()
                     )
+                }
+            }
+            launch {
+                // 渐进式缩略图：高清替换小图时 handle 集合不变，Set 相等不会触发上面的流，
+                // 因此单独监听升级计数，只重绘**可见范围**（十几项），避免全量 DiffUtil。
+                viewModel.thumbUpgradeTick.collect { tick ->
+                    if (tick == 0L) return@collect
+                    val lm = binding.gridPhotos.layoutManager as? GridLayoutManager ?: return@collect
+                    val first = lm.findFirstVisibleItemPosition()
+                    val last = lm.findLastVisibleItemPosition()
+                    if (first >= 0 && last >= first) {
+                        adapter.notifyItemRangeChanged(first, last - first + 1)
+                    }
                 }
             }
             launch {
