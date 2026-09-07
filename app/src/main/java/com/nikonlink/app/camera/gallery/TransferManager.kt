@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -1357,11 +1358,55 @@ class TransferManager @Inject constructor(
             contentValues.put(MediaStore.Images.Media.IS_PENDING, 0)
             resolver.update(uri, contentValues, null, null)
 
+            // B5/O3：补一次媒体库扫描。
+            // MediaStore.insert + IS_PENDING=0 只保证文件进了媒体库，部分机型/相册 App
+            // （Google 相册等）要等下一次全盘扫描才出现，表现为「App 里已下载，系统相册
+            // 要手动刷新才看得到」。这里主动通知一次，让新照片即时可见。
+            notifyMediaScanner(uri, relativePath, fileName)
+
             Timber.tag(TAG).i("Saved to MediaStore: $fileName")
             uri.toString()
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Failed to save to MediaStore")
             null
+        }
+    }
+
+    /**
+     * B5/O3：通知系统媒体库扫描刚落盘的文件。
+     *
+     * 双保险：① 能拼出真实路径就走 [MediaScannerConnection.scanFile]（最可靠）；
+     * ② 拿不到路径时退化为 `ACTION_MEDIA_SCANNER_SCAN_FILE` 广播携带 Uri。
+     * 扫描失败不影响下载结果，只记警告。
+     */
+    private fun notifyMediaScanner(uri: Uri, relativePath: String, fileName: String) {
+        try {
+            // relativePath 形如 "DCIM/N-Link" 或 "Download/N-Link"
+            val top = relativePath.substringBefore("/")
+            val sub = relativePath.substringAfter("/", "")
+            val dir = if (sub.isEmpty()) {
+                Environment.getExternalStoragePublicDirectory(top)
+            } else {
+                File(Environment.getExternalStoragePublicDirectory(top), sub)
+            }
+            val realFile = File(dir, fileName)
+            if (realFile.exists()) {
+                MediaScannerConnection.scanFile(
+                    context,
+                    arrayOf(realFile.absolutePath),
+                    arrayOf(getMimeType(fileName)),
+                    null
+                )
+                Timber.tag(TAG).i("MediaScanner requested: ${realFile.absolutePath}")
+            } else {
+                @Suppress("DEPRECATION")
+                context.sendBroadcast(
+                    Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, uri)
+                )
+                Timber.tag(TAG).i("MediaScanner broadcast fallback: $uri")
+            }
+        } catch (e: Exception) {
+            Timber.tag(TAG).w(e, "Failed to notify media scanner")
         }
     }
 

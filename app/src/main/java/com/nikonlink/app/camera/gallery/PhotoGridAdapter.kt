@@ -88,6 +88,20 @@ class PhotoGridAdapter(
     val currentList: List<CameraFile>
         get() = items.mapNotNull { (it as? PhotoGridItem.Photo)?.file }
 
+    /**
+     * B2：只重绘指定范围的**缩略图**（局部 payload 刷新，不走全量 DiffUtil）。
+     *
+     * 背景：缩略图是逐张到达的，旧逻辑每来一张就 `submit()` 一次 —— 主线程
+     * `buildItems` O(n) + `DiffUtil` O(n)，快速滑动时几十张连发会把主线程占满，
+     * 表现为卡住 / 花屏 / 堆叠。改为批量到达时只重绘可见的十几项。
+     */
+    fun notifyThumbRangeChanged(first: Int, count: Int) {
+        if (first < 0 || count <= 0) return
+        val safeCount = count.coerceAtMost(itemCount - first)
+        if (safeCount <= 0) return
+        notifyItemRangeChanged(first, safeCount, PAYLOAD_THUMB)
+    }
+
     /** 多选模式：显示对勾容器 */
     var multiSelectMode: Boolean = false
 

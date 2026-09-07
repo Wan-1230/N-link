@@ -205,9 +205,17 @@ class TransferViewModel @Inject constructor(
      */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val filteredPhotos: StateFlow<List<CameraFile>> = combine(
-        // F2：先把「未下载」筛选折叠进数据源（关闭时原样透传，行为与 v0.1.4 完全一致）
-        combine(displayedPhotos, _onlyNotDownloaded, _downloadedHandles) { photos, hideDownloaded, downloaded ->
-            if (hideDownloaded) photos.filter { it.handle !in downloaded } else photos
+        // F2：先把「未下载」筛选折叠进数据源（关闭时原样透传，行为与 v0.1.4 完全一致）。
+        // 2026-09-08：限定**仅相机照片源**生效——开关若作用于本地源，本地页（本就是
+        // 已下载集合）会被误清空；已标记源另有 skipDownloadedInMarks，不受此开关影响。
+        combine(
+            displayedPhotos, _onlyNotDownloaded, _downloadedHandles, _activeAlbum
+        ) { photos, hideDownloaded, downloaded, source ->
+            if (hideDownloaded && source == AlbumSource.CAMERA) {
+                photos.filter { it.handle !in downloaded }
+            } else {
+                photos
+            }
         },
         _photoFilter,
         _sort,
@@ -242,6 +250,20 @@ class TransferViewModel @Inject constructor(
     val transferState: StateFlow<TransferState> = transferManager.transferState
     val queue: StateFlow<List<TransferTask>> = transferManager.queue
     val transferSpeedBps: StateFlow<Long> = transferManager.transferSpeedBps
+
+    /**
+     * O2：剩余下载进度 —— 「已下载 M / 总数 N / 剩余 K」。
+     *
+     * 统计基准是**未过滤的相机原始列表** `_photoList`（不是 [uiPhotos]）：
+     * 开启「不重复下载已下载照片」后列表里只剩未下载项，若以展示列表为基准，
+     * 剩余数会永远等于总数。用原始列表才能让「被隐藏的张数 = 剩余 K」自洽。
+     */
+    val downloadStats: StateFlow<DownloadStats> = combine(
+        _photoList, _downloadedHandles
+    ) { photos, downloaded ->
+        val total = photos.size
+        DownloadStats(total, photos.count { it.handle in downloaded })
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, DownloadStats(0, 0))
 
     /** 已完成缩略图加载的 handle 集合（只用于局部刷新负载），Bitmap 统一由 ThumbnailCache 管理 */
     private val _thumbnails = MutableStateFlow<Set<Int>>(emptySet())
@@ -1244,4 +1266,21 @@ enum class PhotoFilter(val label: String) {
             RAW -> file.format == CameraFileFormat.RAW
         }
     }
+}
+
+/**
+ * O2：剩余下载进度快照。
+ *
+ * @param total 相机照片总数（未过滤的原始列表长度）
+ * @param downloaded 其中已下载到手机的数量
+ */
+data class DownloadStats(
+    val total: Int,
+    val downloaded: Int
+) {
+    /** 剩余未下载张数 */
+    val remaining: Int get() = (total - downloaded).coerceAtLeast(0)
+
+    /** 下载完成百分比（0-100），空列表时为 0 */
+    val percent: Int get() = if (total == 0) 0 else (downloaded * 100 / total).coerceIn(0, 100)
 }
