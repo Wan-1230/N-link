@@ -6,7 +6,7 @@
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.1.0-7F52FF?style=flat-square&logo=kotlin)
 ![minSdk](https://img.shields.io/badge/minSdk-29-00ACC1?style=flat-square)
 ![targetSdk](https://img.shields.io/badge/targetSdk-35-00897B?style=flat-square)
-![Version](https://img.shields.io/badge/version-0.1.0-546E7A?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.2.0-546E7A?style=flat-square)
 
 N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等）的开源 Android 应用，打通 **连接 → 浏览 → 传输 → 遥控 → 监看** 的完整链路，以「永不断联」为核心卖点：
 
@@ -25,7 +25,7 @@ N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等�
 |------|------|
 | **BLE** | **辅助通道**：配对引导（免输入下发 WiFi 凭证）· 心跳保活 · GPS 注入 · 遥控快门 · 状态读取。采用尼康 BLE 配对协议与 Blowfish 加密 |
 | **WiFi** | **主数据通道**：相机发现（mDNS `_ptp._tcp` / `_nikon._tcp` + 子网扫描），PTP/IP（ISO 15740）全量会话，承载实时取景与全分辨率传输 |
-| **USB** | 有线优先通道，相机插入自动唤起，keepalive 保活，支持 USB Live View 与遥控 |
+| **USB** | 有线优先通道，相机插入自动唤起，keepalive 保活，支持 USB Live View 与遥控；v1.2.0 完成全链路优化（PTP 事务层容器重组重建、USB 实时监看打通、相册加载与断连修复） |
 
 > **通道定位**：BLE 负责「握手引导 + 状态注入 + 低功耗保活」，WiFi PTP/IP 与 USB 负责「搬运数据」。
 > BLE 受 GATT 带宽限制，**不承载实时取景与大文件传输**；完整的能力边界、风险与参考来源见
@@ -33,17 +33,18 @@ N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等�
 
 ### 照片浏览与传输
 
-- 相机存储卡照片列表，18 张/页分页加载 + 缩略图实时预览
-- 格式筛选（全部 / 照片 / 视频 / RAW / JPG）
-- 单张 / 批量 / 筛选 / 全部下载，传输队列支持暂停、恢复、取消
-- **断点续传**：中断自动从断点恢复，失败自动重试并回退备用通道，传输去重
-- 归档至 `DCIM/N-Link`（MediaStore / Scoped Storage），「本地照片」Tab 随时回看
+- 相机存储卡照片列表，18 张/页分页加载 + 缩略图实时预览，默认按拍摄时间降序（新拍的在前）
+- 格式筛选（全部 / 照片 / 视频 / RAW / JPG），筛选无结果时自动兜底提示
+- 单张 / 批量 / 筛选 / 全部下载，支持**跳过已下载**与剩余数量进度提示，传输队列支持暂停、恢复、取消
+- **断点续传**：中断自动从断点恢复，失败自动重试并回退备用通道，传输去重；相册列表滑动节流，长列表不卡顿
+- 归档至 `DCIM/N-Link`（MediaStore / Scoped Storage），「本地照片」Tab 随时回看，下载完成后触发媒体库扫描
 
 ### 远程遥控拍摄
 
 - 两段式快门：半按对焦 → AF 收敛后自动释放快门，确保合焦
 - **B 门**遥控（实时曝光计时）、**定时拍摄**（2s/5s/10s/自定义）、**间隔拍摄**（延时摄影）
 - 曝光三要素（光圈 / 快门 / ISO）、白平衡、对焦模式、测光等参数实时读写
+- 画面模式置于顶部下拉芯片快速切换，拍摄模式下拉分体按钮切换；更多动作长按弹出教程气泡
 
 ### 实时取景（Live View）
 
@@ -54,20 +55,30 @@ N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等�
 ### 连接稳定性
 
 - 前台连接服务（`connectedDevice|dataSync`）保活 + 开机自启 + WorkManager 健康检查
-- 连接状态机：通道升级、失败回退、指数退避重连
+- 连接状态机：通道升级、失败回退、指数退避重连；WiFi STA 扫描失败原因可见化（权限 / 定位开关 / 系统限制逐项提示）
 - 实时连接状态仪表盘与厂商后台策略适配
 
 ### 其他
 
 - **快门次数查询**：机身 PTP 不支持时自动经 EXIF 解析（Digeeker 协议）
 - 拍摄参数预设管理、传输完成通知、RAW 处理策略
+- **应用内更新**：读取 GitHub Releases 元数据（仅提示正式版），解析夸克网盘回退链接写入本地缓存，更新弹窗纯文本呈现
+- 支持与反馈页（问题反馈 / 交流群 / 捐赠入口）
 - 黑白极简设计语言：DayNight 自适应主题、8px 圆角、PressEffect 按压反馈
 
 ---
 
 ## 🚀 快速开始
 
-### 环境要求
+### 下载安装（普通用户）
+
+| 渠道 | 说明 |
+|------|------|
+| **GitHub Releases** | [最新 Release](https://github.com/Wan-1230/N-link/releases/latest) 下载 APK（国内访问不稳定时用下方夸克网盘） |
+| **夸克网盘** | [公开永久链接（免提取码）](https://pan.quark.cn/s/a04626b6e249)，目录 `/N-Link/releases/`，各版本 APK 齐全 |
+| **应用内检查更新** | 启动时自动检查（只提示正式版），GitHub 不可达时自动回退到夸克网盘缓存链接 |
+
+### 环境要求（开发者）
 
 - Android Studio（JDK 17 + Android SDK 35）
 - Android 10（API 29）及以上真机（建议支持 BLE 5.0 与 5GHz WiFi）
@@ -120,12 +131,12 @@ python tools/ptp_probe.py --host 192.168.1.1
 
 ```text
 app/src/main/java/com/nikonlink/app/
-├── core/          # 连接协议核心：BLE / PTP/IP / USB / WiFi
-├── data/          # Room 数据库与仓库层
-├── di/            # Hilt 依赖注入模块
-├── feature/       # 功能模块：仪表盘 / 实时取景 / 遥控 / 传输 / 设置
-├── service/       # 前台连接服务、开机自启、健康检查
-└── ui/            # 通用 UI 组件（PressEffect 等）
+├── MainActivity.kt / NLinkApp.kt
+├── device/        # 设备连接层：ble / ptp / usb / wifi（AP + STA）/ 连接状态机 / 前台服务
+├── camera/        # 相机内容：相册与传输（gallery）/ 实时取景（liveview）/ 参数与快门次数（params）
+├── capture/       # 远程遥控拍摄：两段式快门 / B 门 / 定时 / 间隔
+├── settings/      # 设置页与支持反馈
+└── shared/        # 通用组件（ui）、数据与 DI、应用内更新（update）
 ```
 
 ## 🧪 测试
@@ -150,9 +161,12 @@ app/src/main/java/com/nikonlink/app/
 - [x] Phase 1：三通道连接 + 照片传输（MVP）
 - [x] Phase 2：远程快门 / B 门 / 定时 / 间隔拍摄 + 参数读写
 - [x] Phase 3：Live View 实时取景
+- [x] v1.1.0：八项真机反馈修复 + 画面模式顶部下拉 + 教程气泡
+- [x] v1.2.0：USB 连接与照片管理全链路优化（7 项）+ 三处断连修复 + 相册体验
+- [ ] v1.3.0：群友反馈专项优化（进行中：隐藏已下载开关 / 剩余进度 / 媒体库扫描 / STA 扫描增强）
 - [ ] Phase 4：**AI 修图**（PRD 已完成，编辑器开发中）
-- [ ] 批量编辑、会话恢复、HEIC / RAW 评估
-- [ ] 更多机型适配（Z6III / Z8 / Z9 / Zf）、iOS 规划
+- [ ] 监看色彩与 LUT（PRD 已完成，待开发）
+- [ ] 更多机型适配与兼容性验证、iOS 规划
 
 ---
 
