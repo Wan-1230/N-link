@@ -14,6 +14,7 @@ import com.nikonlink.app.device.usb.UsbConnectionState
 import com.nikonlink.app.device.usb.UsbPtpManager
 import com.nikonlink.app.device.wifi.WifiEndpoint
 import com.nikonlink.app.device.wifi_sta.WifiCameraCandidate
+import com.nikonlink.app.device.wifi_sta.WifiScanner
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -88,6 +89,10 @@ class DashboardViewModel @Inject constructor(
         connectionManager.startScan()
     }
 
+    /** B4：最近一次 WiFi 扫描统计（候选为空时 UI 据此生成诊断文案） */
+    private val _wifiScanStats = MutableStateFlow<WifiScanner.ScanStats?>(null)
+    val wifiScanStats: StateFlow<WifiScanner.ScanStats?> = _wifiScanStats.asStateFlow()
+
     fun scanWifi() {
         _isWifiScanning.value = true
         _wifiDeviceList.value = emptyList()
@@ -96,6 +101,7 @@ class DashboardViewModel @Inject constructor(
             try {
                 val candidates = connectionManager.scanWifiCameras(hotspotMode = hotspotMode)
                 _wifiDeviceList.value = candidates
+                _wifiScanStats.value = connectionManager.lastWifiScanStats.value
             } catch (e: Exception) {
                 _wifiDeviceList.value = emptyList()
             } finally {

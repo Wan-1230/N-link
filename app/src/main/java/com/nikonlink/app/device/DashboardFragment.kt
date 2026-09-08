@@ -593,7 +593,24 @@ class DashboardFragment : Fragment() {
                     if (mode == ConnectMode.WIFI_AP) {
                         "未发现相机，请先连接相机 WiFi 后再扫描"
                     } else {
-                        "未发现相机，请确认相机与手机在同一网络"
+                        // B4：失败原因可见化——不再笼统一句「未发现相机」。
+                        // 统计来自 WifiScanner.ScanStats：探测了多少地址、mDNS/NSD 有无响应。
+                        val stats = viewModel.wifiScanStats.value
+                        if (stats == null) {
+                            "未发现相机，请确认相机与手机在同一网络"
+                        } else {
+                            buildString {
+                                append("未发现相机 · 已探测 ")
+                                append(stats.probedHosts)
+                                append(" 个地址（ARP 表 ")
+                                append(stats.arpEntries)
+                                append(" 条）均无响应")
+                                if (stats.mdnsResponses == 0 && stats.nsdResponses == 0) {
+                                    append("\nmDNS/NSD 均无响应：路由器可能过滤了组播，或开启了客户端隔离")
+                                }
+                                append("\n可点「连接」手动输入相机 IP（相机机身菜单可查）")
+                            }
+                        }
                     }
                 )
             )
@@ -674,7 +691,9 @@ class DashboardFragment : Fragment() {
                 if (mode == ConnectMode.WIFI_AP) {
                     "请确认手机已连接相机发出的 WiFi，输入相机默认地址"
                 } else {
-                    "STA 模式下请输入相机在同一局域网中的 IP 地址"
+                    // B4：补 IP 查看路径，降低 STA 用户找不到 IP 的门槛
+                    "STA 模式下请输入相机在同一局域网中的 IP 地址\n" +
+                        "（相机机身菜单「网络设置」可查看当前 IP，端口默认 15740 可省略）"
                 }
             )
             .setView(container)
