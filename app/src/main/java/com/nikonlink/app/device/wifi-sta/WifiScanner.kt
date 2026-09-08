@@ -47,7 +47,19 @@ class WifiScanner @Inject constructor(
         private const val MDNS_PORT = 5353
         private const val PTP_PORT = 15740
         private const val MDNS_ADDRESS = "224.0.0.251"
-        private const val DEFAULT_SCAN_TIMEOUT_MS = 12000L
+
+        /**
+         * B4（P1）：总超时 12s → 18s。
+         * STA 失败的常见原因是路由器过滤组播 / 客户端隔离，多等 6 秒给
+         * mDNS 重发与网段扫描更多机会；扫描全程在 IO 协程，不阻塞 UI。
+         */
+        private const val DEFAULT_SCAN_TIMEOUT_MS = 18_000L
+
+        /** B4（P1）：mDNS 单次读超时 1s → 2.5s，配合周期重发 probe */
+        private const val MDNS_SO_TIMEOUT_MS = 2_500L
+
+        /** B4（P1）：每隔多久重发一次 mDNS probe（原来只在开头发一次） */
+        private const val MDNS_PROBE_INTERVAL_MS = 4_000L
         private const val MAX_SCAN_CONCURRENCY = 32
         private const val GENERIC_NAME = "尼康相机"
 
@@ -55,6 +67,23 @@ class WifiScanner @Inject constructor(
         private const val NSD_SERVICE_TYPE_PTP = "_ptp._tcp."
         private const val NSD_SERVICE_TYPE_NIKON = "_nikon._tcp."
     }
+
+    /** B4：最近一次扫描的统计（失败原因可见化的数据源，UI 据此生成诊断文案） */
+    data class ScanStats(
+        /** 全部 TCP 15740 探测次数（网段 + ARP 表） */
+        val probedHosts: Int,
+        /** ARP 表里读到的条目数 */
+        val arpEntries: Int,
+        /** mDNS 收到的响应包数（0 = 组播大概率被过滤） */
+        val mdnsResponses: Int,
+        /** NSD 发现的服务数 */
+        val nsdResponses: Int,
+        val elapsedMs: Long
+    )
+
+    /** B4：每次 scan() 结束写入；UI 在候选为空时读取生成「为什么没找到」的提示 */
+    private val _lastScanStats = kotlinx.coroutines.flow.MutableStateFlow<ScanStats?>(null)
+    val lastScanStats: kotlinx.coroutines.flow.StateFlow<ScanStats?> = _lastScanStats
 
     private val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
     private val wifiManager = context.getSystemService(WifiManager::class.java)
@@ -78,11 +107,30 @@ class WifiScanner @Inject constructor(
         }
         try {
             withContext(Dispatchers.IO) {
-                val mdnsJob = async { collectMdns(timeoutMs, results, network) }
-                val subnetJob = async { scanSubnet(timeoutMs, results, network, hotspotMode) }
-                val nsdJob = async { collectNsd(timeoutMs, results, network) }
-                val arpJob = async { collectArp(timeoutMs, results, network) }
+                // B4：探测/响应计数，供失败诊断文案使用
+                val probed = java.util.concurrent.atomic.AtomicInteger(0)
+                val mdnsSeen = java.util.concurrent.atomic.AtomicInteger(0)
+                val nsdSeen = java.util.concurrent.atomic.AtomicInteger(0)
+                val arpEntries = java.util.concurrent.atomic.AtomicInteger(0)
+                val startAt = System.currentTimeMillis()
+                val mdnsJob = async { collectMdns(timeoutMs, results, network, mdnsSeen) }
+                val subnetJob = async { scanSubnet(timeoutMs, results, network, hotspotMode, probed) }
+                val nsdJob = async { collectNsd(timeoutMs, results, network, nsdSeen) }
+                val arpJob = async { collectArp(timeoutMs, results, network, probed, arpEntries) }
                 awaitAll(mdnsJob, subnetJob, nsdJob, arpJob)
+                _lastScanStats.value = ScanStats(
+                    probedHosts = probed.get(),
+                    arpEntries = arpEntries.get(),
+                    mdnsResponses = mdnsSeen.get(),
+                    nsdResponses = nsdSeen.get(),
+                    elapsedMs = System.currentTimeMillis() - startAt
+                )
+                Timber.tag(TAG).i(
+                    "Scan done in ${_lastScanStats.value!!.elapsedMs}ms: " +
+                        "probed=${probed.get()} arp=${arpEntries.get()} " +
+                        "mdns=${mdnsSeen.get()} nsd=${nsdSeen.get()} " +
+                        "candidates=${results.size}"
+                )
             }
         } finally {
             // 恢复默认路由，避免应用流量滞留在无 Internet 的相机网络
@@ -101,7 +149,8 @@ class WifiScanner @Inject constructor(
     private suspend fun collectMdns(
         timeoutMs: Long,
         results: MutableSet<WifiCameraCandidate>,
-        network: Network?
+        network: Network?,
+        mdnsSeen: java.util.concurrent.atomic.AtomicInteger
     ) {
         val multicastLock = runCatching {
             wifiManager.createMulticastLock("N-LinkWifiScan")
@@ -113,7 +162,7 @@ class WifiScanner @Inject constructor(
         try {
             socket = MulticastSocket(MDNS_PORT).apply {
                 reuseAddress = true
-                soTimeout = 1000
+                soTimeout = MDNS_SO_TIMEOUT_MS.toInt()
             }
             // STA 模式下必须显式把组播 Socket 绑定到 WiFi 网络，
             // 否则默认路由可能被蜂窝网抢走，导致收不到相机的 mDNS 广播。
@@ -122,11 +171,19 @@ class WifiScanner @Inject constructor(
             sendMdnsProbe(socket)
 
             val deadline = System.currentTimeMillis() + timeoutMs
+            var lastProbeAt = System.currentTimeMillis()
             val buffer = ByteArray(4096)
             while (System.currentTimeMillis() < deadline) {
+                // B4（P1）：周期重发 probe——路由器对 mDNS 查询的丢弃并不罕见，
+                // 原来只发一次，丢了就一直干等到超时。
+                if (System.currentTimeMillis() - lastProbeAt >= MDNS_PROBE_INTERVAL_MS) {
+                    runCatching { sendMdnsProbe(socket) }
+                    lastProbeAt = System.currentTimeMillis()
+                }
                 val packet = DatagramPacket(buffer, buffer.size)
                 try {
                     socket.receive(packet)
+                    mdnsSeen.incrementAndGet()
                     val sourceIp = packet.address?.hostAddress ?: continue
                     if (sourceIp.isLoopbackOrMulticast()) continue
                     val candidate = parseMdnsResponse(
@@ -162,7 +219,8 @@ class WifiScanner @Inject constructor(
         timeoutMs: Long,
         results: MutableSet<WifiCameraCandidate>,
         network: Network?,
-        hotspotMode: Boolean = false
+        hotspotMode: Boolean = false,
+        probed: java.util.concurrent.atomic.AtomicInteger
     ) {
         val networks = currentIpv4Addresses()
         if (networks.isEmpty()) return
@@ -196,6 +254,7 @@ class WifiScanner @Inject constructor(
                     semaphore.acquire()
                     try {
                         if (System.currentTimeMillis() >= deadline) return@async
+                        probed.incrementAndGet()
                         if (PtpIpProbe.probe(host, PTP_PORT, 900L, network)) {
                             results.add(WifiCameraCandidate(host, PTP_PORT, "尼康相机", "WiFi"))
                             Timber.tag(TAG).i("Port scan found camera at $host")
@@ -216,7 +275,8 @@ class WifiScanner @Inject constructor(
     private suspend fun collectNsd(
         timeoutMs: Long,
         results: MutableSet<WifiCameraCandidate>,
-        network: Network?
+        network: Network?,
+        nsdSeen: java.util.concurrent.atomic.AtomicInteger
     ) {
         val nsdManager = context.getSystemService(Context.NSD_SERVICE) as? NsdManager
         if (nsdManager == null) {
@@ -248,7 +308,10 @@ class WifiScanner @Inject constructor(
                     override fun onServiceResolved(p1: NsdServiceInfo?) {
                         val host = p1?.host?.hostAddress
                         val port = p1?.port ?: 0
-                        if (!host.isNullOrEmpty() && port > 0) discovered.add("$host:$port")
+                        if (!host.isNullOrEmpty() && port > 0) {
+                            discovered.add("$host:$port")
+                            nsdSeen.incrementAndGet()
+                        }
                         resolving.set(false)
                         tryResolveNext()
                     }
@@ -315,11 +378,14 @@ class WifiScanner @Inject constructor(
     private suspend fun collectArp(
         timeoutMs: Long,
         results: MutableSet<WifiCameraCandidate>,
-        network: Network?
+        network: Network?,
+        probed: java.util.concurrent.atomic.AtomicInteger,
+        arpEntries: java.util.concurrent.atomic.AtomicInteger
     ) {
         // 给 ARP 表一点学习时间（相机刚入网时表里可能还没有它）
         delay(1500)
         val hosts = readArpHosts()
+        arpEntries.set(hosts.size)
         if (hosts.isEmpty()) return
         val semaphore = Semaphore(16)
         coroutineScope {
@@ -328,6 +394,7 @@ class WifiScanner @Inject constructor(
                     semaphore.acquire()
                     try {
                         if (results.any { it.ipAddress == host }) return@async
+                        probed.incrementAndGet()
                         if (PtpIpProbe.probe(host, PTP_PORT, 900L, network)) {
                             results.add(WifiCameraCandidate(host, PTP_PORT, GENERIC_NAME, "WiFi-arp"))
                             Timber.tag(TAG).i("ARP candidate: $host")
