@@ -251,7 +251,7 @@ class ConnectionManager @Inject constructor(
      * 扫描当前 WiFi 网络中的尼康相机（UDP 5353 + TCP 15740 探测）。
      */
     suspend fun scanWifiCameras(
-        timeoutMs: Long = 12000L,
+        timeoutMs: Long = 18_000L,
         hotspotMode: Boolean = false
     ): List<WifiCameraCandidate> {
         // STA: 显式拿到 WiFi Network，让 scan() 内部的 mDNS/探测 Socket 绑定到 WiFi，
@@ -279,6 +279,10 @@ class ConnectionManager @Inject constructor(
         }
         return candidates
     }
+
+    /** B4：转发最近一次 WiFi 扫描统计（失败原因可见化的数据源） */
+    val lastWifiScanStats: kotlinx.coroutines.flow.StateFlow<WifiScanner.ScanStats?>
+        get() = wifiScanner.lastScanStats
 
     /**
      * 后台健康检查/启动时恢复最后配对的设备。
