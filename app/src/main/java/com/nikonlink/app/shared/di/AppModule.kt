@@ -9,6 +9,7 @@ import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.ptp.PtpIdentityStore
 import com.nikonlink.app.device.usb.UsbPtpManager
 import com.nikonlink.app.device.wifi_ap.WifiManager
+import com.nikonlink.app.device.wifi_sta.StaNetworkRequester
 import com.nikonlink.app.device.wifi_sta.WifiDirectConnector
 import com.nikonlink.app.device.wifi_sta.WifiScanner
 import com.nikonlink.app.shared.data.NLinkDatabase
@@ -55,8 +56,9 @@ object AppModule {
     @Provides
     @Singleton
     fun provideWifiScanner(
-        @ApplicationContext context: Context
-    ): WifiScanner = WifiScanner(context)
+        @ApplicationContext context: Context,
+        networkRequester: StaNetworkRequester
+    ): WifiScanner = WifiScanner(context, networkRequester)
 
     @Provides
     @Singleton
