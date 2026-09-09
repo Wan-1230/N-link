@@ -6,6 +6,7 @@
 
 | 版本 | 分享链接 | 提取码 | 有效期 | 发布日期 | 备注 |
 |---|---|---|---|---|---|
+| v1.2.2 | https://pan.quark.cn/s/a04626b6e249 | （无，公开链接） | 永久 | 2026-09-09 | 同一 releases 文件夹的分享；APK 3,777,262 字节与 GitHub 资产一致，SHA-256 c8dd80f4…4a643。本次清理：历史重复的 version-info.txt(v1.2.0)/version-info(1).txt(v1.2.1) 移入 `/N-Link/_archive-version-info`，v1.2.2 内容（839 字节）改回规范名 `version-info.txt` |
 | v1.2.1 | https://pan.quark.cn/s/a04626b6e249 | （无，公开链接） | 永久 | 2026-09-09 | 同一 releases 文件夹的分享（AI 经 quarkclouddrive CLI 自动上传）；APK 3,770,382 字节与 GitHub 资产一致，SHA-256 e414e1fc…a1df |
 | v1.2.0 | https://pan.quark.cn/s/a04626b6e249 | （无，公开链接） | 永久 | 2026-09-07 | 同一 releases 文件夹的分享；APK 3,763,710 字节与 GitHub 资产一致，SHA-256 cbab8f1f…76c5 |
 | v1.1.0 | https://pan.quark.cn/s/fcbccaf42e70 | （无，公开链接） | 永久 | 2026-09-06 | 同一 releases 文件夹的分享；v1.1.0 APK 3,717,244 字节与 GitHub 资产一致，SHA-256 与 Release 声明一致 |
@@ -25,6 +26,10 @@
 
 1. `app/build/outputs/apk/release/app-release.apk` 重命名为 `N-Link-v{版本}-release.apk`，
    连同 `version-info.txt`（版本号/versionCode/日期/tag/摘要）一起传入 `/N-Link/releases/`。
+   **注意（v1.2.2 实测）**：目录里已有同名 `version-info.txt` 时，上传会被自动改名为
+   `version-info(2).txt`。上传后必须把旧的重名文件移出（v1.2.2 起放
+   `/N-Link/_archive-version-info/`），再把新文件 rename 回规范名，保证分享内
+   `version-info.txt` 恒为最新版内容。
 2. 对 `releases` 文件夹新建分享：**免提取码（公开链接）+ 永久有效期**（2026-09-05 用户拍板，
    免码点击直达体验更好）。
 3. Release body 固定标记行：`夸克网盘：<链接>`（无提取码时不含提取码字段，
