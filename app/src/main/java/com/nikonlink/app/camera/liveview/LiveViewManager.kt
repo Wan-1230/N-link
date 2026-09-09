@@ -458,13 +458,17 @@ class LiveViewManager @Inject constructor(
                             lastFpsTime = now
                         }
                     } else {
-                        handleError()
+                        handleFrameFailure(null)
                     }
                 } catch (e: CancellationException) {
                     break
+                } catch (e: java.net.SocketTimeoutException) {
+                    // 取帧超时：多数是链路拥塞或相机瞬时忙碌，属可自愈的软错误
+                    Timber.tag(TAG).w("Frame timeout: ${e.message}")
+                    handleFrameFailure(e)
                 } catch (e: Exception) {
                     Timber.tag(TAG).w("Frame error: ${e.message}")
-                    handleError()
+                    handleFrameFailure(e)
                 }
 
                 // 帧间隔控制（避免过度请求）
@@ -485,16 +489,45 @@ class LiveViewManager @Inject constructor(
         errorGraceUntilMs = System.currentTimeMillis() + durationMs
     }
 
-    private suspend fun handleError() {
-        // 宽限期内（拍照等已知会暂停出帧的场景）错误不累计，但仍节流重试，
-        // 避免失败快速返回形成无间隔的紧密轮询加重命令通道负担
+    /**
+     * 取帧失败处理。
+     *
+     * 断连体感的根因之一：旧实现不分错误类型一律累加 [consecutiveErrors]，
+     * 达到 5 次才停。而单次 `getLiveViewImage` 的命令超时是 10s，
+     * 链路其实早就断了，界面却还要空转约 50 秒才弹出错误提示。
+     *
+     * 现在分三级（优先级从高到低）：
+     * - **链路已死**（PTP 会话进入 ERROR）：立即停止并给出「连接已断开」提示，
+     *   把控制权交还重连流程，一次多余的重试都不做。这是确定性信号，
+     *   优先于宽限期——拍照途中真断链也应立即收口，不该再干等 6 秒；
+     * - **宽限期内**（拍照 AF/曝光/写卡期间无帧属正常）：不累计错误，
+     *   但仍节流重试，避免失败快速返回形成紧密轮询加重命令通道负担；
+     * - **链路还在**（偶发超时/相机忙碌）：按 [MAX_CONSECUTIVE_ERRORS] 累计，
+     *   保持原有「抖动自愈」能力，不会因一两次超时就掐断监看。
+     */
+    private suspend fun handleFrameFailure(cause: Throwable?) {
+        if (isWifiLinkDead()) {
+            Timber.tag(TAG).w("Link already dead, stop live view immediately")
+            eventLogger.event(
+                "lv_stop",
+                "reason" to "link_dead",
+                "errors" to consecutiveErrors,
+                "cause" to (cause?.javaClass?.simpleName ?: "empty_frame")
+            )
+            _liveViewState.value = LiveViewState.ERROR
+            _errorMessage.value = "与相机的连接已断开，请返回重连后再开启监看"
+            frameJob?.cancel()
+            return
+        }
+        // 宽限期内（拍照等已知会暂停出帧的场景）错误不累计，但仍节流重试
         if (System.currentTimeMillis() < errorGraceUntilMs) {
             delay(100)
             return
         }
         consecutiveErrors++
         if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-            Timber.tag(TAG).e("Too many errors, stopping Live View")
+            Timber.tag(TAG).e("Too many consecutive frame errors, stopping Live View")
+            eventLogger.event("lv_stop", "reason" to "max_errors", "errors" to consecutiveErrors)
             _liveViewState.value = LiveViewState.ERROR
             _errorMessage.value = "实时取景长时间无画面，已自动停止，请重试"
             // 帧循环自停路径不走 stopLiveView()，保活需在此恢复
@@ -503,6 +536,12 @@ class LiveViewManager @Inject constructor(
         } else {
             delay(100)  // 短暂等待后重试
         }
+    }
+
+    /** WiFi(PTP/IP) 通道是否已被判死；USB 通道不受此判定影响。 */
+    private fun isWifiLinkDead(): Boolean {
+        if (usbPtpManager.isConnected()) return false
+        return ptpSession.isLinkDead()
     }
 
     // ==================== 触摸对焦 ====================
