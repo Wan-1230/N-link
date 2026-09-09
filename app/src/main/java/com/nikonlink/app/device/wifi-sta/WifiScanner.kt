@@ -40,7 +40,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class WifiScanner @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val networkRequester: StaNetworkRequester
 ) {
     companion object {
         private const val TAG = "WifiScanner"
@@ -50,6 +51,8 @@ class WifiScanner @Inject constructor(
         private const val DEFAULT_SCAN_TIMEOUT_MS = 12000L
         private const val MAX_SCAN_CONCURRENCY = 32
         private const val GENERIC_NAME = "尼康相机"
+        /** mDNS 查询重发间隔：兼顾"相机晚入网"与 UDP 丢包 */
+        private const val MDNS_PROBE_INTERVAL_MS = 2000L
 
         /** RC-6：系统 NSD 服务类型（与自绘 mDNS 并行兜底） */
         private const val NSD_SERVICE_TYPE_PTP = "_ptp._tcp."
@@ -70,23 +73,30 @@ class WifiScanner @Inject constructor(
         val results = ConcurrentHashMap.newKeySet<WifiCameraCandidate>()
         // ZDROP 同款：扫描期间进程级绑定到 WiFi 网络。双卡手机默认路由在蜂窝时，
         // 组播/NSD/网段探测 socket 的路由都可能被抢，仅靠逐 socket 绑定不可靠。
+        // 调用方没给网络（STA 首次发现）时，先向系统申请一张 WiFi 网再扫，
+        // 否则 mDNS 组播会发到蜂窝网口上，永远等不到相机响应。
         val monitor = runCatching {
             context.getSystemService(android.net.ConnectivityManager::class.java)
         }.getOrNull()
-        if (network != null) {
-            runCatching { monitor?.bindProcessToNetwork(network) }
+        val ownedNetwork = network == null
+        val target = network ?: runCatching {
+            networkRequester.acquire(null, 3000L)
+        }.getOrNull()
+        if (target != null) {
+            runCatching { monitor?.bindProcessToNetwork(target) }
         }
         try {
             withContext(Dispatchers.IO) {
-                val mdnsJob = async { collectMdns(timeoutMs, results, network) }
-                val subnetJob = async { scanSubnet(timeoutMs, results, network, hotspotMode) }
-                val nsdJob = async { collectNsd(timeoutMs, results, network) }
-                val arpJob = async { collectArp(timeoutMs, results, network) }
+                val mdnsJob = async { collectMdns(timeoutMs, results, target) }
+                val subnetJob = async { scanSubnet(timeoutMs, results, target, hotspotMode) }
+                val nsdJob = async { collectNsd(timeoutMs, results, target) }
+                val arpJob = async { collectArp(timeoutMs, results, target) }
                 awaitAll(mdnsJob, subnetJob, nsdJob, arpJob)
             }
         } finally {
             // 恢复默认路由，避免应用流量滞留在无 Internet 的相机网络
-            if (network != null) runCatching { monitor?.bindProcessToNetwork(null) }
+            if (target != null) runCatching { monitor?.bindProcessToNetwork(null) }
+            if (ownedNetwork) networkRequester.release()
         }
         // 任务2: 同一台相机会产生多个同名/异名条目（mDNS+网段扫描），按 IP 去重，
         // 优先保留相机自定义名称条目，隐藏通用占位名称的重复项
@@ -123,7 +133,15 @@ class WifiScanner @Inject constructor(
 
             val deadline = System.currentTimeMillis() + timeoutMs
             val buffer = ByteArray(4096)
+            // 只发一次查询会漏掉"扫描开始后才入网"的相机（相机上电到广播有数秒延迟），
+            // 也扛不住单个 UDP 包丢失；按 2s 周期重发，直到扫描窗口结束。
+            var lastProbeAt = 0L
             while (System.currentTimeMillis() < deadline) {
+                val now = System.currentTimeMillis()
+                if (now - lastProbeAt >= MDNS_PROBE_INTERVAL_MS) {
+                    sendMdnsProbe(socket)
+                    lastProbeAt = now
+                }
                 val packet = DatagramPacket(buffer, buffer.size)
                 try {
                     socket.receive(packet)
@@ -224,7 +242,9 @@ class WifiScanner @Inject constructor(
             return
         }
 
-        val discovered = ConcurrentHashMap.newKeySet<String>()  // "host:port"
+        // "host:port" -> mDNS 服务名（ZDROP 直接拿 serviceName 当相机名展示，
+        // 比统一显示"尼康相机"更容易在列表里认出目标机身）
+        val discovered = ConcurrentHashMap<String, String>()
         val done = CompletableDeferred<Unit>()
 
         // v1.0.2 修复：NsdManager 同一时刻只允许一个 resolve 在途，旧版对两个服务
@@ -248,7 +268,9 @@ class WifiScanner @Inject constructor(
                     override fun onServiceResolved(p1: NsdServiceInfo?) {
                         val host = p1?.host?.hostAddress
                         val port = p1?.port ?: 0
-                        if (!host.isNullOrEmpty() && port > 0) discovered.add("$host:$port")
+                        if (!host.isNullOrEmpty() && port > 0) {
+                            discovered["$host:$port"] = cleanServiceName(p1.serviceName)
+                        }
                         resolving.set(false)
                         tryResolveNext()
                     }
@@ -290,21 +312,35 @@ class WifiScanner @Inject constructor(
         }
 
         coroutineScope {
-            discovered.map { entry ->
+            discovered.map { (entry, serviceName) ->
                 async(Dispatchers.IO) {
                     val endpoint = WifiEndpoint.parse("wifi:$entry")
                     if (endpoint != null &&
                         results.none { it.ipAddress == endpoint.host } &&
                         PtpIpProbe.probe(endpoint, timeoutMs = 1200L, network = network)
                     ) {
+                        val name = serviceName.ifBlank { GENERIC_NAME }
                         results.add(
-                            WifiCameraCandidate(endpoint.host, endpoint.port, GENERIC_NAME, "WiFi")
+                            WifiCameraCandidate(endpoint.host, endpoint.port, name, "WiFi-nsd")
                         )
-                        Timber.tag(TAG).i("NSD candidate: ${endpoint.host}:${endpoint.port}")
+                        Timber.tag(TAG).i("NSD candidate: ${endpoint.host}:${endpoint.port} name=$name")
                     }
                 }
             }.awaitAll()
         }
+    }
+
+    /**
+     * mDNS 服务名清洗：去掉尾部的 `._tcp` / `.local` 与空标签。
+     * 尼康机身广播的服务名形如 `Z6III_12345678` / `Nikon Z Camera`，
+     * 直接拿来当展示名即可。
+     */
+    private fun cleanServiceName(raw: String?): String {
+        if (raw.isNullOrBlank()) return ""
+        return raw.trim()
+            .removeSuffix("._tcp")
+            .removeSuffix(".")
+            .trim()
     }
 
     /**
