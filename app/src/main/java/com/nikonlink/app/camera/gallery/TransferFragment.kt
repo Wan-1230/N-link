@@ -18,11 +18,14 @@ import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import androidx.recyclerview.widget.SimpleItemAnimator
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.nikonlink.app.R
 import com.nikonlink.app.databinding.FragmentTransferBinding
 import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import java.util.Locale
 import javax.inject.Inject
@@ -139,6 +142,18 @@ class TransferFragment : Fragment() {
             }
         }
         binding.gridPhotos.adapter = adapter
+        // 快速滑动保护：滑动期间关掉格子动画并暂停缩略图请求，
+        // 滚动停止后统一补请求可见项。详见 PhotoGridAdapter.fastScrolling 的说明。
+        binding.gridPhotos.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                val fast = newState != RecyclerView.SCROLL_STATE_IDLE
+                adapter.setFastScrolling(fast)
+                if (!fast) requestVisibleThumbnails()
+            }
+        })
+        // 缩短 item 变更动画时长：默认 250ms 在连续 payload 刷新时会层层叠加，
+        // 视觉上就是"上一次还没播完下一次又来了"的堆叠感
+        (binding.gridPhotos.itemAnimator as? SimpleItemAnimator)?.changeDuration = 120L
         // 模块 4.4：滑动多选事件接管（未激活时完全透传，不影响滚动/点击）
         dragSelect = DragSelectController(
             recyclerView = binding.gridPhotos,
@@ -146,6 +161,28 @@ class TransferFragment : Fragment() {
             onRange = { handles, select -> viewModel.setSelectionRange(handles, select) }
         )
         binding.gridPhotos.addOnItemTouchListener(dragSelect!!)
+    }
+
+    /**
+     * 滚动停止后为当前可见范围补发缩略图请求。
+     *
+     * 快速滑动期间适配器暂停了 `onRequestThumb`（避免给 PTP 通道灌入大量
+     * 马上就滚出视野的请求），停下时这里把视口内仍未加载的格子补齐；
+     * 上下各多取两行做预热，减少再次滑动时出现的白块。
+     */
+    private fun requestVisibleThumbnails() {
+        if (_binding == null) return
+        val lm = binding.gridPhotos.layoutManager as? GridLayoutManager ?: return
+        val first = (lm.findFirstVisibleItemPosition() - PRELOAD_SPAN).coerceAtLeast(0)
+        val last = (lm.findLastVisibleItemPosition() + PRELOAD_SPAN)
+            .coerceAtMost(adapter.itemCount - 1)
+        if (last < first) return
+        for (pos in first..last) {
+            val file = adapter.itemAt(pos) ?: continue
+            if (!thumbnailCache.hasInMemory(file.handle)) {
+                viewModel.requestThumbnail(file.handle)
+            }
+        }
     }
 
     /**
@@ -736,7 +773,11 @@ class TransferFragment : Fragment() {
                 }
             }
             launch {
-                viewModel.thumbnails.collect { thumbs ->
+                // 批量加载时缩略图以"每张完成一次"的频率发射，而每次 submit 都要跑
+                // 一遍全量 DiffUtil + dispatchUpdatesTo。快速滑动下这就是掉帧和
+                // 动画堆叠的放大器。80ms 合并窗口：肉眼看不出延迟，submit 次数
+                // 却能从"每张一次"降到"每屏几次"。
+                viewModel.thumbnails.debounce(THUMB_SUBMIT_DEBOUNCE_MS).collect { thumbs ->
                     adapter.submit(
                         viewModel.uiPhotos.value,
                         viewModel.selectedHandles.value,
@@ -914,5 +955,11 @@ class TransferFragment : Fragment() {
     companion object {
         /** F1 大额保护阈值：全选超过该张数时批量下载前二次确认（PRD F1 AC-10） */
         private const val LARGE_SELECTION_WARNING = 200
+
+        /** 滚动停止后向前/向后额外预热的格子数（3 列网格，6 ≈ 两行） */
+        private const val PRELOAD_SPAN = 6
+
+        /** 缩略图流触发网格刷新的合并窗口 */
+        private const val THUMB_SUBMIT_DEBOUNCE_MS = 80L
     }
 }
