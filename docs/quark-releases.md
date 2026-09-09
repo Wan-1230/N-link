@@ -6,6 +6,7 @@
 
 | 版本 | 分享链接 | 提取码 | 有效期 | 发布日期 | 备注 |
 |---|---|---|---|---|---|
+| v1.2.1 | https://pan.quark.cn/s/a04626b6e249 | （无，公开链接） | 永久 | 2026-09-09 | 同一 releases 文件夹的分享（AI 经 quarkclouddrive CLI 自动上传）；APK 3,770,382 字节与 GitHub 资产一致，SHA-256 e414e1fc…a1df |
 | v1.2.0 | https://pan.quark.cn/s/a04626b6e249 | （无，公开链接） | 永久 | 2026-09-07 | 同一 releases 文件夹的分享；APK 3,763,710 字节与 GitHub 资产一致，SHA-256 cbab8f1f…76c5 |
 | v1.1.0 | https://pan.quark.cn/s/fcbccaf42e70 | （无，公开链接） | 永久 | 2026-09-06 | 同一 releases 文件夹的分享；v1.1.0 APK 3,717,244 字节与 GitHub 资产一致，SHA-256 与 Release 声明一致 |
 | v1.0.2 | https://pan.quark.cn/s/8af03310fbfd | （无，公开链接） | 永久 | 2026-09-05 | 同一 releases 文件夹的分享；APK 3,671,480 字节与 GitHub 资产一致 |
