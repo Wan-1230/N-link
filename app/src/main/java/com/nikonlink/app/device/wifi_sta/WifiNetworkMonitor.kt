@@ -47,6 +47,9 @@ class WifiNetworkMonitor @Inject constructor(
     private var multicastLock: WifiManager.MulticastLock? = null
     private var callbackRegistered = false
 
+    /** WifiLock / MulticastLock 持有引用计数（0 表示未持有）。 */
+    private var lockRefs = 0
+
     private val _currentNetwork = MutableStateFlow<Network?>(null)
     val currentNetwork: StateFlow<Network?> = _currentNetwork.asStateFlow()
 
@@ -83,7 +86,9 @@ class WifiNetworkMonitor @Inject constructor(
             runCatching { connectivityManager.unregisterNetworkCallback(callback) }
             callbackRegistered = false
         }
-        releaseLocks()
+        // 停止是终态：忽略引用计数强制归还，避免会话异常退出后锁残留
+        synchronized(this) { lockRefs = 0 }
+        doReleaseLocks()
         _currentNetwork.value = null
     }
 
@@ -171,10 +176,22 @@ class WifiNetworkMonitor @Inject constructor(
     }
 
     /**
-     * 连接生命周期内持有 WifiLock + MulticastLock。
-     * RC-5：`WIFI_MODE_FULL_HIGH_PERF` 是 ZRelay/影犀/ZDROP 三方共识。
+     * 连接生命周期内持有 WifiLock + MulticastLock，支持**会话级重复持有**。
+     *
+     * RC-5：`WIFI_MODE_FULL_HIGH_PERF` 是 ZRelay/影犀/ZDROP 三方共识；
+     * v1.1.0：改为引用计数。连接成功后由 [retainLocks] 追加一次持有，
+     * 连接循环的 finally 里 [releaseLocks] 只减不释放 —— 否则会话还活着但锁
+     * 已经归还，息屏 2 分钟后系统照样回收 WiFi（三方 APK 都是会话级持锁）。
      */
+    @Synchronized
     fun acquireLocks() {
+        acquireLocksInternal()
+    }
+
+    @Synchronized
+    private fun acquireLocksInternal() {
+        lockRefs++
+        if (lockRefs > 1) return
         runCatching {
             if (wifiLock == null) {
                 @Suppress("DEPRECATION")
@@ -198,8 +215,36 @@ class WifiNetworkMonitor @Inject constructor(
         }.onFailure { Timber.tag(TAG).w(it, "Failed to acquire MulticastLock") }
     }
 
-    /** 断开时释放（调用方放 finally，绝不残留）。 */
+    /** 断开时释放（调用方放 finally，绝不残留）。引用计数归零才真正归还。 */
+    @Synchronized
     fun releaseLocks() {
+        if (lockRefs == 0) return
+        lockRefs--
+        if (lockRefs > 0) {
+            Timber.tag(TAG).d("locks still held (refs=$lockRefs), session in progress")
+            return
+        }
+        doReleaseLocks()
+    }
+
+    /**
+     * 会话级持锁：连接成功后调用，保证整个监看/传输过程中 WiFi 不被系统回收。
+     * 语义与 [acquireLocks] 完全一致（引用计数 +1），单独命名只是为了让
+     * 调用点表达"这是会话级持有，不是连接尝试级"的意图。
+     */
+    @Synchronized
+    fun retainLocks() {
+        acquireLocksInternal()
+    }
+
+    /** 归还 [retainLocks] 追加的那一次持有。 */
+    @Synchronized
+    fun releaseRetained() {
+        releaseLocks()
+    }
+
+    @Synchronized
+    private fun doReleaseLocks() {
         runCatching { wifiLock?.release() }
         wifiLock = null
         runCatching { multicastLock?.release() }
