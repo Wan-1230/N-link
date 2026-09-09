@@ -91,6 +91,27 @@ class PhotoGridAdapter(
     /** 多选模式：显示对勾容器 */
     var multiSelectMode: Boolean = false
 
+    /**
+     * 快速滑动中（拖拽/惯性滚动）标志。
+     *
+     * 花屏与动画堆叠的主因：网格高速滚动时 ViewHolder 被疯狂复用，
+     * 每个复用都触发一次 150ms 的勾选 AnimatorSet；这些动画在复用瞬间被 cancel，
+     * 但 `AnimatorListenerAdapter.onAnimationEnd` 在 cancel 后**仍会被调用**，
+     * 于是"上一张照片的取消动画"把"这一张照片刚设好的对勾"又隐藏掉 ——
+     * 表现为对勾闪烁、遮罩半透明残留、整块格子发灰（花屏）。
+     *
+     * 置 true 时：不再启动任何动画，直接把属性设到终值；同时暂停缩略图请求，
+     * 滚动停止后由 Fragment 统一为可见项补请求。
+     */
+    @Volatile
+    var fastScrolling: Boolean = false
+        private set
+
+    /** 供 Fragment 的滚动监听调用：快速滑动期间关动画 + 暂停缩略图请求。 */
+    fun setFastScrolling(fast: Boolean) {
+        fastScrolling = fast
+    }
+
     fun submit(
         newItems: List<CameraFile>,
         newSelected: Set<Int>,
@@ -280,8 +301,11 @@ class PhotoGridAdapter(
         when (val item = items[position]) {
             is PhotoGridItem.Photo -> {
                 (holder as GridViewHolder).bind(item.file, animate = false)
-                // 可见即加载：滚动到该格时请求缩略图（VM 层并发控制 + 缓存判断）
-                if (!cache.hasInMemory(item.file.handle)) {
+                // 快速滑动期间不发起缩略图请求：这些请求绝大多数在停下前就已滚出
+                // 视野，白白挤占 PTP 通道（相机侧串行处理），反而让停下后真正
+                // 需要的那一批排到队尾 → 停在屏幕上却迟迟不出图。
+                // 停止滚动后由 Fragment 统一为可见项补请求。
+                if (!fastScrolling && !cache.hasInMemory(item.file.handle)) {
                     onRequestThumb(item.file)
                 }
             }
@@ -364,7 +388,35 @@ class PhotoGridAdapter(
 
         private var currentAnimators: AnimatorSet? = null
 
+        /**
+         * 当前绑定的 handle。动画结束回调里用它做"身份校验"：
+         * ViewHolder 已被复用到别的照片时，旧动画的收尾动作必须作废，
+         * 否则会把新照片的 UI 状态改掉（对勾消失/遮罩残留 = 花屏）。
+         */
+        private var boundHandle: Int = -1
+
+        /** 取消在途动画并摘掉监听器，杜绝 cancel 后的残留回调。 */
+        private fun cancelAnimators() {
+            currentAnimators?.let { animator ->
+                animator.removeAllListeners()
+                animator.cancel()
+            }
+            currentAnimators = null
+        }
+
+        /** 把所有可能被动画改写的属性一次性复位，消除复用带来的中间态残影。 */
+        private fun resetAnimatableProperties() {
+            binding.root.alpha = 1f
+            binding.checkContainer.alpha = 1f
+            binding.checkContainer.scaleX = 1f
+            binding.checkContainer.scaleY = 1f
+            binding.viewSelectedMask.alpha = 1f
+        }
+
         fun bind(file: CameraFile, animate: Boolean) {
+            cancelAnimators()
+            resetAnimatableProperties()
+            boundHandle = file.handle
             binding.tvFormatBadge.text = when (file.format) {
                 CameraFileFormat.JPEG -> "JPG"
                 CameraFileFormat.RAW -> "RAW"
@@ -395,13 +447,18 @@ class PhotoGridAdapter(
 
         /** 选中状态渲染 + 勾选/取消动画（每次切换都触发） */
         fun applySelection(isSelected: Boolean, animate: Boolean) {
-            currentAnimators?.cancel()
+            // 取消在途动画并摘监听：cancel 后 onAnimationEnd 仍会回调的时代结束
+            cancelAnimators()
+            resetAnimatableProperties()
+            // 快速滑动中一律走无动画直设终值，动画留到滚动停止后再播
+            val shouldAnimate = animate && !fastScrolling
+            val handleAtStart = boundHandle
 
             if (isSelected) {
                 binding.checkContainer.visibility = View.VISIBLE
                 binding.viewSelectedMask.visibility = View.VISIBLE
                 binding.root.alpha = 0.92f
-                if (animate) {
+                if (shouldAnimate) {
                     // 对勾: 缩放+淡入 0.15s；遮罩: 淡入
                     binding.checkContainer.scaleX = 0.5f
                     binding.checkContainer.scaleY = 0.5f
@@ -425,7 +482,7 @@ class PhotoGridAdapter(
                     binding.viewSelectedMask.alpha = 1f
                 }
             } else {
-                if (animate && binding.checkContainer.visibility == View.VISIBLE) {
+                if (shouldAnimate && binding.checkContainer.visibility == View.VISIBLE) {
                     // 取消勾选: 对勾淡出缩小后隐藏
                     currentAnimators = AnimatorSet().apply {
                         playTogether(
@@ -438,6 +495,10 @@ class PhotoGridAdapter(
                         duration = 150
                         addListener(object : android.animation.AnimatorListenerAdapter() {
                             override fun onAnimationEnd(animation: android.animation.Animator) {
+                                // 身份校验：ViewHolder 已被复用到别的照片时，
+                                // 这张旧照片的收尾动作必须作废，否则会把新格子的
+                                // 对勾/遮罩改掉（快速滑动花屏的直接来源）
+                                if (boundHandle != handleAtStart) return
                                 binding.checkContainer.visibility =
                                     if (multiSelectMode) View.INVISIBLE else View.GONE
                                 binding.viewSelectedMask.visibility = View.GONE
