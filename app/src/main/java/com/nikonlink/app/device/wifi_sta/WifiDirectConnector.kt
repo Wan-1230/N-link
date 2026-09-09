@@ -48,6 +48,7 @@ class WifiDirectConnector @Inject constructor(
     private val ptpSession: PtpSessionManager,
     private val wifiManager: WifiManager,
     private val networkMonitor: WifiNetworkMonitor,
+    private val networkRequester: StaNetworkRequester,
     private val stateMachine: ConnectionStateMachine,
     private val eventLogger: AppEventLogger
 ) {
@@ -71,12 +72,31 @@ class WifiDirectConnector @Inject constructor(
     /** 当前活跃的连接循环。同步登记/取消，是 RC-1 修复的核心槽位。 */
     @Volatile private var activeJob: Job? = null
 
+    /**
+     * 会话是否已建立（连接成功后置 true）。
+     *
+     * STA 根因之一：旧实现在连接循环的 `finally` 里无条件
+     * `bindProcessTo(null)`，导致**刚连上就把进程级绑网解掉**——
+     * 后续 PTP 数据通道重新走系统默认路由（双卡机上多半是蜂窝网），
+     * 表现为"连接成功但立刻断流/指令无响应"。成功路径必须保持绑网，
+     * 直到 [cancelActive] / [stop] 才对称解绑。
+     */
+    @Volatile private var sessionBound = false
+
     /** 是否有连接循环在跑（含配对与恢复）。上层用它做幂等守卫。 */
     val isActive: Boolean get() = activeJob?.isActive == true
 
     fun start(scope: CoroutineScope) {
         this.scope = scope
         networkMonitor.start()
+        // 申请到的网络被系统回收时留痕：这是 STA 断链的第一现场，
+        // 心跳/健康检查的后续判定都以此为时间锚点
+        scope.launch(Dispatchers.IO) {
+            networkRequester.networkLost.collect { network ->
+                Timber.tag(TAG).w("STA network lost: $network")
+                eventLogger.event("sta_net_lost", "network" to network.toString())
+            }
+        }
     }
 
     fun stop() {
@@ -84,6 +104,20 @@ class WifiDirectConnector @Inject constructor(
         generation++
         activeJob?.cancel()
         activeJob = null
+        teardownSession()
+    }
+
+    /**
+     * 归还会话级资源：解绑进程级网络、归还会话锁、释放 requestNetwork 句柄。
+     * 与成功路径的持有动作严格对称，且幂等。
+     */
+    private fun teardownSession() {
+        if (!sessionBound) return
+        sessionBound = false
+        networkMonitor.releaseRetained()
+        networkMonitor.bindProcessTo(null)
+        networkRequester.release()
+        Timber.tag(TAG).i("STA session resources released")
     }
 
     /**
@@ -110,6 +144,8 @@ class WifiDirectConnector @Inject constructor(
         // 都会看到 isActive == true，不再产生第二条循环。
         activeJob?.cancel()
         activeJob = null
+        // 新连接前把上一次会话的网络句柄/锁/绑网清干净，避免叠加持有
+        teardownSession()
 
         val myScope = scope
         if (myScope == null) {
@@ -131,6 +167,7 @@ class WifiDirectConnector @Inject constructor(
         generation++
         activeJob?.cancel()
         activeJob = null
+        teardownSession()
     }
 
     private suspend fun run(
@@ -164,7 +201,12 @@ class WifiDirectConnector @Inject constructor(
                 // RC-4: 每次尝试都等待并重新解析 Network，不用循环外缓存的旧句柄；
                 // v1.0.2: 按相机 IP 的子网匹配选网（ZDROP 同款）——手机热点模式下
                 // 相机在热点子网而非上游 WiFi 子网，"任意 WiFi 网络"会绑错路由
-                val network = networkMonitor.awaitWifiNetworkFor(endpoint.host, AWAIT_NETWORK_MS)
+                // ZDROP 同款：先向系统申请一个能到达相机的 WiFi 网络并持有
+                // （无 Internet 的相机网/热点网不会被系统回收），拿不到再依次
+                // 回退到既有监听与 AP 通道。绑定前再按相机 IP 子网匹配一次，
+                // 手机热点模式下"任意 WiFi 网络"会绑到上游 WiFi 而连不上相机。
+                val network = networkRequester.acquire(endpoint.host, AWAIT_NETWORK_MS)
+                    ?: networkMonitor.awaitWifiNetworkFor(endpoint.host, AWAIT_NETWORK_MS)
                     ?: wifiManager.bindToActiveWifi()
                 if (network == null) {
                     lastErr = "no_wifi_network"
@@ -186,6 +228,10 @@ class WifiDirectConnector @Inject constructor(
 
                 if (gen != generation) return                    // RC-7: 二次校验
                 if (ok) {
+                    // 会话级持有：进程级绑网 + WifiLock 在整个监看/传输期间保持，
+                    // 不再由本循环的 finally 解掉（见 [sessionBound] 的说明）
+                    sessionBound = true
+                    networkMonitor.retainLocks()
                     eventLogger.event(
                         "sta_ok",
                         "gen" to gen, "attempt" to attempt,
@@ -216,9 +262,14 @@ class WifiDirectConnector @Inject constructor(
             eventLogger.event("sta_cancel", "gen" to gen, "attempt" to attempt)
             throw e
         } finally {
+            // 归还"连接尝试"这一次持锁（会话持有另算，引用计数保证不误放）
             networkMonitor.releaseLocks()
-            // 连接结束恢复系统默认路由（进程级绑定的对称操作）
-            networkMonitor.bindProcessTo(null)
+            // 仅在**未连上**时恢复默认路由并释放网络申请；
+            // 连上后必须保持，否则数据通道会被系统默认路由抢走（STA 断流根因）
+            if (!sessionBound) {
+                networkMonitor.bindProcessTo(null)
+                networkRequester.release()
+            }
             // 任何异常出口都保证会话被清干净，不残留半开 socket
             if (gen == generation && !ptpSession.isConnected()) {
                 runCatching { ptpSession.closeSession() }
