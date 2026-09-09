@@ -33,7 +33,29 @@ class PtpSessionManager @Inject constructor(
         // 非配对模式读超时降至 15s：断链/半开连接能更快被识别，交给上层快速恢复
         private const val READ_TIMEOUT_MS = 15000
         private const val PAIRING_TIMEOUT_MS = 60000L
-        private const val KEEP_ALIVE_INTERVAL_MS = 15000L
+        /**
+         * 心跳间隔。原 15s 偏慢：相机侧空闲约 3.5 分钟会主动断链，
+         * 而手机侧一旦出现半开连接（路由器删 NAT 会话 / 手机切网 / 息屏），
+         * 15s 一轮 + 60s 判死意味着最长 75s 才恢复，监看早就黑屏了。
+         * 现在 8s 一轮，配合 [MAX_MISSED_BEATS] 把判死窗口压到 30s 出头。
+         */
+        private const val KEEP_ALIVE_INTERVAL_MS = 8000L
+        /**
+         * 发出 Ping 后等待相机应答的宽限时间。
+         * 注意判据是"event 通道有无入站活动"而不是"有没有收到 Pong"——
+         * 部分机身只主动发 ProbeRequest 而不回 Pong，只看 Pong 会误杀。
+         */
+        private const val PONG_GRACE_MS = 2500L
+        /** 连续多少个心跳周期内 event 通道毫无动静即判定链路死亡 */
+        private const val MAX_MISSED_BEATS = 3
+        /** event 通道最长静默时间（兜底，原为 60s） */
+        private const val NO_ACTIVITY_TIMEOUT_MS = 30000L
+        /**
+         * 事件通道读超时。原来设成 0（无限阻塞）是断连恢复慢的直接原因：
+         * 半开连接下 `read` 永不返回，事件协程既退出不了也感知不到对端消失，
+         * 只能等心跳兜底。给它一个大于判死窗口的超时，让读线程自己也能醒来。
+         */
+        private const val EVENT_READ_TIMEOUT_MS = 45000
         private const val EVENT_PING_TIMEOUT_MS = 1500
     }
 
@@ -215,7 +237,9 @@ class PtpSessionManager @Inject constructor(
 
             // 缩短断联检测时间：会话建立后命令通道超时降至 10s
             commandSocket?.soTimeout = 10000
-            eventSocket?.soTimeout = 0
+            // 事件通道不再无限阻塞（0）；45s 无入站即由读超时唤醒并判死，
+            // 与心跳的 30s 判死窗口形成双保险，避免半开连接下永久挂起
+            eventSocket?.soTimeout = EVENT_READ_TIMEOUT_MS
             _sessionState.value = PtpSessionState.CONNECTED
             startKeepAlive()
             startEventListener()
@@ -627,6 +651,15 @@ class PtpSessionManager @Inject constructor(
 
     fun isConnected(): Boolean = _sessionState.value == PtpSessionState.CONNECTED
 
+    /**
+     * 链路是否已被判定死亡（ERROR 态）。
+     *
+     * 上层（尤其是取帧/下载这类自带重试的循环）在每次失败后应先问一次：
+     * 链路已死就立刻收手交给重连流程，不要再用 10s 级的命令超时去空转五轮，
+     * 那 50 秒里用户看到的只有"卡住不动"。
+     */
+    fun isLinkDead(): Boolean = _sessionState.value == PtpSessionState.ERROR
+
     @Synchronized
     private fun sendPacket(packet: PtpPacket) {
         commandOutput?.write(packet.toBytes())
@@ -639,12 +672,20 @@ class PtpSessionManager @Inject constructor(
 
     private fun startKeepAlive() {
         lastEventActivityAt = System.currentTimeMillis()
+        missedBeats = 0
         keepAliveJob = scope?.launch(Dispatchers.IO) {
             while (isActive) {
                 delay(KEEP_ALIVE_INTERVAL_MS)
                 // 保活心跳走 event 通道 Ping(packetType=13)，
                 // 相机回 Pong(type=14) 由 event 监听器处理并刷新 lastEventActivityAt；
                 // 全程不发 DeviceReady 命令，命令通道完全留给业务。
+                //
+                // 关键修复：旧实现只检查"write 有没有抛异常"。TCP 半开连接下
+                // （对端掉电 / 路由器回收 NAT / 手机切网）write 只是写进内核缓冲区，
+                // 永远成功 —— 于是链路已死却一直显示健康，直到 60s 静默才判死。
+                // 现在改为"发一轮、验一轮"：发完 Ping 等一个宽限期，看 event 通道
+                // 有没有任何入站活动（Pong 或相机主动 ProbeRequest 都算）。
+                val activityBeforePing = lastEventActivityAt
                 val pingOk = try {
                     eventOutput?.write(PingPacket.toBytes())
                     eventOutput?.flush()
@@ -654,21 +695,43 @@ class PtpSessionManager @Inject constructor(
                     false
                 }
                 if (!pingOk) {
-                    markLinkError()
+                    markLinkError("ping_write_failed")
                     break
                 }
-                // 相机会在长时间空闲后主动断链（约 3.5 分钟）；
-                // event 通道 60 秒无任何活动即判定链路已死，交给上层恢复流程
-                if (System.currentTimeMillis() - lastEventActivityAt > 60_000) {
-                    Timber.tag(TAG).w("keepAlive: no event-channel activity for 60s, link dead")
-                    markLinkError()
+                delay(PONG_GRACE_MS)
+
+                if (lastEventActivityAt > activityBeforePing) {
+                    // 相机回了 Pong 或主动发了探针：链路活
+                    missedBeats = 0
+                } else {
+                    missedBeats++
+                    Timber.tag(TAG).w(
+                        "keepAlive: no event-channel response ($missedBeats/$MAX_MISSED_BEATS)"
+                    )
+                    if (missedBeats >= MAX_MISSED_BEATS) {
+                        markLinkError("no_response_x$missedBeats")
+                        break
+                    }
+                }
+                // 兜底：event 通道超过 30s 毫无活动即判定链路已死，交给上层恢复流程
+                if (System.currentTimeMillis() - lastEventActivityAt > NO_ACTIVITY_TIMEOUT_MS) {
+                    Timber.tag(TAG).w(
+                        "keepAlive: no event-channel activity for ${NO_ACTIVITY_TIMEOUT_MS}ms, link dead"
+                    )
+                    markLinkError("idle_timeout")
                     break
                 }
             }
         }
     }
 
-    private fun markLinkError() {
+    /** 连续无应答的心跳轮数 */
+    @Volatile
+    private var missedBeats = 0
+
+    private fun markLinkError(reason: String) {
+        Timber.tag(TAG).w("link error: $reason")
+        eventLogger.event("link_error", "reason" to reason)
         keepAliveJob?.cancel()
         eventListenerJob?.cancel()
         closeSockets()
@@ -705,10 +768,18 @@ class PtpSessionManager @Inject constructor(
                         else -> Unit
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // 正常取消（关会话/停止服务）：不算链路错误，直接静默退出
+                Timber.tag(TAG).d("Event listener cancelled")
             } catch (e: Exception) {
                 if (isActive) {
-                    Timber.tag(TAG).w("Event listener error: ${e.message}")
-                    markLinkError()
+                    val reason = if (e is java.net.SocketTimeoutException) {
+                        "event_read_timeout"
+                    } else {
+                        "event_read_error"
+                    }
+                    Timber.tag(TAG).w("Event listener error (${e.message})")
+                    markLinkError(reason)
                 }
             }
         }
