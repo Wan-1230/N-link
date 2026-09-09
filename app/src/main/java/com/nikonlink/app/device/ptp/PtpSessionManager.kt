@@ -29,7 +29,23 @@ class PtpSessionManager @Inject constructor(
 
     companion object {
         private const val TAG = "PtpSession"
-        private const val CONNECT_TIMEOUT_MS = 10000
+        /**
+         * TCP 连接超时。对齐官方 SnapBridge（`ConnectWifiAction` → 30_000ms）。
+         * 原来 10s 在弱信号 / 相机刚上电时容易过早放弃——相机侧 WiFi 模块
+         * 完成 DHCP 到 PTP 服务就绪本身就可能超过 10 秒。
+         */
+        private const val CONNECT_TIMEOUT_MS = 30000
+
+        /**
+         * 连接重试次数。官方 SnapBridge 的策略（ConnectWifiAction 静态字段 l=5）：
+         * 相机 WiFi 关联成功后，15740 端口不是立刻 listen 的，此时 connect 会
+         * 立即返回 ECONNREFUSED（**不是超时**）。官方靠重试扛过这个就绪窗口，
+         * 我们原来一次失败就整条链路失败——这是 STA 首连成功率低的直接原因。
+         */
+        private const val CONNECT_RETRY_MAX = 5
+
+        /** 重试间隔，官方为 300ms（ConnectWifiAction 静态字段 m=0x12c）。 */
+        private const val CONNECT_RETRY_INTERVAL_MS = 300L
         // 非配对模式读超时降至 15s：断链/半开连接能更快被识别，交给上层快速恢复
         private const val READ_TIMEOUT_MS = 15000
         private const val PAIRING_TIMEOUT_MS = 60000L
@@ -100,6 +116,55 @@ class PtpSessionManager @Inject constructor(
         if (network != null) network.socketFactory.createSocket() else Socket()
 
     /**
+     * 建立 TCP 连接，失败按官方策略重试。
+     *
+     * 逆向官方 SnapBridge `ConnectWifiAction` 得到的连接语义：
+     * - 连接超时 30s（[CONNECT_TIMEOUT_MS]）
+     * - 失败最多重试 5 次，每次间隔 300ms
+     * - **[java.net.SocketTimeoutException] 不重试**：超时说明对端根本不可达
+     *   （IP 不对 / 不在同一网段 / 被 AP 隔离），再试 5 次只是白等 2.5 分钟；
+     *   而 ECONNREFUSED 这类 IOException 说明主机在、只是服务没起来，值得等。
+     *
+     * 每次重试都必须**重建 Socket**：`Socket` 是一次性的，connect 失败后
+     * 对同一实例再 connect 会抛 "already connected"/"socket closed"。
+     *
+     * @param configure 在 connect 之前施加的 socket 选项。tcpNoDelay 与
+     *   receiveBufferSize 必须在连接前设置才对 TCP 窗口协商生效。
+     */
+    private fun connectSocketWithRetry(
+        network: Network?,
+        host: String,
+        port: Int,
+        configure: Socket.() -> Unit
+    ): Socket {
+        var attempt = 0
+        while (true) {
+            val socket = createSocket(network)
+            try {
+                socket.configure()
+                socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+                if (attempt > 0) {
+                    Timber.tag(TAG).i("connect ok after $attempt retries -> $host:$port")
+                }
+                return socket
+            } catch (e: java.net.SocketTimeoutException) {
+                runCatching { socket.close() }
+                Timber.tag(TAG).w("connect timeout (no retry) -> $host:$port")
+                throw e
+            } catch (e: java.io.IOException) {
+                runCatching { socket.close() }
+                attempt++
+                if (attempt >= CONNECT_RETRY_MAX) {
+                    Timber.tag(TAG).w("connect failed after $attempt attempts: ${e.message}")
+                    throw e
+                }
+                Timber.tag(TAG).i("retry connect [$attempt/$CONNECT_RETRY_MAX]: ${e.message}")
+                Thread.sleep(CONNECT_RETRY_INTERVAL_MS)
+            }
+        }
+    }
+
+    /**
      * 建立 PTP/IP 连接（双 Socket：Command + Event）
      */
     suspend fun connect(
@@ -124,13 +189,13 @@ class PtpSessionManager @Inject constructor(
             // 建立 Command 通道
             Timber.tag(TAG).i("phase=connecting host=%s:%d", host, port)
             eventLogger.event("connect", "phase" to "socket", "host" to host, "port" to port, "pairing" to pairingMode)
-            commandSocket = createSocket(network).apply {
-                connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
-                soTimeout = readTimeout
+            commandSocket = connectSocketWithRetry(network, host, port) {
                 tcpNoDelay = true
                 keepAlive = true
                 receiveBufferSize = 4 * 1024 * 1024  // 放大 TCP 接收窗口，提升大文件传输吞吐
                 sendBufferSize = 1024 * 1024
+            }.apply {
+                soTimeout = readTimeout
             }
             // WiFi 到相机端口的 TCP 连接已建立，此时相机端会进入配对确认界面
             onWifiConnected?.invoke()
@@ -161,12 +226,16 @@ class PtpSessionManager @Inject constructor(
 
             // 建立 Event 通道
             Timber.tag(TAG).i("phase=event connecting")
-            eventSocket = createSocket(network).apply {
-                connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
-                // 配对模式下相机可能等待用户按 OK，超时后由上层重试
-                soTimeout = if (pairingMode) readTimeout else 0
+            eventSocket = connectSocketWithRetry(network, host, port) {
+                // 官方对 data / event 两条通道都设 TCP_NODELAY。PTP/IP 是
+                // 小包一问一答，Nagle 会把 event 包压在缓冲区里等待累积，
+                // 白白叠加几十毫秒——原来这里漏了，只 command 通道设了。
+                tcpNoDelay = true
                 keepAlive = true
                 receiveBufferSize = 4 * 1024 * 1024
+            }.apply {
+                // 配对模式下相机可能等待用户按 OK，超时后由上层重试
+                soTimeout = if (pairingMode) readTimeout else 0
             }
             eventInput = eventSocket!!.getInputStream()
             eventOutput = eventSocket!!.getOutputStream()
