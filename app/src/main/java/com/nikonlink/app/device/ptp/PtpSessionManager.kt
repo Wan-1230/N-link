@@ -29,11 +29,49 @@ class PtpSessionManager @Inject constructor(
 
     companion object {
         private const val TAG = "PtpSession"
-        private const val CONNECT_TIMEOUT_MS = 10000
+        /**
+         * TCP 连接超时。对齐官方 SnapBridge（`ConnectWifiAction` → 30_000ms）。
+         * 原来 10s 在弱信号 / 相机刚上电时容易过早放弃——相机侧 WiFi 模块
+         * 完成 DHCP 到 PTP 服务就绪本身就可能超过 10 秒。
+         */
+        private const val CONNECT_TIMEOUT_MS = 30000
+
+        /**
+         * 连接重试次数。官方 SnapBridge 的策略（ConnectWifiAction 静态字段 l=5）：
+         * 相机 WiFi 关联成功后，15740 端口不是立刻 listen 的，此时 connect 会
+         * 立即返回 ECONNREFUSED（**不是超时**）。官方靠重试扛过这个就绪窗口，
+         * 我们原来一次失败就整条链路失败——这是 STA 首连成功率低的直接原因。
+         */
+        private const val CONNECT_RETRY_MAX = 5
+
+        /** 重试间隔，官方为 300ms（ConnectWifiAction 静态字段 m=0x12c）。 */
+        private const val CONNECT_RETRY_INTERVAL_MS = 300L
         // 非配对模式读超时降至 15s：断链/半开连接能更快被识别，交给上层快速恢复
         private const val READ_TIMEOUT_MS = 15000
         private const val PAIRING_TIMEOUT_MS = 60000L
-        private const val KEEP_ALIVE_INTERVAL_MS = 15000L
+        /**
+         * 心跳间隔。原 15s 偏慢：相机侧空闲约 3.5 分钟会主动断链，
+         * 而手机侧一旦出现半开连接（路由器删 NAT 会话 / 手机切网 / 息屏），
+         * 15s 一轮 + 60s 判死意味着最长 75s 才恢复，监看早就黑屏了。
+         * 现在 8s 一轮，配合 [MAX_MISSED_BEATS] 把判死窗口压到 30s 出头。
+         */
+        private const val KEEP_ALIVE_INTERVAL_MS = 8000L
+        /**
+         * 发出 Ping 后等待相机应答的宽限时间。
+         * 注意判据是"event 通道有无入站活动"而不是"有没有收到 Pong"——
+         * 部分机身只主动发 ProbeRequest 而不回 Pong，只看 Pong 会误杀。
+         */
+        private const val PONG_GRACE_MS = 2500L
+        /** 连续多少个心跳周期内 event 通道毫无动静即判定链路死亡 */
+        private const val MAX_MISSED_BEATS = 3
+        /** event 通道最长静默时间（兜底，原为 60s） */
+        private const val NO_ACTIVITY_TIMEOUT_MS = 30000L
+        /**
+         * 事件通道读超时。原来设成 0（无限阻塞）是断连恢复慢的直接原因：
+         * 半开连接下 `read` 永不返回，事件协程既退出不了也感知不到对端消失，
+         * 只能等心跳兜底。给它一个大于判死窗口的超时，让读线程自己也能醒来。
+         */
+        private const val EVENT_READ_TIMEOUT_MS = 45000
         private const val EVENT_PING_TIMEOUT_MS = 1500
     }
 
@@ -78,6 +116,55 @@ class PtpSessionManager @Inject constructor(
         if (network != null) network.socketFactory.createSocket() else Socket()
 
     /**
+     * 建立 TCP 连接，失败按官方策略重试。
+     *
+     * 逆向官方 SnapBridge `ConnectWifiAction` 得到的连接语义：
+     * - 连接超时 30s（[CONNECT_TIMEOUT_MS]）
+     * - 失败最多重试 5 次，每次间隔 300ms
+     * - **[java.net.SocketTimeoutException] 不重试**：超时说明对端根本不可达
+     *   （IP 不对 / 不在同一网段 / 被 AP 隔离），再试 5 次只是白等 2.5 分钟；
+     *   而 ECONNREFUSED 这类 IOException 说明主机在、只是服务没起来，值得等。
+     *
+     * 每次重试都必须**重建 Socket**：`Socket` 是一次性的，connect 失败后
+     * 对同一实例再 connect 会抛 "already connected"/"socket closed"。
+     *
+     * @param configure 在 connect 之前施加的 socket 选项。tcpNoDelay 与
+     *   receiveBufferSize 必须在连接前设置才对 TCP 窗口协商生效。
+     */
+    private fun connectSocketWithRetry(
+        network: Network?,
+        host: String,
+        port: Int,
+        configure: Socket.() -> Unit
+    ): Socket {
+        var attempt = 0
+        while (true) {
+            val socket = createSocket(network)
+            try {
+                socket.configure()
+                socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+                if (attempt > 0) {
+                    Timber.tag(TAG).i("connect ok after $attempt retries -> $host:$port")
+                }
+                return socket
+            } catch (e: java.net.SocketTimeoutException) {
+                runCatching { socket.close() }
+                Timber.tag(TAG).w("connect timeout (no retry) -> $host:$port")
+                throw e
+            } catch (e: java.io.IOException) {
+                runCatching { socket.close() }
+                attempt++
+                if (attempt >= CONNECT_RETRY_MAX) {
+                    Timber.tag(TAG).w("connect failed after $attempt attempts: ${e.message}")
+                    throw e
+                }
+                Timber.tag(TAG).i("retry connect [$attempt/$CONNECT_RETRY_MAX]: ${e.message}")
+                Thread.sleep(CONNECT_RETRY_INTERVAL_MS)
+            }
+        }
+    }
+
+    /**
      * 建立 PTP/IP 连接（双 Socket：Command + Event）
      */
     suspend fun connect(
@@ -102,13 +189,13 @@ class PtpSessionManager @Inject constructor(
             // 建立 Command 通道
             Timber.tag(TAG).i("phase=connecting host=%s:%d", host, port)
             eventLogger.event("connect", "phase" to "socket", "host" to host, "port" to port, "pairing" to pairingMode)
-            commandSocket = createSocket(network).apply {
-                connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
-                soTimeout = readTimeout
+            commandSocket = connectSocketWithRetry(network, host, port) {
                 tcpNoDelay = true
                 keepAlive = true
                 receiveBufferSize = 4 * 1024 * 1024  // 放大 TCP 接收窗口，提升大文件传输吞吐
                 sendBufferSize = 1024 * 1024
+            }.apply {
+                soTimeout = readTimeout
             }
             // WiFi 到相机端口的 TCP 连接已建立，此时相机端会进入配对确认界面
             onWifiConnected?.invoke()
@@ -139,12 +226,16 @@ class PtpSessionManager @Inject constructor(
 
             // 建立 Event 通道
             Timber.tag(TAG).i("phase=event connecting")
-            eventSocket = createSocket(network).apply {
-                connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
-                // 配对模式下相机可能等待用户按 OK，超时后由上层重试
-                soTimeout = if (pairingMode) readTimeout else 0
+            eventSocket = connectSocketWithRetry(network, host, port) {
+                // 官方对 data / event 两条通道都设 TCP_NODELAY。PTP/IP 是
+                // 小包一问一答，Nagle 会把 event 包压在缓冲区里等待累积，
+                // 白白叠加几十毫秒——原来这里漏了，只 command 通道设了。
+                tcpNoDelay = true
                 keepAlive = true
                 receiveBufferSize = 4 * 1024 * 1024
+            }.apply {
+                // 配对模式下相机可能等待用户按 OK，超时后由上层重试
+                soTimeout = if (pairingMode) readTimeout else 0
             }
             eventInput = eventSocket!!.getInputStream()
             eventOutput = eventSocket!!.getOutputStream()
@@ -215,7 +306,9 @@ class PtpSessionManager @Inject constructor(
 
             // 缩短断联检测时间：会话建立后命令通道超时降至 10s
             commandSocket?.soTimeout = 10000
-            eventSocket?.soTimeout = 0
+            // 事件通道不再无限阻塞（0）；45s 无入站即由读超时唤醒并判死，
+            // 与心跳的 30s 判死窗口形成双保险，避免半开连接下永久挂起
+            eventSocket?.soTimeout = EVENT_READ_TIMEOUT_MS
             _sessionState.value = PtpSessionState.CONNECTED
             startKeepAlive()
             startEventListener()
@@ -627,6 +720,15 @@ class PtpSessionManager @Inject constructor(
 
     fun isConnected(): Boolean = _sessionState.value == PtpSessionState.CONNECTED
 
+    /**
+     * 链路是否已被判定死亡（ERROR 态）。
+     *
+     * 上层（尤其是取帧/下载这类自带重试的循环）在每次失败后应先问一次：
+     * 链路已死就立刻收手交给重连流程，不要再用 10s 级的命令超时去空转五轮，
+     * 那 50 秒里用户看到的只有"卡住不动"。
+     */
+    fun isLinkDead(): Boolean = _sessionState.value == PtpSessionState.ERROR
+
     @Synchronized
     private fun sendPacket(packet: PtpPacket) {
         commandOutput?.write(packet.toBytes())
@@ -639,12 +741,20 @@ class PtpSessionManager @Inject constructor(
 
     private fun startKeepAlive() {
         lastEventActivityAt = System.currentTimeMillis()
+        missedBeats = 0
         keepAliveJob = scope?.launch(Dispatchers.IO) {
             while (isActive) {
                 delay(KEEP_ALIVE_INTERVAL_MS)
                 // 保活心跳走 event 通道 Ping(packetType=13)，
                 // 相机回 Pong(type=14) 由 event 监听器处理并刷新 lastEventActivityAt；
                 // 全程不发 DeviceReady 命令，命令通道完全留给业务。
+                //
+                // 关键修复：旧实现只检查"write 有没有抛异常"。TCP 半开连接下
+                // （对端掉电 / 路由器回收 NAT / 手机切网）write 只是写进内核缓冲区，
+                // 永远成功 —— 于是链路已死却一直显示健康，直到 60s 静默才判死。
+                // 现在改为"发一轮、验一轮"：发完 Ping 等一个宽限期，看 event 通道
+                // 有没有任何入站活动（Pong 或相机主动 ProbeRequest 都算）。
+                val activityBeforePing = lastEventActivityAt
                 val pingOk = try {
                     eventOutput?.write(PingPacket.toBytes())
                     eventOutput?.flush()
@@ -654,21 +764,43 @@ class PtpSessionManager @Inject constructor(
                     false
                 }
                 if (!pingOk) {
-                    markLinkError()
+                    markLinkError("ping_write_failed")
                     break
                 }
-                // 相机会在长时间空闲后主动断链（约 3.5 分钟）；
-                // event 通道 60 秒无任何活动即判定链路已死，交给上层恢复流程
-                if (System.currentTimeMillis() - lastEventActivityAt > 60_000) {
-                    Timber.tag(TAG).w("keepAlive: no event-channel activity for 60s, link dead")
-                    markLinkError()
+                delay(PONG_GRACE_MS)
+
+                if (lastEventActivityAt > activityBeforePing) {
+                    // 相机回了 Pong 或主动发了探针：链路活
+                    missedBeats = 0
+                } else {
+                    missedBeats++
+                    Timber.tag(TAG).w(
+                        "keepAlive: no event-channel response ($missedBeats/$MAX_MISSED_BEATS)"
+                    )
+                    if (missedBeats >= MAX_MISSED_BEATS) {
+                        markLinkError("no_response_x$missedBeats")
+                        break
+                    }
+                }
+                // 兜底：event 通道超过 30s 毫无活动即判定链路已死，交给上层恢复流程
+                if (System.currentTimeMillis() - lastEventActivityAt > NO_ACTIVITY_TIMEOUT_MS) {
+                    Timber.tag(TAG).w(
+                        "keepAlive: no event-channel activity for ${NO_ACTIVITY_TIMEOUT_MS}ms, link dead"
+                    )
+                    markLinkError("idle_timeout")
                     break
                 }
             }
         }
     }
 
-    private fun markLinkError() {
+    /** 连续无应答的心跳轮数 */
+    @Volatile
+    private var missedBeats = 0
+
+    private fun markLinkError(reason: String) {
+        Timber.tag(TAG).w("link error: $reason")
+        eventLogger.event("link_error", "reason" to reason)
         keepAliveJob?.cancel()
         eventListenerJob?.cancel()
         closeSockets()
@@ -705,10 +837,18 @@ class PtpSessionManager @Inject constructor(
                         else -> Unit
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // 正常取消（关会话/停止服务）：不算链路错误，直接静默退出
+                Timber.tag(TAG).d("Event listener cancelled")
             } catch (e: Exception) {
                 if (isActive) {
-                    Timber.tag(TAG).w("Event listener error: ${e.message}")
-                    markLinkError()
+                    val reason = if (e is java.net.SocketTimeoutException) {
+                        "event_read_timeout"
+                    } else {
+                        "event_read_error"
+                    }
+                    Timber.tag(TAG).w("Event listener error (${e.message})")
+                    markLinkError(reason)
                 }
             }
         }
