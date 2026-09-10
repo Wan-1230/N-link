@@ -162,7 +162,8 @@ class DashboardViewModel @Inject constructor(
 
     /** USB 有线连接：检测已插入的相机 */
     fun connectUsb() {
-        usbPtpManager.checkExistingDevice()
+        // 用户主动点了 USB 连接 → 允许在「总线上没有相机」时把原因写进状态
+        usbPtpManager.checkExistingDevice(notifyWhenAbsent = true)
     }
 
     /** 断开 USB */
