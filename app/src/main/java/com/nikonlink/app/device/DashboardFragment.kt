@@ -118,11 +118,13 @@ class DashboardFragment : Fragment() {
                     cameraInfoRequested = false
                 }
                 binding.swipeRefresh.isRefreshing = false
+                // 连接状态变化后统一刷新状态行（避免各处直接写 tvStatusMessage 造成互相覆盖）
+                renderStatusLine()
             }
         }
 
         viewLifecycleOwner.lifecycleScope.launch {
-            viewModel.statusMessage.collect { msg -> binding.tvStatusMessage.text = msg }
+            viewModel.statusMessage.collect { renderStatusLine() }
         }
 
         // 相机信息：有真实数据才展示对应行，读不到时整行隐藏，不遗留横杠占位
@@ -270,13 +272,6 @@ class DashboardFragment : Fragment() {
                         binding.tvWifiBandCard.text = "USB 已连接"
                         binding.tvConnectionStatus.text = "USB 已连接"
                         binding.tvUsbDevice.text = "USB 相机已连接，可直接传输照片"
-                        // v1.3.0（需求 6）：状态行由 USB 状态机驱动。旧版此行只由无线状态机发射，
-                        // 而 USB 连接根本不走无线状态机 → 连上后文案永久停在「正在建立 USB 通道...」。
-                        binding.tvStatusMessage.text =
-                            viewModel.usbDeviceInfo.value?.cameraModel
-                                ?.takeIf { it.isNotBlank() }
-                                ?.let { "已连接（USB）：$it" }
-                                ?: "已连接（USB）"
                         binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
                             ContextCompat.getColor(requireContext(), R.color.on_dark_card)
                         )
@@ -286,39 +281,36 @@ class DashboardFragment : Fragment() {
                             cameraInfoRequested = true
                             paramsViewModel.readAll()
                         }
+                        renderStatusLine()
                     }
                     UsbConnectionState.ERROR -> {
                         // 模块 6：细分失败原因，禁止统一报「未检测到 USB 相机」
+                        // 提示全文写进 USB 卡片（可换行、不截断）；状态行由 renderStatusLine 用短文案
                         binding.tvUsbDevice.text =
                             viewModel.usbErrorMessage.value ?: "USB 连接失败，正在重试…"
-                        binding.tvStatusMessage.text =
-                            viewModel.usbErrorMessage.value ?: "USB 连接失败，正在重试…"
+                        renderStatusLine()
                     }
 
                     UsbConnectionState.PERMISSION_DENIED -> {
                         binding.tvUsbDevice.text =
                             viewModel.usbErrorMessage.value ?: "USB 权限被拒绝"
-                        binding.tvStatusMessage.text =
-                            viewModel.usbErrorMessage.value ?: "USB 权限被拒绝，无法连接"
+                        renderStatusLine()
                     }
 
                     UsbConnectionState.REQUESTING_PERMISSION -> {
                         binding.tvUsbDevice.text = "正在请求 USB 访问权限…"
-                        binding.tvStatusMessage.text = "正在请求 USB 访问权限…"
+                        renderStatusLine()
                     }
 
                     UsbConnectionState.CONNECTING -> {
                         binding.tvUsbDevice.text = "正在建立 USB 连接…"
-                        binding.tvStatusMessage.text = "正在建立 USB 通道…"
+                        renderStatusLine()
                     }
 
                     UsbConnectionState.DISCONNECTED -> {
-                        binding.tvUsbDevice.text = "未检测到 USB 相机"
-                        // 只有在无线也没连接时才回写状态行，避免把 WiFi 的连接文案覆盖掉
-                        if (viewModel.connectionState.value == ConnectionState.DISCONNECTED) {
-                            binding.tvStatusMessage.text =
-                                viewModel.usbErrorMessage.value ?: "未连接"
-                        }
+                        // USB 卡片（仅 USB 面板可见）保留完整指引；状态行用短文案，见 renderStatusLine
+                        binding.tvUsbDevice.text =
+                            viewModel.usbErrorMessage.value ?: "未检测到 USB 相机"
                         // 切回 WiFi 链路：恢复频段卡，具体频段由指标刷新补齐
                         if (usbActive) {
                             usbActive = false
@@ -333,6 +325,7 @@ class DashboardFragment : Fragment() {
                             binding.btnConnect.visibility = View.GONE
                             binding.btnDisconnect.visibility = View.GONE
                         }
+                        renderStatusLine()
                     }
                     else -> {}
                 }
@@ -344,11 +337,8 @@ class DashboardFragment : Fragment() {
                 if (info != null) {
                     binding.tvCameraName.text = info.cameraModel
                     binding.tvUsbDevice.text = "${info.cameraModel} · 已连接 USB"
-                    // 机型可能在会话建立后被机身 DeviceInfo 回填，这里再刷新一次状态行
-                    if (viewModel.usbState.value == UsbConnectionState.CONNECTED) {
-                        binding.tvStatusMessage.text = "已连接（USB）：${info.cameraModel}"
-                    }
                 }
+                renderStatusLine()
             }
         }
 
@@ -359,17 +349,54 @@ class DashboardFragment : Fragment() {
                     UsbConnectionState.ERROR,
                     UsbConnectionState.PERMISSION_DENIED,
                     // v1.3.0：DISCONNECTED 也要显示原因（例如"未检测到 USB 相机"），
-                    // 否则点了连接但总线上没设备时，状态行没有任何反馈。
+                    // 但仅限 USB 场景 —— 否则 WiFi 连接页会出现 USB 专属文案（v1.3.0 反馈问题 1）
                     UsbConnectionState.DISCONNECTED -> {
-                        binding.tvUsbDevice.text = message ?: "未检测到 USB 相机"
-                        if (viewModel.connectionState.value == ConnectionState.DISCONNECTED) {
-                            binding.tvStatusMessage.text = message ?: "未连接"
+                        if (isUsbMode()) {
+                            binding.tvUsbDevice.text = message ?: "未检测到 USB 相机"
                         }
+                        renderStatusLine()
                     }
                     else -> {}
                 }
             }
         }
+    }
+
+    /** 当前是否处于「USB 有线连接」场景（用户停在 USB 页签，或 USB 链路已激活） */
+    private fun isUsbMode(): Boolean = currentMode == ConnectMode.USB || usbActive
+
+    /**
+     * 状态行（tvStatusMessage）的**唯一渲染出口**。
+     *
+     * 为什么必须收敛到一处：`tvStatusMessage` 宽 160dp、单行省略号，且 StateFlow 不会重发
+     * 未变化的值。此前 USB 与无线的收集器各写各的，USB 的自动探测结果一旦后于无线状态写入，
+     * 就会把 USB 专属文案永久留在 WiFi 连接页上（v1.3.0 反馈问题 1）。
+     *
+     * 规则：
+     * - USB 已连上 → 显示「已连接（USB）：机型」（USB 优先，跨页签都成立）；
+     * - 停留在 USB 页签时 → 显示 USB 过程/失败**短文案**（长指引只看 USB 卡片，避免被截断）；
+     * - 其余一切情况 → 一律回落到无线状态机的文案（WiFi AP / STA / BLE / 未连接）。
+     */
+    private fun renderStatusLine() {
+        val usb = viewModel.usbState.value
+        val model = viewModel.usbDeviceInfo.value?.cameraModel
+        val text = when {
+            usb == UsbConnectionState.CONNECTED ->
+                if (model.isNullOrBlank()) "已连接（USB）" else "已连接（USB）：$model"
+
+            isUsbMode() -> when (usb) {
+                UsbConnectionState.REQUESTING_PERMISSION -> "正在请求 USB 权限…"
+                UsbConnectionState.CONNECTING -> "正在建立 USB 通道…"
+                UsbConnectionState.PERMISSION_DENIED -> "USB 权限被拒绝"
+                UsbConnectionState.ERROR -> "USB 连接失败"
+                // 短文案：完整指引（"…请用数据线连接相机并开机，再点连接"）留在 USB 卡片里
+                UsbConnectionState.DISCONNECTED -> "未检测到 USB 相机"
+                UsbConnectionState.CONNECTED -> "已连接（USB）"
+            }
+
+            else -> viewModel.statusMessage.value
+        }
+        binding.tvStatusMessage.text = text.ifBlank { "未连接" }
     }
 
     private fun setupInteractions() {
@@ -507,6 +534,9 @@ class DashboardFragment : Fragment() {
         binding.scrollContent.smoothScrollTo(0, 0)
         updateModeTabs(animate = true)
         updateModePanels()
+        // 页签切换会改变"是否 USB 场景"的判定 → 立即按新场景重渲染状态行，
+        // 避免离开 USB 页后仍残留 USB 专属文案（v1.3.0 反馈问题 1）
+        renderStatusLine()
     }
 
     private fun updateModeTabs(animate: Boolean) {
@@ -579,6 +609,12 @@ class DashboardFragment : Fragment() {
             ConnectMode.USB -> {
                 binding.tvStatusMessage.text = "正在检测 USB 相机..."
                 viewModel.connectUsb()
+                // 兜底收口：若探测结果与上一次完全相同（StateFlow 不会重发），
+                // 1.5s 后按状态重渲染一次，避免"正在检测…"永久留在状态行
+                viewLifecycleOwner.lifecycleScope.launch {
+                    delay(1500)
+                    if (_binding != null) renderStatusLine()
+                }
             }
         }
     }
@@ -596,6 +632,11 @@ class DashboardFragment : Fragment() {
             ConnectMode.USB -> {
                 binding.tvStatusMessage.text = "正在建立 USB 通道..."
                 viewModel.connectUsb()
+                // 同 scanForCurrentMode：状态未变化时 StateFlow 不会重发，这里兜底重渲染
+                viewLifecycleOwner.lifecycleScope.launch {
+                    delay(1500)
+                    if (_binding != null) renderStatusLine()
+                }
             }
         }
     }
