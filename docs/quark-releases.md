@@ -8,6 +8,7 @@
 
 | 版本 | 分享链接 | 提取码 | 有效期 | 发布日期 | 备注 |
 |---|---|---|---|---|---|
+| v1.3.1 | https://pan.quark.cn/s/a04626b6e249 | （无，公开链接） | 永久 | 2026-09-10 | 同一 releases 文件夹的分享（AI 经 quarkclouddrive CLI 上传）；APK 3,787,794 字节与 GitHub 资产一致，SHA-256 e3cfe503…c2486。归档：v1.3.0 APK → `_archive-releases`，旧 `version-info.txt`(1,272B, v1.3.0 内容) → `_archive-version-info`，新内容（781 字节）rename 回规范名 |
 | v1.3.0 | https://pan.quark.cn/s/a04626b6e249 | （无，公开链接） | 永久 | 2026-09-10 | 同一 releases 文件夹的分享（AI 经 quarkclouddrive CLI 上传）；APK 3,787,118 字节与 GitHub 资产一致，SHA-256 cf2ea969…96c04。同时按约定归档：v1.2.2 APK → `_archive-releases`，旧 `version-info.txt`(839B, v1.2.2 内容) → `_archive-version-info`，新内容（1,272 字节）rename 回规范名 |
 | v1.2.2 | https://pan.quark.cn/s/a04626b6e249 | （无，公开链接） | 永久 | 2026-09-09 | 同一 releases 文件夹的分享；APK 3,777,262 字节与 GitHub 资产一致，SHA-256 c8dd80f4…4a643。本次清理：历史重复的 version-info.txt(v1.2.0)/version-info(1).txt(v1.2.1) 移入 `/N-Link/_archive-version-info`，v1.2.2 内容（839 字节）改回规范名 `version-info.txt` |
 | v1.2.1 | https://pan.quark.cn/s/a04626b6e249 | （无，公开链接） | 永久 | 2026-09-09 | 同一 releases 文件夹的分享（AI 经 quarkclouddrive CLI 自动上传）；APK 3,770,382 字节与 GitHub 资产一致，SHA-256 e414e1fc…a1df |
@@ -50,5 +51,6 @@
 
 | 日期 | 操作 | 内容 |
 |---|---|---|
+| 2026-09-10 | v1.3.1 发版归档 | releases 移出 v1.3.0 APK(3,787,118) → `_archive-releases`；旧 `version-info.txt`(1,272B) → `_archive-version-info`；v1.3.1 内容(781B) rename 回 `version-info.txt`。公开分享页 a04626b6e249 复核：仅 `N-Link-v1.3.1-release.apk`(3,787,794) + `version-info.txt`(781) |
 | 2026-09-10 | v1.3.0 发版归档 | releases 移出 v1.2.2 APK(3,777,262) → `_archive-releases`；旧 `version-info.txt`(839B) → `_archive-version-info`；v1.3.0 内容(1,272B) rename 回 `version-info.txt`。公开分享页 a04626b6e249 复核结果：仅 `N-Link-v1.3.0-release.apk`(3,787,118) + `version-info.txt`(1,272) |
 | 2026-09-09 | 首次清理 | releases 移出 4 个历史 APK → `_archive-releases`：v1.0.2(3,671,480) / v1.1.0(3,717,244) / v1.2.0(3,763,710) / v1.2.1(3,770,382)；releases 保留 v1.2.2(3,777,262) + version-info.txt(839)。公开分享页 a04626b6e249 外部复核已同步只剩最新版 |
