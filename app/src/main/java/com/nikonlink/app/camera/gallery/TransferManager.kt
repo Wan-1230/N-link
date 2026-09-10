@@ -34,6 +34,7 @@ import com.nikonlink.app.shared.common.AppEventLogger
 import com.nikonlink.app.shared.common.AppSettings
 import com.nikonlink.app.shared.data.NLinkDatabaseEntryPoint
 import com.nikonlink.app.shared.data.TransferHistoryDao
+import com.nikonlink.app.shared.data.TransferRecord
 import com.nikonlink.app.shared.data.findTransferredHandlesBatch
 import dagger.hilt.android.EntryPointAccessors
 import java.io.File
@@ -318,6 +319,29 @@ class TransferManager @Inject constructor(
      * 不再允许把整页乃至整次加载拖死——旧版无任何超时与失败分类，一次 5s 级阻塞
      * 叠加全量句柄后表现就是「转圈永远不结束」。
      */
+    /**
+     * 抓取单张照片（v1.3.0 需求 5：逐张实时加载）。
+     *
+     * 供尼康私有事件 `0xC101 ObjectAddedInSDRAM` 使用：事件自带新对象句柄，
+     * 只取这一张的 ObjectInfo 即可增量插入列表，**不必整表重拉**
+     * （旧版每拍一张都走 objectHandles + 全量元数据，是"刷新慢/间歇"的另一半原因）。
+     *
+     * @return null = 该句柄不可用（目录对象 / 不支持的格式 / 链路抖动），
+     *         调用方应回退到全量同步，保证不漏照片。
+     */
+    suspend fun fetchPhotoByHandle(handle: Int): CameraFile? {
+        if (handle <= 0 || handle == PtpConstants.NIKON_EVENT_HANDLE_NONE) return null
+        val transport = currentTransport()
+        if (!transport.isConnected) return null
+        return withContext(Dispatchers.IO) {
+            val info = runCatching {
+                withTimeoutOrNull(OBJECT_INFO_TIMEOUT_MS) { transport.objectInfo(handle) }
+            }.onFailure { Timber.tag(TAG).d(it, "New-object info fetch failed: $handle") }
+                .getOrNull() ?: return@withContext null
+            parseObjectInfo(handle, info)
+        }
+    }
+
     suspend fun fetchPhotoListDetailed(
         onPage: ((List<CameraFile>) -> Unit)? = null
     ): PhotoListFetch {
@@ -953,6 +977,37 @@ class TransferManager @Inject constructor(
      */
     suspend fun queryDownloadedHandles(handles: List<Int>): Set<Int> =
         queryTransferredHandles(handles)
+
+    /**
+     * 全部已完成的传输记录（v1.3.0 「本地删除 → 状态恢复未下载」自愈用）。
+     * 记录里带 localPath / fileName / fileSize，用于与本地媒体库比对。
+     */
+    suspend fun completedTransferRecords(): List<TransferRecord> =
+        runCatching { transferRepository.getCompletedRecords() }
+            .onFailure { Timber.tag(TAG).w(it, "Read transfer records failed") }
+            .getOrDefault(emptyList())
+
+    /** 回收传输记录：本地文件被删除后调用，使「已下载」状态立即恢复为未下载 */
+    suspend fun forgetDownloads(handles: List<Int>) {
+        if (handles.isEmpty()) return
+        runCatching { transferRepository.removeTransfers(handles) }
+            .onFailure { Timber.tag(TAG).w(it, "Forget downloads failed") }
+    }
+
+    /**
+     * 与本地媒体库对账：本地文件已不存在的记录连同记录一起回收。
+     * @param isStillLocal localPath 是否仍存在（由调用方注入 MediaStore 判定）
+     * @return 被回收的 handle 集合
+     */
+    suspend fun reconcileTransferHistory(isStillLocal: (String) -> Boolean): Set<Int> {
+        val before = runCatching { transferRepository.getCompletedRecords() }
+            .getOrDefault(emptyList())
+        val stale = before.filterNot { isStillLocal(it.localPath) }.map { it.fileHandle }
+        if (stale.isEmpty()) return emptySet()
+        forgetDownloads(stale)
+        Timber.tag(TAG).i("Reconciled ${stale.size} stale transfers (local file gone)")
+        return stale.toSet()
+    }
 
     /**
      * 懒取 TransferHistoryDao：本类由 AppModule 手动构造，无法追加构造器参数，

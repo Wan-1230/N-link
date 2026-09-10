@@ -2,6 +2,7 @@ package com.nikonlink.app.camera.data
 
 import com.nikonlink.app.shared.data.TransferHistoryDao
 import com.nikonlink.app.shared.data.TransferRecord
+import com.nikonlink.app.shared.data.deleteByHandlesBatch
 import kotlinx.coroutines.flow.Flow
 import timber.log.Timber
 import javax.inject.Inject
@@ -48,10 +49,24 @@ class TransferRepository @Inject constructor(
         Timber.tag(TAG).d("Recorded transfer: $fileName ($status)")
     }
 
-    /** 清理过期记录（保留最近30天） */
-    suspend fun cleanOldRecords() {
-        val thirtyDaysAgo = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
-        transferHistoryDao.deleteOlderThan(thirtyDaysAgo)
-        Timber.tag(TAG).d("Cleaned old transfer records")
+    /**
+     * 全部已完成的传输记录（含 localPath / fileName / fileSize）。
+     * 供「本地文件已删除 → 状态恢复为未下载」的自愈校验使用。
+     */
+    suspend fun getCompletedRecords(): List<TransferRecord> = transferHistoryDao.getCompletedRecords()
+
+    /**
+     * 批量回收传输记录（用户删除本地文件后调用）。
+     * 删除记录 = 相机照片页该张不再显示「已下载」角标、在「未下载」筛选下重新出现。
+     *
+     * v1.3.0 说明：本类原有 `cleanOldRecords()`（按时间清理最近 30 天外的记录）已废弃——
+     * 时间口径会让下载满 30 天的照片**无端丢失「已下载」状态**（文件还在手机里，
+     * App 里角标却消失了）。新口径只看事实：本地文件确实不存在了才回收记录，
+     * 由 `TransferViewModel.reconcileWithLocalMedia()` 比对媒体库后调用本方法。
+     */
+    suspend fun removeTransfers(handles: List<Int>) {
+        if (handles.isEmpty()) return
+        transferHistoryDao.deleteByHandlesBatch(handles)
+        Timber.tag(TAG).d("Removed ${handles.size} transfer records")
     }
 }

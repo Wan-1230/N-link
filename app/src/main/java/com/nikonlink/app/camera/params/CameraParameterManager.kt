@@ -191,6 +191,10 @@ class CameraParameterManager @Inject constructor(
             return
         }
 
+        // v1.3.0 需求 4：每次重新读取（= 新会话）都复位「不支持远程切换模式」的判定，
+        // 换机身/换拨盘档位后应重新给一次机会
+        resetModeSwitchSupport()
+
         withContext(Dispatchers.IO) {
             try {
                 readAperture()
@@ -544,6 +548,18 @@ class CameraParameterManager @Inject constructor(
         else -> 0
     }
 
+    /**
+     * 由规格（焦段 + 两端最大光圈）合成镜头展示名。
+     *
+     * **不再硬编码 "NIKKOR" 前缀**（v1.3.0 修复）：
+     * 机身私有属性只给得出 LensID 与规格，给不出品牌字符串；此前无条件拼 "NIKKOR"
+     * 会把适马 / 腾龙 / 蔡司等第三方镜头显示成尼康原厂，属于确定性错误展示。
+     * 现在只呈现**客观可得的规格**，拿不到就退化为「未知镜头」，
+     * 既不冒充原厂，也不把内部 LensID 暴露给用户。
+     *
+     * 注：原厂型号精确名（如 "NIKKOR Z 24-70mm f/2.8 S"）需要维护 LensID→型号表，
+     * 按 PRD Q1 决策留待后续按真机实测补全（当前为 A 方案）。
+     */
     private fun buildLensName(
         lensId: Int?,
         focalMinMm: Double?,
@@ -564,12 +580,10 @@ class CameraParameterManager @Inject constructor(
             else -> ""
         }
         val specs = listOf(focalRange, aperture).filter { it.isNotBlank() }.joinToString(" ")
-        return if (specs.isNotBlank()) {
-            "NIKKOR $specs"
-        } else if (lensId != null && lensId > 0) {
-            "镜头 ID $lensId"
-        } else {
-            ""
+        return when {
+            specs.isNotBlank() -> specs
+            lensId != null && lensId > 0 -> "未知镜头"
+            else -> ""
         }
     }
 
@@ -897,14 +911,85 @@ class CameraParameterManager @Inject constructor(
      *
      * 模式值：1=M、2=P、3=A、4=S、0x8010=Auto。这是"远程模式"语义的写入——
      * 机身切到对应曝光模式；物理拨盘是更高优先级，断开重连后机身回到拨盘位置属于正常行为。
+     *
+     * v1.3.0 说明：写入结果只代表**相机是否接受这条指令**（0x2001 OK），不代表模式真的变了。
+     * 部分机型会回 OK 却静默忽略（拨盘机型 / 固件限制），因此调用方必须再用
+     * [confirmExposureProgram] 主动回读设备确认，不能只信这里的返回值。
      */
     suspend fun setExposureProgram(mode: Int): Boolean {
         if (_paramsLocked.value) return false
         val data = ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN)
             .putShort(mode.toShort()).array()
         val success = writeDeviceProp(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE, data)
+        Timber.tag(TAG).i("setExposureProgram(0x500E)=$mode writeAccepted=$success")
         if (success) readExposureProgram()
         return success
+    }
+
+    /**
+     * 主动回读设备上的 0x500E 当前值（v1.3.0 需求 4）。
+     *
+     * 与 [readExposureProgram] 的区别：**直接读设备并返回原始值**，不经过
+     * `_exposureProgram` 状态流 —— 状态流里可能残留初始默认值/上一次的缓存，
+     * 用它做"切换是否成功"的判定会出现"UI 说已切换、相机其实没动"的假成功。
+     *
+     * @return 相机上报的模式值；读不到（链路抖动/属性不可读）返回 null
+     */
+    suspend fun readExposureProgramRaw(): Int? {
+        val data = readDeviceProp(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE) ?: return null
+        if (data.size < 2) return null
+        return ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+    }
+
+    /**
+     * 写入后确认模式是否真的切换成功：轮询回读 0x500E 至 [attempts] 次。
+     *
+     * @return 命中 target 时返回 target；否则返回最后一次读到的实际值（读不到则 null）
+     */
+    suspend fun confirmExposureProgram(
+        target: Int,
+        attempts: Int = 4,
+        intervalMs: Long = 400L
+    ): Int? {
+        var last: Int? = null
+        repeat(attempts.coerceAtLeast(1)) { i ->
+            val value = readExposureProgramRaw()
+            if (value != null) {
+                last = value
+                if (value == target) {
+                    // 顺带把状态流刷新到真实值（不落本地假状态）
+                    _exposureProgram.value = _exposureProgram.value.copy(
+                        currentValue = describeExposureProgram(value),
+                        rawValue = value
+                    )
+                    return value
+                }
+            }
+            if (i < attempts - 1) kotlinx.coroutines.delay(intervalMs)
+        }
+        Timber.tag(TAG).w("ExposureProgram not switched: target=$target actual=$last")
+        return last
+    }
+
+    /**
+     * 会话级「本机不支持远程切换拍摄模式」标记（v1.3.0 需求 4）。
+     *
+     * 一旦现场验证过"写入返回 OK 但模式始终不变"，就不再反复尝试，
+     * 后续点击直接给出明确结论，避免用户反复点击却毫无反馈。
+     * 重连后调用 [resetModeSwitchSupport] 复位，给不同机身/不同拨盘档位留出重试机会。
+     */
+    private val _modeSwitchUnsupported = MutableStateFlow(false)
+    val modeSwitchUnsupported: StateFlow<Boolean> = _modeSwitchUnsupported.asStateFlow()
+
+    fun markModeSwitchUnsupported() {
+        if (!_modeSwitchUnsupported.value) {
+            Timber.tag(TAG).w("Marking remote exposure-program switch as unsupported (this session)")
+            _modeSwitchUnsupported.value = true
+        }
+    }
+
+    fun resetModeSwitchSupport() {
+        _modeSwitchUnsupported.value = false
     }
 
     /**
