@@ -6,7 +6,7 @@
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.1.0-7F52FF?style=flat-square&logo=kotlin)
 ![minSdk](https://img.shields.io/badge/minSdk-29-00ACC1?style=flat-square)
 ![targetSdk](https://img.shields.io/badge/targetSdk-35-00897B?style=flat-square)
-![Version](https://img.shields.io/badge/version-1.3.0-546E7A?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.3.1-546E7A?style=flat-square)
 
 N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等）的开源 Android 应用，打通 **连接 → 浏览 → 传输 → 遥控 → 监看** 的完整链路，以「永不断联」为核心卖点：
 
@@ -72,11 +72,11 @@ N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等�
 
 | 版本 | 亮点 |
 |------|------|
+| **v1.3.1** | WiFi 连接页不再误显示 USB 提示 · USB 探测改为主动连接才提示 · 提示文案不再被截断（短文案 + 卡片完整指引） |
 | **v1.3.0** | 第三方镜头不再被显示成 NIKKOR · 相册「✓ 已下载」角标 · 删除本地照片后状态自动恢复 · 拍摄后逐张即时入册 · USB 状态行修复 · 录像中监看断流修复 · 拍摄模式写入后回读确认 |
 | **v1.2.2** | 监看心跳响应校验（修复偶发断连）· event 通道读超时 · WiFi STA 链路重构（对齐官方 SnapBridge 语义）· 相册快速翻页动画修复 |
 | **v1.2.1** | 「不重复下载已下载照片」开关 · 剩余下载进度常驻 · 下载完成即时通知媒体库 · STA 扫描失败原因可见化 · 支持手动输入相机 IP |
 | **v1.2.0** | USB 全链路优化（识别修复 / 相册秒开 / 实时监看打通）· 缩略图渐进加载 · 拍摄模式下拉切换 · 状态栏连接状态修正 |
-| **v1.1.0** | B 门全链路重构 + 定时长曝光 · 相册三 Tab 修复 + 长按滑动多选 · 双指缩放重构 + 构图网格同步 · 快门次数查询 |
 
 ---
 
@@ -173,6 +173,14 @@ app/src/main/java/com/nikonlink/app/
 ## 📋 更新日志
 
 > 从新到旧保留全部版本记录；应用内「检查更新」仅提示正式版。最新版下载见 [GitHub Releases](https://github.com/Wan-1230/N-link/releases/latest) 或上方夸克网盘。
+
+### v1.3.1 — 2026-09-10
+
+设备页连接文案修复：WiFi 场景不再出现 USB 专属提示，USB 提示不再被截断。
+
+- **WiFi 场景误显示修复**：WiFi AP / STA 连接时设备页不再出现「未检测到 USB 相机」；USB 探测改为只在用户主动点连接时提示，开机自动探测保持静默
+- **提示不再截断**：状态行只显示短文案（未检测到 USB 相机 / USB 连接失败 / USB 权限被拒绝），完整操作指引移入可换行的 USB 卡片
+- **状态行收敛**：状态行渲染统一到单一出口，USB 文案仅在 USB 场景出现，切回 WiFi 页签立即恢复无线状态文案，杜绝文案残留
 
 ### v1.3.0 — 2026-09-10
 
@@ -316,6 +324,7 @@ N-Link 第一个正式版：通过 WiFi / USB 以 PTP 协议控制尼康相机�
 - [x] v1.2.1：群友反馈优化（不重复下载开关 / 剩余下载进度 / 媒体库即时扫描 / STA 扫描增强）
 - [x] v1.2.2：稳定性专项（远端监看断连修复 + WiFi STA 链路重构 + 相册翻页修复 + SnapBridge 语义对齐）
 - [x] v1.3.0：七项体验优化（镜头显示 / 已下载角标 / 状态自愈 / USB 状态 / 逐张即时刷新 / 录像监看 / 模式回读）
+- [x] v1.3.1：设备页连接文案修复（WiFi 场景误显示 USB 提示 / 提示文案截断）
 - [ ] Phase 4：**AI 修图**（PRD 已完成，编辑器开发中）
 - [ ] 监看色彩与 LUT（PRD 已完成，待开发）
 - [ ] 更多机型适配与兼容性验证、iOS 规划
