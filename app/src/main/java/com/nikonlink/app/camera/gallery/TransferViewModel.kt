@@ -59,6 +59,8 @@ class TransferViewModel @Inject constructor(
 
     companion object {
         private const val TAG = "TransferVM"
+        /** 「已下载」状态与媒体库对账的最小间隔（非强制路径），避免频繁扫媒体库 */
+        private const val RECONCILE_COOLDOWN_MS = 5_000L
 
         /**
          * 拍摄完成 → 拉取相册的合并窗口（优化项 3）。
@@ -159,6 +161,16 @@ class TransferViewModel @Inject constructor(
     /** F2：已下载判定集合（传输历史按 handle 查询，传输状态变化时增量刷新） */
     private val _downloadedHandles = MutableStateFlow<Set<Int>>(emptySet())
     val downloadedHandles: StateFlow<Set<Int>> = _downloadedHandles.asStateFlow()
+
+    /** 上次与本地媒体库对账的时间戳（v1.3.0，`reconcileWithLocalMedia` 冷却用） */
+    private var lastReconcileAt = 0L
+
+    /**
+     * 正在增量抓取的"新照片"句柄（v1.3.0 需求 5）。
+     * 尼康事件可能同一张重复上报，且抓取是异步的，
+     * 用它防止同一个 handle 被并发抓取两次、插入两条。
+     */
+    private val inFlightNewHandles = mutableSetOf<Int>()
 
     /** 「已标记」栏最终展示列表：按标记时间倒序 + 可选跳过已下载（F2 联动） */
     val markedDisplayList: StateFlow<List<CameraFile>> = combine(
@@ -361,12 +373,12 @@ class TransferViewModel @Inject constructor(
         // 连拍/间隔由 scheduleCaptureSync 的 800ms 合并窗口去抖，不会拉爆 PTP 通道。
         viewModelScope.launch {
             ptpSession.events.collect { event ->
-                if (event.eventCode == PtpConstants.EVENT_OBJECT_ADDED) scheduleCaptureSync()
+                handleCameraEvent(event.eventCode, event.parameters)
             }
         }
         viewModelScope.launch {
             usbPtpManager.events.collect { event ->
-                if (event.eventCode == PtpConstants.EVENT_OBJECT_ADDED) scheduleCaptureSync()
+                handleCameraEvent(event.eventCode, event.parameters)
             }
         }
         // 拍摄任务（间隔/定时）结束后补一次挂起的同步
@@ -402,14 +414,55 @@ class TransferViewModel @Inject constructor(
         }
     }
 
-    /** 查询当前相机列表中已成功下载过的 handle 子集（传输历史一次性批量查询） */
-    private suspend fun refreshDownloadedHandles() {
+    /** 查询当前相机列表中已成功下载过的 handle 子集（传输历史批量查询 + 本地媒体对账） */
+    private suspend fun refreshDownloadedHandles(forceReconcile: Boolean = false) {
         val handles = _photoList.value.map { it.handle }.filter { it > 0 }
         if (handles.isEmpty()) {
             _downloadedHandles.value = emptySet()
             return
         }
-        _downloadedHandles.value = transferManager.queryDownloadedHandles(handles)
+        val fromHistory = transferManager.queryDownloadedHandles(handles)
+        _downloadedHandles.value = reconcileWithLocalMedia(fromHistory, forceReconcile)
+    }
+
+    /**
+     * 「已下载」状态自愈（v1.3.0，需求 3）。
+     *
+     * 传输历史只记录"下载成功过"，不感知本地文件后来是否被删除：
+     * - App 内删除（本地照片页删除）→ 已即时触发本方法；
+     * - App 外删除（系统相册 / 文件管理器）→ 靠这里与媒体库对账兜住。
+     *
+     * 做法：拿本地 /N-Link 目录下的真实文件（文件名 + 大小）与传输记录比对，
+     * 对不上的记录连同 transfer_history 一起回收 → 相机照片页角标消失、
+     * 「未下载」筛选下重新出现、剩余进度计数回升。
+     *
+     * 无媒体权限时不做对账（避免把"读不到"误判成"已删除"），只保留 App 内删除那条路径。
+     * 非强制调用时带 5 秒冷却，避免每次静默同步都扫一遍媒体库。
+     */
+    private suspend fun reconcileWithLocalMedia(
+        downloaded: Set<Int>,
+        force: Boolean = false
+    ): Set<Int> {
+        if (downloaded.isEmpty() || !hasMediaPermission()) return downloaded
+        val now = System.currentTimeMillis()
+        if (!force && now - lastReconcileAt < RECONCILE_COOLDOWN_MS) return downloaded
+        lastReconcileAt = now
+        return runCatching {
+            val localKeys = withContext(Dispatchers.IO) {
+                queryLocalMedia().map { it.fileName to it.size }.toSet()
+            }
+            val records = transferManager.completedTransferRecords()
+                .filter { it.fileHandle in downloaded }
+            if (records.isEmpty()) return@runCatching downloaded
+            val gone = records.filterNot { (it.fileName to it.fileSize) in localKeys }
+            if (gone.isEmpty()) return@runCatching downloaded
+            transferManager.forgetDownloads(gone.map { it.fileHandle })
+            Timber.tag(TAG).i("Reconciled ${gone.size} downloaded photos: local file gone")
+            downloaded - gone.map { it.fileHandle }.toSet()
+        }.getOrElse {
+            Timber.tag(TAG).w(it, "Reconcile downloaded state failed")
+            downloaded
+        }
     }
 
     /** UI 层订阅：批量下载完成后弹「是否清除这些标记」（载荷 = 可清除张数，0 不弹） */
@@ -605,6 +658,72 @@ class TransferViewModel @Inject constructor(
     }
 
     /**
+     * 相机事件总入口（v1.3.0 需求 5）。
+     *
+     * 分两条路：
+     * - **尼康私有 `0xC101 ObjectAddedInSDRAM`**：事件自带新对象句柄 → 只抓这一张，
+     *   增量插入（真正的「拍一张、立刻出现一张」）；
+     * - **标准 `0x4002` 与完成信号 `0x400D`/`0xC102`**：保留原有 800ms 去抖 + 全量同步，
+     *   作为"事件缺失/无句柄"时的兜底，保证不倒退、不漏片。
+     */
+    private fun handleCameraEvent(eventCode: Int, parameters: List<Int>) {
+        when (eventCode) {
+            PtpConstants.EVENT_NIKON_OBJECT_ADDED_IN_SDRAM ->
+                onNikonObjectAdded(parameters.firstOrNull() ?: 0)
+
+            PtpConstants.EVENT_OBJECT_ADDED,
+            PtpConstants.EVENT_CAPTURE_COMPLETE,
+            PtpConstants.EVENT_NIKON_CAPTURE_COMPLETE_REC_IN_SDRAM ->
+                scheduleCaptureSync()
+
+            else -> Unit
+        }
+    }
+
+    /**
+     * 尼康 `0xC101 ObjectAddedInSDRAM`：逐张增量插入（需求 5 主路径）。
+     *
+     * 与全量同步的分工：
+     * - 句柄有效 → 只取该张 ObjectInfo 插入；抓取失败/无句柄 → 退回 [scheduleCaptureSync]；
+     * - 与标准 `0x4002` 可能重复上报 → 用"列表已含该 handle" + 在途集合双重去重；
+     * - 不在相机标签页时只置脏标记（与全量同步同一套语义，避免后台频繁拉流）。
+     */
+    private fun onNikonObjectAdded(handle: Int) {
+        if (handle <= 0 || handle == PtpConstants.NIKON_EVENT_HANDLE_NONE) {
+            // NEF+RAW 等双拍场景事件不带句柄 → 只能全量同步补齐
+            scheduleCaptureSync()
+            return
+        }
+        if (_activeAlbum.value != AlbumSource.CAMERA) {
+            pendingCaptureSync = true
+            return
+        }
+        if (!transferManager.hasActiveSession()) {
+            pendingCaptureSync = true
+            return
+        }
+        if (_photoList.value.any { it.handle == handle }) return
+        if (!inFlightNewHandles.add(handle)) return
+        viewModelScope.launch {
+            try {
+                val file = transferManager.fetchPhotoByHandle(handle)
+                if (file == null) {
+                    // 取不到（目录对象/不支持格式/链路抖动）→ 交给全量同步兜底
+                    scheduleCaptureSync()
+                    return@launch
+                }
+                if (_photoList.value.any { it.handle == handle }) return@launch
+                // 增量插入：排序管线（filteredPhotos → sortCameraFiles）会自动放到正确位置，
+                // 不做任何整表重拉，因此不会打断滚动位置或引起列表闪烁
+                _photoList.value = _photoList.value + file
+                Timber.tag(TAG).i("Incremental add after capture: ${file.fileName} (handle=$handle)")
+            } finally {
+                inFlightNewHandles.remove(handle)
+            }
+        }
+    }
+
+    /**
      * 相机连接就绪状态变化时由 UI 层回调。
      * 只在「未就绪 → 就绪」的上升沿触发一次加载：
      * 既避免 FULLY_CONNECTED 期间持续重刷，也避免切 Tab 回来时无谓重载（AC-4）。
@@ -634,11 +753,16 @@ class TransferViewModel @Inject constructor(
         when (source) {
             AlbumSource.LOCAL -> if (_localPhotos.value.isEmpty()) fetchLocalPhotos()
             AlbumSource.MARKED -> {
-                // 首次进入标记栏时刷新一次已下载判定，保证「跳过已下载」开关立即生效
-                viewModelScope.launch { refreshDownloadedHandles() }
+                // 首次进入标记栏时刷新一次已下载判定，保证「跳过已下载」开关立即生效；
+                // 强制对账一次（不受冷却限制），用户在系统相册删过照片也能立刻反映
+                viewModelScope.launch { refreshDownloadedHandles(forceReconcile = true) }
             }
             // 优化项 3：拍摄时若不在本页而留下了补拉标记，切回来时立刻补上
-            AlbumSource.CAMERA -> if (pendingCaptureSync) scheduleCaptureSync()
+            AlbumSource.CAMERA -> {
+                // 切进相机照片页同样强制对账：外部删除的照片在这里应当已是「未下载」
+                viewModelScope.launch { refreshDownloadedHandles(forceReconcile = true) }
+                if (pendingCaptureSync) scheduleCaptureSync()
+            }
         }
     }
 
@@ -842,6 +966,9 @@ class TransferViewModel @Inject constructor(
             _thumbnails.value = _thumbnails.value - deletedHandles
             _selectedHandles.value = emptySet()
             _message.value = if (deleted > 0) "已删除 $deleted 个本地文件" else "删除失败，请检查文件权限"
+            // v1.3.0（需求 3）：本地文件没了 → 相机照片页的「已下载」状态必须同步恢复为未下载
+            // （角标消失、「未下载」筛选下重新出现、剩余进度回升）。强制对账一次，不受冷却限制。
+            if (deleted > 0) refreshDownloadedHandles(forceReconcile = true)
         }
     }
 

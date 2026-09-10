@@ -183,6 +183,26 @@ object PtpConstants {
     const val EVENT_DEVICE_PROP_CHANGED = 0x4006
     const val EVENT_CAPTURE_COMPLETE = 0x400D
 
+    /**
+     * 尼康私有事件（v1.3.0 需求 5：逐张实时加载的核心信号）。
+     *
+     * **依据**：libgphoto2 `camlibs/ptp2/ptp.h` —— `PTP_EC_Nikon_ObjectAddedInSDRAM = 0xC101`、
+     * `PTP_EC_Nikon_CaptureCompleteRecInSdram = 0xC102`；其 capture 流程正是等这两个事件
+     * （见 gphoto/libgphoto2 issue #846）。参考实现同样以它们为触发：
+     * PixCake（`NikonObjectAddedInSdram` + `onRamObjectAdded`）、影犀（`Nikon_ObjectAddedInSDRAM`）。
+     *
+     * **为什么必须处理**：尼康机身拍照后主要上报的是这两个私有事件，标准 `0x4002` 在部分
+     * 机型上延迟或不来 —— 这正是旧版「相册间歇性刷新」的根因。
+     *
+     * 参数：Param1 = 新对象的 object handle；`0xffff0001` 表示**无句柄**
+     * （NEF+RAW 等双拍场景），此时必须退回全量同步。
+     */
+    const val EVENT_NIKON_OBJECT_ADDED_IN_SDRAM = 0xC101
+    const val EVENT_NIKON_CAPTURE_COMPLETE_REC_IN_SDRAM = 0xC102
+
+    /** 尼康事件 Param1 的「无句柄」哨兵值（见上） */
+    const val NIKON_EVENT_HANDLE_NONE = 0xffff0001.toInt()
+
     // Nikon 厂商属性: LiveView 图像配置 (image profile set size=0xd1ac:3)
     const val PROP_NIKON_LV_IMAGE_PROFILE = 0xD1AC
 

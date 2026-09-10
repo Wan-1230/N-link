@@ -41,8 +41,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Tab3 遥控拍摄（黑白极简）
@@ -382,10 +380,11 @@ class RemoteFragment : Fragment() {
     }
 
     /**
-     * 拍摄模式远程切换（0x500E，模块 2：失败显式回调 + 下发后回读校验）。
+     * 拍摄模式远程切换（0x500E，模块 2 + v1.3.0 需求 4 强化）。
      * 与全屏监看页共用同一套档位与回读流（单一数据源）：列表预选当前模式、
-     * 下发中禁用重复点击并显示 loading、下发后等 0x500E 快轮询回读，
-     * 3 秒内未切过去则明确提示失败，UI 仍以 exposureProgram 回读流为准。
+     * 下发中禁用重复点击并显示 loading、下发后**主动回读设备**确认模式是否真的改变，
+     * 三种结果分别给出明确提示（成功 / 相机接受但未变 / 读取失败），
+     * 绝不把 UI 显示成"已切换"而相机没动。
      */
     private fun showModePicker() {
         // 边界：未连接 / 切换进行中直接拦截（入口已置灰，这里再兜一层）
@@ -394,6 +393,16 @@ class RemoteFragment : Fragment() {
             return
         }
         if (modeSwitching) return
+        // v1.3.0 需求 4：本机已被现场验证为「不支持远程切换」→ 直接给结论，
+        // 不再让用户反复点选却毫无反馈
+        if (paramsViewModel.modeSwitchUnsupported.value) {
+            Toast.makeText(
+                requireContext(),
+                "该机型不支持从 App 切换拍摄模式（相机接受指令但不改变模式），请用机身拨盘",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
         val modes = paramsViewModel.exposureProgramModes
         if (modes.isEmpty()) {
             Toast.makeText(requireContext(), "暂无可切换的拍摄模式", Toast.LENGTH_SHORT).show()
@@ -435,16 +444,30 @@ class RemoteFragment : Fragment() {
                     ).show()
                     return@launch
                 }
-                val confirmed = withTimeoutOrNull(3000) {
-                    paramsViewModel.exposureProgram.first { it.rawValue == target }
-                } != null
+                // v1.3.0 需求 4：不再用状态流判定，改为**主动回读设备**确认。
+                // 旧实现只看 exposureProgram 流，若它停在缓存/初始值上，就会出现
+                // 「提示已切换、相机其实没动」的假成功（用户反馈的"只有字样没效果"）。
+                val actual = paramsViewModel.confirmExposureProgram(target)
                 if (_binding == null) return@launch
-                if (confirmed) {
-                    Toast.makeText(requireContext(), "已切换到 $label", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(
+                when {
+                    actual == target ->
+                        Toast.makeText(requireContext(), "已切换到 $label", Toast.LENGTH_SHORT).show()
+
+                    actual != null -> {
+                        // 相机接受了指令但模式没变 → 判定本机不支持，后续点击直接给结论
+                        paramsViewModel.markModeSwitchUnsupported()
+                        Toast.makeText(
+                            requireContext(),
+                            "相机接受了指令但模式未改变（当前："
+                                + paramsViewModel.describeExposureProgram(actual)
+                                + "）。该机型不支持从 App 切换拍摄模式，请用机身拨盘调整",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+
+                    else -> Toast.makeText(
                         requireContext(),
-                        "相机未响应：当前模式下可能不支持远程切换，请确认后用机身拨盘调整",
+                        "无法读取相机当前模式，请确认连接后重试",
                         Toast.LENGTH_LONG
                     ).show()
                 }

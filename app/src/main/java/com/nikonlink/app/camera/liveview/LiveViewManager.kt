@@ -71,6 +71,14 @@ class LiveViewManager @Inject constructor(
     @Volatile
     private var errorGraceUntilMs = 0L
 
+    /**
+     * 「期望停流」标记（v1.3.0 需求 7）：录像期间置位。
+     * 与 [errorGraceUntilMs] 的区别是**没有时长上限**，由 begin/end 显式控制，
+     * 覆盖整段录像（时长由用户决定，无法预估）。
+     */
+    @Volatile
+    private var expectedStall = false
+
     private val _liveViewState = MutableStateFlow(LiveViewState.STOPPED)
     val liveViewState: StateFlow<LiveViewState> = _liveViewState.asStateFlow()
 
@@ -490,6 +498,31 @@ class LiveViewManager @Inject constructor(
     }
 
     /**
+     * 进入「期望停流」状态（v1.3.0 需求 7：视频模式 + 联动画面下录像期间保持画面）。
+     *
+     * **背景**：联动画面（相机屏同显）下开始录像时，机身会转入录像应用模式
+     * （0x9435 ChangeApplicationMode）并**停止向 PTP 推送 LV 帧**。旧版把这种
+     * 预期内的停流当成链路故障，连续 5 次取帧失败即判 ERROR 并 cancel 帧循环，
+     * 且没有任何重连 —— 用户看到的就是"点开始录像 → 画面断开，但快门还能按"。
+     *
+     * **做法**：整段录像期间不再累计取帧错误（等价于一个时长无上限的宽限），
+     * 停止录像时由 [endExpectedStall] 退出。机身在录像期间仍出帧的机型不受影响
+     * （照常有画面）；真的断链仍会被 [isWifiLinkDead] 的确定性判定立即收口。
+     */
+    fun beginExpectedStall(reason: String) {
+        expectedStall = true
+        errorGraceUntilMs = System.currentTimeMillis() + 2000L
+        Timber.tag(TAG).i("Live view expected stall ON ($reason)")
+    }
+
+    /** 退出「期望停流」状态（停止录像后调用） */
+    fun endExpectedStall() {
+        if (!expectedStall) return
+        expectedStall = false
+        Timber.tag(TAG).i("Live view expected stall OFF")
+    }
+
+    /**
      * 取帧失败处理。
      *
      * 断连体感的根因之一：旧实现不分错误类型一律累加 [consecutiveErrors]，
@@ -519,8 +552,9 @@ class LiveViewManager @Inject constructor(
             frameJob?.cancel()
             return
         }
-        // 宽限期内（拍照等已知会暂停出帧的场景）错误不累计，但仍节流重试
-        if (System.currentTimeMillis() < errorGraceUntilMs) {
+        // 宽限期内（拍照等已知会暂停出帧的场景）错误不累计，但仍节流重试；
+        // expectedStall = 录像期间（联动画面下机身停推 LV 帧属预期），同样不累计
+        if (expectedStall || System.currentTimeMillis() < errorGraceUntilMs) {
             delay(100)
             return
         }
@@ -645,8 +679,7 @@ class LiveViewManager @Inject constructor(
         _zoomLevel.value = 1.0f
     }
 
-    fun isRunning(): Boolean = _liveViewState.value == LiveViewState.RUNNING
-}
+    fun isRunning(): Boolean = _liveViewState.value == LiveViewState.RUNNING}
 
 /**
  * Live View 状态

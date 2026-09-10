@@ -50,6 +50,11 @@ class RemoteShootingManager @Inject constructor(
 
         /** 0x9435 进入/退出应用模式后等待机身生效的时间 */
         private const val VIDEO_MODE_SETTLE_MS = 300L
+        /**
+         * 应用模式切换（进/出录像）后，等待相机恢复推流再判定是否需要重启监看的时间（v1.3.0 需求 7）。
+         * 取 600ms：短于机身上报 CaptureComplete 的常见间隔，又能避免刚切完模式就抢 PTP 通道。
+         */
+        private const val LIVE_VIEW_RESTART_SETTLE_MS = 600L
 
         /** 收门策略①（恢复快门值）在曝光中的重试上限：曝光中机身可能持续回忙 */
         private const val BULB_STOP_WRITE_RETRIES = 6
@@ -774,6 +779,11 @@ class RemoteShootingManager @Inject constructor(
             return false
         }
         return withContext(Dispatchers.IO) {
+            // v1.3.0（需求 7）：联动画面（相机屏同显）下，机身转入录像应用模式后会停止
+            // 向 PTP 推 LV 帧 —— 这是**预期行为**，必须提前给监看开"期望停流"，
+            // 否则连续 5 次取帧失败会把监看判死并 cancel 帧循环（用户看到"画面断开"）。
+            val graceForMovie = isLinkedDisplay()
+            if (graceForMovie) liveViewManager.beginExpectedStall("movie_recording")
             try {
                 _shootingState.value = ShootingState.VIDEO_PREPARING
 
@@ -792,6 +802,9 @@ class RemoteShootingManager @Inject constructor(
                             Timber.tag(TAG).i(
                                 "Video recording started (lvStartedHere=$lvStartedHere)"
                             )
+                            // 需求 7：应用模式切换后确认监看仍在跑；掉了就重启一次
+                            // （对齐 libgphoto2「CaptureComplete 后 restart liveview」）
+                            if (graceForMovie) ensureLiveViewAfterModeChange()
                             return@withContext true
                         }
                         code == PtpConstants.RESPONSE_NIKON_NOT_LIVE_VIEW && !lvStartedHere -> {
@@ -802,6 +815,7 @@ class RemoteShootingManager @Inject constructor(
                                 _shootingState.value = ShootingState.IDLE
                                 _shootingMessage.value = describeMovieRejection(code)
                                 changeApplicationMode(enter = false)
+                                if (graceForMovie) liveViewManager.endExpectedStall()
                                 return@withContext false
                             }
                             delay(VIDEO_LV_SETTLE_MS)
@@ -815,6 +829,7 @@ class RemoteShootingManager @Inject constructor(
                             _shootingState.value = ShootingState.IDLE
                             _shootingMessage.value = describeMovieRejection(code)
                             changeApplicationMode(enter = false)
+                            if (graceForMovie) liveViewManager.endExpectedStall()
                             return@withContext false
                         }
                     }
@@ -827,9 +842,34 @@ class RemoteShootingManager @Inject constructor(
                 _shootingState.value = ShootingState.IDLE
                 _shootingMessage.value = "录制启动异常：${e.message ?: "未知错误"}"
                 changeApplicationMode(enter = false)
+                if (graceForMovie) liveViewManager.endExpectedStall()
                 false
             }
         }
+    }
+
+    /**
+     * 「联动画面」判定（v1.3.0 需求 7）：
+     * 只有相机屏同显模式下录像才会暂停/中断 PTP 的画面推送；
+     * 遥控画面模式（相机屏熄）本来就没有这个停流，因此不做任何介入，行为保持原样。
+     */
+    private fun isLinkedDisplay(): Boolean =
+        settings.remoteDisplayMode == AppSettings.DISPLAY_MODE_LINKED
+
+    /**
+     * 应用模式切换（进入/退出录像）后确认监看仍在运行，掉了就重启一次。
+     *
+     * 依据：libgphoto2 在收到 CaptureComplete / CaptureCompleteRecInSdram 时，
+     * 若处于 liveview 会调用 `ptp_nikon_start_liveview` 重启；参考实现影犀也有
+     * `USB remote LiveView restart after camera mode failure / after config retry`。
+     * 只重启一次并带短暂沉降等待，避免与正在恢复的相机抢通道。
+     */
+    private suspend fun ensureLiveViewAfterModeChange() {
+        if (liveViewManager.isRunning()) return
+        delay(LIVE_VIEW_RESTART_SETTLE_MS)
+        if (liveViewManager.isRunning()) return
+        val ok = runCatching { liveViewManager.ensureRunning() }.getOrDefault(false)
+        Timber.tag(TAG).i("Live view restart after mode change: ok=$ok")
     }
 
     /**
@@ -850,6 +890,10 @@ class RemoteShootingManager @Inject constructor(
                             _shootingState.value = ShootingState.IDLE
                             // 退出应用模式（影犀 ChangeApplicationMode(0)）
                             changeApplicationMode(enter = false)
+                            // 需求 7：停止录像 → 退出"期望停流"并确认监看恢复
+                            // （相机恢复推流后画面自动回来，无需用户手动点"开始监看"）
+                            liveViewManager.endExpectedStall()
+                            ensureLiveViewAfterModeChange()
                             Timber.tag(TAG).i("Video recording stopped")
                             return@withContext true
                         }
@@ -862,6 +906,8 @@ class RemoteShootingManager @Inject constructor(
                             _shootingState.value = ShootingState.IDLE
                             _shootingMessage.value = describeMovieRejection(code)
                             changeApplicationMode(enter = false)
+                            liveViewManager.endExpectedStall()
+                            ensureLiveViewAfterModeChange()
                             return@withContext false
                         }
                     }
@@ -874,6 +920,8 @@ class RemoteShootingManager @Inject constructor(
                 _shootingState.value = ShootingState.IDLE
                 _shootingMessage.value = "停止录制异常：${e.message ?: "未知错误"}"
                 changeApplicationMode(enter = false)
+                liveViewManager.endExpectedStall()
+                ensureLiveViewAfterModeChange()
                 false
             }
         }

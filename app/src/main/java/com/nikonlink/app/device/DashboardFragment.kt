@@ -270,6 +270,13 @@ class DashboardFragment : Fragment() {
                         binding.tvWifiBandCard.text = "USB 已连接"
                         binding.tvConnectionStatus.text = "USB 已连接"
                         binding.tvUsbDevice.text = "USB 相机已连接，可直接传输照片"
+                        // v1.3.0（需求 6）：状态行由 USB 状态机驱动。旧版此行只由无线状态机发射，
+                        // 而 USB 连接根本不走无线状态机 → 连上后文案永久停在「正在建立 USB 通道...」。
+                        binding.tvStatusMessage.text =
+                            viewModel.usbDeviceInfo.value?.cameraModel
+                                ?.takeIf { it.isNotBlank() }
+                                ?.let { "已连接（USB）：$it" }
+                                ?: "已连接（USB）"
                         binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
                             ContextCompat.getColor(requireContext(), R.color.on_dark_card)
                         )
@@ -284,23 +291,34 @@ class DashboardFragment : Fragment() {
                         // 模块 6：细分失败原因，禁止统一报「未检测到 USB 相机」
                         binding.tvUsbDevice.text =
                             viewModel.usbErrorMessage.value ?: "USB 连接失败，正在重试…"
+                        binding.tvStatusMessage.text =
+                            viewModel.usbErrorMessage.value ?: "USB 连接失败，正在重试…"
                     }
 
                     UsbConnectionState.PERMISSION_DENIED -> {
                         binding.tvUsbDevice.text =
                             viewModel.usbErrorMessage.value ?: "USB 权限被拒绝"
+                        binding.tvStatusMessage.text =
+                            viewModel.usbErrorMessage.value ?: "USB 权限被拒绝，无法连接"
                     }
 
                     UsbConnectionState.REQUESTING_PERMISSION -> {
                         binding.tvUsbDevice.text = "正在请求 USB 访问权限…"
+                        binding.tvStatusMessage.text = "正在请求 USB 访问权限…"
                     }
 
                     UsbConnectionState.CONNECTING -> {
                         binding.tvUsbDevice.text = "正在建立 USB 连接…"
+                        binding.tvStatusMessage.text = "正在建立 USB 通道…"
                     }
 
                     UsbConnectionState.DISCONNECTED -> {
                         binding.tvUsbDevice.text = "未检测到 USB 相机"
+                        // 只有在无线也没连接时才回写状态行，避免把 WiFi 的连接文案覆盖掉
+                        if (viewModel.connectionState.value == ConnectionState.DISCONNECTED) {
+                            binding.tvStatusMessage.text =
+                                viewModel.usbErrorMessage.value ?: "未连接"
+                        }
                         // 切回 WiFi 链路：恢复频段卡，具体频段由指标刷新补齐
                         if (usbActive) {
                             usbActive = false
@@ -326,6 +344,10 @@ class DashboardFragment : Fragment() {
                 if (info != null) {
                     binding.tvCameraName.text = info.cameraModel
                     binding.tvUsbDevice.text = "${info.cameraModel} · 已连接 USB"
+                    // 机型可能在会话建立后被机身 DeviceInfo 回填，这里再刷新一次状态行
+                    if (viewModel.usbState.value == UsbConnectionState.CONNECTED) {
+                        binding.tvStatusMessage.text = "已连接（USB）：${info.cameraModel}"
+                    }
                 }
             }
         }
@@ -333,10 +355,18 @@ class DashboardFragment : Fragment() {
         // 模块 6：分类错误文案变化时即时上屏（重试成功 → 清空恢复连接文案）
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.usbErrorMessage.collect { message ->
-                if (viewModel.usbState.value == UsbConnectionState.ERROR ||
-                    viewModel.usbState.value == UsbConnectionState.PERMISSION_DENIED
-                ) {
-                    binding.tvUsbDevice.text = message ?: "USB 连接失败，正在重试…"
+                when (viewModel.usbState.value) {
+                    UsbConnectionState.ERROR,
+                    UsbConnectionState.PERMISSION_DENIED,
+                    // v1.3.0：DISCONNECTED 也要显示原因（例如"未检测到 USB 相机"），
+                    // 否则点了连接但总线上没设备时，状态行没有任何反馈。
+                    UsbConnectionState.DISCONNECTED -> {
+                        binding.tvUsbDevice.text = message ?: "未检测到 USB 相机"
+                        if (viewModel.connectionState.value == ConnectionState.DISCONNECTED) {
+                            binding.tvStatusMessage.text = message ?: "未连接"
+                        }
+                    }
+                    else -> {}
                 }
             }
         }

@@ -32,9 +32,7 @@ import com.nikonlink.app.shared.common.AppSettings
 import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 /**
@@ -253,6 +251,15 @@ class LiveViewFragment : Fragment() {
     private fun showModePicker() {
         // 边界：列表为空 / 切换进行中直接拦截（入口已置灰，这里再兜一层）
         if (modeSwitching) return
+        // v1.3.0 需求 4：本机已被验证为「不支持远程切换」→ 直接给结论
+        if (paramsViewModel.modeSwitchUnsupported.value) {
+            Toast.makeText(
+                requireContext(),
+                "该机型不支持从 App 切换拍摄模式（相机接受指令但不改变模式），请用机身拨盘",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
         val modes = paramsViewModel.exposureProgramModes
         if (modes.isEmpty()) {
             Toast.makeText(requireContext(), "暂无可切换的拍摄模式", Toast.LENGTH_SHORT).show()
@@ -295,18 +302,28 @@ class LiveViewFragment : Fragment() {
                     ).show()
                     return@launch
                 }
-                // 回读校验：0x500E 快轮询（≤500ms）会刷新 exposureProgram 流，
-                // 最多等 3 秒确认相机确实切到了目标模式
-                val confirmed = withTimeoutOrNull(3000) {
-                    paramsViewModel.exposureProgram.first { it.rawValue == target }
-                } != null
+                // v1.3.0 需求 4：主动回读设备确认（替代依赖 exposureProgram 状态流——
+                // 该流可能停在缓存/初始默认值上，会给出"已切换"的假成功）
+                val actual = paramsViewModel.confirmExposureProgram(target)
                 if (_binding == null) return@launch
-                if (confirmed) {
-                    Toast.makeText(requireContext(), "已切换到 $label", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(
+                when {
+                    actual == target ->
+                        Toast.makeText(requireContext(), "已切换到 $label", Toast.LENGTH_SHORT).show()
+
+                    actual != null -> {
+                        paramsViewModel.markModeSwitchUnsupported()
+                        Toast.makeText(
+                            requireContext(),
+                            "相机接受了指令但模式未改变（当前："
+                                + paramsViewModel.describeExposureProgram(actual)
+                                + "）。该机型不支持从 App 切换拍摄模式，请用机身拨盘调整",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+
+                    else -> Toast.makeText(
                         requireContext(),
-                        "相机未响应：当前模式下可能不支持远程切换，请确认后用机身拨盘调整",
+                        "无法读取相机当前模式，请确认连接后重试",
                         Toast.LENGTH_LONG
                     ).show()
                 }
