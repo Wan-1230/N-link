@@ -103,18 +103,24 @@
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintStart_toStartOf="parent" />
 
-        <!-- 右下角已下载角标（F2）：对勾小胶囊，视觉口径与格式角标一致 -->
+        <!--
+          右下角已下载角标（F2 / v1.3.0 强化）：✓ + 「已下载」文字胶囊。
+          旧版只有 9sp 的 ✓，辨识度太低（用户反馈"看不到已下载标记"），
+          现在明确写出「已下载」；窄格子由 Android 的 wrap_content + maxLines=1 自适应。
+          视觉口径与左下角格式角标一致（同底色、同圆角半径）。
+        -->
         <TextView
             android:id="@+id/tvDownloadedBadge"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_margin="6dp"
-            android:background="#AA000000"
-            android:paddingHorizontal="5dp"
-            android:paddingVertical="2dp"
-            android:text="✓"
+            android:background="#CC000000"
+            android:maxLines="1"
+            android:paddingHorizontal="6dp"
+            android:paddingVertical="3dp"
+            android:text="✓ 已下载"
             android:textColor="@color/white"
-            android:textSize="9sp"
+            android:textSize="10sp"
             android:textStyle="bold"
             android:visibility="gone"
             app:layout_constraintBottom_toBottomOf="parent"

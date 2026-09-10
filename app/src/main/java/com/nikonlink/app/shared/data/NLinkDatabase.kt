@@ -61,12 +61,25 @@ interface TransferHistoryDao {
     )
     suspend fun findTransferredHandles(handles: List<Int>): List<Int>
 
+    /**
+     * 一次性取出全部已完成记录（含 local_path / file_name / file_size）。
+     * v1.3.0「本地文件被删除 → 状态自动恢复为未下载」的自愈校验用它：
+     * 拿本地路径/文件名去比对 MediaStore，失效的连同记录一起清掉。
+     */
+    @Query("SELECT * FROM transfer_history WHERE status = 'completed'")
+    suspend fun getCompletedRecords(): List<TransferRecord>
+
+    /**
+     * 批量删除传输记录（按 handle）。
+     * 用户删除手机本地文件后，同步回收记录 → 相机照片页角标与「未下载」筛选立即恢复。
+     * 走 [deleteByHandlesBatch] 分片，规避 SQLite 的 999 个绑定变量上限。
+     */
+    @Query("DELETE FROM transfer_history WHERE file_handle IN (:handles)")
+    suspend fun deleteByHandles(handles: List<Int>)
+
     // S5: 唯一索引生效后，同一 handle 的重复写入直接忽略，不再产生第二条记录
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(record: TransferRecord)
-
-    @Query("DELETE FROM transfer_history WHERE transfer_time < :beforeTime")
-    suspend fun deleteOlderThan(beforeTime: Long)
 }
 
 /**
@@ -159,6 +172,12 @@ suspend fun TransferHistoryDao.findTransferredHandlesBatch(handles: List<Int>): 
         result.addAll(findTransferredHandles(chunk))
     }
     return result
+}
+
+/** 批量删除传输记录（分片，规避 SQLite 999 绑定变量上限） */
+suspend fun TransferHistoryDao.deleteByHandlesBatch(handles: List<Int>) {
+    if (handles.isEmpty()) return
+    handles.chunked(HANDLE_QUERY_CHUNK).forEach { chunk -> deleteByHandles(chunk) }
 }
 
 /**

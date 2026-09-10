@@ -170,6 +170,10 @@ class UsbPtpManager @Inject constructor(
             }
         }
         Timber.tag(TAG).d("No Nikon camera found on USB bus")
+        // v1.3.0（需求 6）：总线上没有相机时必须给出终态，否则 UI 会永远停在
+        // 「正在建立 USB 通道...」（旧版这里只打日志，状态文案无人回写）。
+        _usbErrorMessage.value = "未检测到 USB 相机：请用数据线连接相机并开机，再点连接"
+        _usbState.value = UsbConnectionState.DISCONNECTED
     }
 
     /**
@@ -205,6 +209,11 @@ class UsbPtpManager @Inject constructor(
         reconnectJob?.cancel()
         reconnectJob = null
         _usbState.value = UsbConnectionState.CONNECTING
+
+        // v1.3.0（需求 6）重连卫生：先释放上一次遗留的接口/端点/连接句柄。
+        // 旧版重连时不清场，第二次 claimInterface 会因"接口已被本进程占用"直接失败，
+        // 用户表现为"要插拔好几次才连得上"。silent=true 只清资源、不动 UI 状态。
+        runCatching { disconnect(silent = true) }
 
         try {
             val connection = usbManager.openDevice(device) ?: run {
@@ -289,7 +298,10 @@ class UsbPtpManager @Inject constructor(
             // 打开 PTP 会话
             scope?.launch {
                 val sessionOk = openPtpSession()
-                if (sessionOk) {
+                // v1.3.0（需求 6）：首次会话失败时做一次「残留会话恢复」再判定，
+                // 而不是直接报错重连 —— 见 recoverStaleSession() 说明。
+                val connected = sessionOk || recoverStaleSession()
+                if (connected) {
                     eventLogger.event("usb_session", "ok" to true)
                     // 相机名称以**机身自报的 Model** 为准：PID 映射表覆盖不全且存在
                     // 一 PID 多机型，用它做显示名必然出现「名称不正确」。
@@ -378,6 +390,31 @@ class UsbPtpManager @Inject constructor(
                     "USB 自动重连未成功：请重新插拔数据线，或点亮相机屏幕后下拉刷新"
             }
         }
+    }
+
+    /**
+     * USB 残留会话恢复（v1.3.0，需求 6）。
+     *
+     * **为什么需要**：上一次连接异常中断（拔线、App 被杀、相机会话超时）时，相机侧
+     * 可能仍认为会话被占用，此时 OpenSession 返回 `0x2019 DeviceBusy`/`0x201E`，
+     * 旧版直接判失败 → 退避重连 → 用户体感"要插拔好几次才连得上"。
+     *
+     * **做法**（对齐参考实现影犀的 `fresh PTP session failed after stale-session
+     * recovery`）：CloseSession(0x1003) 清掉相机侧残留 → DeviceReady → 重试 OpenSession 一次。
+     * 只重试一次，避免在真·不可用（相机休眠/线缆故障）时形成忙等。
+     */
+    private suspend fun recoverStaleSession(): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            Timber.tag(TAG).i("Recovering stale PTP session (CloseSession → OpenSession retry)")
+            eventLogger.event("usb_session", "ok" to false, "reason" to "stale_session_recovery")
+            sendCommand(PtpConstants.OP_CLOSE_SESSION)
+            delay(200)
+            sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
+            delay(200)
+        }.onFailure { Timber.tag(TAG).w(it, "Stale session cleanup failed") }
+        val retried = runCatching { openPtpSession() }.getOrDefault(false)
+        if (!retried) Timber.tag(TAG).w("Stale session recovery did not help")
+        retried
     }
 
     /**

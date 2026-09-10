@@ -62,6 +62,32 @@ class CameraParamsViewModel @Inject constructor(
         withContext(Dispatchers.IO) { paramManager.setExposureProgram(mode) }
 
     /**
+     * 写入后**主动回读设备**确认模式是否真的切换（v1.3.0 需求 4）。
+     *
+     * 必要性：0x500E 写入返回 OK 只说明相机接受了指令，部分机型会静默忽略；
+     * 旧实现用 `exposureProgram` 状态流判定，而该流可能还停在上一次缓存/初始默认值上，
+     * 会出现"提示已切换、相机其实没动"的假成功。
+     *
+     * @return 命中 target 返回 target；否则返回相机最后上报的实际值（读不到为 null）
+     */
+    suspend fun confirmExposureProgram(
+        target: Int,
+        attempts: Int = 4,
+        intervalMs: Long = 400L
+    ): Int? = withContext(Dispatchers.IO) {
+        paramManager.confirmExposureProgram(target, attempts, intervalMs)
+    }
+
+    /** 本机是否已判定为「不支持从 App 切换拍摄模式」（会话级，重连后复位） */
+    val modeSwitchUnsupported: StateFlow<Boolean> get() = paramManager.modeSwitchUnsupported
+
+    /** 标记本机不支持远程切换（由监看页在"写入 OK 但模式未变"后调用） */
+    fun markModeSwitchUnsupported() = paramManager.markModeSwitchUnsupported()
+
+    /** 相机侧模式的中文描述（用于把回读到的实际值写进提示文案） */
+    fun describeExposureProgram(value: Int): String = paramManager.describeExposureProgram(value)
+
+    /**
      * 模式快轮询开关（模块 2：机身侧切模式 ≤500ms 同步）。
      * 拍摄页 / 全屏监看页可见期间开启，隐藏或销毁时停止。
      */
