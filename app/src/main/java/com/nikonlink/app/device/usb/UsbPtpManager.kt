@@ -160,7 +160,16 @@ class UsbPtpManager @Inject constructor(
     /**
      * 检查是否已有尼康相机通过 USB 连接
      */
-    fun checkExistingDevice() {
+    /**
+     * 检查是否已有尼康相机通过 USB 连接。
+     *
+     * @param notifyWhenAbsent 总线上没有相机时是否要把「未检测到 USB 相机…」写进状态。
+     *   **默认 false（静默）**：本方法在 [start] 时会被自动调用一次，而绝大多数用户用的是
+     *   WiFi（AP / STA），此时 USB 总线上本来就不会有相机。旧版无条件下发该提示，
+     *   结果 WiFi 连接页面上也会跳出 USB 专属文案（v1.3.0 反馈问题 1）。
+     *   只有用户**主动点了 USB 的连接按钮**（[DashboardViewModel.connectUsb]）才传 true。
+     */
+    fun checkExistingDevice(notifyWhenAbsent: Boolean = false) {
         val deviceList = usbManager.deviceList
         for ((_, device) in deviceList) {
             if (UsbPtpProtocol.isNikonCamera(device.vendorId, device.productId)) {
@@ -169,9 +178,9 @@ class UsbPtpManager @Inject constructor(
                 return
             }
         }
-        Timber.tag(TAG).d("No Nikon camera found on USB bus")
-        // v1.3.0（需求 6）：总线上没有相机时必须给出终态，否则 UI 会永远停在
-        // 「正在建立 USB 通道...」（旧版这里只打日志，状态文案无人回写）。
+        Timber.tag(TAG).d("No Nikon camera found on USB bus (notify=$notifyWhenAbsent)")
+        if (!notifyWhenAbsent) return
+        // 用户主动连接 USB 但总线上没有相机：给出明确终态，否则 UI 会停在「正在建立 USB 通道...」
         _usbErrorMessage.value = "未检测到 USB 相机：请用数据线连接相机并开机，再点连接"
         _usbState.value = UsbConnectionState.DISCONNECTED
     }
