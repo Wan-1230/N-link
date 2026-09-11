@@ -1,5 +1,10 @@
 package com.nikonlink.app.device
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import android.graphics.Typeface
 import android.os.Bundle
 import android.text.InputType
@@ -28,6 +33,7 @@ import com.nikonlink.app.device.wifi_sta.WifiCameraCandidate
 import com.nikonlink.app.shared.data.PairedDevice
 import com.nikonlink.app.databinding.ItemRecentDeviceBinding
 import com.nikonlink.app.databinding.ItemWifiCandidateBinding
+import timber.log.Timber
 import com.nikonlink.app.databinding.FragmentDashboardBinding
 import com.nikonlink.app.camera.params.CameraParamsViewModel
 import com.nikonlink.app.camera.params.ShutterCountState
@@ -76,6 +82,67 @@ class DashboardFragment : Fragment() {
         setupModeTabs()
         setupModeActions()
         paramsViewModel.readAll()
+    }
+
+    // ---------------- v1.3.2：STA 扫描/连接所需的运行时权限 ----------------
+
+    /** 用户答应权限后要继续执行的动作 */
+    private var pendingStaAction: (() -> Unit)? = null
+
+    private val staPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { granted ->
+        val action = pendingStaAction
+        pendingStaAction = null
+        val allGranted = granted.values.all { it }
+        if (allGranted) {
+            action?.invoke()
+        } else {
+            val msg = "缺少「定位 / 附近设备」权限：Android 12 起系统要求该权限才允许搜索 WiFi 相机"
+            Toast.makeText(requireContext(), msg, Toast.LENGTH_LONG).show()
+            renderStatusLine()
+            Timber.tag("Dashboard").w("STA permissions denied: " + granted.filterValues { !it }.keys)
+        }
+    }
+
+    /**
+     * v1.3.2（STA 修复）：Android 12 起 `ACCESS_FINE_LOCATION`、Android 13 起
+     * `NEARBY_WIFI_DEVICES` 是 WiFi 相关 API 的前置条件。
+     *
+     * 旧实现把 `ACCESS_FINE_LOCATION` 放在 `SDK_INT < S` 的分支里申请 ——
+     * 也就是说 Android 12 及以上**从来没有申请过**，`NEARBY_WIFI_DEVICES` 更是
+     * 只声明不申请。缺少权限时系统会静默拒绝 WiFi 扫描/发现类调用，
+     * 用户侧的表现就是"STA 完全搜不到相机"。这里在每次 STA 扫描/连接前补齐。
+     */
+    private fun missingStaPermissions(): List<String> {
+        val missing = mutableListOf<String>()
+        if (ContextCompat.checkSelfPermission(
+                requireContext(),
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            missing.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                requireContext(),
+                Manifest.permission.NEARBY_WIFI_DEVICES
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            missing.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        }
+        return missing
+    }
+
+    /** 权限齐备则直接执行，否则先申请、授权后再执行 */
+    private fun ensureStaPermissions(then: () -> Unit) {
+        val missing = missingStaPermissions()
+        if (missing.isEmpty()) {
+            then()
+            return
+        }
+        pendingStaAction = then
+        staPermissionLauncher.launch(missing.toTypedArray())
     }
 
     private fun setupObservers() {
@@ -603,8 +670,10 @@ class DashboardFragment : Fragment() {
     private fun scanForCurrentMode() {
         when (currentMode) {
             ConnectMode.WIFI_AP, ConnectMode.WIFI_STA -> {
-                binding.tvStatusMessage.text = "正在扫描 WiFi 相机..."
-                viewModel.scanWifi()
+                ensureStaPermissions {
+                    binding.tvStatusMessage.text = "正在扫描 WiFi 相机..."
+                    viewModel.scanWifi()
+                }
             }
             ConnectMode.USB -> {
                 binding.tvStatusMessage.text = "正在检测 USB 相机..."
@@ -621,7 +690,7 @@ class DashboardFragment : Fragment() {
 
     private fun connectForCurrentMode() {
         when (currentMode) {
-            ConnectMode.WIFI_AP, ConnectMode.WIFI_STA -> {
+            ConnectMode.WIFI_AP, ConnectMode.WIFI_STA -> ensureStaPermissions {
                 val target = wifiDevices.firstOrNull()
                 if (target != null) {
                     connectWifiCandidate(target)
@@ -659,28 +728,48 @@ class DashboardFragment : Fragment() {
     ) {
         container.removeAllViews()
         if (devices.isEmpty()) {
+            // v1.3.2（STA 反馈修复）：三重信息，用户不必猜
+            // ① 明确错误（未连 WiFi / WiFi 没拿到 IP / 扫描异常）
+            // ② 自我定位（本机网段 + 当前 SSID + ARP 可读性 + 探测结论分布）
+            // ③ 可操作建议（手动输入 IP）
+            val explicitError = viewModel.wifiScanError.value
+            val stats = viewModel.wifiScanStats.value
             container.addView(
                 emptyHint(
-                    if (mode == ConnectMode.WIFI_AP) {
-                        "未发现相机，请先连接相机 WiFi 后再扫描"
-                    } else {
-                        // B4：失败原因可见化——不再笼统一句「未发现相机」。
-                        // 统计来自 WifiScanner.ScanStats：探测了多少地址、mDNS/NSD 有无响应。
-                        val stats = viewModel.wifiScanStats.value
-                        if (stats == null) {
-                            "未发现相机，请确认相机与手机在同一网络"
-                        } else {
-                            buildString {
-                                append("未发现相机 · 已探测 ")
-                                append(stats.probedHosts)
-                                append(" 个地址（ARP 表 ")
-                                append(stats.arpEntries)
-                                append(" 条）均无响应")
-                                if (stats.mdnsResponses == 0 && stats.nsdResponses == 0) {
-                                    append("\nmDNS/NSD 均无响应：路由器可能过滤了组播，或开启了客户端隔离")
-                                }
-                                append("\n可点「连接」手动输入相机 IP（相机机身菜单可查）")
+                    when {
+                        explicitError != null -> explicitError
+                        mode == ConnectMode.WIFI_AP -> "未发现相机，请先连接相机 WiFi 后再扫描"
+                        stats == null -> "未发现相机，请确认相机与手机在同一网络"
+                        else -> buildString {
+                            append("未发现相机 · 已探测 ")
+                            append(stats.probedHosts)
+                            append(" 个地址（ARP 表 ")
+                            append(stats.arpEntries)
+                            append(" 条）均无响应")
+                            if (stats.mdnsResponses == 0 && stats.nsdResponses == 0) {
+                                append("\nmDNS/NSD 均无响应：路由器可能过滤了组播，或开启了客户端隔离")
                             }
+                            if (!stats.wifiReady) {
+                                append("\n本机 WiFi 未取得 IP 地址，网段扫描无法进行")
+                            } else {
+                                append("\n本机网段 ")
+                                append(stats.localSubnets.ifBlank { "未知" })
+                                if (stats.ssid.isNotBlank()) {
+                                    append("（WiFi: ")
+                                    append(stats.ssid)
+                                    append("）")
+                                }
+                            }
+                            if (!stats.arpReadable) {
+                                append("\nARP 表不可读（Android 10+ 系统限制，属正常）")
+                            }
+                            append("\n探测结果：握手成功 ")
+                            append(stats.probeOk)
+                            append(" · 仅端口开放 ")
+                            append(stats.probeTcpOpenNoPtp)
+                            append(" · 无响应 ")
+                            append(stats.probeTimeout)
+                            append("\n可点「连接」手动输入相机 IP（相机机身菜单可查）")
                         }
                     }
                 )

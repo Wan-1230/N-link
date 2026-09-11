@@ -64,6 +64,21 @@ class WifiScanner @Inject constructor(
         private const val MAX_SCAN_CONCURRENCY = 32
         private const val GENERIC_NAME = "尼康相机"
 
+        /**
+         * v1.3.2：开始扫描前等待「WiFi 拿到 IPv4」的上限。
+         *
+         * 旧实现在拿不到本机 IPv4 时 `scanSubnet` 直接 return —— 网段扫描整条路径消失，
+         * 而且没有任何提示。用户刚连上 WiFi（DHCP 还没完成）就点扫描，就会出现
+         * "完全搜不到相机"。这里先等链路就绪，等不到也要给出明确原因。
+         */
+        private const val ROUTE_READY_WAIT_MS = 6_000L
+
+        /** 网段盲扫的单主机探测超时（要控制 254 个地址的总耗时） */
+        private const val SWEEP_PROBE_TIMEOUT_MS = 800L
+
+        /** 候选确认 / 第二轮补扫的探测超时（覆盖相机从休眠唤醒的时延） */
+        private const val CONFIRM_PROBE_TIMEOUT_MS = 2_500L
+
         /** RC-6：系统 NSD 服务类型（与自绘 mDNS 并行兜底） */
         private const val NSD_SERVICE_TYPE_PTP = "_ptp._tcp."
         private const val NSD_SERVICE_TYPE_NIKON = "_nikon._tcp."
@@ -79,12 +94,48 @@ class WifiScanner @Inject constructor(
         val mdnsResponses: Int,
         /** NSD 发现的服务数 */
         val nsdResponses: Int,
-        val elapsedMs: Long
+        val elapsedMs: Long,
+        // ---------- v1.3.2：STA 诊断扩展（"为什么搜不到"要可回答） ----------
+        /** WiFi 链路是否就绪：有 WiFi 网络且已拿到 IPv4 链路地址 */
+        val wifiReady: Boolean = false,
+        /** 本机在 WiFi 上的 IPv4/前缀，多网段用「, 」连接（如 192.168.1.23/24） */
+        val localSubnets: String = "",
+        /** 计划探测的主机数（网段 + 常见网关 + 热点段） */
+        val plannedHosts: Int = 0,
+        /** mDNS 查询包实际发送次数（0 = 连探针都没发出去） */
+        val mdnsProbesSent: Int = 0,
+        /** mDNS 路径异常（null = 正常） */
+        val mdnsError: String? = null,
+        /** NSD 路径异常（null = 正常） */
+        val nsdError: String? = null,
+        /** /proc/net/arp 是否可读（Android 10+ 常被系统 SELinux 限制） */
+        val arpReadable: Boolean = false,
+        /** 探测结论分布：PTP 握手成功 / 仅 TCP 通（相机休眠中）/ 超时 */
+        val probeOk: Int = 0,
+        val probeTcpOpenNoPtp: Int = 0,
+        val probeTimeout: Int = 0,
+        /** 提前收口的原因（null = 正常走完全部路径） */
+        val gateReason: String? = null,
+        /** 已连上的 WiFi 名称（若可读） */
+        val ssid: String = ""
     )
 
     /** B4：每次 scan() 结束写入；UI 在候选为空时读取生成「为什么没找到」的提示 */
     private val _lastScanStats = kotlinx.coroutines.flow.MutableStateFlow<ScanStats?>(null)
     val lastScanStats: kotlinx.coroutines.flow.StateFlow<ScanStats?> = _lastScanStats
+
+    /** v1.3.2 扫描过程计数器（诊断用，线程安全） */
+    private class Diag {
+        /** 本轮计划探测的主机数（诊断用） */
+        val plannedHosts = java.util.concurrent.atomic.AtomicInteger(0)
+        val probeOk = java.util.concurrent.atomic.AtomicInteger(0)
+        val probeTcpOpen = java.util.concurrent.atomic.AtomicInteger(0)
+        val probeTimeout = java.util.concurrent.atomic.AtomicInteger(0)
+        val mdnsProbes = java.util.concurrent.atomic.AtomicInteger(0)
+        val arpReadable = java.util.concurrent.atomic.AtomicBoolean(false)
+        val mdnsError = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val nsdError = java.util.concurrent.atomic.AtomicReference<String?>(null)
+    }
 
     private val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
     private val wifiManager = context.getSystemService(WifiManager::class.java)
@@ -119,26 +170,91 @@ class WifiScanner @Inject constructor(
                 val mdnsSeen = java.util.concurrent.atomic.AtomicInteger(0)
                 val nsdSeen = java.util.concurrent.atomic.AtomicInteger(0)
                 val arpEntries = java.util.concurrent.atomic.AtomicInteger(0)
+                val diag = Diag()
                 val startAt = System.currentTimeMillis()
-                // 网络一律用 target（调用方给的，或本次主动申请到的），
-                // 不能再用可能为 null 的 network —— 否则 socket 会落到蜂窝网口
-                val mdnsJob = async { collectMdns(timeoutMs, results, target, mdnsSeen) }
-                val subnetJob = async { scanSubnet(timeoutMs, results, target, hotspotMode, probed) }
-                val nsdJob = async { collectNsd(timeoutMs, results, target, nsdSeen) }
-                val arpJob = async { collectArp(timeoutMs, results, target, probed, arpEntries) }
-                awaitAll(mdnsJob, subnetJob, nsdJob, arpJob)
+
+                // ── v1.3.2 路由就绪门控 ──────────────────────────────────────────
+                // 拿不到本机 IPv4 时网段扫描整条路径会静默失效（旧版直接 return），
+                // 用户看到的就是"完全搜不到相机"。这里最多等 ROUTE_READY_WAIT_MS，
+                // 等不到也要把原因写进诊断（gateReason），让 UI 能说清"为什么"。
+                // 热点模式跳过门控：手机热点接口多数机型不在 allNetworks 里，
+                // 真实网段靠 ARP / 热点段兜底（与既有行为一致，不改动）。
+                var subnets = currentIpv4Addresses()
+                if (subnets.isEmpty() && !hotspotMode) {
+                    val routeDeadline = System.currentTimeMillis() + ROUTE_READY_WAIT_MS
+                    while (System.currentTimeMillis() < routeDeadline && subnets.isEmpty()) {
+                        delay(300)
+                        subnets = currentIpv4Addresses()
+                    }
+                }
+                val wifiReady = subnets.isNotEmpty()
+                val gateReason = when {
+                    wifiReady -> null
+                    hotspotMode -> null
+                    target == null -> "no_wifi_network"
+                    else -> "wifi_no_ipv4"
+                }
+                val subnetText = subnets.joinToString(", ") { it.first + "/" + it.second }
+                val ssid = runCatching { wifiManager.connectionInfo?.ssid?.trim('"') }
+                    .getOrNull()
+                    ?.takeIf { it.isNotBlank() && it != "<unknown ssid>" }
+                    ?: ""
+
+                if (gateReason == null) {
+                    // 网络一律用 target（调用方给的，或本次主动申请到的），
+                    // 不能再用可能为 null 的 network —— 否则 socket 会落到蜂窝网口
+                    val mdnsJob = async { collectMdns(timeoutMs, results, target, mdnsSeen, diag) }
+                    val subnetJob = async {
+                        scanSubnet(timeoutMs, results, target, hotspotMode, probed, subnets, diag)
+                    }
+                    val nsdJob = async { collectNsd(timeoutMs, results, target, nsdSeen, diag) }
+                    val arpJob = async {
+                        collectArp(timeoutMs, results, target, probed, arpEntries, diag)
+                    }
+                    awaitAll(mdnsJob, subnetJob, nsdJob, arpJob)
+
+                    // ── v1.3.2 第二轮补扫（对齐 ZDROP 的重试语义）────────────────
+                    // 第一轮用 800ms 短超时压缩总耗时；若一条路径都没出候选，
+                    // 用 2.5s 长超时对网段再扫一遍 —— 覆盖"相机刚从休眠唤醒"的场景，
+                    // 这时第一轮的短超时必然全部落空。
+                    if (results.isEmpty() && subnets.isNotEmpty()) {
+                        Timber.tag(TAG).i("No candidate in wave-1, running wave-2 (longer timeout)")
+                        delay(600)
+                        collectSlowSubnet(results, target, subnets, probed, diag)
+                    }
+                } else {
+                    Timber.tag(TAG).w("Scan gated before discovery: " + gateReason)
+                }
+
                 _lastScanStats.value = ScanStats(
                     probedHosts = probed.get(),
                     arpEntries = arpEntries.get(),
                     mdnsResponses = mdnsSeen.get(),
                     nsdResponses = nsdSeen.get(),
-                    elapsedMs = System.currentTimeMillis() - startAt
+                    elapsedMs = System.currentTimeMillis() - startAt,
+                    wifiReady = wifiReady,
+                    localSubnets = subnetText,
+                    plannedHosts = diag.plannedHosts.get(),
+                    mdnsProbesSent = diag.mdnsProbes.get(),
+                    mdnsError = diag.mdnsError.get(),
+                    nsdError = diag.nsdError.get(),
+                    arpReadable = diag.arpReadable.get(),
+                    probeOk = diag.probeOk.get(),
+                    probeTcpOpenNoPtp = diag.probeTcpOpen.get(),
+                    probeTimeout = diag.probeTimeout.get(),
+                    gateReason = gateReason,
+                    ssid = ssid
                 )
+                val st = _lastScanStats.value!!
                 Timber.tag(TAG).i(
-                    "Scan done in ${_lastScanStats.value!!.elapsedMs}ms: " +
-                        "probed=${probed.get()} arp=${arpEntries.get()} " +
-                        "mdns=${mdnsSeen.get()} nsd=${nsdSeen.get()} " +
-                        "candidates=${results.size}"
+                    "Scan done in " + st.elapsedMs + "ms: wifiReady=" + wifiReady +
+                        " subnets=[" + subnetText + "] ssid='" + ssid + "'" +
+                        " gate=" + (gateReason ?: "-") + " planned=" + diag.plannedHosts.get() +
+                        " probed=" + probed.get() + " arp=" + arpEntries.get() +
+                        " readable=" + st.arpReadable + " mdns=" + mdnsSeen.get() +
+                        " probesSent=" + st.mdnsProbesSent + " nsd=" + nsdSeen.get() +
+                        " probeOk=" + st.probeOk + " tcpOnly=" + st.probeTcpOpenNoPtp +
+                        " timeout=" + st.probeTimeout + " candidates=" + results.size
                 )
             }
         } finally {
@@ -160,7 +276,8 @@ class WifiScanner @Inject constructor(
         timeoutMs: Long,
         results: MutableSet<WifiCameraCandidate>,
         network: Network?,
-        mdnsSeen: java.util.concurrent.atomic.AtomicInteger
+        mdnsSeen: java.util.concurrent.atomic.AtomicInteger,
+        diag: Diag
     ) {
         val multicastLock = runCatching {
             wifiManager.createMulticastLock("N-LinkWifiScan")
@@ -179,6 +296,7 @@ class WifiScanner @Inject constructor(
             network?.bindSocket(socket)
             socket.joinGroup(InetAddress.getByName(MDNS_ADDRESS))
             sendMdnsProbe(socket)
+            diag.mdnsProbes.incrementAndGet()
 
             val deadline = System.currentTimeMillis() + timeoutMs
             var lastProbeAt = System.currentTimeMillis()
@@ -189,6 +307,7 @@ class WifiScanner @Inject constructor(
                 // 的相机（相机上电到开始广播有数秒延迟）。
                 if (System.currentTimeMillis() - lastProbeAt >= MDNS_PROBE_INTERVAL_MS) {
                     runCatching { sendMdnsProbe(socket) }
+                    diag.mdnsProbes.incrementAndGet()
                     lastProbeAt = System.currentTimeMillis()
                 }
                 val packet = DatagramPacket(buffer, buffer.size)
@@ -201,7 +320,20 @@ class WifiScanner @Inject constructor(
                         buffer.copyOf(packet.length),
                         sourceIp
                     ) ?: continue
-                    if (!PtpIpProbe.probe(candidate.ip, candidate.port, 1200L, network)) continue
+                    // v1.3.2：mDNS 主动播报 _ptp._tcp 的主机已高度可信，
+                    // 确认超时放宽到 2.5s，并接受「TCP 通但 PTP 握手超时」
+                    // （相机休眠中）—— 旧版只认握手成功，休眠相机直接被丢弃。
+                    val verdict = PtpIpProbe.probeDetailed(
+                        candidate.ip, candidate.port, CONFIRM_PROBE_TIMEOUT_MS, network
+                    )
+                    when (verdict) {
+                        PtpIpProbe.ProbeResult.OK -> diag.probeOk.incrementAndGet()
+                        PtpIpProbe.ProbeResult.TCP_OPEN_NO_PTP ->
+                            diag.probeTcpOpen.incrementAndGet()
+                        PtpIpProbe.ProbeResult.TIMEOUT -> diag.probeTimeout.incrementAndGet()
+                        else -> {}
+                    }
+                    if (!verdict.isCandidate) continue
                     results.add(
                         WifiCameraCandidate(
                             candidate.ip,
@@ -216,6 +348,7 @@ class WifiScanner @Inject constructor(
                 }
             }
         } catch (e: Exception) {
+            diag.mdnsError.set(e.javaClass.simpleName + ": " + (e.message ?: ""))
             Timber.tag(TAG).w(e, "mDNS listener failed, subnet scan will still run")
         } finally {
             runCatching {
@@ -231,10 +364,16 @@ class WifiScanner @Inject constructor(
         results: MutableSet<WifiCameraCandidate>,
         network: Network?,
         hotspotMode: Boolean = false,
-        probed: java.util.concurrent.atomic.AtomicInteger
+        probed: java.util.concurrent.atomic.AtomicInteger,
+        networks: List<Pair<String, Int>>,
+        diag: Diag
     ) {
-        val networks = currentIpv4Addresses()
-        if (networks.isEmpty()) return
+        if (networks.isEmpty()) {
+            // v1.3.2：不再静默返回——网段缺失已在 scan() 的门控里等过并有 gateReason，
+            // 这里只记录一次，避免"整条路径无声消失"。
+            Timber.tag(TAG).w("scanSubnet skipped: no local IPv4 subnet")
+            return
+        }
 
         val subnetHosts = networks.flatMap { (ip, prefix) ->
             subnetHosts(ip, prefix).filterNot { it == ip }
@@ -256,6 +395,7 @@ class WifiScanner @Inject constructor(
         val hosts = (subnetHosts + knownGatewayHosts + hotspotHosts)
             .filter { WifiEndpoint.isValidHost(it) }.distinct()
         if (hosts.isEmpty()) return
+        diag.plannedHosts.addAndGet(hosts.size)
 
         val semaphore = Semaphore(MAX_SCAN_CONCURRENCY)
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -266,9 +406,76 @@ class WifiScanner @Inject constructor(
                     try {
                         if (System.currentTimeMillis() >= deadline) return@async
                         probed.incrementAndGet()
-                        if (PtpIpProbe.probe(host, PTP_PORT, 900L, network)) {
-                            results.add(WifiCameraCandidate(host, PTP_PORT, "尼康相机", "WiFi"))
-                            Timber.tag(TAG).i("Port scan found camera at $host")
+                        when (PtpIpProbe.probeDetailed(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)) {
+                            PtpIpProbe.ProbeResult.OK -> {
+                                diag.probeOk.incrementAndGet()
+                                results.add(WifiCameraCandidate(host, PTP_PORT, "尼康相机", "WiFi"))
+                                Timber.tag(TAG).i("Port scan found camera at " + host)
+                            }
+                            PtpIpProbe.ProbeResult.TCP_OPEN_NO_PTP -> {
+                                // 端口开放但没回 PTP 握手：大概率是休眠中的相机。
+                                // 旧版直接丢弃，这是"相机在同一网段却搜不到"的直接原因之一。
+                                diag.probeTcpOpen.incrementAndGet()
+                                results.add(
+                                    WifiCameraCandidate(host, PTP_PORT, "尼康相机(待唤醒)", "WiFi")
+                                )
+                                Timber.tag(TAG).i("Port open (no PTP yet) at " + host)
+                            }
+                            PtpIpProbe.ProbeResult.TIMEOUT -> diag.probeTimeout.incrementAndGet()
+                            else -> {}
+                        }
+                    } finally {
+                        semaphore.release()
+                    }
+                }
+            }.awaitAll()
+        }
+    }
+
+    /**
+     * v1.3.2 第二轮补扫：第一轮（[SWEEP_PROBE_TIMEOUT_MS]）一条候选都没出时，
+     * 用 [CONFIRM_PROBE_TIMEOUT_MS] 长超时对整个网段再扫一遍。
+     *
+     * 依据：尼康机身会进入 WiFi 休眠，从唤醒到完成 PTP 握手可能耗时 2~3 秒，
+     * 第一轮的 800ms 短超时对它必然全部落空；而"TCP 通但没回握手"的地址
+     * 在这一轮按"待唤醒"候选收下（ZDROP 同款：先记下来再刷新端点）。
+     * 总耗时可控：只在第一轮颗粒无收时才执行。
+     */
+    private suspend fun collectSlowSubnet(
+        results: MutableSet<WifiCameraCandidate>,
+        network: Network?,
+        networks: List<Pair<String, Int>>,
+        probed: java.util.concurrent.atomic.AtomicInteger,
+        diag: Diag
+    ) {
+        val hosts = networks.flatMap { (ip, prefix) ->
+            subnetHosts(ip, prefix).filterNot { it == ip }
+        }.filter { WifiEndpoint.isValidHost(it) }.distinct()
+        if (hosts.isEmpty()) return
+        diag.plannedHosts.addAndGet(hosts.size)
+        val semaphore = Semaphore(MAX_SCAN_CONCURRENCY)
+        val deadline = System.currentTimeMillis() + DEFAULT_SCAN_TIMEOUT_MS
+        coroutineScope {
+            hosts.map { host ->
+                async(Dispatchers.IO) {
+                    semaphore.acquire()
+                    try {
+                        if (System.currentTimeMillis() >= deadline) return@async
+                        probed.incrementAndGet()
+                        when (PtpIpProbe.probeDetailed(host, PTP_PORT, CONFIRM_PROBE_TIMEOUT_MS, network)) {
+                            PtpIpProbe.ProbeResult.OK -> {
+                                diag.probeOk.incrementAndGet()
+                                results.add(WifiCameraCandidate(host, PTP_PORT, "尼康相机", "WiFi"))
+                                Timber.tag(TAG).i("wave-2 found camera at " + host)
+                            }
+                            PtpIpProbe.ProbeResult.TCP_OPEN_NO_PTP -> {
+                                diag.probeTcpOpen.incrementAndGet()
+                                results.add(
+                                    WifiCameraCandidate(host, PTP_PORT, "尼康相机(待唤醒)", "WiFi")
+                                )
+                            }
+                            PtpIpProbe.ProbeResult.TIMEOUT -> diag.probeTimeout.incrementAndGet()
+                            else -> {}
                         }
                     } finally {
                         semaphore.release()
@@ -287,7 +494,8 @@ class WifiScanner @Inject constructor(
         timeoutMs: Long,
         results: MutableSet<WifiCameraCandidate>,
         network: Network?,
-        nsdSeen: java.util.concurrent.atomic.AtomicInteger
+        nsdSeen: java.util.concurrent.atomic.AtomicInteger,
+        diag: Diag
     ) {
         val nsdManager = context.getSystemService(Context.NSD_SERVICE) as? NsdManager
         if (nsdManager == null) {
@@ -338,6 +546,7 @@ class WifiScanner @Inject constructor(
         fun discoveryListener() = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(serviceType: String) {}
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                diag.nsdError.compareAndSet(null, "start_failed(" + errorCode + ") on " + serviceType)
                 Timber.tag(TAG).w("NSD discovery start failed: $serviceType err=$errorCode")
                 done.complete(Unit)
             }
@@ -408,13 +617,15 @@ class WifiScanner @Inject constructor(
         results: MutableSet<WifiCameraCandidate>,
         network: Network?,
         probed: java.util.concurrent.atomic.AtomicInteger,
-        arpEntries: java.util.concurrent.atomic.AtomicInteger
+        arpEntries: java.util.concurrent.atomic.AtomicInteger,
+        diag: Diag
     ) {
         // 给 ARP 表一点学习时间（相机刚入网时表里可能还没有它）
         delay(1500)
         val hosts = readArpHosts()
-        arpEntries.set(hosts.size)
-        if (hosts.isEmpty()) return
+        diag.arpReadable.set(hosts != null)
+        arpEntries.set(hosts?.size ?: 0)
+        if (hosts.isNullOrEmpty()) return
         val semaphore = Semaphore(16)
         coroutineScope {
             hosts.map { host ->
@@ -423,9 +634,22 @@ class WifiScanner @Inject constructor(
                     try {
                         if (results.any { it.ipAddress == host }) return@async
                         probed.incrementAndGet()
-                        if (PtpIpProbe.probe(host, PTP_PORT, 900L, network)) {
-                            results.add(WifiCameraCandidate(host, PTP_PORT, GENERIC_NAME, "WiFi-arp"))
-                            Timber.tag(TAG).i("ARP candidate: $host")
+                        when (PtpIpProbe.probeDetailed(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)) {
+                            PtpIpProbe.ProbeResult.OK -> {
+                                diag.probeOk.incrementAndGet()
+                                results.add(
+                                    WifiCameraCandidate(host, PTP_PORT, GENERIC_NAME, "WiFi-arp")
+                                )
+                                Timber.tag(TAG).i("ARP candidate: " + host)
+                            }
+                            PtpIpProbe.ProbeResult.TCP_OPEN_NO_PTP -> {
+                                diag.probeTcpOpen.incrementAndGet()
+                                results.add(
+                                    WifiCameraCandidate(host, PTP_PORT, "尼康相机(待唤醒)", "WiFi-arp")
+                                )
+                            }
+                            PtpIpProbe.ProbeResult.TIMEOUT -> diag.probeTimeout.incrementAndGet()
+                            else -> {}
                         }
                     } finally {
                         semaphore.release()
@@ -435,8 +659,14 @@ class WifiScanner @Inject constructor(
         }
     }
 
-    /** 读 /proc/net/arp 中"已解析完成"(flags 含 0x2) 的 IPv4 条目 */
-    private fun readArpHosts(): List<String> {
+    /**
+     * 读 /proc/net/arp 中"已解析完成"(flags 含 0x2) 的 IPv4 条目。
+     *
+     * @return null = 文件不可读（Android 10+ 起 /proc/net/arp 对普通应用受限，
+     *   SELinux 常直接拒绝），空列表 = 可读但表里没有有效条目。
+     *   v1.3.2 起把这两种情况区分开，诊断里不再把"读不到"伪装成"表里是空的"。
+     */
+    private fun readArpHosts(): List<String>? {
         return runCatching {
             java.io.File("/proc/net/arp").readLines()
                 .drop(1)
@@ -451,7 +681,7 @@ class WifiScanner @Inject constructor(
                 }
                 .filterNot { it.startsWith("127.") }
                 .distinct()
-        }.getOrDefault(emptyList())
+        }.getOrNull()
     }
 
     private fun parseMdnsResponse(data: ByteArray, sourceIp: String): MdnsCandidate? {

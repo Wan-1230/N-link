@@ -47,6 +47,16 @@ class ConnectionStateMachine @Inject constructor() {
     /** 状态变更回调 */
     private val stateListeners = mutableListOf<(ConnectionState, ConnectionState) -> Unit>()
 
+    /**
+     * **事件级**回调：任何事件都会通知，**包括不引起状态变化的**（v1.3.2 STA 反馈修复）。
+     *
+     * 为什么需要：状态回调只在 `newState != oldState` 时触发，而「连不上相机」这类失败
+     * 往往在状态还没推进到 CONNECTING 时就发生（例如 WiFi 没连、相机不可达），
+     * 于是 ErrorOccurred 被静默丢掉，UI 一直停在旧文案 —— 用户看到的就是
+     * 「点了连接没有任何反馈」。失败原因必须与状态变化解耦。
+     */
+    private val eventListeners = mutableListOf<(ConnectionEvent) -> Unit>()
+
     fun start(scope: CoroutineScope) {
         this.scope = scope
         scope.launch {
@@ -73,9 +83,24 @@ class ConnectionStateMachine @Inject constructor() {
         stateListeners.remove(listener)
     }
 
+    /** 注册事件级监听（失败原因可见化的入口，见 [eventListeners] 说明） */
+    fun addEventListener(listener: (ConnectionEvent) -> Unit) {
+        eventListeners.add(listener)
+    }
+
+    fun removeEventListener(listener: (ConnectionEvent) -> Unit) {
+        eventListeners.remove(listener)
+    }
+
     private suspend fun handleEvent(event: ConnectionEvent) {
         val oldState = _state.value
         Timber.tag(TAG).d("Event: $event | Current state: $oldState")
+
+        // 事件级通知先发：即使下面不产生状态迁移，UI 也能拿到失败原因
+        eventListeners.forEach { listener ->
+            runCatching { listener(event) }
+                .onFailure { Timber.tag(TAG).w(it, "Event listener failed: $event") }
+        }
 
         val newState = transition(oldState, event)
 

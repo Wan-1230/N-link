@@ -19,6 +19,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import timber.log.Timber
 
 /**
  * 连接状态仪表盘 ViewModel
@@ -93,17 +94,35 @@ class DashboardViewModel @Inject constructor(
     private val _wifiScanStats = MutableStateFlow<WifiScanner.ScanStats?>(null)
     val wifiScanStats: StateFlow<WifiScanner.ScanStats?> = _wifiScanStats.asStateFlow()
 
+    /** v1.3.2：扫描失败/被门控的原因（UI 直接展示，不再静默） */
+    private val _wifiScanError = MutableStateFlow<String?>(null)
+    val wifiScanError: StateFlow<String?> = _wifiScanError.asStateFlow()
+
     fun scanWifi() {
         _isWifiScanning.value = true
         _wifiDeviceList.value = emptyList()
+        _wifiScanError.value = null
         val hotspotMode = settings.staSubMode == com.nikonlink.app.shared.common.AppSettings.STA_MODE_PHONE_HOTSPOT
         viewModelScope.launch {
             try {
                 val candidates = connectionManager.scanWifiCameras(hotspotMode = hotspotMode)
                 _wifiDeviceList.value = candidates
                 _wifiScanStats.value = connectionManager.lastWifiScanStats.value
+                // v1.3.2（STA 反馈修复）：扫描"没结果"必须说清楚是哪一步卡住。
+                // 旧版在异常分支只清空列表，UI 只能笼统显示"未发现相机"——
+                // 用户无法区分"没连 WiFi""WiFi 没拿到 IP""相机不在同一网段"。
+                _wifiScanError.value = when {
+                    candidates.isNotEmpty() -> null
+                    else -> when (connectionManager.lastWifiScanStats.value?.gateReason) {
+                        "no_wifi_network" -> "手机当前未连接 WiFi，无法搜索同一网络下的相机"
+                        "wifi_no_ipv4" -> "WiFi 已连接但未取得 IP 地址（DHCP 未完成），请稍后重试"
+                        else -> null
+                    }
+                }
             } catch (e: Exception) {
                 _wifiDeviceList.value = emptyList()
+                _wifiScanError.value = "WiFi 扫描失败：" + (e.message ?: e.javaClass.simpleName)
+                Timber.tag("DashboardVM").w(e, "WiFi scan failed")
             } finally {
                 _isWifiScanning.value = false
             }
