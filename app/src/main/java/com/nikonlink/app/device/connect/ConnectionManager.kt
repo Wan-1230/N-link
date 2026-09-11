@@ -65,6 +65,9 @@ class ConnectionManager @Inject constructor(
     private var scope: CoroutineScope? = null
     private var pairedDeviceAddress: String? = null
     private var stateListener: ((ConnectionState, ConnectionState) -> Unit)? = null
+
+    /** v1.3.2：事件级监听（失败原因可见化），与 stateListener 同生命周期 */
+    private var eventListener: ((ConnectionEvent) -> Unit)? = null
     private var userDisconnectRequested = false
     private var connectedSince: Long? = null
     private var pairingJob: Job? = null
@@ -112,6 +115,8 @@ class ConnectionManager @Inject constructor(
         pairingJob = null
         stateListener?.let { stateMachine.removeStateListener(it) }
         stateListener = null
+        eventListener?.let { stateMachine.removeEventListener(it) }
+        eventListener = null
         bleManager.stop()
         wifiManager.stop()
         ptpSession.stop()
@@ -217,9 +222,14 @@ class ConnectionManager @Inject constructor(
                     }
                 }
             },
-            onFail = {
+            onFail = { reason ->
                 _connectionHint.value = null
-                eventLogger.event("pair_fail", "host" to endpoint.host, "port" to endpoint.port)
+                eventLogger.event(
+                    "pair_fail",
+                    "host" to endpoint.host, "port" to endpoint.port, "reason" to reason
+                )
+                // 状态行文案由事件监听统一写入（见 observeStateMachine 的 eventListener），
+                // 这里不再重复设置，避免两处文案互相覆盖
             }
         )
         stateMachine.dispatch(ConnectionEvent.StartConnect)
@@ -513,6 +523,19 @@ class ConnectionManager @Inject constructor(
             }
         }
         stateMachine.addStateListener(stateListener!!)
+        // v1.3.2（STA 反馈修复）：失败原因不再依赖状态变化。
+        // 状态回调只在状态迁移时触发，而"WiFi 没连 / 相机不可达"这类失败往往在
+        // 状态推进之前就发生 —— 旧版因此静默，UI 停在旧文案。事件级监听保证
+        // 任何 ErrorOccurred 都会把原因写到状态行上。
+        eventListener?.let { stateMachine.removeEventListener(it) }
+        val listener: (ConnectionEvent) -> Unit = { event ->
+            if (event is ConnectionEvent.ErrorOccurred) {
+                _statusMessage.value = event.message
+                Timber.tag(TAG).w("Connection error surfaced to UI: ${event.message}")
+            }
+        }
+        eventListener = listener
+        stateMachine.addEventListener(listener)
     }
 
     /**
