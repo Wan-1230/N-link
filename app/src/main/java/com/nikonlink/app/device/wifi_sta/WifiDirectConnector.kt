@@ -2,7 +2,12 @@ package com.nikonlink.app.device.wifi_sta
 
 import com.nikonlink.app.device.model.ConnectionEvent
 import com.nikonlink.app.device.connect.ConnectionStateMachine
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import com.nikonlink.app.device.ptp.PtpIpProbe
 import com.nikonlink.app.device.ptp.PtpSessionManager
+import dagger.hilt.android.qualifiers.ApplicationContext
 import com.nikonlink.app.device.wifi.WifiEndpoint
 import com.nikonlink.app.device.wifi_ap.WifiManager
 import com.nikonlink.app.shared.common.AppEventLogger
@@ -50,7 +55,8 @@ class WifiDirectConnector @Inject constructor(
     private val networkMonitor: WifiNetworkMonitor,
     private val networkRequester: StaNetworkRequester,
     private val stateMachine: ConnectionStateMachine,
-    private val eventLogger: AppEventLogger
+    private val eventLogger: AppEventLogger,
+    @ApplicationContext private val context: Context
 ) {
     companion object {
         private const val TAG = "WifiDirect"
@@ -129,6 +135,9 @@ class WifiDirectConnector @Inject constructor(
      * - [onRetry]：单次尝试失败进入退避时更新提示；
      * - [onSuccess]：连接成功（状态机 WifiConnected 由本类 dispatch）；
      * - [onFail]：全部尝试用尽（ErrorOccurred 由本类 dispatch）。
+     *   参数是**机器可读的失败原因**（`no_wifi_network` / `camera_unreachable` /
+     *   `ptp_handshake_failed` / `connect_failed`），由调用方翻译成给用户看的文案 ——
+     *   v1.3.2 STA 反馈修复：旧版只回调空参，UI 只能笼统说"连接失败"。
      */
     fun connect(
         endpoint: WifiEndpoint,
@@ -136,7 +145,7 @@ class WifiDirectConnector @Inject constructor(
         onWaitingCameraOk: (() -> Unit)? = null,
         onRetry: (() -> Unit)? = null,
         onSuccess: () -> Unit = {},
-        onFail: () -> Unit = {}
+        onFail: (String) -> Unit = {}
     ): Job {
         val gen = ++generation
         // RC-1: 同步作废旧循环（旧 run 会在下一个校验点因 gen 过期退出），
@@ -177,7 +186,7 @@ class WifiDirectConnector @Inject constructor(
         onWaitingCameraOk: (() -> Unit)?,
         onRetry: (() -> Unit)?,
         onSuccess: () -> Unit,
-        onFail: () -> Unit
+        onFail: (String) -> Unit
     ) {
         val pairing = (mode == Mode.PAIRING)
         var attempt = 0
@@ -210,6 +219,22 @@ class WifiDirectConnector @Inject constructor(
                     ?: wifiManager.bindToActiveWifi()
                 if (network == null) {
                     lastErr = "no_wifi_network"
+                    // v1.3.2 STA 反馈修复：手机压根没有 WiFi 网络时立刻收口。
+                    // 旧版会走满 10 次退避（≈90s），用户面对"正在连接…"却永远等不到结果。
+                    if (!hasAnyWifiNetwork()) {
+                        eventLogger.event(
+                            "sta_fail", "gen" to gen, "reason" to "no_wifi_network",
+                            "attempt" to attempt, "host" to endpoint.host
+                        )
+                        stateMachine.dispatch(
+                            ConnectionEvent.ErrorOccurred(
+                                "手机未连接 WiFi：请先连上相机所在的同一个 WiFi / 热点后重试",
+                                recoverable = true
+                            )
+                        )
+                        onFail("no_wifi_network")
+                        return
+                    }
                     delay(BACKOFF_MS[(attempt - 1).coerceAtMost(BACKOFF_MS.size - 1)])
                     continue
                 }
@@ -242,7 +267,14 @@ class WifiDirectConnector @Inject constructor(
                     return
                 }
 
-                lastErr = "connect_failed"
+                // 连接前可达性刷新（对齐 ZDROP "refreshing discovery before connect"）：
+                // 直接打一次 TCP 15740，把"相机不在这个地址/没醒"和"PTP 握手失败"分开，
+                // 让用户拿到的原因是有信息量的，而不是统一的"连接失败"。
+                lastErr = if (!probeReachable(network, endpoint)) {
+                    "camera_unreachable"
+                } else {
+                    "ptp_handshake_failed"
+                }
                 onRetry?.invoke()
                 Timber.tag(TAG).w("WiFi connect attempt $attempt failed (${endpoint.display}), backing off")
                 delay(BACKOFF_MS[(attempt - 1).coerceAtMost(BACKOFF_MS.size - 1)])   // RC-8
@@ -255,9 +287,12 @@ class WifiDirectConnector @Inject constructor(
                 "host" to endpoint.host
             )
             stateMachine.dispatch(
-                ConnectionEvent.ErrorOccurred("WiFi 相机连接失败", recoverable = true)
+                ConnectionEvent.ErrorOccurred(
+                    describeStaFailure(lastErr, endpoint),
+                    recoverable = true
+                )
             )
-            onFail()
+            onFail(lastErr ?: "connect_failed")
         } catch (e: CancellationException) {
             eventLogger.event("sta_cancel", "gen" to gen, "attempt" to attempt)
             throw e
@@ -275,5 +310,39 @@ class WifiDirectConnector @Inject constructor(
                 runCatching { ptpSession.closeSession() }
             }
         }
+    }
+    // ---------------- v1.3.2 STA 诊断与反馈辅助 ----------------
+
+    /** 手机当前是否存在任何 WiFi 网络（用于「无 WiFi」快速失败，避免空转 90s） */
+    private fun hasAnyWifiNetwork(): Boolean = runCatching {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
+        cm.allNetworks.any { network ->
+            cm.getNetworkCapabilities(network)
+                ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        }
+    }.getOrDefault(false)
+
+    /**
+     * 连接前可达性刷新（对齐 ZDROP `refreshing discovery before connect`）。
+     *
+     * 直接用 2.5s 超时打一次 TCP 15740 + PTP/IP Init：能连上说明相机在线，
+     * 之前失败就是握手层问题（配对码/会话占用）；连不上说明地址已失效或相机休眠，
+     * 这时重试 10 次也没有意义 —— 给出"不可达"的明确原因，用户可以去唤醒相机或
+     * 重新扫描。用比扫描阶段的 900ms 更长的超时，覆盖相机从休眠唤醒的时延。
+     */
+    private suspend fun probeReachable(network: android.net.Network?, endpoint: WifiEndpoint): Boolean =
+        runCatching { PtpIpProbe.probe(endpoint, timeoutMs = 2500L, network = network) }
+            .getOrDefault(false)
+
+    /** 机器可读原因 → 用户可读文案（STA 场景的失败分类） */
+    private fun describeStaFailure(reason: String?, endpoint: WifiEndpoint): String = when (reason) {
+        "no_wifi_network" -> "手机未连接 WiFi：请先连上相机所在的同一个 WiFi / 热点后重试"
+        "camera_unreachable" ->
+            "相机不可达（${endpoint.host}）：请确认相机已开机、处于「连接智能设备」状态，" +
+                "且与本机在同一网络；地址可能已变化，建议重新扫描"
+        "ptp_handshake_failed" ->
+            "相机在线但 PTP/IP 握手失败：请在相机上完成配对确认（按 OK），或断开后重新连接"
+        "invalid_endpoint" -> "IP 地址无效，请填写形如 192.168.1.1 的 IPv4 地址"
+        else -> "WiFi 相机连接失败：请确认相机与手机在同一网络后重试"
     }
 }
