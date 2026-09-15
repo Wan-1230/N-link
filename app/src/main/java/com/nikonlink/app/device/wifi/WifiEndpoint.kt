@@ -116,6 +116,39 @@ data class WifiEndpoint(
         }
 
         /**
+         * FIX-4：判断 host 是否是「值得作为相机候选去探测」的地址。
+         *
+         * 对齐 ZDROP 的两条显式过滤：
+         * - `ignored link-local endpoint` —— `169.254.x.x` 是 DHCP 失败时系统自分配的
+         *   链路本地地址，**没有任何可用路由**。探测它必然超时，白白占掉扫描配额。
+         * - `ignored unreachable endpoint` —— 组播地址、广播地址、`0.0.0.0`
+         *   都不是单播可达的主机。
+         *
+         * 与 [isValidHost] 的分工：那个只管"格式是不是合法 IPv4"（用于输入校验，
+         * 越宽越好）；本方法管"值不值得探测"（用于扫描候选，从严）。
+         *
+         * @return true = 可以作为扫描候选
+         */
+        fun isProbeCandidate(host: String?): Boolean {
+            val normalized = host?.let { normalizeIpv4(it) } ?: return false
+            val octets = normalized.split('.').mapNotNull { it.toIntOrNull() }
+            if (octets.size != 4) return false
+            val a = octets[0]
+            val b = octets[1]
+            // 0.0.0.0/8：本机/未指定
+            if (a == 0) return false
+            // 127.0.0.0/8：回环
+            if (a == 127) return false
+            // 169.254.0.0/16：链路本地（ZDROP 的 ignored link-local endpoint）
+            if (a == 169 && b == 254) return false
+            // 224.0.0.0/4：组播（含 mDNS 的 224.0.0.251）
+            if (a in 224..239) return false
+            // 240.0.0.0/4：保留 + 255.255.255.255 广播
+            if (a >= 240) return false
+            return true
+        }
+
+        /**
          * 把点分十进制归一化成无前导零的规范形式，非法返回 `null`。
          *
          * 这是整个 RC-3 修复的核心：**返回的永远是重新拼接出来的字符串**，

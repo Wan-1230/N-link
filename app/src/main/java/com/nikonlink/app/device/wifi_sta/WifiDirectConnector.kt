@@ -2,12 +2,8 @@ package com.nikonlink.app.device.wifi_sta
 
 import com.nikonlink.app.device.model.ConnectionEvent
 import com.nikonlink.app.device.connect.ConnectionStateMachine
-import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import com.nikonlink.app.device.ptp.PtpIpProbe
 import com.nikonlink.app.device.ptp.PtpSessionManager
-import dagger.hilt.android.qualifiers.ApplicationContext
 import com.nikonlink.app.device.wifi.WifiEndpoint
 import com.nikonlink.app.device.wifi_ap.WifiManager
 import com.nikonlink.app.shared.common.AppEventLogger
@@ -15,12 +11,16 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -54,17 +54,41 @@ class WifiDirectConnector @Inject constructor(
     private val wifiManager: WifiManager,
     private val networkMonitor: WifiNetworkMonitor,
     private val networkRequester: StaNetworkRequester,
+    private val localInterfaces: LocalNetworkInterfaceResolver,
     private val stateMachine: ConnectionStateMachine,
-    private val eventLogger: AppEventLogger,
-    @ApplicationContext private val context: Context
+    private val eventLogger: AppEventLogger
 ) {
     companion object {
         private const val TAG = "WifiDirect"
         private const val MAX_ATTEMPTS = 10
         /** RC-8: 指数退避，10 次总等待 ≈ 90s（对齐旧配对超时窗口） */
         private val BACKOFF_MS = longArrayOf(1000, 2000, 4000, 8000, 15000, 15000, 15000, 15000, 15000)
-        /** RC-4: 每次尝试等待 WiFi 网络就绪的上限 */
-        private const val AWAIT_NETWORK_MS = 8000L
+
+        /**
+         * RC-4: 每次尝试等待 WiFi 网络就绪的上限。
+         *
+         * FIX-2：旧值 8000ms 会与 [StaNetworkRequester.acquire] 的 8000ms **串行**叠加，
+         * 真机日志里每轮尝试耗时恒定 16.2s（= 8000 + 8000 + 余量），用户全程没有任何反馈。
+         * 现在三条解析路径**并行**竞争（见 [resolveNetwork]），本值收敛到 4s，
+         * 最坏耗时 ≈ 4s 而非 16.2s。
+         */
+        private const val AWAIT_NETWORK_MS = 4000L
+
+        /** FIX-2：并行解析期间给 UI 推进度提示的间隔 */
+        private const val PROGRESS_TICK_MS = 1500L
+
+        /**
+         * FIX-5：连接前等待相机起监听的总窗口（ZDROP `refreshing discovery before connect`）。
+         *
+         * 相机在 STA 下不会立刻监听 15740，需要先应用 host profile，实测有数秒延迟。
+         */
+        private const val PRECONNECT_WAIT_MS = 3000L
+
+        /** FIX-5：单次探活超时（比扫描阶段长，覆盖相机唤醒时延） */
+        private const val PRECONNECT_PROBE_TIMEOUT_MS = 1200L
+
+        /** FIX-5：前几轮才做连接前等待（后续轮次已经给过机会，不必每轮都等） */
+        private const val PRECONNECT_MAX_ROUNDS = 3
     }
 
     enum class Mode { PAIRING, RESUME }
@@ -210,18 +234,23 @@ class WifiDirectConnector @Inject constructor(
                 // RC-4: 每次尝试都等待并重新解析 Network，不用循环外缓存的旧句柄；
                 // v1.0.2: 按相机 IP 的子网匹配选网（ZDROP 同款）——手机热点模式下
                 // 相机在热点子网而非上游 WiFi 子网，"任意 WiFi 网络"会绑错路由
-                // ZDROP 同款：先向系统申请一个能到达相机的 WiFi 网络并持有
-                // （无 Internet 的相机网/热点网不会被系统回收），拿不到再依次
-                // 回退到既有监听与 AP 通道。绑定前再按相机 IP 子网匹配一次，
-                // 手机热点模式下"任意 WiFi 网络"会绑到上游 WiFi 而连不上相机。
-                val network = networkRequester.acquire(endpoint.host, AWAIT_NETWORK_MS)
-                    ?: networkMonitor.awaitWifiNetworkFor(endpoint.host, AWAIT_NETWORK_MS)
-                    ?: wifiManager.bindToActiveWifi()
+                // FIX-2：三条路径**并行**竞争，不再串行叠加（旧版 8s + 8s = 16.2s 才出结果）
+                // 并行等待期间通过 onRetry 推进度文案，避免长时间静止无反馈
+                val network = resolveNetwork(endpoint.host) { progress ->
+                    onRetry?.invoke()
+                    eventLogger.event("sta_progress", "gen" to gen, "hint" to progress)
+                }
                 if (network == null) {
                     lastErr = "no_wifi_network"
                     // v1.3.2 STA 反馈修复：手机压根没有 WiFi 网络时立刻收口。
                     // 旧版会走满 10 次退避（≈90s），用户面对"正在连接…"却永远等不到结果。
-                    if (!hasAnyWifiNetwork()) {
+                    //
+                    // FIX-1（RC-0）：判据必须用 [LocalNetworkInterfaceResolver.hasLocalWifiLikeInterface]，
+                    // **不能**只看 ConnectivityManager —— 手机开热点时热点接口属 TETHERING，
+                    // 不在 allNetworks 里，用 allNetworks 判断会得到"没有 WiFi"的假阴性，
+                    // 于是明明开着热点、相机就连在上面，却被判 no_wifi_network 直接收口。
+                    // 真机日志铁证：9 轮尝试全是 reason=no_wifi_network attempt=1。
+                    if (!localInterfaces.hasLocalWifiLikeInterface()) {
                         eventLogger.event(
                             "sta_fail", "gen" to gen, "reason" to "no_wifi_network",
                             "attempt" to attempt, "host" to endpoint.host
@@ -235,12 +264,40 @@ class WifiDirectConnector @Inject constructor(
                         onFail("no_wifi_network")
                         return
                     }
+                    // 有本地接口但拿不到 Network 句柄：网络确实存在，只是系统没给我们
+                    // 可直接绑定的句柄（热点场景典型）。不该判"没有 WiFi"，
+                    // 退避后再试 —— 也可能相机还没入网。
+                    eventLogger.event(
+                        "sta_retry", "gen" to gen, "reason" to "no_network_handle",
+                        "attempt" to attempt, "host" to endpoint.host
+                    )
                     delay(BACKOFF_MS[(attempt - 1).coerceAtMost(BACKOFF_MS.size - 1)])
                     continue
                 }
                 // ZDROP 同款：进程级绑定到 WiFi 网络，杜绝双卡手机蜂窝默认路由
                 // 抢走 PTP/IP 通道（socket 级绑定无法覆盖所有创建点）
                 networkMonitor.bindProcessTo(network)
+
+                // ── FIX-5：连接前刷新发现（对齐 ZDROP "refreshing discovery before connect"）──
+                // ZDROP 在每次真正 connect 之前都会先刷一次对端可达性，原因是：
+                // 相机（尤其 STA 下）会**延迟几秒才在 15740 上监听** —— 它需要先完成
+                // host profile 的应用/注册（我逆向到的
+                // `STA connect deferred while camera applies host profile remaining=`）。
+                // 直接 connect 会在相机还没起监听时超时，白白吃掉一次尝试。
+                //
+                // 这里先做一次轻量 TCP 探活，给相机最多 [PRECONNECT_WAIT_MS] 的窗口；
+                // 探活结果**不作为硬门禁**（避免把"休眠中但可唤醒"的相机挡掉），
+                // 只用于：① 抢出几秒等待时间；② 让日志/UI 能区分"没起监听"与"握手失败"。
+                if (attempt <= PRECONNECT_MAX_ROUNDS) {
+                    val reachable = waitUntilReachable(network, endpoint) { hint ->
+                        onRetry?.invoke()
+                        eventLogger.event("sta_progress", "gen" to gen, "hint" to hint)
+                    }
+                    eventLogger.event(
+                        "sta_preconnect", "gen" to gen, "attempt" to attempt,
+                        "reachable" to reachable, "host" to endpoint.host
+                    )
+                }
 
                 val ok = ptpSession.connect(
                     endpoint.host,
@@ -311,16 +368,132 @@ class WifiDirectConnector @Inject constructor(
             }
         }
     }
+    /**
+     * FIX-2：并行解析可用的 Network 句柄。
+     *
+     * 旧实现是串行的 `?:` 链：
+     * ```
+     * networkRequester.acquire(8000) ?: networkMonitor.awaitWifiNetworkFor(8000) ?: wifiManager.bindToActiveWifi()
+     * ```
+     * 三条路径依次等待，最坏 8000 + 8000 = 16.2s（真机日志实测恒定值），
+     * 期间用户看不到任何进度。
+     *
+     * 现在三条路径同时发起，**用 channel 收第一个非 null 结果**（真正的"谁快用谁"，
+     * 而不是按固定顺序 await —— 否则最慢的那条仍会把整体拖满）。
+     * 每 [PROGRESS_TICK_MS] 回调一次 [onProgress]，让 UI 能显示"正在准备网络…"
+     * 而不是长时间静止 —— 对齐 ZDROP 的 `LocalRouteReadiness` 进度语义。
+     *
+     * ## 为什么用 channel 而不是 `select`
+     *
+     * `select { }` 在 Kotlin 协程里对 `Deferred` 的 `onAwait` 分支处理较为繁琐，
+     * 且这里还要额外接进度心跳，用 [Channel] 把"首个成功结果"投递出来最直白。
+     *
+     * ## 关于取消
+     *
+     * [StaNetworkRequester.acquire] 内部的 `finally` 保证：只要它没把网络交出去
+     * （`held == null`）就会释放 callback，所以被取消是安全的，不会泄漏。
+     * 其它两条是无副作用的只读查询，取消无成本。
+     */
+    private suspend fun resolveNetwork(
+        host: String,
+        onProgress: ((String) -> Unit)? = null
+    ): android.net.Network? {
+        var resolved: android.net.Network? = null
+        return coroutineScope {
+            // 首个非 null 结果通过它回传（conflated：后来者无人接也无所谓）
+            val winner = Channel<android.net.Network>(Channel.CONFLATED)
+
+            val requester = async(Dispatchers.IO) {
+                networkRequester.acquire(host, AWAIT_NETWORK_MS)?.let { winner.trySend(it) }
+            }
+            val monitor = async(Dispatchers.IO) {
+                networkMonitor.awaitWifiNetworkFor(host, AWAIT_NETWORK_MS)?.let { winner.trySend(it) }
+            }
+            val fallback = async(Dispatchers.IO) {
+                // 兜底路径：既有 AP 通道的绑网实现，通常很快返回或立即失败
+                runCatching { wifiManager.bindToActiveWifi() }.getOrNull()?.let { winner.trySend(it) }
+            }
+
+            // 进度心跳：并行等待期间保持用户感知
+            val ticker = launch(Dispatchers.IO) {
+                var waited = 0L
+                while (waited < AWAIT_NETWORK_MS) {
+                    delay(PROGRESS_TICK_MS)
+                    waited += PROGRESS_TICK_MS
+                    onProgress?.invoke("正在准备网络（${waited / 1000}s）…")
+                }
+            }
+
+            // 只等到整体上限；期间谁先给出结果就用谁
+            resolved = withTimeoutOrNull(AWAIT_NETWORK_MS + 500L) {
+                for (network in winner) return@withTimeoutOrNull network
+                null
+            }
+
+            ticker.cancel()
+            // 未被选中的分支取消掉，避免占着网络请求不做事的协程继续跑
+            listOf(requester, monitor, fallback).forEach { if (it.isActive) it.cancel() }
+            resolved
+        }.also { network ->
+            if (network != null) {
+                Timber.tag(TAG).i("network resolved for host=$host: $network")
+            } else {
+                Timber.tag(TAG).w("network resolution failed for host=$host")
+            }
+        }
+    }
+
+    /**
+     * FIX-5：等待相机在 [PRECONNECT_WAIT_MS] 内起 PTP/IP 监听。
+     *
+     * 对齐 ZDROP `refreshing discovery before connect`。相机在 STA 模式下不会立刻
+     * 监听 15740 —— 它要先应用 host profile（逆向到的
+     * `STA connect deferred while camera applies host profile remaining=`）。
+     * 这段时间直接 connect 必然超时。
+     *
+     * 语义刻意做成**软等待**：
+     * - 一旦探活成功立即返回 true（不浪费剩余窗口）；
+     * - 窗口用完仍未探通则返回 false，但**不阻断**后续 connect ——
+     *   相机可能"端口未起但稍后握手能成"，也可能探活本身被路由干扰，
+     *   硬门禁会把这些情况误杀（这正是旧版"休眠相机永远连不上"的教训）。
+     *
+     * @return true = 窗口内已确认可达
+     */
+    private suspend fun waitUntilReachable(
+        network: android.net.Network?,
+        endpoint: WifiEndpoint,
+        onProgress: ((String) -> Unit)? = null
+    ): Boolean {
+        val deadline = System.currentTimeMillis() + PRECONNECT_WAIT_MS
+        var waited = 0L
+        while (System.currentTimeMillis() < deadline) {
+            val ok = runCatching {
+                PtpIpProbe.probe(
+                    endpoint,
+                    timeoutMs = PRECONNECT_PROBE_TIMEOUT_MS,
+                    network = network
+                )
+            }.getOrDefault(false)
+            if (ok) return true
+            delay(400)
+            waited += 400 + PRECONNECT_PROBE_TIMEOUT_MS
+            if (waited < PRECONNECT_WAIT_MS) {
+                onProgress?.invoke("正在等待相机响应（${waited / 1000}s）…")
+            }
+        }
+        return false
+    }
+
     // ---------------- v1.3.2 STA 诊断与反馈辅助 ----------------
 
-    /** 手机当前是否存在任何 WiFi 网络（用于「无 WiFi」快速失败，避免空转 90s） */
-    private fun hasAnyWifiNetwork(): Boolean = runCatching {
-        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
-        cm.allNetworks.any { network ->
-            cm.getNetworkCapabilities(network)
-                ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-        }
-    }.getOrDefault(false)
+    /**
+     * 手机当前是否存在「类 WiFi 的本地接口」—— 含手机自身热点。
+     *
+     * FIX-1（RC-0）：**不要**退回成只看 `ConnectivityManager.allNetworks`。
+     * 热点接口属 TETHERING，不经 ConnectivityService，在那里恒不可见；
+     * 只有内核网卡枚举（[LocalNetworkInterfaceResolver]）能看到它。
+     */
+    private fun hasAnyWifiNetwork(): Boolean = localInterfaces.hasLocalWifiLikeInterface()
 
     /**
      * 连接前可达性刷新（对齐 ZDROP `refreshing discovery before connect`）。

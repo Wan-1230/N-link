@@ -86,6 +86,15 @@ class StaNetworkRequester @Inject constructor(
     suspend fun acquire(host: String?, timeoutMs: Long = 6000L): Network? {
         val target = host?.let { ipToInt(it) }
 
+        // ── FIX-3 关键：快路径命中前必须先释放上一次的 callback ──────────────
+        // 旧实现在这里直接 `return network`，**从不注册 callback 却把 held 设上**：
+        // ① 上一轮若注册过 callback，这次不释放 → 每轮泄漏一个未注册回调；
+        // ② `held` 与"是否有回调在注册中"语义不一致，release() 清不干净。
+        // 真机日志铁证：netId 递增 127→129→130→131，且 network=131 一次性连发
+        // 6 条 sta_net_lost —— 就是回调堆积后集中触发。
+        // 现在：任何出口都先清掉旧 callback，保证「held 有值 ⇔ 语义明确」。
+        releaseCallbackOnly()
+
         // 快路径：已经连着的 WiFi 里找同网段的
         findMatchingWifi(target)?.let { network ->
             Timber.tag(TAG).i("reuse existing wifi network $network for host=$host")
@@ -120,36 +129,46 @@ class StaNetworkRequester @Inject constructor(
             connectivityManager.requestNetwork(request, cb)
             registered = true
         } catch (e: Exception) {
+            // FIX-3：注册失败必须保证 cb 不会被"半个注册"地留在系统里。
+            // requestNetwork 抛异常（如超过每 UID 100 个未释放回调的上限）时
+            // 该请求并未生效，直接放弃引用即可，但不能写进 callback 字段。
             Timber.tag(TAG).w(e, "requestNetwork failed, falling back to existing wifi")
         }
         callback = if (registered) cb else null
 
         val deadline = System.currentTimeMillis() + timeoutMs
         var fallback: Network? = null
-        while (System.currentTimeMillis() < deadline) {
-            val snapshot = synchronized(lock) { available.toList() }
-            for (network in snapshot) {
-                if (covers(network, target)) {
-                    Timber.tag(TAG).i("acquired wifi network $network (subnet match host=$host)")
-                    held = network
-                    return network
+        try {
+            while (System.currentTimeMillis() < deadline) {
+                val snapshot = synchronized(lock) { available.toList() }
+                for (network in snapshot) {
+                    if (covers(network, target)) {
+                        Timber.tag(TAG).i("acquired wifi network $network (subnet match host=$host)")
+                        held = network
+                        return network
+                    }
+                    if (fallback == null) fallback = network
                 }
-                if (fallback == null) fallback = network
-            }
-            // 未注册回调（不支持/异常）时继续用快路径轮询，不必空转
-            if (!registered) {
-                findMatchingWifi(target)?.let { network ->
-                    held = network
-                    return network
+                // 未注册回调（不支持/异常）时继续用快路径轮询，不必空转
+                if (!registered) {
+                    findMatchingWifi(target)?.let { network ->
+                        held = network
+                        return network
+                    }
                 }
+                delay(POLL_INTERVAL_MS)
             }
-            delay(POLL_INTERVAL_MS)
-        }
 
-        if (fallback != null) {
-            Timber.tag(TAG).w("no subnet-matched wifi, fallback to $fallback (host=$host)")
-            held = fallback
-            return fallback
+            if (fallback != null) {
+                Timber.tag(TAG).w("no subnet-matched wifi, fallback to $fallback (host=$host)")
+                held = fallback
+                return fallback
+            }
+        } finally {
+            // FIX-3：只要本次没把网络"交出去"（返回给调用方长期持有），
+            // 就必须把 callback 释放掉 —— 旧实现在超时/异常出口漏了 release()，
+            // 是回调堆积的第二条路径。
+            if (held == null) releaseCallbackOnly()
         }
         Timber.tag(TAG).w("acquire wifi network timeout (host=$host, ${timeoutMs}ms)")
         return null
@@ -157,6 +176,18 @@ class StaNetworkRequester @Inject constructor(
 
     /** 释放申请到的网络（断开连接/扫描结束时调用，务必成对）。 */
     fun release() {
+        releaseCallbackOnly()
+        held = null
+    }
+
+    /**
+     * FIX-3：只注销 callback、清空 available，**不动 [held]**。
+     *
+     * 拆出这个方法是因为两个场景语义不同：
+     * - [release]：整段会话结束，held 与 callback 一起清；
+     * - [acquire] 重入/超时出口：只清 callback，avoid 误伤刚交出去的 held。
+     */
+    private fun releaseCallbackOnly() {
         val cb = synchronized(lock) {
             val c = callback
             callback = null
@@ -167,7 +198,6 @@ class StaNetworkRequester @Inject constructor(
             runCatching { connectivityManager.unregisterNetworkCallback(it) }
                 .onFailure { e -> Timber.tag(TAG).w(e, "unregisterNetworkCallback failed") }
         }
-        held = null
     }
 
     /** 当前已有的 WiFi 网络中，链路地址与 [target] 同网段的那个。 */
