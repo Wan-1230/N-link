@@ -23,7 +23,9 @@ import timber.log.Timber
 import java.net.DatagramPacket
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.MulticastSocket
+import java.net.NetworkInterface
 import java.net.SocketTimeoutException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Semaphore
@@ -41,7 +43,8 @@ import javax.inject.Singleton
 @Singleton
 class WifiScanner @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val networkRequester: StaNetworkRequester
+    private val networkRequester: StaNetworkRequester,
+    private val localInterfaces: LocalNetworkInterfaceResolver
 ) {
     companion object {
         private const val TAG = "WifiScanner"
@@ -104,6 +107,18 @@ class WifiScanner @Inject constructor(
         val plannedHosts: Int = 0,
         /** mDNS 查询包实际发送次数（0 = 连探针都没发出去） */
         val mdnsProbesSent: Int = 0,
+        /**
+         * RC-5：成功加入 mDNS 组播组的网卡数。
+         * 0 = 本机没有任何网卡能收组播（热点场景下旧版必然如此并静默跳过整段 mDNS）。
+         */
+        val mdnsInterfacesJoined: Int = 0,
+        /**
+         * RC-0：内核网卡枚举出的本机网段（含热点接口），与 [localSubnets] 对照即可
+         * 看出「ConnectivityManager 看不见热点」这一事实。
+         */
+        val kernelSubnets: String = "",
+        /** RC-0：是否判定为热点拓扑（无 WiFi 客户端网络 + 有内核可见 IPv4 接口） */
+        val hotspotTopology: Boolean = false,
         /** mDNS 路径异常（null = 正常） */
         val mdnsError: String? = null,
         /** NSD 路径异常（null = 正常） */
@@ -132,6 +147,10 @@ class WifiScanner @Inject constructor(
         val probeTcpOpen = java.util.concurrent.atomic.AtomicInteger(0)
         val probeTimeout = java.util.concurrent.atomic.AtomicInteger(0)
         val mdnsProbes = java.util.concurrent.atomic.AtomicInteger(0)
+        /** RC-5：成功加入 mDNS 组播组的网卡数（0 = 组播收不到任何东西） */
+        val mdnsInterfacesJoined = java.util.concurrent.atomic.AtomicInteger(0)
+        /** RC-0：内核可见的本机网段（含热点接口），用于诊断"热点为什么看不见" */
+        val kernelSubnets = java.util.concurrent.atomic.AtomicReference<String>("")
         val arpReadable = java.util.concurrent.atomic.AtomicBoolean(false)
         val mdnsError = java.util.concurrent.atomic.AtomicReference<String?>(null)
         val nsdError = java.util.concurrent.atomic.AtomicReference<String?>(null)
@@ -177,8 +196,6 @@ class WifiScanner @Inject constructor(
                 // 拿不到本机 IPv4 时网段扫描整条路径会静默失效（旧版直接 return），
                 // 用户看到的就是"完全搜不到相机"。这里最多等 ROUTE_READY_WAIT_MS，
                 // 等不到也要把原因写进诊断（gateReason），让 UI 能说清"为什么"。
-                // 热点模式跳过门控：手机热点接口多数机型不在 allNetworks 里，
-                // 真实网段靠 ARP / 热点段兜底（与既有行为一致，不改动）。
                 var subnets = currentIpv4Addresses()
                 if (subnets.isEmpty() && !hotspotMode) {
                     val routeDeadline = System.currentTimeMillis() + ROUTE_READY_WAIT_MS
@@ -187,10 +204,33 @@ class WifiScanner @Inject constructor(
                         subnets = currentIpv4Addresses()
                     }
                 }
+
+                // ── RC-0 修复：用内核网卡枚举补全网段（含手机自身热点接口）─────────
+                // ConnectivityManager 看不到 Tethering 的热点接口，导致手机开热点时
+                // subnets 为空 → 网段扫描只剩过时的 192.168.43.x 硬编码；
+                // 同时上层还会误判 no_wifi_network 直接收口。
+                // 这里改用 NetworkInterface.getNetworkInterfaces()（ZDROP 同款）把
+                // 热点网段补回来，`subnets` 从此在热点场景下也是真实可用的。
+                val kernelSubnets = runCatching { localInterfaces.subnets() }.getOrDefault(emptyList())
+                diag.kernelSubnets.set(
+                    kernelSubnets.joinToString(", ") { it.first + "/" + it.second }
+                )
+                if (kernelSubnets.isNotEmpty()) {
+                    // 内核枚举到的网段优先级更高（含热点），且能覆盖 CM 未就绪的情况
+                    val merged = LinkedHashSet<Pair<String, Int>>()
+                    merged.addAll(subnets)
+                    merged.addAll(kernelSubnets)
+                    subnets = merged.toList()
+                }
+
+                val hotspotTopology = runCatching {
+                    hotspotMode || localInterfaces.isHotspotTopology()
+                }.getOrDefault(hotspotMode)
                 val wifiReady = subnets.isNotEmpty()
                 val gateReason = when {
-                    wifiReady -> null
+                    wifiReady -> null                 // 有网段就能扫（无论它来自 CM 还是内核）
                     hotspotMode -> null
+                    hotspotTopology -> null           // 热点拓扑：网卡可见即放行，不再误判
                     target == null -> "no_wifi_network"
                     else -> "wifi_no_ipv4"
                 }
@@ -236,6 +276,9 @@ class WifiScanner @Inject constructor(
                     localSubnets = subnetText,
                     plannedHosts = diag.plannedHosts.get(),
                     mdnsProbesSent = diag.mdnsProbes.get(),
+                    mdnsInterfacesJoined = diag.mdnsInterfacesJoined.get(),
+                    kernelSubnets = diag.kernelSubnets.get(),
+                    hotspotTopology = hotspotTopology,
                     mdnsError = diag.mdnsError.get(),
                     nsdError = diag.nsdError.get(),
                     arpReadable = diag.arpReadable.get(),
@@ -248,11 +291,13 @@ class WifiScanner @Inject constructor(
                 val st = _lastScanStats.value!!
                 Timber.tag(TAG).i(
                     "Scan done in " + st.elapsedMs + "ms: wifiReady=" + wifiReady +
-                        " subnets=[" + subnetText + "] ssid='" + ssid + "'" +
+                        " subnets=[" + subnetText + "] kernel=[" + st.kernelSubnets + "]" +
+                        " hotspot=" + st.hotspotTopology + " ssid='" + ssid + "'" +
                         " gate=" + (gateReason ?: "-") + " planned=" + diag.plannedHosts.get() +
                         " probed=" + probed.get() + " arp=" + arpEntries.get() +
                         " readable=" + st.arpReadable + " mdns=" + mdnsSeen.get() +
-                        " probesSent=" + st.mdnsProbesSent + " nsd=" + nsdSeen.get() +
+                        " probesSent=" + st.mdnsProbesSent +
+                        " mdnsIfaces=" + st.mdnsInterfacesJoined + " nsd=" + nsdSeen.get() +
                         " probeOk=" + st.probeOk + " tcpOnly=" + st.probeTcpOpenNoPtp +
                         " timeout=" + st.probeTimeout + " candidates=" + results.size
                 )
@@ -294,7 +339,22 @@ class WifiScanner @Inject constructor(
             // STA 模式下必须显式把组播 Socket 绑定到 WiFi 网络，
             // 否则默认路由可能被蜂窝网抢走，导致收不到相机的 mDNS 广播。
             network?.bindSocket(socket)
-            socket.joinGroup(InetAddress.getByName(MDNS_ADDRESS))
+            // ── RC-5：绝不能用被废弃的单参 joinGroup ──────────────────────────
+            // `MulticastSocket.joinGroup(InetAddress)` 会把组播组加入**所有**网卡，
+            // 只要有一张网卡不支持组播就直接抛：
+            //   ErrnoException: setsockopt failed: ENODEV (No such device)
+            // 手机开热点时热点接口正是这种「无网关/不支持组播」的网卡，
+            // 于是整段 mDNS 发现被跳过（旧版这行还没包 runCatching，异常直接
+            // 冒泡到外层 catch）—— 这是"热点下搜不到相机"的独立丢失路径。
+            // 参见 jmdns/jmdns#120 "JmDNS will crash when in Android AP mode"。
+            // 修法：逐个网卡、用两参重载显式指定 interface；单张网卡失败不中断。
+            val joined = joinMulticastOnAllInterfaces(socket)
+            diag.mdnsInterfacesJoined.set(joined)
+            if (joined == 0) {
+                diag.mdnsError.compareAndSet(null, "no_multicast_capable_interface")
+                Timber.tag(TAG).w("mDNS: no interface accepted the multicast group, skipping")
+                return
+            }
             sendMdnsProbe(socket)
             diag.mdnsProbes.incrementAndGet()
 
@@ -352,11 +412,52 @@ class WifiScanner @Inject constructor(
             Timber.tag(TAG).w(e, "mDNS listener failed, subnet scan will still run")
         } finally {
             runCatching {
-                socket?.leaveGroup(InetAddress.getByName(MDNS_ADDRESS))
+                // RC-5：必须与加入时同形（两参 + 指定 interface）。
+                // 单参 leaveGroup 同样会遍历所有网卡并在热点接口上抛 ENODEV。
+                val group = InetAddress.getByName(MDNS_ADDRESS)
+                NetworkInterface.getNetworkInterfaces()?.toList()?.forEach { nif ->
+                    runCatching {
+                        socket?.leaveGroup(
+                            InetSocketAddress(group, MDNS_PORT),
+                            nif
+                        )
+                    }
+                }
             }
             runCatching { socket?.close() }
             multicastLock?.release()
         }
+    }
+
+    /**
+     * RC-5：逐个网卡把 [socket] 加入 mDNS 组播组，返回成功加入的网卡数。
+     *
+     * 只用**两参重载** `joinGroup(SocketAddress, NetworkInterface)`：
+     * 单参版本会遍历全部网卡，任一网卡不支持组播就抛 `ENODEV` 并让整段发现失效
+     * （热点接口必踩）。两参版本把失败局限在单张网卡内，其它网卡照常工作。
+     *
+     * @return 成功加入的网卡数量；0 表示本机没有任何网卡能收组播。
+     */
+    private fun joinMulticastOnAllInterfaces(socket: MulticastSocket): Int {
+        val group = runCatching { InetAddress.getByName(MDNS_ADDRESS) }.getOrNull() ?: return 0
+        val interfaces = runCatching { NetworkInterface.getNetworkInterfaces()?.toList() }
+            .getOrNull() ?: return 0
+        var joined = 0
+        for (nif in interfaces) {
+            val usable = runCatching { nif.isUp && !nif.isLoopback }.getOrDefault(false)
+            if (!usable) continue
+            val ok = runCatching {
+                socket.joinGroup(InetSocketAddress(group, MDNS_PORT), nif)
+            }.isSuccess
+            if (ok) {
+                joined++
+            } else {
+                // 单张网卡失败是常态（热点/蜂窝/VPN 网卡多数不支持组播），
+                // 不值得把整段发现判死，留痕即可。
+                Timber.tag(TAG).d("mDNS: interface ${nif.name} rejected multicast group")
+            }
+        }
+        return joined
     }
 
     private suspend fun scanSubnet(
@@ -377,23 +478,24 @@ class WifiScanner @Inject constructor(
 
         val subnetHosts = networks.flatMap { (ip, prefix) ->
             subnetHosts(ip, prefix).filterNot { it == ip }
-        }.filter { WifiEndpoint.isValidHost(it) }.distinct()
+        }.filter { WifiEndpoint.isProbeCandidate(it) }.distinct()
         // 相机 AP/STA 常见网关 IP，即使当前网段不同也做一次轻量探测。
         val knownGatewayHosts = listOf(
             "192.168.1.1", "192.168.0.1", "10.0.0.1", "192.168.42.1",
             "192.168.31.1", "192.168.2.1", "192.168.10.1", "192.168.50.1",
             "192.168.137.1", "172.16.0.1", "10.0.1.1"
         )
-        // 热点模式：手机热点网段（现代 Android 随机化，旧版固定 192.168.43.x）。
-        // 本机热点接口多数机型不在 allNetworks 里，无法枚举真实网段时用常见值兜底；
-        // ARP 采集器负责覆盖真实网段（相机入网后必然出现在 ARP 表）。
+        // 热点模式：真正的主机列表已由调用方通过 `networks` 传入的本机网段覆盖
+        // （RC-0 修复后，热点网段由 LocalNetworkInterfaceResolver 从内核网卡枚举得到，
+        //  不再依赖下面这个兜底列表）。这里只保留最常见的 `192.168.43.x` 作为
+        //  最后一道保险：部分老机型/老 ROM 仍固定使用该网段。
         val hotspotHosts = if (hotspotMode) {
             (1 until 255).map { "192.168.43.$it" }
         } else {
             emptyList()
         }
         val hosts = (subnetHosts + knownGatewayHosts + hotspotHosts)
-            .filter { WifiEndpoint.isValidHost(it) }.distinct()
+            .filter { WifiEndpoint.isProbeCandidate(it) }.distinct()
         if (hosts.isEmpty()) return
         diag.plannedHosts.addAndGet(hosts.size)
 
@@ -450,7 +552,7 @@ class WifiScanner @Inject constructor(
     ) {
         val hosts = networks.flatMap { (ip, prefix) ->
             subnetHosts(ip, prefix).filterNot { it == ip }
-        }.filter { WifiEndpoint.isValidHost(it) }.distinct()
+        }.filter { WifiEndpoint.isProbeCandidate(it) }.distinct()
         if (hosts.isEmpty()) return
         diag.plannedHosts.addAndGet(hosts.size)
         val semaphore = Semaphore(MAX_SCAN_CONCURRENCY)
@@ -676,7 +778,7 @@ class WifiScanner @Inject constructor(
                     val ip = cols[0]
                     val flags = cols[2].toIntOrNull(16) ?: return@mapNotNull null
                     if (flags and 0x2 == 0) return@mapNotNull null
-                    if (!WifiEndpoint.isValidHost(ip)) return@mapNotNull null
+                    if (!WifiEndpoint.isProbeCandidate(ip)) return@mapNotNull null
                     ip
                 }
                 .filterNot { it.startsWith("127.") }
