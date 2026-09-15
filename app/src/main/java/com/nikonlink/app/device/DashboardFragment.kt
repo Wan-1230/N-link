@@ -749,6 +749,11 @@ class DashboardFragment : Fragment() {
                             if (stats.mdnsResponses == 0 && stats.nsdResponses == 0) {
                                 append("\nmDNS/NSD 均无响应：路由器可能过滤了组播，或开启了客户端隔离")
                             }
+                            // FIX-1c（RC-5）：没有任何网卡接受组播组时，
+                            // mDNS 这一整条路径在旧版是被静默跳过的 —— 必须说出来。
+                            if (stats.mdnsInterfacesJoined == 0) {
+                                append("\nmDNS 组播未能在任何网卡上建立（热点模式下常见），已仅用网段扫描")
+                            }
                             if (!stats.wifiReady) {
                                 append("\n本机 WiFi 未取得 IP 地址，网段扫描无法进行")
                             } else {
@@ -759,6 +764,27 @@ class DashboardFragment : Fragment() {
                                     append(stats.ssid)
                                     append("）")
                                 }
+                            }
+                            // FIX-1（RC-0）：把「系统看不见热点、但内核网卡看得见」
+                            // 这一事实摆出来 —— 这是热点场景判 no_wifi_network 的根因。
+                            if (stats.kernelSubnets.isNotBlank() &&
+                                stats.kernelSubnets != stats.localSubnets
+                            ) {
+                                append("\n含手机热点等本地网卡网段 ")
+                                append(stats.kernelSubnets)
+                                if (stats.hotspotTopology) {
+                                    append("（当前为热点拓扑）")
+                                }
+                            }
+                            if (stats.gateReason != null) {
+                                append("\n扫描被提前收口：")
+                                append(
+                                    when (stats.gateReason) {
+                                        "no_wifi_network" -> "未检测到可用网络"
+                                        "wifi_no_ipv4" -> "网络未分配 IP 地址"
+                                        else -> stats.gateReason
+                                    }
+                                )
                             }
                             if (!stats.arpReadable) {
                                 append("\nARP 表不可读（Android 10+ 系统限制，属正常）")
