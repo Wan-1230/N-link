@@ -89,6 +89,14 @@ class WifiDirectConnector @Inject constructor(
 
         /** FIX-5：前几轮才做连接前等待（后续轮次已经给过机会，不必每轮都等） */
         private const val PRECONNECT_MAX_ROUNDS = 3
+
+        /**
+         * RC-6：连续判定 `camera_unreachable` 达到此次数即提前收口。
+         *
+         * 单次 socket 超时 30s、退避最长 15s，走满 10 次 ≈ 6.5 分钟；
+         * 而"不可达"这个结论 2.5s 探测就拿到了，多等只是在消耗用户耐心。
+         */
+        private const val UNREACHABLE_GIVE_UP = 3
     }
 
     enum class Mode { PAIRING, RESUME }
@@ -215,6 +223,8 @@ class WifiDirectConnector @Inject constructor(
         val pairing = (mode == Mode.PAIRING)
         var attempt = 0
         var lastErr: String? = null
+        /** RC-6：连续判定"相机不可达"的次数，用于提前收口（见下方循环）。 */
+        var consecutiveUnreachable = 0
         // RC-5: 连接生命周期内持有 WifiLock/MulticastLock，finally 保证释放
         networkMonitor.acquireLocks()
         try {
@@ -240,43 +250,79 @@ class WifiDirectConnector @Inject constructor(
                     onRetry?.invoke()
                     eventLogger.event("sta_progress", "gen" to gen, "hint" to progress)
                 }
-                if (network == null) {
+                // RC-6：拿不到 Network 句柄 ≠ 连不上，绝不能就此放弃。
+                //
+                // 【真机日志铁证 2026-09-16】新构建时段内 `connect phase=socket` 出现 **0 次** ——
+                // 相机明明已被扫描发现（10.94.35.14），我们却在 resolveNetwork() 返回 null 时
+                // 直接 `continue` 退避重试，**连一次 TCP 都没发出去**，10 次尝试全部空转，
+                // 最终上报 no_wifi_network。这是"能发现但连不上"的直接原因。
+                //
+                // 根因：手机开热点时热点接口属 TETHERING，ConnectivityManager 既不把它
+                // 放进 allNetworks，也不会为它派发 Network 对象 —— 但**内核路由是通的**，
+                // 该接口有正常 IPv4 与直连路由。此时 `Socket()` 走默认路由即可到达相机，
+                // 根本不需要 Network 句柄（PtpSessionManager.createSocket(null) 就是普通 Socket）。
+                //
+                // 这正是 ZDROP 的 `socketFactory=default-route-fallback` 语义：
+                // **绑网失败时回落到默认路由继续连，而不是判死。**
+                val defaultRouteFallback = network == null &&
+                    localInterfaces.hasLocalWifiLikeInterface()
+                if (defaultRouteFallback) {
+                    val ifaces = runCatching { localInterfaces.localAddresses() }
+                        .getOrDefault(emptyList())
+                        .joinToString(",") { it.display }
+                    // 关键诊断：相机 IP 是否真的落在本机某个直连网段里。
+                    // PTP/IP 是二层直连协议，跨网段一律不可达 —— 若为 false，
+                    // 说明扫描到的 IP 与本机不同网段（相机已换网/地址过期），
+                    // 再重试也没用，下一条日志就能直接看出来。
+                    val inSubnet = runCatching { localInterfaces.subnetsContain(endpoint.host) }
+                        .getOrDefault(false)
+                    Timber.tag(TAG).i(
+                        "no Network handle, falling back to default route; " +
+                            "local ifaces=[$ifaces] host=${endpoint.host} inSubnet=$inSubnet"
+                    )
+                    eventLogger.event(
+                        "sta_fallback", "gen" to gen, "attempt" to attempt,
+                        "host" to endpoint.host, "ifaces" to ifaces,
+                        "in_subnet" to inSubnet
+                    )
+                    if (!inSubnet) {
+                        Timber.tag(TAG).w(
+                            "host ${endpoint.host} is NOT in any local subnet - " +
+                                "connection will likely fail, rescan needed"
+                        )
+                    }
+                    // 明确回到默认路由：清掉可能残留的进程级绑网，
+                    // 让 socket 完全交给内核按路由表选择出口。
+                    networkMonitor.bindProcessTo(null)
+                }
+
+                if (network == null && !defaultRouteFallback) {
                     lastErr = "no_wifi_network"
-                    // v1.3.2 STA 反馈修复：手机压根没有 WiFi 网络时立刻收口。
+                    // v1.3.2 STA 反馈修复：手机压根没有任何本地网络时立刻收口。
                     // 旧版会走满 10 次退避（≈90s），用户面对"正在连接…"却永远等不到结果。
                     //
                     // FIX-1（RC-0）：判据必须用 [LocalNetworkInterfaceResolver.hasLocalWifiLikeInterface]，
                     // **不能**只看 ConnectivityManager —— 手机开热点时热点接口属 TETHERING，
-                    // 不在 allNetworks 里，用 allNetworks 判断会得到"没有 WiFi"的假阴性，
-                    // 于是明明开着热点、相机就连在上面，却被判 no_wifi_network 直接收口。
+                    // 不在 allNetworks 里，用 allNetworks 判断会得到"没有 WiFi"的假阴性。
                     // 真机日志铁证：9 轮尝试全是 reason=no_wifi_network attempt=1。
-                    if (!localInterfaces.hasLocalWifiLikeInterface()) {
-                        eventLogger.event(
-                            "sta_fail", "gen" to gen, "reason" to "no_wifi_network",
-                            "attempt" to attempt, "host" to endpoint.host
-                        )
-                        stateMachine.dispatch(
-                            ConnectionEvent.ErrorOccurred(
-                                "手机未连接 WiFi：请先连上相机所在的同一个 WiFi / 热点后重试",
-                                recoverable = true
-                            )
-                        )
-                        onFail("no_wifi_network")
-                        return
-                    }
-                    // 有本地接口但拿不到 Network 句柄：网络确实存在，只是系统没给我们
-                    // 可直接绑定的句柄（热点场景典型）。不该判"没有 WiFi"，
-                    // 退避后再试 —— 也可能相机还没入网。
                     eventLogger.event(
-                        "sta_retry", "gen" to gen, "reason" to "no_network_handle",
+                        "sta_fail", "gen" to gen, "reason" to "no_wifi_network",
                         "attempt" to attempt, "host" to endpoint.host
                     )
-                    delay(BACKOFF_MS[(attempt - 1).coerceAtMost(BACKOFF_MS.size - 1)])
-                    continue
+                    stateMachine.dispatch(
+                        ConnectionEvent.ErrorOccurred(
+                            "手机未连接 WiFi：请先连上相机所在的同一个 WiFi / 热点后重试",
+                            recoverable = true
+                        )
+                    )
+                    onFail("no_wifi_network")
+                    return
                 }
                 // ZDROP 同款：进程级绑定到 WiFi 网络，杜绝双卡手机蜂窝默认路由
-                // 抢走 PTP/IP 通道（socket 级绑定无法覆盖所有创建点）
-                networkMonitor.bindProcessTo(network)
+                // 抢走 PTP/IP 通道（socket 级绑定无法覆盖所有创建点）。
+                // RC-6：defaultRouteFallback 时 network 为 null，此时**不绑**，
+                // 交由内核按路由表选出口（热点接口有正常直连路由）。
+                network?.let { networkMonitor.bindProcessTo(it) }
 
                 // ── FIX-5：连接前刷新发现（对齐 ZDROP "refreshing discovery before connect"）──
                 // ZDROP 在每次真正 connect 之前都会先刷一次对端可达性，原因是：
@@ -327,13 +373,36 @@ class WifiDirectConnector @Inject constructor(
                 // 连接前可达性刷新（对齐 ZDROP "refreshing discovery before connect"）：
                 // 直接打一次 TCP 15740，把"相机不在这个地址/没醒"和"PTP 握手失败"分开，
                 // 让用户拿到的原因是有信息量的，而不是统一的"连接失败"。
-                lastErr = if (!probeReachable(network, endpoint)) {
-                    "camera_unreachable"
-                } else {
-                    "ptp_handshake_failed"
-                }
+                val unreachable = !probeReachable(network, endpoint)
+                lastErr = if (unreachable) "camera_unreachable" else "ptp_handshake_failed"
                 onRetry?.invoke()
                 Timber.tag(TAG).w("WiFi connect attempt $attempt failed (${endpoint.display}), backing off")
+
+                // RC-6 附加：连续确认"相机不可达"时提前收口，别让用户干等。
+                // 单次 socket 连接超时是 30s（CONNECT_TIMEOUT_MS），10 次就是 5 分钟起步 ——
+                // 而这个"不可达"结论本身只花 2.5s 探测就得到了，再等下去没有新信息。
+                // 只针对 `camera_unreachable`（地址错/不在同网段/被 AP 隔离），
+                // `ptp_handshake_failed` 仍走满退避 —— 那属于"相机在、只是要用户按 OK"。
+                if (unreachable) {
+                    consecutiveUnreachable++
+                    if (consecutiveUnreachable >= UNREACHABLE_GIVE_UP) {
+                        eventLogger.event(
+                            "sta_fail", "gen" to gen, "reason" to "camera_unreachable",
+                            "attempt" to attempt, "host" to endpoint.host,
+                            "fallback" to defaultRouteFallback
+                        )
+                        stateMachine.dispatch(
+                            ConnectionEvent.ErrorOccurred(
+                                describeStaFailure("camera_unreachable", endpoint),
+                                recoverable = true
+                            )
+                        )
+                        onFail("camera_unreachable")
+                        return
+                    }
+                } else {
+                    consecutiveUnreachable = 0
+                }
                 delay(BACKOFF_MS[(attempt - 1).coerceAtMost(BACKOFF_MS.size - 1)])   // RC-8
             }
 
