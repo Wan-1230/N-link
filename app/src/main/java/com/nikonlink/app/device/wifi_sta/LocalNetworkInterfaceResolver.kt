@@ -110,6 +110,46 @@ class LocalNetworkInterfaceResolver @Inject constructor(
     fun subnets(): List<Pair<String, Int>> =
         localAddresses().map { it.address to it.prefixLength }.distinct()
 
+    private fun ipToInt(host: String): Int? {
+        val parts = host.trim().split(".")
+        if (parts.size != 4) return null
+        var value = 0
+        for (part in parts) {
+            val octet = part.toIntOrNull() ?: return null
+            if (octet !in 0..255) return null
+            value = (value shl 8) or octet
+        }
+        return value
+    }
+
+    private fun prefixMask(prefixLength: Int): Int {
+        if (prefixLength <= 0) return 0
+        if (prefixLength >= 32) return -1
+        return (0xFFFFFFFF.toInt() shl (32 - prefixLength))
+    }
+
+    /**
+     * [host] 是否落在**本机某个已连接网段**之内。
+     *
+     * 这是判断"相机到底能不能从本机直达"的最终依据：
+     * PTP/IP 是二层直连协议，相机必须与手机在**同一个直连网段**，
+     * 跨网段/走网关一律不可达。若本方法返回 false，说明扫描给出的 IP
+     * 与本机任何网卡都不在同网段 —— 再怎么重试也连不上，应该提示用户重新扫描。
+     *
+     * 注意前缀长度取自内核（[localAddresses]），蜂窝网口通常是 /32
+     * （PPP 点对点），此时只有它自己算"同网段"，不会出现误判。
+     *
+     * @return true = host 在本机某个直连网段内（含网络地址/广播地址校验）
+     */
+    fun subnetsContain(host: String): Boolean {
+        val target = ipToInt(host) ?: return false
+        return localAddresses().any { local ->
+            val base = ipToInt(local.address) ?: return@any false
+            val mask = prefixMask(local.prefixLength)
+            (base and mask) == (target and mask)
+        }
+    }
+
     /**
      * 手机上是否存在「类 WiFi 的本地接口」—— 用于区分
      * **"真的一个网都没有"** 与 **"有热点但 ConnectivityManager 看不见"**。
