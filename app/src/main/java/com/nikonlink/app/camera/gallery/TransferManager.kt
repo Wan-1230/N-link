@@ -75,8 +75,10 @@ class TransferManager @Inject constructor(
         // 兼容只支持小分块的老相机（部分机型 GetPartialObject 上限 ~1MB）
         private const val PARTIAL_CHUNK_SIZE = 4 * 1024 * 1024
         private const val MIN_PARTIAL_CHUNK_SIZE = 1024 * 1024
-        // 媒体列表分页 limit=18，逐页加载避免一次性阻塞
-        private const val PAGE_SIZE = 18
+        // 媒体列表分页 limit=60，逐页加载避免一次性阻塞；调大以减少回调次数与 DiffUtil 抖动
+        private const val PAGE_SIZE = 60
+        /** 首屏批：先读到的约 60 个 handle 元数据即 emit，让用户立刻看到图，不等整份拉完 */
+        private const val FIRST_SCREEN_HANDLES = 60
         /** ObjectInfo 读取并发窗口（PTP 命令通道本身串行，窗口用于 USB 多段与响应叠加） */
         private const val OBJECT_INFO_CONCURRENCY = 4
 
@@ -343,7 +345,8 @@ class TransferManager @Inject constructor(
     }
 
     suspend fun fetchPhotoListDetailed(
-        onPage: ((List<CameraFile>) -> Unit)? = null
+        onPage: ((List<CameraFile>) -> Unit)? = null,
+        onFirstScreen: ((List<CameraFile>) -> Unit)? = null
     ): PhotoListFetch {
         val transport = currentTransport()
         if (!transport.isConnected) {
@@ -393,6 +396,8 @@ class TransferManager @Inject constructor(
                         Timber.tag(TAG).i(
                             "photo list via MTP batch: ${batchFiles.size}/${handles.size} in ${cost}ms"
                         )
+                        // 首屏批：批量路径一次返回全部，直接当作首屏 emit，让用户立刻看到图
+                        onFirstScreen?.invoke(batchFiles)
                         onPage?.invoke(batchFiles)
                         return@withContext PhotoListFetch(
                             batchFiles, handles.size,
@@ -405,6 +410,8 @@ class TransferManager @Inject constructor(
 
                 // ---- 回退路径：按 PAGE_SIZE 分页逐个读取 ObjectInfo（旧行为，页内并发 4）----
                 val result = mutableListOf<CameraFile>()
+                var firstScreenHandles = 0
+                var firstScreenEmitted = false
                 handles.chunked(PAGE_SIZE).forEach { page ->
                     val semaphore = Semaphore(OBJECT_INFO_CONCURRENCY)
                     val pageFiles = coroutineScope {
@@ -435,7 +442,18 @@ class TransferManager @Inject constructor(
                                 it.format == CameraFileFormat.VIDEO
                     }
                     result.addAll(pageFiles)
+                    firstScreenHandles += page.size
+                    // 首屏批：读到约 FIRST_SCREEN_HANDLES 个 handle 即 emit 一次，
+                    // 无论调用方是否 holdPages，让用户先看到第一屏（空网格时立即填充）
+                    if (!firstScreenEmitted && firstScreenHandles >= FIRST_SCREEN_HANDLES) {
+                        onFirstScreen?.invoke(result.toList())
+                        firstScreenEmitted = true
+                    }
                     onPage?.invoke(result.toList())
+                }
+                // 句柄不足一屏也保证至少 emit 一次首屏
+                if (!firstScreenEmitted && result.isNotEmpty()) {
+                    onFirstScreen?.invoke(result.toList())
                 }
                 PhotoListFetch(result, handles.size, failedInfoCount, transportOnline = true)
             } catch (e: Exception) {
@@ -602,14 +620,15 @@ class TransferManager @Inject constructor(
         if (!transport.isConnected) {
             return TransferResult.Failed("相机未连接")
         }
-        eventLogger.event(
-            "download_start",
-            "handle" to file.handle,
-            "name" to file.fileName,
-            "size" to file.size,
-            "channel" to channelName(transport)
-        )
+        transport.setBulkTransferActive(true)
         return try {
+            eventLogger.event(
+                "download_start",
+                "handle" to file.handle,
+                "name" to file.fileName,
+                "size" to file.size,
+                "channel" to channelName(transport)
+            )
             if (tempFile.length() > file.size) {
                 tempFile.delete()
             }
@@ -629,7 +648,7 @@ class TransferManager @Inject constructor(
                 )
             }
 
-            val savedPath = saveFileToMediaStore(prepareFileToSave(tempFile, file), file.fileName)
+            val savedPath = saveFileToMediaStore(prepareFileToSave(tempFile, file), file.fileName, file.format)
             if (savedPath != null) {
                 // 已下载原图 → 用原图生成高清缩略图回填缓存（0x90C4/0x100A 的小图从此不再展示）
                 regenerateThumbnailFromLocal(file.handle, tempFile)
@@ -661,6 +680,9 @@ class TransferManager @Inject constructor(
             Timber.tag(TAG).e(e, "Download failed: ${file.fileName}")
             eventLogger.event("download_fail", "handle" to file.handle, "reason" to (e.message ?: "unknown"))
             TransferResult.Failed(e.message ?: "未知错误")
+        } finally {
+            // 无论成功/失败/取消都复位批量传输标记，恢复心跳判死与命令通道 10s 超时
+            transport.setBulkTransferActive(false)
         }
     }
 
@@ -692,6 +714,13 @@ class TransferManager @Inject constructor(
 
         val startOffset = totalReceived
         var chunkSize = PARTIAL_CHUNK_SIZE
+        // 断点续传起点：PTP GetPartialObject 的 dwOffset 是 32 位，totalReceived 超过
+        // Int.MAX_VALUE(≈2GB) 时 toInt() 会溢出成负数 → 从错误起点续传破坏大视频。
+        // 超过 2GB 时退化为整对象下载（清占位文件从头拉），保证大视频仍可正常落盘。
+        if (totalReceived > Int.MAX_VALUE.toLong()) {
+            target.delete()
+            return downloadWhole(transport, file, target, onProgress)
+        }
         while (totalReceived < file.size) {
             val remaining = (file.size - totalReceived).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
             val size = minOf(chunkSize, remaining)
@@ -977,6 +1006,13 @@ class TransferManager @Inject constructor(
      */
     suspend fun queryDownloadedHandles(handles: List<Int>): Set<Int> =
         queryTransferredHandles(handles)
+
+    /**
+     * 只读查询：某 handle 已成功下载后的本地路径（供预览页分享/EXIF 直接取本地文件，避免重复下载）。
+     * 仅读取传输历史，不触碰任何队列/去重/重试逻辑。
+     */
+    suspend fun getDownloadedPath(handle: Int): String? =
+        runCatching { transferRepository.getCompletedRecordPath(handle) }.getOrNull()
 
     /**
      * 全部已完成的传输记录（v1.3.0 「本地删除 → 状态恢复未下载」自愈用）。
@@ -1382,22 +1418,44 @@ class TransferManager @Inject constructor(
      * 将下载完成的临时文件保存到 MediaStore（Android Scoped Storage）。
      * 保存路径按设置「save_path」选择 DCIM/N-Link 或 Download/N-Link。
      */
-    private fun saveFileToMediaStore(file: File, fileName: String): String? {
+    /**
+     * 将下载完成的临时文件保存到 MediaStore（Android Scoped Storage）。
+     *
+     * 按格式/设置的集合分流，避免把视频 MIME 误插进 Images 集合导致被 MediaProvider
+     * 拒绝、以及 Download 目录下照片 RELATIVE_PATH 非法：
+     * - 「Download 目录」设置 → [MediaStore.Downloads]（DCIM/Images/Video 主目录均非法，统一走 Downloads）
+     * - 视频（format == VIDEO 或 .MOV/.MP4）→ [MediaStore.Video]
+     * - 其余（照片/RAW）→ [MediaStore.Images]
+     */
+    private fun saveFileToMediaStore(file: File, fileName: String, format: CameraFileFormat = CameraFileFormat.OTHER): String? {
         return try {
             val relativePath = if (settings.savePath == AppSettings.SAVE_PATH_DOWNLOAD) {
                 Environment.DIRECTORY_DOWNLOADS + "/N-Link"
             } else {
                 Environment.DIRECTORY_DCIM + "/N-Link"
             }
+            val isVideo = format == CameraFileFormat.VIDEO ||
+                    fileName.endsWith(".MOV", ignoreCase = true) ||
+                    fileName.endsWith(".MP4", ignoreCase = true)
+            // 「Download 目录」设置下统一走 Downloads 集合（任意类型都合法）；
+            // 其余按 MIME 分流到 Images / Video。
+            val collectionUri = if (settings.savePath == AppSettings.SAVE_PATH_DOWNLOAD) {
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            } else if (isVideo) {
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            } else {
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            }
+
             val contentValues = ContentValues().apply {
-                put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
-                put(MediaStore.Images.Media.MIME_TYPE, getMimeType(fileName))
-                put(MediaStore.Images.Media.RELATIVE_PATH, relativePath)
-                put(MediaStore.Images.Media.IS_PENDING, 1)
+                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(MediaStore.MediaColumns.MIME_TYPE, getMimeType(fileName))
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
 
             val resolver = context.contentResolver
-            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+            val uri = resolver.insert(collectionUri, contentValues)
                 ?: return null
 
             val output = resolver.openOutputStream(uri)
@@ -1410,7 +1468,7 @@ class TransferManager @Inject constructor(
             }
 
             contentValues.clear()
-            contentValues.put(MediaStore.Images.Media.IS_PENDING, 0)
+            contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
             resolver.update(uri, contentValues, null, null)
 
             // B5/O3：补一次媒体库扫描。
@@ -1419,7 +1477,7 @@ class TransferManager @Inject constructor(
             // 要手动刷新才看得到」。这里主动通知一次，让新照片即时可见。
             notifyMediaScanner(uri, relativePath, fileName)
 
-            Timber.tag(TAG).i("Saved to MediaStore: $fileName")
+            Timber.tag(TAG).i("Saved to MediaStore(${if (collectionUri == MediaStore.Video.Media.EXTERNAL_CONTENT_URI) "video" else if (collectionUri == MediaStore.Downloads.EXTERNAL_CONTENT_URI) "downloads" else "images"}): $fileName")
             uri.toString()
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Failed to save to MediaStore")
@@ -1589,6 +1647,11 @@ private interface CameraTransport {
         sink: OutputStream? = null
     ): ByteArray?
     suspend fun deleteObject(handle: Int): Boolean
+    /**
+     * 标记批量/大文件传输进行中：WiFi PTP 下暂停心跳判死并提高命令通道超时；
+     * USB 通道无心跳保活，此处为 no-op。
+     */
+    fun setBulkTransferActive(active: Boolean)
 }
 
 private class PtpTransport(
@@ -1613,6 +1676,7 @@ private class PtpTransport(
     override suspend fun partialObject(handle: Int, offset: Int, size: Int, sink: OutputStream?): ByteArray? =
         ptp.getPartialObject(handle, offset, size, sink)
     override suspend fun deleteObject(handle: Int): Boolean = ptp.deleteObject(handle)
+    override fun setBulkTransferActive(active: Boolean) = ptp.setBulkTransferActive(active)
 }
 
 private class UsbTransport(
@@ -1632,4 +1696,7 @@ private class UsbTransport(
     override suspend fun partialObject(handle: Int, offset: Int, size: Int, sink: OutputStream?): ByteArray? =
         usb.getPartialObject(handle, offset, size, sink)
     override suspend fun deleteObject(handle: Int): Boolean = usb.deleteObject(handle)
+    override fun setBulkTransferActive(active: Boolean) {
+        // USB 通道无心跳保活机制，无需暂停判死；留空
+    }
 }

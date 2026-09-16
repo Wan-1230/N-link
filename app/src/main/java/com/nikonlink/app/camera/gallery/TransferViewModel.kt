@@ -77,7 +77,7 @@ class TransferViewModel @Inject constructor(
          * 相册整体加载硬顶：任何单请求卡顿叠加都不允许把加载圈挂到天荒地老。
          * 超时后保留旧列表、复位加载态并给出可操作提示（下拉重试）。
          */
-        private const val LOAD_HARD_DEADLINE_MS = 60_000L
+        private const val LOAD_HARD_DEADLINE_MS = 120_000L
     }
 
     private val _photoList = MutableStateFlow<List<CameraFile>>(emptyList())
@@ -567,16 +567,27 @@ class TransferViewModel @Inject constructor(
                 for (attempt in 0 until 2) {
                     fetch = withTimeoutOrNull(LOAD_HARD_DEADLINE_MS) {
                         transferManager.fetchPhotoListDetailed(
-                            onPage = if (holdPages) null else ({ page -> _photoList.value = page })
+                            onPage = if (holdPages) null else ({ page -> _photoList.value = page }),
+                            // 首屏优先：当前网格为空时，首屏批立即写入让用户先看到图；
+                            // 刷新场景（网格非空）忽略，保留全量完成后的一次性排序提交语义。
+                            onFirstScreen = { if (_photoList.value.isEmpty()) _photoList.value = it }
                         )
-                    } ?: run {
-                        if (!silent) _message.value = "相册加载超时，请检查连接后下拉重试"
-                        null
                     }
-                    if (fetch == null || !fetch.totalFailure) break
+                    if (fetch != null && !fetch.totalFailure) break
+                    if (fetch == null) break // 超时：跳出重试，下方保留首屏已读到的部分列表
                     if (attempt == 0) delay(800)
                 }
-                val outcome = fetch ?: return@launch
+                val outcome = fetch
+                // 加载超时：首屏批（onFirstScreen）已写入 _photoList，保留部分列表并提示缺口，
+                // 不再整份丢弃；旧列表也保留，下拉可补全。
+                if (outcome == null) {
+                    if (!silent) _message.value = "相册加载超时，已显示已读取的部分，可下拉补全"
+                    return@launch
+                }
+                if (outcome.totalFailure) {
+                    if (!silent) _message.value = "相册加载失败（${outcome.totalHandles} 个文件元数据不可读），请下拉重试"
+                    return@launch
+                }
                 val result = outcome.files
                 fetched = result
                 fetchedViaHoldPages = holdPages
