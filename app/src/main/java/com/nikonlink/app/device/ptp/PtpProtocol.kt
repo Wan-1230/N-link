@@ -32,6 +32,18 @@ object PtpConstants {
     const val PACKET_TYPE_PING = 0x000D
     const val PACKET_TYPE_PONG = 0x000E
 
+    // PTP/IP InitFail reason codes（ISO 15740 §6.2：InitCommand 被拒绝的原因）
+    const val INIT_FAIL_CONNECTION_IN_USE = 0x00000001      // 连接被占用（相机已有活动会话）
+    const val INIT_FAIL_CONNECTION_DENIED = 0x00000002      // 拒绝（连接数满 / 未配对门控）
+    const val INIT_FAIL_HOST_ALREADY_CONNECTED = 0x00000003 // 该主机（GUID）已连接
+
+    fun describeInitFailReason(reason: Int): String = when (reason) {
+        INIT_FAIL_CONNECTION_IN_USE -> "connection_in_use($reason)"
+        INIT_FAIL_CONNECTION_DENIED -> "connection_denied($reason)"
+        INIT_FAIL_HOST_ALREADY_CONNECTED -> "host_already_connected($reason)"
+        else -> "unknown($reason)"
+    }
+
     // PTP Operation Codes (standard)
     const val OP_GET_DEVICE_INFO = 0x1001
     const val OP_OPEN_SESSION = 0x1002
@@ -558,6 +570,7 @@ sealed class PtpPacket {
                 PtpConstants.PACKET_TYPE_END_DATA -> EndDataPacket.parse(payload)
                 PtpConstants.PACKET_TYPE_PING -> PingPacket
                 PtpConstants.PACKET_TYPE_PONG -> PongPacket
+                PtpConstants.PACKET_TYPE_INIT_FAIL -> InitFailPacket.parse(payload)
                 else -> UnknownPacket(type, payload)
             }
         }
@@ -932,5 +945,36 @@ data class UnknownPacket(
         buffer.putInt(type)
         buffer.put(payload)
         return buffer.array()
+    }
+}
+
+/**
+ * 初始化失败包（相机主动拒绝 InitCommandRequest）。
+ *
+ * PTP/IP 标准：InitFail 包体为 4 字节 reason code（小端）：
+ * 1=连接被占用 / 2=拒绝（连接数满或未配对门控）/ 3=该主机已连接。
+ * 尼康相机在 STA 模式未激活配对时会对标准 InitCommandRequest 回此包，
+ * 解析 reason 是区分「会话残留」与「配对门控」的关键。
+ */
+data class InitFailPacket(
+    val reasonCode: Int
+) : PtpPacket() {
+    override val type = PtpConstants.PACKET_TYPE_INIT_FAIL
+
+    override fun toBytes(): ByteArray { // Client doesn't send this
+        val buffer = ByteBuffer.allocate(PtpConstants.PTP_IP_HEADER_SIZE + 4)
+            .order(ByteOrder.LITTLE_ENDIAN)
+        buffer.putInt(PtpConstants.PTP_IP_HEADER_SIZE + 4)
+        buffer.putInt(type)
+        buffer.putInt(reasonCode)
+        return buffer.array()
+    }
+
+    companion object {
+        fun parse(payload: ByteArray): InitFailPacket {
+            val buffer = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+            val reason = if (payload.size >= 4) buffer.int else 0
+            return InitFailPacket(reason)
+        }
     }
 }
