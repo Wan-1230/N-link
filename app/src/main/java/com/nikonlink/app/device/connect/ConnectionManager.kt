@@ -12,6 +12,7 @@ import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.ptp.PtpSessionState
 import com.nikonlink.app.device.ptp.PtpIpProbe
+import com.nikonlink.app.device.ptp.HostRegistrationResult
 import com.nikonlink.app.device.usb.UsbConnectionState
 import com.nikonlink.app.device.usb.UsbPtpManager
 import com.nikonlink.app.device.wifi.WifiEndpoint
@@ -421,6 +422,26 @@ class ConnectionManager @Inject constructor(
             }
             true
         } ?: false
+    }
+
+    /**
+     * STA 主机注册（ZDROP 式）：在已建立的 PTP 会话内发送
+     * PrepareHost(0x952B) / ConfirmHost(0x935A)，把本机 GUID 注册为相机信任主机。
+     * 注册成功后，相机切 STA 模式才会放行 InitCommandRequest（否则会 InitFail 拒绝）。
+     *
+     * 前置校验：PTP 会话已连接（AP 模式连上相机后调用，由 UI 引导相机进入
+     * 「连接至 PC」首次配置向导）。
+     */
+    suspend fun registerStaHost(
+        onProgress: ((String) -> Unit)? = null
+    ): HostRegistrationResult {
+        if (!ptpSession.isConnected()) {
+            return HostRegistrationResult.Failure(
+                phase = "not_connected",
+                detail = "相机未连接。请先通过 WiFi 连上相机（AP 模式），再执行 STA 主机注册"
+            )
+        }
+        return ptpSession.registerHost(onProgress)
     }
 
     /**

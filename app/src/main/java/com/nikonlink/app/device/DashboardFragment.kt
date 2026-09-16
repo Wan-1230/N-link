@@ -187,11 +187,45 @@ class DashboardFragment : Fragment() {
                 binding.swipeRefresh.isRefreshing = false
                 // 连接状态变化后统一刷新状态行（避免各处直接写 tvStatusMessage 造成互相覆盖）
                 renderStatusLine()
+                // STA 主机注册仅在有 PTP 会话（WiFi 已连接）且非 USB 模式时有意义
+                binding.btnStaHostRegister.visibility =
+                    if (state == ConnectionState.FULLY_CONNECTED && !isUsbMode()) {
+                        View.VISIBLE
+                    } else {
+                        View.GONE
+                    }
             }
         }
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.statusMessage.collect { renderStatusLine() }
+        }
+
+        // STA 主机注册：进度/结果展示。长文案放卡片文本，不塞状态行（共享窄条规则）。
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.hostReg.collect { state ->
+                when (state) {
+                    null -> {
+                        binding.tvStaHostRegStatus.visibility = View.GONE
+                        binding.btnStaHostRegister.isEnabled = true
+                    }
+                    is HostRegUiState.Running -> {
+                        binding.tvStaHostRegStatus.visibility = View.VISIBLE
+                        binding.tvStaHostRegStatus.text = state.progress
+                        binding.btnStaHostRegister.isEnabled = false
+                    }
+                    is HostRegUiState.Success -> {
+                        binding.tvStaHostRegStatus.visibility = View.VISIBLE
+                        binding.tvStaHostRegStatus.text = state.message
+                        binding.btnStaHostRegister.isEnabled = true
+                    }
+                    is HostRegUiState.Failure -> {
+                        binding.tvStaHostRegStatus.visibility = View.VISIBLE
+                        binding.tvStaHostRegStatus.text = state.message
+                        binding.btnStaHostRegister.isEnabled = true
+                    }
+                }
+            }
         }
 
         // 相机信息：有真实数据才展示对应行，读不到时整行隐藏，不遗留横杠占位
@@ -478,6 +512,22 @@ class DashboardFragment : Fragment() {
             viewModel.disconnect()
             viewModel.disconnectUsb()
         }
+
+        // STA 主机注册（ZDROP 式）：先引导用户在相机端进入「连接至 PC」向导，再执行注册
+        binding.btnStaHostRegister.pressEffect()
+        binding.btnStaHostRegister.setOnClickListener {
+            MaterialAlertDialogBuilder(requireContext())
+                .setTitle("STA 主机注册")
+                .setMessage(
+                    "注册后，相机在 STA 模式（连接本机热点）下才会允许 N-Link 连接。\n\n" +
+                            "请在相机菜单进入「连接至 PC」首次配置向导，并让相机停留在该画面，然后点「开始注册」。"
+                )
+                .setPositiveButton("开始注册") { _, _ -> viewModel.registerStaHost() }
+                .setNegativeButton("取消", null)
+                .show()
+        }
+        // 结果卡片点击即清除（进行中的状态不可清除）
+        binding.tvStaHostRegStatus.setOnClickListener { viewModel.clearHostReg() }
 
         // 点击设备卡片快速重连
         binding.cardDevice.setOnClickListener {
