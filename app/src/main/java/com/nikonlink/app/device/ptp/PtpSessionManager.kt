@@ -73,6 +73,11 @@ class PtpSessionManager @Inject constructor(
          */
         private const val EVENT_READ_TIMEOUT_MS = 45000
         private const val EVENT_PING_TIMEOUT_MS = 1500
+        /**
+         * 批量/大文件传输期间的命令通道读超时（原 10s）。视频等大对象首包可能等待数秒，
+         * 传输中临时提高到 60s，避免首包/慢速相机被判超时；传输结束后还原 10s。
+         */
+        private const val BULK_TRANSFER_SO_TIMEOUT_MS = 60000
     }
 
     private var commandSocket: Socket? = null
@@ -840,12 +845,23 @@ class PtpSessionManager @Inject constructor(
                     false
                 }
                 if (!pingOk) {
-                    markLinkError("ping_write_failed")
-                    break
+                    if (!bulkTransferActive()) {
+                        markLinkError("ping_write_failed")
+                        break
+                    }
+                    // 批量/大文件传输中：写失败先不判死，交给业务侧已放宽到 60s 的命令通道
+                    // 超时自行失败；传输结束后下一轮心跳会重新判死
+                    continue
                 }
                 delay(PONG_GRACE_MS)
 
-                if (lastEventActivityAt > activityBeforePing) {
+                if (bulkTransferActive()) {
+                    // 批量/大文件传输中：相机正忙、event 通道无入站是正常态，
+                    // 暂停心跳判死以免误杀正在传数据的命令通道；同时刷新判活基线，
+                    // 传输结束复位标记后不会立即误判死亡。
+                    missedBeats = 0
+                    lastEventActivityAt = System.currentTimeMillis()
+                } else if (lastEventActivityAt > activityBeforePing) {
                     // 相机回了 Pong 或主动发了探针：链路活
                     missedBeats = 0
                 } else {
@@ -857,14 +873,14 @@ class PtpSessionManager @Inject constructor(
                         markLinkError("no_response_x$missedBeats")
                         break
                     }
-                }
-                // 兜底：event 通道超过 30s 毫无活动即判定链路已死，交给上层恢复流程
-                if (System.currentTimeMillis() - lastEventActivityAt > NO_ACTIVITY_TIMEOUT_MS) {
-                    Timber.tag(TAG).w(
-                        "keepAlive: no event-channel activity for ${NO_ACTIVITY_TIMEOUT_MS}ms, link dead"
-                    )
-                    markLinkError("idle_timeout")
-                    break
+                    // 兜底：event 通道超过 30s 毫无活动即判定链路已死，交给上层恢复流程
+                    if (System.currentTimeMillis() - lastEventActivityAt > NO_ACTIVITY_TIMEOUT_MS) {
+                        Timber.tag(TAG).w(
+                            "keepAlive: no event-channel activity for ${NO_ACTIVITY_TIMEOUT_MS}ms, link dead"
+                        )
+                        markLinkError("idle_timeout")
+                        break
+                    }
                 }
             }
         }
@@ -874,7 +890,34 @@ class PtpSessionManager @Inject constructor(
     @Volatile
     private var missedBeats = 0
 
+    /**
+     * 批量/大文件传输进行中的引用计数（支持并发下载叠加）。
+     * >0 时：心跳判死暂停（相机传大对象时 event 通道无入站属正常态），
+     * 且命令通道 soTimeout 提到 [BULK_TRANSFER_SO_TIMEOUT_MS]，避免首包久等被掐断。
+     */
+    @Volatile
+    private var bulkTransferRefCount = 0
+
+    /** 批量传输标记：true 时心跳不再判死，命令通道 soTimeout 提到 60s */
+    fun setBulkTransferActive(active: Boolean) {
+        bulkTransferRefCount = if (active) bulkTransferRefCount + 1 else (bulkTransferRefCount - 1).coerceAtLeast(0)
+        val activeNow = bulkTransferRefCount > 0
+        try {
+            commandSocket?.soTimeout = if (activeNow) BULK_TRANSFER_SO_TIMEOUT_MS else 10000
+        } catch (_: Exception) {
+            // socket 可能已关闭，忽略
+        }
+    }
+
+    private fun bulkTransferActive(): Boolean = bulkTransferRefCount > 0
+
     private fun markLinkError(reason: String) {
+        if (bulkTransferActive()) {
+            // 批量传输中：即便 event 通道读超时/写失败，也不关正在传数据的 socket，
+            // 交给业务侧 60s 级命令通道超时自行失败；传输结束后下一轮心跳会重新判死。
+            Timber.tag(TAG).w("link error suppressed during bulk transfer: $reason")
+            return
+        }
         Timber.tag(TAG).w("link error: $reason")
         eventLogger.event("link_error", "reason" to reason)
         keepAliveJob?.cancel()
