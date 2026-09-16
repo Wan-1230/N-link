@@ -6,7 +6,7 @@
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.1.0-7F52FF?style=flat-square&logo=kotlin)
 ![minSdk](https://img.shields.io/badge/minSdk-29-00ACC1?style=flat-square)
 ![targetSdk](https://img.shields.io/badge/targetSdk-35-00897B?style=flat-square)
-![Version](https://img.shields.io/badge/version-1.3.1-546E7A?style=flat-square)
+![Version](https://img.shields.io/badge/version-2.0.1-546E7A?style=flat-square)
 
 N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等）的开源 Android 应用，打通 **连接 → 浏览 → 传输 → 遥控 → 监看** 的完整链路，以「永不断联」为核心卖点：
 
@@ -72,11 +72,11 @@ N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等�
 
 | 版本 | 亮点 |
 |------|------|
+| **v2.0.1** | WiFi STA 链路打通（相机连手机热点 / 同路由器可稳定连接）· 新增「STA 主机注册」· 热点网段枚举修复 · mDNS 组播崩溃修复 · 连接等待缩短与失败原因可见化 |
 | **v1.3.1** | WiFi 连接页不再误显示 USB 提示 · USB 探测改为主动连接才提示 · 提示文案不再被截断（短文案 + 卡片完整指引） |
 | **v1.3.0** | 第三方镜头不再被显示成 NIKKOR · 相册「✓ 已下载」角标 · 删除本地照片后状态自动恢复 · 拍摄后逐张即时入册 · USB 状态行修复 · 录像中监看断流修复 · 拍摄模式写入后回读确认 |
 | **v1.2.2** | 监看心跳响应校验（修复偶发断连）· event 通道读超时 · WiFi STA 链路重构（对齐官方 SnapBridge 语义）· 相册快速翻页动画修复 |
 | **v1.2.1** | 「不重复下载已下载照片」开关 · 剩余下载进度常驻 · 下载完成即时通知媒体库 · STA 扫描失败原因可见化 · 支持手动输入相机 IP |
-| **v1.2.0** | USB 全链路优化（识别修复 / 相册秒开 / 实时监看打通）· 缩略图渐进加载 · 拍摄模式下拉切换 · 状态栏连接状态修正 |
 
 ---
 
@@ -87,7 +87,7 @@ N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等�
 | 渠道 | 说明 |
 |------|------|
 | **GitHub Releases** | [最新 Release](https://github.com/Wan-1230/N-link/releases/latest) 下载 APK（国内访问不稳定时用下方夸克网盘） |
-| **夸克网盘** | [公开永久链接（免提取码）](https://pan.quark.cn/s/a04626b6e249)，目录 `/N-Link/releases/` 恒为最新版（历史版本归档于 `/N-Link/_archive-releases/`） |
+| **夸克网盘** | [公开永久链接（免提取码）](https://pan.quark.cn/s/d060f7f350e8)，目录 `/N-Link/releases/` 恒为最新版（历史版本归档于 `/N-Link/_archive-releases/`） |
 | **应用内检查更新** | 启动时自动检查（只提示正式版），GitHub 不可达时自动回退到夸克网盘缓存链接 |
 
 ### WiFi STA 连接教程
@@ -201,6 +201,18 @@ app/src/main/java/com/nikonlink/app/
 ## 📋 更新日志
 
 > 从新到旧保留全部版本记录；应用内「检查更新」仅提示正式版。最新版下载见 [GitHub Releases](https://github.com/Wan-1230/N-link/releases/latest) 或上方夸克网盘。
+
+### v2.0.1 — 2026-09-17
+
+WiFi STA 链路打通：相机以 STA 方式接入网络（连手机热点 / 同一路由器）从「搜得到却连不上」变为可稳定连接，并补齐相机侧信任主机注册与连接引导。
+
+- **STA 主机注册**：新增 `PrepareHost(0x952B)` / `ConfirmHost(0x935A)` 尼康厂商命令流程，首次使用在 AP 模式下注册一次，相机记住本机 client GUID 后 STA 会话才被放行（此前相机直接回 InitFail 拒绝握手）
+- **热点网段识别修复**：手机自身热点接口属 TETHERING、不经 ConnectivityService，改用内核网卡枚举判定可用网络，消除「明明有热点却判定无 WiFi」的假阴性
+- **默认路由回落**：热点拓扑下系统不派发 `Network` 句柄，改以默认路由继续发起 PTP/IP（最长前缀匹配命中热点网段），不再空转重试
+- **局域网发现修复**：mDNS 组播改为逐网卡两参 `joinGroup`，避免热点网卡不支持组播导致整段发现失效
+- **连接耗时与失败可见化**：网络解析由串行改并行（16.2s → 4s 上限）；握手被拒时解析 InitFail 原因码并回传 UI，失败原因不再静默
+- **注册入口与教程**：STA 页签常驻「STA 主机注册」按钮（未注册或相机拒绝过握手时以强调色提示），内置三步连接教程与失败提示对照
+- **探测分级**：TCP 通但 PTP 未就绪的地址按「尼康相机(待唤醒)」收候选，休眠 / 待唤醒相机不再被丢弃
 
 ### v1.3.1 — 2026-09-10
 
@@ -353,6 +365,7 @@ N-Link 第一个正式版：通过 WiFi / USB 以 PTP 协议控制尼康相机�
 - [x] v1.2.2：稳定性专项（远端监看断连修复 + WiFi STA 链路重构 + 相册翻页修复 + SnapBridge 语义对齐）
 - [x] v1.3.0：七项体验优化（镜头显示 / 已下载角标 / 状态自愈 / USB 状态 / 逐张即时刷新 / 录像监看 / 模式回读）
 - [x] v1.3.1：设备页连接文案修复（WiFi 场景误显示 USB 提示 / 提示文案截断）
+- [x] v2.0.1：WiFi STA 链路打通（主机注册 / 热点网段识别 / 默认路由回落 / mDNS 修复 / 注册入口与教程）
 - [ ] Phase 4：**AI 修图**（PRD 已完成，编辑器开发中）
 - [ ] 监看色彩与 LUT（PRD 已完成，待开发）
 - [ ] 更多机型适配与兼容性验证、iOS 规划
