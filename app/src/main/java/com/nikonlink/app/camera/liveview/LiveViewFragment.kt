@@ -531,8 +531,35 @@ class LiveViewFragment : Fragment() {
     private fun handleFocusTap(tapX: Float, tapY: Float) {
         // 统一换算：fitCenter 黑边剔除 + 双指缩放还原（旧版放大后点击坐标与实际不符）
         val tap = FocusTapMapper.mapToNormalized(binding.ivLiveView, tapX, tapY) ?: return
-        viewModel.touchFocus(tap.x, tap.y)
-        showFocusIndicator(tapX, tapY)
+        // 取当前帧尺寸用于第 1 步标定打点（事后核对 4:3 假设）
+        val frameW = binding.ivLiveView.drawable?.intrinsicWidth ?: -1
+        val frameH = binding.ivLiveView.drawable?.intrinsicHeight ?: -1
+        // 异步等待相机真值回读后再决定对焦框位置（0x9205 失败则不画框）
+        viewLifecycleOwner.lifecycleScope.launch {
+            val result = viewModel.touchFocus(tap.x, tap.y, tapX, tapY, frameW, frameH)
+            drawFocusResult(result, tapX, tapY)
+        }
+    }
+
+    /**
+     * 根据 [TouchFocusDraw] 决定对焦框落点：
+     * - None：不下发/失败 → 不画框；
+     * - AtCamera：相机真值反算到屏幕坐标绘制；
+     * - AtTap：退回点击位置（相机属性读不到时降级）。
+     */
+    private fun drawFocusResult(result: TouchFocusDraw, tapX: Float, tapY: Float) {
+        when (result) {
+            TouchFocusDraw.None -> { /* 不画框 */ }
+            is TouchFocusDraw.AtTap -> {
+                if (result.screenX >= 0f && result.screenY >= 0f) {
+                    showFocusIndicator(result.screenX, result.screenY)
+                }
+            }
+            is TouchFocusDraw.AtCamera -> {
+                val p = FocusTapMapper.normalizedToView(binding.ivLiveView, result.nx, result.ny)
+                if (p != null) showFocusIndicator(p.x, p.y) else showFocusIndicator(tapX, tapY)
+            }
+        }
     }
 
     private fun showFocusIndicator(x: Float, y: Float) {
