@@ -213,8 +213,16 @@ class PtpSessionManager @Inject constructor(
             // 等待初始化响应
             val response = PtpPacket.fromStream(commandInput!!)
             if (response !is InitResponsePacket) {
-                Timber.tag(TAG).e("phase=init FAILED unexpected response: $response")
-                eventLogger.event("connect", "phase" to "init", "ok" to false, "resp" to response?.type)
+                val failReason = (response as? InitFailPacket)?.reasonCode
+                Timber.tag(TAG).e(
+                    "phase=init FAILED unexpected response: %s, failReason=%s",
+                    response,
+                    failReason?.let { PtpConstants.describeInitFailReason(it) }
+                )
+                eventLogger.event(
+                    "connect", "phase" to "init", "ok" to false, "resp" to response?.type,
+                    "fail_reason" to failReason
+                )
                 // 连接失败回到 DISCONNECTED 而非 ERROR：
                 // ERROR 会被健康检查当成「链路死亡需重建」，触发不必要的重连风暴
                 _sessionState.value = PtpSessionState.DISCONNECTED
