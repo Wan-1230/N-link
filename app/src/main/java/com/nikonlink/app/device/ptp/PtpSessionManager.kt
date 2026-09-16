@@ -374,6 +374,62 @@ class PtpSessionManager @Inject constructor(
     }
 
     /**
+     * STA 主机注册（ZDROP 式）：在 AP 模式已建立的会话内，把本机 GUID 注册为
+     * 相机的信任主机。注册成功后，相机切 STA 模式才会放行 InitCommandRequest，
+     * 否则会回 InitFail(0x0005)「相机拒绝该主机」。
+     *
+     * 时序对齐 ZDROP 字节码：PrepareHost(0x952B, 无参) → 等待相机应用
+     * host profile（固定 8.5s）→ ConfirmHost(0x935A, 参数 0x2001)。
+     * 前置条件：相机停在「连接至 PC」首次配置向导（由 UI 引导用户操作）。
+     *
+     * @param onProgress 进度文案回调（预备/等待/确认）
+     */
+    suspend fun registerHost(
+        onProgress: ((String) -> Unit)? = null
+    ): HostRegistrationResult = withContext(Dispatchers.IO) {
+        eventLogger.event("hostreg", "phase" to "start")
+        onProgress?.invoke("正在预备注册…")
+
+        // 1. PrepareHost（无参数）
+        val prepare = sendCommand(PtpConstants.OP_NIKON_HOST_REGISTRATION_PREPARE)
+        if (!prepare.isOk) {
+            val code = "0x${prepare.responseCode.toString(16)}"
+            Timber.tag(TAG).e("hostreg prepare failed: $code")
+            eventLogger.event("hostreg", "phase" to "prepare_fail", "code" to code)
+            return@withContext HostRegistrationResult.Failure(
+                phase = "prepare",
+                detail = "相机未接受预备注册（$code）。请确认相机已进入「连接至 PC」配置向导后重试"
+            )
+        }
+        Timber.tag(TAG).i("hostreg prepare ok")
+        eventLogger.event("hostreg", "phase" to "prepare_ok")
+
+        // 2. 等相机应用 host profile（ZDROP 固定 sleep 8500ms）
+        onProgress?.invoke("相机正在应用配置（约 9 秒）…")
+        eventLogger.event("hostreg", "phase" to "settle", "ms" to PtpConstants.HOST_REGISTRATION_SETTLE_MS)
+        delay(PtpConstants.HOST_REGISTRATION_SETTLE_MS)
+
+        // 3. ConfirmHost（参数固定 0x2001 = OK）
+        onProgress?.invoke("正在确认注册…")
+        val confirm = sendCommand(
+            PtpConstants.OP_NIKON_HOST_REGISTRATION_CONFIRM,
+            listOf(PtpConstants.HOST_REGISTRATION_CONFIRM_OK)
+        )
+        if (!confirm.isOk) {
+            val code = "0x${confirm.responseCode.toString(16)}"
+            Timber.tag(TAG).e("hostreg confirm failed: $code")
+            eventLogger.event("hostreg", "phase" to "confirm_fail", "code" to code)
+            return@withContext HostRegistrationResult.Failure(
+                phase = "confirm",
+                detail = "确认注册失败（$code），请让相机停留在「连接至 PC」向导后重试"
+            )
+        }
+        Timber.tag(TAG).i("hostreg confirm ok")
+        eventLogger.event("hostreg", "phase" to "confirm_ok")
+        HostRegistrationResult.Success
+    }
+
+    /**
      * 发送命令并接收数据（用于获取文件、缩略图等）
      * PRD 2.1: 照片传输速率 > 10MB/s
      *
@@ -888,4 +944,15 @@ data class PtpEvent(
 sealed class PtpDataResult {
     data class Success(val data: ByteArray, val response: CommandResponsePacket) : PtpDataResult()
     data class Failure(val response: CommandResponsePacket) : PtpDataResult()
+}
+
+/**
+ * STA 主机注册结果（ZDROP 式 host registration）
+ */
+sealed class HostRegistrationResult {
+    /** 注册成功：相机已记住本机 GUID，切 STA 模式后可正常连接 */
+    data object Success : HostRegistrationResult()
+
+    /** 注册失败：[phase] 为失败的阶段（prepare/confirm），[detail] 为用户可读的说明 */
+    data class Failure(val phase: String, val detail: String) : HostRegistrationResult()
 }
