@@ -169,6 +169,12 @@ class DashboardViewModel @Inject constructor(
     private val _hostReg = MutableStateFlow<HostRegUiState?>(null)
     val hostReg: StateFlow<HostRegUiState?> = _hostReg.asStateFlow()
 
+    /** 相机是否已记住本机为信任主机 */
+    val staHostRegistered: StateFlow<Boolean> = connectionManager.staHostRegistered
+
+    /** 是否需要引导注册（从未注册过 或 相机拒绝过握手）→ UI 用强调色显示注册按钮 */
+    val staRegisterNeeded: StateFlow<Boolean> = connectionManager.staRegisterNeeded
+
     /**
      * STA 主机注册（ZDROP 式）：AP 模式连上相机后，把本机 GUID 注册为相机信任主机，
      * 之后相机切 STA 模式才会放行握手。前置引导（相机进「连接至 PC」向导）由 UI 完成。

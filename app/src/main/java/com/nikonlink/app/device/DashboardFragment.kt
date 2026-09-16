@@ -40,6 +40,7 @@ import com.nikonlink.app.camera.params.ShutterCountState
 import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
@@ -187,13 +188,6 @@ class DashboardFragment : Fragment() {
                 binding.swipeRefresh.isRefreshing = false
                 // 连接状态变化后统一刷新状态行（避免各处直接写 tvStatusMessage 造成互相覆盖）
                 renderStatusLine()
-                // STA 主机注册仅在有 PTP 会话（WiFi 已连接）且非 USB 模式时有意义
-                binding.btnStaHostRegister.visibility =
-                    if (state == ConnectionState.FULLY_CONNECTED && !isUsbMode()) {
-                        View.VISIBLE
-                    } else {
-                        View.GONE
-                    }
             }
         }
 
@@ -208,6 +202,11 @@ class DashboardFragment : Fragment() {
                     null -> {
                         binding.tvStaHostRegStatus.visibility = View.GONE
                         binding.btnStaHostRegister.isEnabled = true
+                        // 结果清空后回到引导提示（若仍需要注册）
+                        updateHostRegHint(
+                            viewModel.staRegisterNeeded.value,
+                            viewModel.staHostRegistered.value
+                        )
                     }
                     is HostRegUiState.Running -> {
                         binding.tvStaHostRegStatus.visibility = View.VISIBLE
@@ -225,6 +224,16 @@ class DashboardFragment : Fragment() {
                         binding.btnStaHostRegister.isEnabled = true
                     }
                 }
+            }
+        }
+
+        // 是否需要注册：true → 按钮切强调色并给出提示（相机拒绝过握手，或从未注册过）
+        viewLifecycleOwner.lifecycleScope.launch {
+            combine(viewModel.staRegisterNeeded, viewModel.staHostRegistered) { needed, registered ->
+                needed to registered
+            }.collect { (needed, registered) ->
+                renderStaHostRegisterButton(needed)
+                updateHostRegHint(needed, registered)
             }
         }
 
@@ -467,6 +476,47 @@ class DashboardFragment : Fragment() {
     private fun isUsbMode(): Boolean = currentMode == ConnectMode.USB || usbActive
 
     /**
+     * 注册按钮下方的引导提示。注册结果文本优先，不被引导覆盖。
+     * 两种情形文案不同：从未注册（要教怎么注册）vs 已注册但相机仍拒绝（要教相机侧动作）。
+     */
+    private fun updateHostRegHint(needed: Boolean, registered: Boolean) {
+        if (viewModel.hostReg.value != null) return
+        val tv = binding.tvStaHostRegStatus
+        when {
+            !needed -> tv.visibility = View.GONE
+            !registered -> {
+                tv.visibility = View.VISIBLE
+                tv.text = "首次使用请先注册：切到「WiFi-AP」模式连上相机，再点上方按钮，" +
+                        "按相机屏幕提示确认。"
+            }
+            else -> {
+                tv.visibility = View.VISIBLE
+                tv.text = "相机未接受本次连接。请在相机菜单进入「WiFi 连接（STA mode）」" +
+                        "并停在等待画面，再点「扫描相机」→「连接相机」。"
+            }
+        }
+    }
+
+    /**
+     * 注册按钮的视觉状态：需要注册时用主色强调（引导点击），已注册后回落到描边样式。
+     */
+    private fun renderStaHostRegisterButton(needed: Boolean) {
+        val btn = binding.btnStaHostRegister
+        if (needed) {
+            btn.backgroundTintList =
+                ColorStateList.valueOf(ContextCompat.getColor(requireContext(), R.color.primary))
+            btn.setTextColor(ContextCompat.getColor(requireContext(), R.color.on_primary))
+            btn.strokeWidth = 0
+        } else {
+            btn.backgroundTintList = ColorStateList.valueOf(android.graphics.Color.TRANSPARENT)
+            btn.setTextColor(ContextCompat.getColor(requireContext(), R.color.text_primary))
+            btn.strokeWidth = dpF(1f).toInt()
+            btn.strokeColor =
+                ColorStateList.valueOf(ContextCompat.getColor(requireContext(), R.color.outline))
+        }
+    }
+
+    /**
      * 状态行（tvStatusMessage）的**唯一渲染出口**。
      *
      * 为什么必须收敛到一处：`tvStatusMessage` 宽 160dp、单行省略号，且 StateFlow 不会重发
@@ -519,8 +569,9 @@ class DashboardFragment : Fragment() {
             MaterialAlertDialogBuilder(requireContext())
                 .setTitle("STA 主机注册")
                 .setMessage(
-                    "注册后，相机在 STA 模式（连接本机热点）下才会允许 N-Link 连接。\n\n" +
-                            "请在相机菜单进入「连接至 PC」首次配置向导，并让相机停留在该画面，然后点「开始注册」。"
+                    "注册只需做一次，完成后相机才会允许 N-Link 以 STA 方式连接。\n\n" +
+                            "首次使用请先切到「WiFi-AP」模式连上相机，再点「开始注册」，" +
+                            "按相机屏幕提示确认（约 10 秒）。"
                 )
                 .setPositiveButton("开始注册") { _, _ -> viewModel.registerStaHost() }
                 .setNegativeButton("取消", null)
@@ -628,9 +679,15 @@ class DashboardFragment : Fragment() {
                 ContextCompat.getColor(requireContext(), if (hotspot) R.color.on_primary else R.color.text_primary)
             )
             binding.tvStaGuide.text = if (hotspot) {
-                "1. 手机开启个人热点（相机需已记住该热点）\n2. 相机连接到手机热点\n3. 点「扫描相机」自动发现相机（NSD/ARP）\n4. 点「连接相机」完成 PTP/IP 配对"
+                "① 首次使用需注册：切到「WiFi-AP」模式连上相机 → 点下方「STA 主机注册」" +
+                        "（按相机屏幕提示确认，约 10 秒）\n" +
+                        "② 相机菜单进入「WiFi 连接（STA mode）」，加入手机热点并停在等待画面\n" +
+                        "③ 手机开启个人热点，点「扫描相机」自动发现 → 点「连接相机」完成连接"
             } else {
-                "1. 相机与手机连接同一个路由器 / 局域网\n2. 点「扫描相机」自动发现相机\n3. 点「连接相机」完成 PTP/IP 配对"
+                "① 首次使用需注册：切到「WiFi-AP」模式连上相机 → 点下方「STA 主机注册」" +
+                        "（按相机屏幕提示确认，约 10 秒）\n" +
+                        "② 相机与手机连接同一路由器，并在相机菜单进入「WiFi 连接（STA mode）」\n" +
+                        "③ 点「扫描相机」自动发现 → 点「连接相机」完成连接"
             }
         }
 

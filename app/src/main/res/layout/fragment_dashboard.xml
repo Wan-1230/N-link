@@ -271,6 +271,24 @@
                                     android:textColor="@color/text_primary"
                                     android:textSize="13sp" />
                             </LinearLayout>
+
+                            <!-- STA 主机注册：常驻入口。相机未记住本机时用强调色显示 -->
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btnStaHostRegister"
+                                style="@style/NlButton.Outline"
+                                android:layout_width="match_parent"
+                                android:layout_height="46dp"
+                                android:layout_marginTop="14dp"
+                                android:text="STA 主机注册（让相机记住本机）" />
+
+                            <TextView
+                                android:id="@+id/tvStaHostRegStatus"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="8dp"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="13sp"
+                                android:visibility="gone" />
                         </LinearLayout>
 
                         <TextView
@@ -388,27 +406,6 @@
                         android:layout_marginStart="6dp"
                         android:text="连接相机" />
                 </LinearLayout>
-
-                <!-- STA 主机注册（ZDROP 式）：AP 模式连上后把本机注册为相机信任主机 -->
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnStaHostRegister"
-                    style="@style/NlButton.Outline"
-                    android:layout_width="match_parent"
-                    android:layout_height="46dp"
-                    android:layout_marginTop="@dimen/group_gap"
-                    android:text="STA 主机注册（让相机记住本机）"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/tvStaHostRegStatus"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:background="@drawable/bg_card"
-                    android:padding="12dp"
-                    android:textColor="@color/on_dark_card_variant"
-                    android:textSize="13sp"
-                    android:visibility="gone" />
 
                 <!-- 设备核心卡片（页面视觉中心） -->
                 <com.google.android.material.card.MaterialCardView
