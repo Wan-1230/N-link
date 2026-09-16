@@ -15,6 +15,7 @@ import com.nikonlink.app.device.usb.UsbPtpManager
 import com.nikonlink.app.device.wifi.WifiEndpoint
 import com.nikonlink.app.device.wifi_sta.WifiCameraCandidate
 import com.nikonlink.app.device.wifi_sta.WifiScanner
+import com.nikonlink.app.device.ptp.HostRegistrationResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -164,6 +165,36 @@ class DashboardViewModel @Inject constructor(
         connectionManager.cancelPairing()
     }
 
+    /** STA 主机注册 UI 状态：Running=进行中（带进度文案）/ Success / Failure */
+    private val _hostReg = MutableStateFlow<HostRegUiState?>(null)
+    val hostReg: StateFlow<HostRegUiState?> = _hostReg.asStateFlow()
+
+    /**
+     * STA 主机注册（ZDROP 式）：AP 模式连上相机后，把本机 GUID 注册为相机信任主机，
+     * 之后相机切 STA 模式才会放行握手。前置引导（相机进「连接至 PC」向导）由 UI 完成。
+     */
+    fun registerStaHost() {
+        if (_hostReg.value is HostRegUiState.Running) return
+        viewModelScope.launch {
+            _hostReg.value = HostRegUiState.Running("正在预备注册…")
+            val result = connectionManager.registerStaHost { progress ->
+                _hostReg.value = HostRegUiState.Running(progress)
+            }
+            _hostReg.value = when (result) {
+                is HostRegistrationResult.Success ->
+                    HostRegUiState.Success(
+                        "主机注册完成。现在可将相机切换到 STA 模式（连接本机热点），再用 N-Link 连接"
+                    )
+                is HostRegistrationResult.Failure ->
+                    HostRegUiState.Failure(result.detail)
+            }
+        }
+    }
+
+    fun clearHostReg() {
+        if (_hostReg.value !is HostRegUiState.Running) _hostReg.value = null
+    }
+
     fun confirmPairingComplete() {
         connectionManager.confirmPairingComplete()
     }
@@ -189,4 +220,11 @@ class DashboardViewModel @Inject constructor(
     fun disconnectUsb() {
         usbPtpManager.disconnect()
     }
+}
+
+/** STA 主机注册 UI 状态 */
+sealed class HostRegUiState {
+    data class Running(val progress: String) : HostRegUiState()
+    data class Success(val message: String) : HostRegUiState()
+    data class Failure(val message: String) : HostRegUiState()
 }

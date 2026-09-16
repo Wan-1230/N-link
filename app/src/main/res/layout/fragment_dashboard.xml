@@ -389,6 +389,27 @@
                         android:text="连接相机" />
                 </LinearLayout>
 
+                <!-- STA 主机注册（ZDROP 式）：AP 模式连上后把本机注册为相机信任主机 -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnStaHostRegister"
+                    style="@style/NlButton.Outline"
+                    android:layout_width="match_parent"
+                    android:layout_height="46dp"
+                    android:layout_marginTop="@dimen/group_gap"
+                    android:text="STA 主机注册（让相机记住本机）"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/tvStaHostRegStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bg_card"
+                    android:padding="12dp"
+                    android:textColor="@color/on_dark_card_variant"
+                    android:textSize="13sp"
+                    android:visibility="gone" />
+
                 <!-- 设备核心卡片（页面视觉中心） -->
                 <com.google.android.material.card.MaterialCardView
                     android:id="@+id/cardDevice"

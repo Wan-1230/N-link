@@ -101,6 +101,25 @@ object PtpConstants {
     const val OP_NIKON_AF_CAPTURE_SDRAM = 0x90CB
 
     /**
+     * 尼康「PC 主机注册」厂商操作码（STA 准入门控，来源：ZDROP 1.0.190
+     * `Lt1/n2;->l0` 反汇编实锤）。
+     *
+     * 背景：尼康相机在 STA 模式（相机连路由器/手机热点）下对未注册的
+     * InitCommandRequest 直接回 InitFail(0x0005) 拒绝；AP 模式无此门控。
+     * 需先在 AP 模式会话内完成主机注册，相机记住 client GUID 后 STA 才放行。
+     *
+     * 时序（ZDROP 字节码）：OpenSession(0x1002, 1) → PREPARE（无参数）→
+     * 等待 ~8.5s（相机应用 host profile）→ CONFIRM（参数固定 0x2001 = OK）。
+     * 前置条件：相机停在「连接至 PC」首次配置向导。
+     */
+    const val OP_NIKON_HOST_REGISTRATION_PREPARE = 0x952B
+    const val OP_NIKON_HOST_REGISTRATION_CONFIRM = 0x935A
+    /** ConfirmHost 的参数固定为 PTP 响应码 OK（0x2001），ZDROP 字节码常量。 */
+    const val HOST_REGISTRATION_CONFIRM_OK = 0x2001
+    /** PrepareHost 后相机应用 host profile 的等待时长（ZDROP 为固定 sleep 8500ms）。 */
+    const val HOST_REGISTRATION_SETTLE_MS = 8500L
+
+    /**
      * Nikon 应用模式切换（gphoto2: ChangeApplicationMode，1 参数）。
      * 影犀的录像链路：开录前 0x9435(1) 进入应用模式，收录后 0x9435(0) 退出。
      * 相机端表现为短暂弹出「已连接到智能设备」——进入遥控应用态的正常提示。
