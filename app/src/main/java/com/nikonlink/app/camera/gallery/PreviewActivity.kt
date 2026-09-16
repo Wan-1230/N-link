@@ -28,6 +28,7 @@ import com.nikonlink.app.shared.common.AppSettings
 import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
@@ -100,8 +101,12 @@ class PreviewActivity : AppCompatActivity() {
     private var file: CameraFile = CameraFile(0, "", 0, 0, 0)
     private var currentPosition = 0
 
-    /** 每页下载结果缓存：position -> 已下载本地路径（避免滑动后丢失下载态） */
-    private val downloadResults = mutableMapOf<Int, String>()
+    /**
+     * 已传输（已下载）过的 handle 集合，由「切页/进入时查 TransferManager」填充。
+     * 取代原 downloadResults 内存 map：下载态统一由 TransferManager 的状态流驱动，
+     * 退出预览再进入也能还原「已完成」态（不依赖 Activity 实例内存）。
+     */
+    private val downloadedHandles = mutableSetOf<Int>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -119,9 +124,13 @@ class PreviewActivity : AppCompatActivity() {
 
         updateTopBar()
         setupViewPager()
+        observeTransferState()
 
         binding.btnBack.setOnClickListener { finish() }
         binding.btnDownload.setOnClickListener { download() }
+
+        // 进入即按内存态渲染一次，并异步查「是否已传输过」修正为已完成态
+        syncDownloadUi(currentPosition)
 
         binding.btnMark.pressEffect()
         binding.btnMark.setOnClickListener { toggleMark() }
@@ -374,7 +383,7 @@ class PreviewActivity : AppCompatActivity() {
      * 数据源分级（PRD F3）：ObjectInfo 基本区恒可显示；参数区先试缩略图缓存磁盘文件
      * 的内嵌 EXIF，再试已归档原图；都拿不到按「—」兜底，不报错。
      */
-    private fun collectInfo(): InfoText {
+    private suspend fun collectInfo(): InfoText {
         val base = buildString {
             append("文件名: ").append(file.fileName).append('\n')
             append("格式: ").append(file.format.name).append('\n')
@@ -387,12 +396,13 @@ class PreviewActivity : AppCompatActivity() {
                 ).append('\n')
             }
         }
+        // 已下载原图时取其本地路径读完整 EXIF（替代原 downloadResults 内存 map）
+        val localPath = runCatching { transferManager.getDownloadedPath(file.handle) }.getOrNull()
         val exifSources = sequence<ExifInterface?> {
             val thumbFile = runCatching { thumbnailCache.diskFile(file.handle) }.getOrNull()
             yield(thumbFile?.let { path ->
                 runCatching { java.io.FileInputStream(path).use { ExifInterface(it) } }.getOrNull()
             })
-            val localPath = downloadResults[currentPosition]
             if (localPath != null) {
                 yield(runCatching {
                     contentResolver.openInputStream(Uri.parse(localPath))
@@ -492,13 +502,14 @@ class PreviewActivity : AppCompatActivity() {
 
     private fun shareOriginal() {
         lifecycleScope.launch {
-            val alreadyDownloaded = downloadResults.containsKey(currentPosition)
-            if (!alreadyDownloaded) {
+            // 已下载则用其本地路径直接分享，避免重复下载（替代原 downloadResults 内存 map）
+            val localPath = runCatching { transferManager.getDownloadedPath(file.handle) }.getOrNull()
+            if (localPath == null) {
                 binding.progressDownload.visibility = View.VISIBLE
                 binding.progressDownload.isIndeterminate = true
             }
             val uri = withContext(Dispatchers.IO) {
-                shareExporter.exportOriginalUri(file, downloadResults[currentPosition])
+                shareExporter.exportOriginalUri(file, localPath)
             }
             binding.progressDownload.visibility = View.GONE
             binding.progressDownload.isIndeterminate = false
@@ -533,89 +544,130 @@ class PreviewActivity : AppCompatActivity() {
         }
     }
 
-    // ---------- 下载（按当前页维护状态） ----------
+    // ---------- 下载（按当前页维护状态，由 TransferManager 状态流驱动） ----------
 
+    /**
+     * 发起下载：改走单例队列 [TransferManager.enqueue]，不受 Activity 生命周期影响
+     * （退出预览不会取消协程、不会真正中断下载）。重复点击由队列去重（已在队列/已下载均入队无效）。
+     */
     private fun download() {
-        val pos = currentPosition
-        if (downloadResults.containsKey(pos)) return // 已下载，避免重复
-        binding.progressDownload.visibility = View.VISIBLE
-        binding.tvDownloadLabel.text = "下载中"
+        transferManager.enqueue(listOf(file))
+    }
+
+    /**
+     * 订阅传输状态流：当前页文件命中 [TransferManager.transferState] / [TransferManager.queue]
+     * 时驱动底部进度条。退出预览再进入，只要文件仍在下载/已完成，状态流照常回放，进度条不丢失。
+     */
+    private fun observeTransferState() {
         lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                transferManager.downloadPhoto(
-                    file = file,
-                    onProgress = { received, total ->
-                        runOnUiThread {
-                            val totalKnown = total > 0 && total != 0xFFFFFFFFL
-                            binding.progressDownload.isIndeterminate = !totalKnown
-                            if (totalKnown) {
-                                binding.progressDownload.progress =
-                                    (received * 100 / total).toInt().coerceIn(0, 100)
-                                binding.tvDownloadLabel.text =
-                                    "下载中 ${binding.progressDownload.progress}%"
-                            } else {
-                                binding.progressDownload.progress = 0
-                                binding.tvDownloadLabel.text = "下载中"
-                            }
-                        }
-                    }
-                )
-            }
-            when (result) {
-                is TransferResult.Success -> {
-                    // 仅当仍停留在同一页时才更新底部栏（切走则交由 syncDownloadUi 还原）
-                    downloadResults[pos] = result.path
-                    if (pos == currentPosition) {
-                        binding.progressDownload.isIndeterminate = false
-                        binding.progressDownload.progress = 100
-                        binding.iconDownload.setImageResource(R.drawable.ic_check)
-                        binding.iconDownload.scaleX = 0.5f
-                        binding.iconDownload.scaleY = 0.5f
-                        binding.iconDownload.animate().scaleX(1f).scaleY(1f).setDuration(250).start()
-                        binding.tvDownloadLabel.text = "已完成"
-                    }
-                }
-
-                is TransferResult.Failed -> {
-                    if (pos == currentPosition) {
-                        binding.progressDownload.visibility = View.GONE
-                        binding.tvDownloadLabel.text = "重试"
-                        Timber.tag(TAG).w("Download failed: ${result.reason}")
-                    }
-                }
-
-                is TransferResult.Cancelled -> {
-                    if (pos == currentPosition) {
-                        binding.progressDownload.visibility = View.GONE
-                    }
-                }
-            }
+            combine(transferManager.transferState, transferManager.queue) { _, _ -> }
+                .collect { renderDownloadUi() }
         }
     }
 
-    /** 切页时根据下载缓存同步底部下载栏（已下载显示完成，否则复位） */
-    private fun syncDownloadUi(position: Int) {
-        val path = downloadResults[position]
-        if (path != null) {
-            binding.progressDownload.visibility = View.GONE
-            binding.progressDownload.isIndeterminate = false
-            binding.progressDownload.progress = 100
-            binding.iconDownload.setImageResource(R.drawable.ic_check)
-            binding.iconDownload.scaleX = 1f
-            binding.iconDownload.scaleY = 1f
-            binding.tvDownloadLabel.text = "已完成"
+    /** 按当前页文件，综合「传输态 + 队列态 + 已传输查询」渲染底部下载栏 */
+    private fun renderDownloadUi() {
+        val handle = file.handle
+        val state = transferManager.transferState.value
+        val queue = transferManager.queue.value
+
+        // 1) 已传输过（进入/切页时异步查得）→ 直接「已完成」
+        if (downloadedHandles.contains(handle)) {
+            showDownloadCompleted()
+            return
+        }
+        // 2) 当前实时传输态命中本页文件
+        when (state) {
+            is TransferState.Completed ->
+                if (state.file.handle == handle) { showDownloadCompleted(); return }
+
+            is TransferState.Downloading ->
+                if (state.file.handle == handle) { showDownloading(state.received, state.total); return }
+
+            else -> { /* Idle / Paused 不在此处理，交给队列态兜底 */ }
+        }
+        // 3) 队列里存在本页文件（排队中 / 下载中 / 已失败 / 已取消）
+        val task = queue.firstOrNull { it.file.handle == handle }
+        if (task != null) {
+            when (task.status) {
+                TransferTaskStatus.PENDING -> showDownloadQueued()
+                TransferTaskStatus.DOWNLOADING -> showDownloading(0L, 0L) // 进度由 transferState 驱动，这里仅兜底
+                TransferTaskStatus.COMPLETED -> showDownloadCompleted()
+                TransferTaskStatus.FAILED -> showDownloadFailed()
+                TransferTaskStatus.CANCELLED -> showDownloadIdle()
+            }
+            return
+        }
+        // 4) 默认：未下载
+        showDownloadIdle()
+    }
+
+    private fun showDownloadIdle() {
+        binding.progressDownload.visibility = View.GONE
+        binding.progressDownload.isIndeterminate = false
+        binding.progressDownload.progress = 0
+        binding.iconDownload.setImageResource(R.drawable.ic_download)
+        binding.iconDownload.scaleX = 1f
+        binding.iconDownload.scaleY = 1f
+        binding.tvDownloadLabel.text = "下载"
+    }
+
+    private fun showDownloading(received: Long, total: Long) {
+        binding.progressDownload.visibility = View.VISIBLE
+        val totalKnown = total > 0 && total != 0xFFFFFFFFL
+        binding.progressDownload.isIndeterminate = !totalKnown
+        if (totalKnown) {
+            binding.progressDownload.progress = (received * 100 / total).toInt().coerceIn(0, 100)
+            binding.tvDownloadLabel.text = "下载中 ${binding.progressDownload.progress}%"
         } else {
-            binding.progressDownload.visibility = View.GONE
-            binding.progressDownload.isIndeterminate = false
             binding.progressDownload.progress = 0
-            binding.iconDownload.setImageResource(R.drawable.ic_download)
-            binding.iconDownload.scaleX = 1f
-            binding.iconDownload.scaleY = 1f
-            binding.tvDownloadLabel.text = "下载"
+            binding.tvDownloadLabel.text = "下载中"
+        }
+        binding.iconDownload.setImageResource(R.drawable.ic_download)
+    }
+
+    private fun showDownloadQueued() {
+        binding.progressDownload.visibility = View.VISIBLE
+        binding.progressDownload.isIndeterminate = true
+        binding.progressDownload.progress = 0
+        binding.iconDownload.setImageResource(R.drawable.ic_download)
+        binding.tvDownloadLabel.text = "排队中"
+    }
+
+    private fun showDownloadCompleted() {
+        binding.progressDownload.visibility = View.GONE
+        binding.progressDownload.isIndeterminate = false
+        binding.progressDownload.progress = 100
+        binding.iconDownload.setImageResource(R.drawable.ic_check)
+        binding.iconDownload.scaleX = 1f
+        binding.iconDownload.scaleY = 1f
+        binding.tvDownloadLabel.text = "已完成"
+    }
+
+    private fun showDownloadFailed() {
+        binding.progressDownload.visibility = View.GONE
+        binding.progressDownload.isIndeterminate = false
+        binding.progressDownload.progress = 0
+        binding.iconDownload.setImageResource(R.drawable.ic_download)
+        binding.iconDownload.scaleX = 1f
+        binding.iconDownload.scaleY = 1f
+        binding.tvDownloadLabel.text = "重试"
+    }
+
+    /** 切页时按当前状态流即时渲染，并异步查「是否已传输过」修正为已完成态 */
+    private fun syncDownloadUi(position: Int) {
+        renderDownloadUi()
+        val f = files.getOrNull(position) ?: return
+        lifecycleScope.launch {
+            val downloaded = runCatching {
+                transferManager.queryDownloadedHandles(listOf(f.handle)).contains(f.handle)
+            }.getOrDefault(false)
+            if (downloaded) downloadedHandles.add(f.handle)
+            if (position == currentPosition) renderDownloadUi()
         }
     }
 
-    /** 兼容旧逻辑：下载状态（当前页），主要由 downloadResults 维护 */
+    /** dp 尺寸换算（代码构造的底部进度/失败视图用） */
     private fun dp(value: Int): Int =
         android.util.TypedValue.applyDimension(
             android.util.TypedValue.COMPLEX_UNIT_DIP, value.toFloat(), resources.displayMetrics
