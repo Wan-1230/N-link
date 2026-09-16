@@ -7,8 +7,22 @@ import com.nikonlink.app.shared.common.AppEventLogger
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import timber.log.Timber
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/**
+ * 触摸对焦后手机端对焦框的绘制策略。
+ * - None：ChangeAfArea(0x9205) 下发失败 / 异常 → 不画框（避免显示与相机不符的假状态）。
+ * - AtTap：退回点击位置（相机属性读不到 / 解析失败时降级）。
+ * - AtCamera：按相机返回的 AF 框坐标绘制（nx, ny 为相对图像内容的归一化坐标）。
+ */
+sealed class TouchFocusDraw {
+    object None : TouchFocusDraw()
+    data class AtTap(val screenX: Float, val screenY: Float) : TouchFocusDraw()
+    data class AtCamera(val nx: Float, val ny: Float) : TouchFocusDraw()
+}
 
 /**
  * Live View 实时取景管理器
@@ -46,6 +60,25 @@ class LiveViewManager @Inject constructor(
 
         /** ChangeAfArea(0x9205) 生效后再 AfDrive 的间隔 */
         private const val AF_AREA_SETTLE_MS = 150L
+
+        /**
+         * 标定后由外部显式指定「已确认正确」的对焦点属性码，覆盖自动选择，供第 2 步回读使用。
+         * 第 1 步真机日志确认前保持 null（回退到首个有响应的候选）。
+         */
+        @Volatile
+        var confirmedAfPropCode: Int? = null
+
+        /**
+         * 候选对焦区域 / AF 点属性码（第 1 步 af_probe 逐个试读）。
+         * 项目内无现成的「AF 对焦点」属性常量，这里取尼康厂商 0xD0xx / 0xD1xx 段中
+         * 与 AF area / focus point 常见相关的码作为候选；顺序即优先级（AF 区域/对焦点类在前，
+         * 标准 FocusMode / Metering 在后仅作参考）。具体哪个正确需经真机日志确认。
+         */
+        val AF_PROBE_CANDIDATES = listOf(
+            0xD081, 0xD082, 0xD083, 0xD085, 0xD08A, 0xD092,
+            0xD1B0, 0xD1B1, 0xD1B2, 0xD1C0, 0xD1C1,
+            0x500A, 0x501C
+        )
     }
 
     private var scope: CoroutineScope? = null
@@ -78,6 +111,13 @@ class LiveViewManager @Inject constructor(
      */
     @Volatile
     private var expectedStall = false
+
+    /**
+     * 第 1 步枚举出的「回读用」AF 区域属性码；null 表示尚未找到可用属性 → 第 2 步降级到点击位置。
+     * 由 [probeAfProperties] 在 Live View 启动后写入。
+     */
+    @Volatile
+    private var afAreaPropCode: Int? = null
 
     private val _liveViewState = MutableStateFlow(LiveViewState.STOPPED)
     val liveViewState: StateFlow<LiveViewState> = _liveViewState.asStateFlow()
@@ -193,6 +233,8 @@ class LiveViewManager @Inject constructor(
                     // 保活命令只会与帧竞争命令串行通道、拉高帧延迟
                     if (usbPtpManager.isConnected()) usbPtpManager.setKeepAlivePaused(true)
                     startFrameLoop()
+                    // 第 1 步·AF 属性枚举诊断：Live View 启动后异步试读候选属性（不阻塞启动/帧循环）
+                    scope?.launch(Dispatchers.IO) { probeAfProperties() }
                     Timber.tag(TAG).i("✓ Live View started")
                 } else {
                     // 全链路优化: 启动失败时恢复原曝光模式，
@@ -583,21 +625,50 @@ class LiveViewManager @Inject constructor(
     /**
      * 触摸对焦
      * PRD 2.3: 点击手机屏幕任意位置触发对焦点移动
-     * @param x 归一化 X 坐标 (0.0 ~ 1.0)
-     * @param y 归一化 Y 坐标 (0.0 ~ 1.0)
+     * @param nx 归一化 X 坐标 (0.0 ~ 1.0)
+     * @param ny 归一化 Y 坐标 (0.0 ~ 1.0)
+     * @param tapScreenX 用户点击的屏幕坐标 X（仅供第 1 步标定打点，不参与下发）
+     * @param tapScreenY 用户点击的屏幕坐标 Y
+     * @param frameW 当前 Live View 帧宽（用于事后核对 4:3 假设）
+     * @param frameH 当前 Live View 帧高
+     * @return 对焦框绘制策略：None=不下发/失败不画；AtTap=退回点击位置；AtCamera=按相机真值绘制
      */
-    suspend fun touchFocus(x: Float, y: Float): Boolean {
-        if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) return false
+    suspend fun touchFocus(
+        nx: Float,
+        ny: Float,
+        tapScreenX: Float = -1f,
+        tapScreenY: Float = -1f,
+        frameW: Int = -1,
+        frameH: Int = -1
+    ): TouchFocusDraw {
+        if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) return TouchFocusDraw.None
         return withContext(Dispatchers.IO) {
             try {
-                // 触摸对焦坐标范围约 x:0~4000, y:0~3000，
-                // 将归一化坐标映射到该范围
-                val afX = (x * PtpConstants.AF_COORD_MAX_X).toInt()
+                // 触摸对焦坐标范围约 x:0~4000, y:0~3000，将归一化坐标映射到该范围
+                val afX = (nx * PtpConstants.AF_COORD_MAX_X).toInt()
                     .coerceIn(0, PtpConstants.AF_COORD_MAX_X)
-                val afY = (y * PtpConstants.AF_COORD_MAX_Y).toInt()
+                val afY = (ny * PtpConstants.AF_COORD_MAX_Y).toInt()
                     .coerceIn(0, PtpConstants.AF_COORD_MAX_Y)
 
-                val response = onActiveChannel(
+                // —— 第 1 步·标定打点（af_calib）——
+                eventLogger.event(
+                    "af_calib",
+                    "sx" to tapScreenX,
+                    "sy" to tapScreenY,
+                    "afX" to afX,
+                    "afY" to afY,
+                    "frameW" to frameW,
+                    "frameH" to frameH,
+                    "maxX" to PtpConstants.AF_COORD_MAX_X,
+                    "maxY" to PtpConstants.AF_COORD_MAX_Y
+                )
+                Timber.tag(TAG).d(
+                    "af_calib sx=%.1f sy=%.1f af=(%d,%d) frame=%dx%d max=%dx%d",
+                    tapScreenX, tapScreenY, afX, afY, frameW, frameH,
+                    PtpConstants.AF_COORD_MAX_X, PtpConstants.AF_COORD_MAX_Y
+                )
+
+                val changed = onActiveChannel(
                     wifi = {
                         ptpSession.sendCommand(
                             PtpConstants.OP_NIKON_CHANGE_AF_AREA,
@@ -607,20 +678,145 @@ class LiveViewManager @Inject constructor(
                     usb = { usbPtpManager.changeAfArea(afX, afY) }
                 )
 
-                if (response) {
-                    // 触发 AF 驱动：稍等 AF 区域生效后再驱动，部分机型立刻驱动会仍按旧区域对焦
-                    delay(AF_AREA_SETTLE_MS)
-                    onActiveChannel(
-                        wifi = { ptpSession.afDrive() },
-                        usb = { usbPtpManager.afDrive() }
-                    )
-                    Timber.tag(TAG).d("Touch focus: ($afX, $afY)")
+                if (!changed) {
+                    // 0x9205 下发失败 → 绝不画框，避免显示与相机不符的假状态
+                    eventLogger.event("af_calib", "result" to "change_failed", "afX" to afX, "afY" to afY)
+                    Timber.tag(TAG).w("ChangeAfArea(0x9205) failed -> no focus box drawn")
+                    return@withContext TouchFocusDraw.None
                 }
-                response
+
+                // 触发 AF 驱动：稍等 AF 区域生效后再驱动（保持原有链路，不动）
+                delay(AF_AREA_SETTLE_MS)
+                onActiveChannel(
+                    wifi = { ptpSession.afDrive() },
+                    usb = { usbPtpManager.afDrive() }
+                )
+                Timber.tag(TAG).d("Touch focus: ($afX, $afY)")
+
+                // —— 第 2 步·按相机真值绘制 ——
+                val cameraPt = readCameraAfPoint()
+                if (cameraPt != null) {
+                    eventLogger.event(
+                        "af_draw", "src" to "camera",
+                        "prop" to (afAreaPropCode ?: -1),
+                        "nx" to cameraPt.first, "ny" to cameraPt.second
+                    )
+                    TouchFocusDraw.AtCamera(cameraPt.first, cameraPt.second)
+                } else {
+                    // 相机属性读不到 / 解析失败 → 退回点击位置，并标注降级
+                    eventLogger.event("af_draw", "src" to "fallback_tap", "reason" to "no_camera_prop")
+                    TouchFocusDraw.AtTap(tapScreenX, tapScreenY)
+                }
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Touch focus failed")
-                false
+                TouchFocusDraw.None
             }
+        }
+    }
+
+    /**
+     * 第 2 步·回读相机当前 AF 区域坐标。
+     * 用第 1 步枚举出的可用属性；读不到或解析不出合理坐标返回 null（调用方退回点击位置）。
+     */
+    private suspend fun readCameraAfPoint(): Pair<Float, Float>? {
+        val propCode = afAreaPropCode ?: return null
+        return try {
+            val data = onActiveChannel(
+                wifi = { ptpSession.getDevicePropValue(propCode) },
+                usb = { usbPtpManager.getDevicePropValue(propCode) }
+            ) ?: return null
+            parseAfPoint(data)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 把相机 AF 区域属性原始值尽力解析为相对图像内容的归一化坐标 (nx, ny)。
+     * 假设小端 int16 @0=x、@2=y，范围落在 0..AF_COORD_MAX（个别机型 0..0xFFFF）；
+     * 超出合理范围返回 null → 触发第 2 步降级（画在点击位置）。
+     * 具体属性码与字节布局需经第 1 步真机日志确认，此处为善意的通用假设。
+     */
+    private fun parseAfPoint(data: ByteArray): Pair<Float, Float>? {
+        if (data.size < 4) return null
+        val buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        val rawX = buf.short.toInt() and 0xFFFF
+        val rawY = buf.short.toInt() and 0xFFFF
+        val nx = if (rawX <= PtpConstants.AF_COORD_MAX_X) {
+            rawX.toFloat() / PtpConstants.AF_COORD_MAX_X
+        } else {
+            rawX.toFloat() / 0xFFFF
+        }
+        val ny = if (rawY <= PtpConstants.AF_COORD_MAX_Y) {
+            rawY.toFloat() / PtpConstants.AF_COORD_MAX_Y
+        } else {
+            rawY.toFloat() / 0xFFFF
+        }
+        return if (nx in 0f..1f && ny in 0f..1f) Pair(nx, ny) else null
+    }
+
+    /**
+     * 第 1 步·AF 属性枚举诊断（af_probe）。
+     * 逐个试读候选对焦区域 / AF 点属性，记录属性码、原始值与解析值、成功/失败；
+     * 把首个「有响应」的候选暂定为回读用属性（afAreaPropCode），
+     * 方便从真机日志定位正确的对焦点属性。
+     */
+    suspend fun probeAfProperties() {
+        if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) return
+        withContext(Dispatchers.IO) {
+            val responsive = mutableListOf<Int>()
+            for (code in AF_PROBE_CANDIDATES) {
+                try {
+                    val data = onActiveChannel(
+                        wifi = { ptpSession.getDevicePropValue(code) },
+                        usb = { usbPtpManager.getDevicePropValue(code) }
+                    )
+                    val ok = data != null && data.isNotEmpty()
+                    var i32 = 0; var x = 0; var y = 0
+                    if (data != null && data.size >= 4) {
+                        val b = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+                        i32 = b.int
+                        val b2 = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+                        x = b2.short.toInt() and 0xFFFF
+                        y = b2.short.toInt() and 0xFFFF
+                    }
+                    eventLogger.event(
+                        "af_probe",
+                        "prop" to String.format("0x%04X", code),
+                        "ok" to ok,
+                        "len" to (data?.size ?: -1),
+                        "i32" to i32,
+                        "x" to x,
+                        "y" to y
+                    )
+                    Timber.tag(TAG).d(
+                        "af_probe %s ok=%b len=%d i32=%d x=%d y=%d",
+                        String.format("0x%04X", code), ok, data?.size ?: -1, i32, x, y
+                    )
+                    if (ok) responsive.add(code)
+                } catch (e: Exception) {
+                    eventLogger.event(
+                        "af_probe",
+                        "prop" to String.format("0x%04X", code),
+                        "ok" to false,
+                        "err" to (e.message ?: "ex")
+                    )
+                    Timber.tag(TAG).w(e, "af_probe %s failed", String.format("0x%04X", code))
+                }
+            }
+            // 优先用显式确认的属性（标定后由外部设置），否则用首个有响应的候选
+            afAreaPropCode = confirmedAfPropCode ?: responsive.firstOrNull()
+            eventLogger.event(
+                "af_probe",
+                "summary" to true,
+                "responsive" to responsive.joinToString(",") { String.format("0x%04X", it) },
+                "chosen" to (afAreaPropCode?.let { String.format("0x%04X", it) } ?: "none")
+            )
+            Timber.tag(TAG).i(
+                "af_probe chosen=%s responsive=%d",
+                afAreaPropCode?.let { String.format("0x%04X", it) } ?: "none",
+                responsive.size
+            )
         }
     }
 

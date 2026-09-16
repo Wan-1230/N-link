@@ -38,9 +38,15 @@ class LiveViewViewModel @Inject constructor(
         liveViewManager.stopLiveView()
     }
 
-    fun touchFocus(x: Float, y: Float) {
-        viewModelScope.launch { liveViewManager.touchFocus(x, y) }
-    }
+    suspend fun touchFocus(
+        x: Float,
+        y: Float,
+        tapScreenX: Float = -1f,
+        tapScreenY: Float = -1f,
+        frameW: Int = -1,
+        frameH: Int = -1
+    ): TouchFocusDraw =
+        liveViewManager.touchFocus(x, y, tapScreenX, tapScreenY, frameW, frameH)
 
     fun autoFocus() {
         viewModelScope.launch { liveViewManager.touchFocus(0.5f, 0.5f) }

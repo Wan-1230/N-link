@@ -25,6 +25,7 @@ import com.nikonlink.app.databinding.DialogParamPickerBinding
 import com.nikonlink.app.databinding.FragmentRemoteBinding
 import com.nikonlink.app.camera.liveview.FocusTapMapper
 import com.nikonlink.app.camera.liveview.LiveViewState
+import com.nikonlink.app.camera.liveview.TouchFocusDraw
 import com.nikonlink.app.camera.liveview.LiveViewActivity
 import com.nikonlink.app.camera.liveview.LiveViewViewModel
 import com.nikonlink.app.camera.params.CameraParam
@@ -221,8 +222,14 @@ class RemoteFragment : Fragment() {
             ) {
                 val tap = FocusTapMapper.mapToNormalized(binding.ivLiveView, event.x, event.y)
                 if (tap != null) {
-                    liveViewViewModel.touchFocus(tap.x, tap.y)
-                    showFocusIndicator(event.x, event.y)
+                    val frameW = binding.ivLiveView.drawable?.intrinsicWidth ?: -1
+                    val frameH = binding.ivLiveView.drawable?.intrinsicHeight ?: -1
+                    viewLifecycleOwner.lifecycleScope.launch {
+                        val result = liveViewViewModel.touchFocus(
+                            tap.x, tap.y, event.x, event.y, frameW, frameH
+                        )
+                        drawFocusResult(result, event.x, event.y)
+                    }
                 }
             }
             true
@@ -238,6 +245,27 @@ class RemoteFragment : Fragment() {
         binding.viewHistogram.visibility = if (enabled) View.VISIBLE else View.GONE
         binding.btnHistogram.alpha = if (enabled) 1f else 0.55f
         if (!enabled) binding.viewHistogram.clear()
+    }
+
+    /**
+     * 根据 [TouchFocusDraw] 决定对焦框落点：
+     * - None：不下发/失败 → 不画框；
+     * - AtCamera：相机真值反算到屏幕坐标绘制；
+     * - AtTap：退回点击位置（相机属性读不到时降级）。
+     */
+    private fun drawFocusResult(result: TouchFocusDraw, tapX: Float, tapY: Float) {
+        when (result) {
+            TouchFocusDraw.None -> { /* 不画框 */ }
+            is TouchFocusDraw.AtTap -> {
+                if (result.screenX >= 0f && result.screenY >= 0f) {
+                    showFocusIndicator(result.screenX, result.screenY)
+                }
+            }
+            is TouchFocusDraw.AtCamera -> {
+                val p = FocusTapMapper.normalizedToView(binding.ivLiveView, result.nx, result.ny)
+                if (p != null) showFocusIndicator(p.x, p.y) else showFocusIndicator(tapX, tapY)
+            }
+        }
     }
 
     private fun showFocusIndicator(x: Float, y: Float) {

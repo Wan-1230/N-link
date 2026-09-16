@@ -1,6 +1,7 @@
 package com.nikonlink.app.camera.liveview
 
 import android.graphics.Matrix
+import android.graphics.PointF
 import android.graphics.RectF
 import android.view.View
 import android.widget.ImageView
@@ -76,5 +77,21 @@ object FocusTapMapper {
             rect.set(left, top, right, bottom)
         }
         return if (rect.width() > 0 && rect.height() > 0) rect else null
+    }
+
+    /**
+     * 归一化坐标（相对 liveview 图像内容，x/y ∈ 0..1）→ ImageView 视图坐标（对焦点中心）。
+     *
+     * 这是「相机 AF 框坐标 → 屏幕坐标」反算的落点：复用 [displayedImageRect]
+     * （含 fitCenter 黑边 + View 级缩放还原），把归一化比例映射回视图坐标系。
+     * 第 2 步（按相机真值绘制对焦框）即用它把相机回读的对焦点定位到屏幕。
+     * 返回 null 表示无法定位（无图 / 矩阵异常），调用方应退回点击位置。
+     */
+    fun normalizedToView(imageView: ImageView, nx: Float, ny: Float): PointF? {
+        val rect = displayedImageRect(imageView) ?: return null
+        return PointF(
+            rect.left + nx.coerceIn(0f, 1f) * rect.width(),
+            rect.top + ny.coerceIn(0f, 1f) * rect.height()
+        )
     }
 }
