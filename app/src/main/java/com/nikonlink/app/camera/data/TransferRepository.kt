@@ -56,6 +56,13 @@ class TransferRepository @Inject constructor(
     suspend fun getCompletedRecords(): List<TransferRecord> = transferHistoryDao.getCompletedRecords()
 
     /**
+     * 只读：取某 handle 已完成传输的本地路径（预览页分享/EXIF 直接复用已归档文件，避免重复下载）。
+     * 未传输或记录状态非 completed 时返回 null。
+     */
+    suspend fun getCompletedRecordPath(handle: Int): String? =
+        transferHistoryDao.getByHandle(handle)?.takeIf { it.status == "completed" }?.localPath
+
+    /**
      * 批量回收传输记录（用户删除本地文件后调用）。
      * 删除记录 = 相机照片页该张不再显示「已下载」角标、在「未下载」筛选下重新出现。
      *
