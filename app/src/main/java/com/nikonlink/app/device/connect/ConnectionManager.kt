@@ -61,6 +61,8 @@ class ConnectionManager @Inject constructor(
         private const val WIFI_UPGRADE_DELAY_MS = 1000L
         private const val PREFS_NAME = "nl_settings"
         private const val PREFS_WIFI_5G_PREFER = "wifi_band_5g_prefer"
+        /** STA 主机注册标记：相机已记住本机 GUID（门控解除） */
+        private const val PREFS_STA_HOST_REGISTERED = "sta_host_registered"
     }
 
     private var scope: CoroutineScope? = null
@@ -85,6 +87,26 @@ class ConnectionManager @Inject constructor(
     private val _connectionHint = MutableStateFlow<ConnectionHint?>(null)
     val connectionHint: StateFlow<ConnectionHint?> = _connectionHint.asStateFlow()
 
+    private val prefs by lazy { context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
+
+    /**
+     * 相机是否已记住本机为「信任主机」（STA 门控已解除）。
+     * 持久化：注册一次后长期有效，重装/清数据才失效。
+     */
+    private val _staHostRegistered = MutableStateFlow(
+        prefs.getBoolean(PREFS_STA_HOST_REGISTERED, false)
+    )
+    val staHostRegistered: StateFlow<Boolean> = _staHostRegistered.asStateFlow()
+
+    /**
+     * 是否需要引导用户做 STA 主机注册 → UI 把注册按钮切成强调色。
+     * 置 true 的两个来源：① 从未注册过；② 相机明确拒绝了本次握手（InitFail）。
+     */
+    private val _staRegisterNeeded = MutableStateFlow(
+        !prefs.getBoolean(PREFS_STA_HOST_REGISTERED, false)
+    )
+    val staRegisterNeeded: StateFlow<Boolean> = _staRegisterNeeded.asStateFlow()
+
     /** 对外暴露的连接状态（来自状态机） */
     val connectionState: StateFlow<ConnectionState> = stateMachine.state
 
@@ -105,6 +127,7 @@ class ConnectionManager @Inject constructor(
         observeStateMachine()
         observeReconnectTrigger()
         observeStaRecovery()
+        observeHostRegistrationHint()
         startMetricsUpdater()
         scope.launch { reconnectLastDeviceIfPaired() }
 
@@ -441,7 +464,13 @@ class ConnectionManager @Inject constructor(
                 detail = "相机未连接。请先通过 WiFi 连上相机（AP 模式），再执行 STA 主机注册"
             )
         }
-        return ptpSession.registerHost(onProgress)
+        val result = ptpSession.registerHost(onProgress)
+        if (result is HostRegistrationResult.Success) {
+            prefs.edit().putBoolean(PREFS_STA_HOST_REGISTERED, true).apply()
+            _staHostRegistered.value = true
+            _staRegisterNeeded.value = false
+        }
+        return result
     }
 
     /**
@@ -483,6 +512,21 @@ class ConnectionManager @Inject constructor(
                 }
                 if (bleManager.isConnected()) {
                     requestWifiReconnect()
+                }
+            }
+        }
+    }
+
+    /**
+     * 相机主动拒绝握手（InitFail）说明 STA 门控未解除 → 提示需要做主机注册。
+     * 只在收到 InitFail 时触发，网络类失败（无 WiFi / 相机不可达）不误报。
+     */
+    private fun observeHostRegistrationHint() {
+        scope?.launch {
+            ptpSession.lastInitFailReason.collect { reason ->
+                if (reason != null) {
+                    eventLogger.event("sta_hostreg_hint", "reason" to reason)
+                    _staRegisterNeeded.value = true
                 }
             }
         }

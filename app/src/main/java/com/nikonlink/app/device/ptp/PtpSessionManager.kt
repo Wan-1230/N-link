@@ -97,6 +97,14 @@ class PtpSessionManager @Inject constructor(
     private val _events = MutableSharedFlow<PtpEvent>(extraBufferCapacity = 32)
     val events: SharedFlow<PtpEvent> = _events.asSharedFlow()
 
+    /**
+     * 最近一次握手被相机拒绝（InitFail）的原因码；连接成功或尚无失败时为 null。
+     * 用途：STA 模式下相机只接受「已注册主机」的握手，reason 非空即说明
+     * 需要在 AP 模式下先做一次主机注册 —— UI 据此把注册按钮切成强调色。
+     */
+    private val _lastInitFailReason = MutableStateFlow<Int?>(null)
+    val lastInitFailReason: StateFlow<Int?> = _lastInitFailReason.asStateFlow()
+
     fun start(scope: CoroutineScope) {
         this.scope = scope
     }
@@ -223,6 +231,8 @@ class PtpSessionManager @Inject constructor(
                     "connect", "phase" to "init", "ok" to false, "resp" to response?.type,
                     "fail_reason" to failReason
                 )
+                // 相机主动拒绝握手（InitFail）→ 记录原因，供 UI 提示「需先做主机注册」
+                _lastInitFailReason.value = failReason
                 // 连接失败回到 DISCONNECTED 而非 ERROR：
                 // ERROR 会被健康检查当成「链路死亡需重建」，触发不必要的重连风暴
                 _sessionState.value = PtpSessionState.DISCONNECTED
@@ -231,6 +241,8 @@ class PtpSessionManager @Inject constructor(
 
             Timber.tag(TAG).i("phase=init OK server=%s session=%s", response.serverName, response.sessionId)
             eventLogger.event("connect", "phase" to "init", "ok" to true, "session" to response.sessionId)
+            // 握手成功 → 清除「被拒」标记（相机已接受本机）
+            _lastInitFailReason.value = null
 
             // 建立 Event 通道
             Timber.tag(TAG).i("phase=event connecting")
@@ -398,7 +410,7 @@ class PtpSessionManager @Inject constructor(
             eventLogger.event("hostreg", "phase" to "prepare_fail", "code" to code)
             return@withContext HostRegistrationResult.Failure(
                 phase = "prepare",
-                detail = "相机未接受预备注册（$code）。请确认相机已进入「连接至 PC」配置向导后重试"
+                detail = "相机未接受预备注册（$code）。请确认相机屏幕处于可接受连接的画面后重试"
             )
         }
         Timber.tag(TAG).i("hostreg prepare ok")
@@ -421,7 +433,7 @@ class PtpSessionManager @Inject constructor(
             eventLogger.event("hostreg", "phase" to "confirm_fail", "code" to code)
             return@withContext HostRegistrationResult.Failure(
                 phase = "confirm",
-                detail = "确认注册失败（$code），请让相机停留在「连接至 PC」向导后重试"
+                detail = "确认注册失败（$code），请保持相机屏幕处于连接画面后重试"
             )
         }
         Timber.tag(TAG).i("hostreg confirm ok")
