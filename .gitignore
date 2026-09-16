@@ -28,6 +28,11 @@ release_extract/
 .tools/
 videos/
 
+# 发版本地产物与第三方 APK 逆向资料（含解包内容，不入库）
+/dist/
+/_apk_re/
+/tools/apk-analysis/
+
 # Local configuration file (sdk path, etc)
 local.properties
 
