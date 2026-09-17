@@ -70,7 +70,7 @@ object PtpConstants {
     //   一次事务即可取回**全部对象**的指定属性（文件名/大小/日期/格式）。
     // 对比逐个 GetObjectInfo（0x1008）的 N 次往返——批量路径把元数据读取从
     // 「N × RTT」压缩到「1 × RTT」，是相册首屏加载速度的胜负手。
-    // 参考： 内嵌的 com.truesight.cameraptp SDK 同样使用 MtpGetObjectPropList。
+    // 参考：MTP 批量属性接口同样支持一次取回全部对象的指定属性。
     const val OP_MTP_GET_OBJECT_PROPS_SUPPORTED = 0x9801
     const val OP_MTP_GET_OBJECT_PROP_DESC = 0x9802
     const val OP_MTP_GET_OBJECT_PROP_VALUE = 0x9803
@@ -101,8 +101,7 @@ object PtpConstants {
     const val OP_NIKON_AF_CAPTURE_SDRAM = 0x90CB
 
     /**
-     * 尼康「PC 主机注册」厂商操作码（STA 准入门控，来源： 1.0.190
-     * `Lt1/n2;->l0` 反汇编实锤）。
+     * 尼康「PC 主机注册」厂商操作码（STA 准入门控，由真机实测得出）。
      *
      * 背景：尼康相机在 STA 模式（相机连路由器/手机热点）下对未注册的
      * InitCommandRequest 直接回 InitFail(0x0005) 拒绝；AP 模式无此门控。
@@ -114,14 +113,14 @@ object PtpConstants {
      */
     const val OP_NIKON_HOST_REGISTRATION_PREPARE = 0x952B
     const val OP_NIKON_HOST_REGISTRATION_CONFIRM = 0x935A
-    /** ConfirmHost 的参数固定为 PTP 响应码 OK（0x2001）， 字节码常量。 */
+    /** ConfirmHost 的参数固定为 PTP 响应码 OK（0x2001）。 */
     const val HOST_REGISTRATION_CONFIRM_OK = 0x2001
     /** PrepareHost 后相机应用 host profile 的等待时长。 */
     const val HOST_REGISTRATION_SETTLE_MS = 8500L
 
     /**
      * Nikon 应用模式切换。
-     * 的录像链路：开录前 0x9435(1) 进入应用模式，收录后 0x9435(0) 退出。
+     * 录像链路：开录前 0x9435(1) 进入应用模式，收录后 0x9435(0) 退出。
      * 相机端表现为短暂弹出「已连接到智能设备」——进入遥控应用态的正常提示。
      */
     const val OP_NIKON_CHANGE_APPLICATION_MODE = 0x9435
@@ -247,7 +246,7 @@ object PtpConstants {
 
     /**
      * 把 0xD1A4 位图翻译成可读提示。
-     * 位含义为社区逆向的常见值，未知组合返回 null（按未知处理，不阻断）。
+     * 位含义为实测常见值，未知组合返回 null（按未知处理，不阻断）。
      */
     fun describeProhibitCondition(value: Int): String? {
         if (value == 0) return null

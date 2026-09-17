@@ -327,8 +327,7 @@ class WifiDirectConnector @Inject constructor(
                 // ── FIX-5：连接前刷新发现──
                 //  在每次真正 connect 之前都会先刷一次对端可达性，原因是：
                 // 相机（尤其 STA 下）会**延迟几秒才在 15740 上监听** —— 它需要先完成
-                // host profile 的应用/注册（我逆向到的
-                // `STA connect deferred while camera applies host profile remaining=`）。
+                // host profile 的应用/注册（真机实测：相机会推迟数秒才起监听）。
                 // 直接 connect 会在相机还没起监听时超时，白白吃掉一次尝试。
                 //
                 // 这里先做一次轻量 TCP 探活，给相机最多 [PRECONNECT_WAIT_MS] 的窗口；
@@ -515,9 +514,8 @@ class WifiDirectConnector @Inject constructor(
     /**
      * FIX-5：等待相机在 [PRECONNECT_WAIT_MS] 内起 PTP/IP 监听。
      *
-     * 。相机在 STA 模式下不会立刻
-     * 监听 15740 —— 它要先应用 host profile（逆向到的
-     * `STA connect deferred while camera applies host profile remaining=`）。
+     * 相机在 STA 模式下不会立刻
+     * 监听 15740 —— 它要先应用 host profile（真机实测：会推迟数秒）。
      * 这段时间直接 connect 必然超时。
      *
      * 语义刻意做成**软等待**：
