@@ -30,14 +30,14 @@ class PtpSessionManager @Inject constructor(
     companion object {
         private const val TAG = "PtpSession"
         /**
-         * TCP 连接超时。对齐官方 SnapBridge（`ConnectWifiAction` → 30_000ms）。
+         * TCP 连接超时。。
          * 原来 10s 在弱信号 / 相机刚上电时容易过早放弃——相机侧 WiFi 模块
          * 完成 DHCP 到 PTP 服务就绪本身就可能超过 10 秒。
          */
         private const val CONNECT_TIMEOUT_MS = 30000
 
         /**
-         * 连接重试次数。官方 SnapBridge 的策略（ConnectWifiAction 静态字段 l=5）：
+         * 连接重试次数。官方  的策略（ConnectWifiAction 静态字段 l=5）：
          * 相机 WiFi 关联成功后，15740 端口不是立刻 listen 的，此时 connect 会
          * 立即返回 ECONNREFUSED（**不是超时**）。官方靠重试扛过这个就绪窗口，
          * 我们原来一次失败就整条链路失败——这是 STA 首连成功率低的直接原因。
@@ -126,7 +126,7 @@ class PtpSessionManager @Inject constructor(
     /**
      * 建立 TCP 连接，失败按官方策略重试。
      *
-     * 逆向官方 SnapBridge `ConnectWifiAction` 得到的连接语义：
+     * 逆向官方  `ConnectWifiAction` 得到的连接语义：
      * - 连接超时 30s（[CONNECT_TIMEOUT_MS]）
      * - 失败最多重试 5 次，每次间隔 300ms
      * - **[java.net.SocketTimeoutException] 不重试**：超时说明对端根本不可达
@@ -386,11 +386,11 @@ class PtpSessionManager @Inject constructor(
     }
 
     /**
-     * STA 主机注册（ZDROP 式）：在 AP 模式已建立的会话内，把本机 GUID 注册为
+     * STA 主机注册：在 AP 模式已建立的会话内，把本机 GUID 注册为
      * 相机的信任主机。注册成功后，相机切 STA 模式才会放行 InitCommandRequest，
      * 否则会回 InitFail(0x0005)「相机拒绝该主机」。
      *
-     * 时序对齐 ZDROP 字节码：PrepareHost(0x952B, 无参) → 等待相机应用
+     * 时序
      * host profile（固定 8.5s）→ ConfirmHost(0x935A, 参数 0x2001)。
      * 前置条件：相机停在「连接至 PC」首次配置向导（由 UI 引导用户操作）。
      *
@@ -416,7 +416,7 @@ class PtpSessionManager @Inject constructor(
         Timber.tag(TAG).i("hostreg prepare ok")
         eventLogger.event("hostreg", "phase" to "prepare_ok")
 
-        // 2. 等相机应用 host profile（ZDROP 固定 sleep 8500ms）
+        // 2. 等相机应用 host profile
         onProgress?.invoke("相机正在应用配置（约 9 秒）…")
         eventLogger.event("hostreg", "phase" to "settle", "ms" to PtpConstants.HOST_REGISTRATION_SETTLE_MS)
         delay(PtpConstants.HOST_REGISTRATION_SETTLE_MS)
@@ -959,7 +959,7 @@ sealed class PtpDataResult {
 }
 
 /**
- * STA 主机注册结果（ZDROP 式 host registration）
+ * STA 主机注册结果
  */
 sealed class HostRegistrationResult {
     /** 注册成功：相机已记住本机 GUID，切 STA 模式后可正常连接 */

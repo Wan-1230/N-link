@@ -307,7 +307,7 @@ class MockCamera:
         elif op == 0x1004:
             send_data(conn, tx, struct.pack("<II", 1, 0x00010001))
         elif op == 0x1005:
-            send_data(conn, tx, struct.pack("<HHHQQI", 0, 1, 0, 0, 0, 0))
+            send_data(conn, tx, struct.pack("<HHH加群应用I", 0, 1, 0, 0, 0, 0))
         elif op == 0x1007:
             send_data(conn, tx, struct.pack("<II", 1, 0x00010001))
         elif op == 0x1008:

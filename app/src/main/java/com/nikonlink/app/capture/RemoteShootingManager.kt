@@ -115,7 +115,7 @@ class RemoteShootingManager @Inject constructor(
     /**
      * 定时 B 门的总时长 (ms)；null = 手动模式（开始/结束全手动）。
      * 模块 3 选型：定时模式为主（长曝光动辄 30s~数分钟，要求手指按住屏幕不现实，
-     * 且按住期间锁屏/误触都会中断曝光——ZRelay BulbTimeConfigUi(durationSeconds=30)
+     * 且按住期间锁屏/误触都会中断曝光—— BulbTimeConfigUi(durationSeconds=30)
      * 同款交互）；手动「开始/结束」保留为次要方式。
      */
     private val _bulbDurationMs = MutableStateFlow<Long?>(null)
@@ -407,7 +407,7 @@ class RemoteShootingManager @Inject constructor(
     /**
      * B 门开始曝光（v1.0.2 全链路修复）。
      *
-     * 1. 前置校验：读 0x500D，非 Bulb 档时**自动切档**（digiCamControl 同款）；
+     * 1. 前置校验：读 0x500D，非 Bulb 档时**自动切档**；
      *    写不进去（只读 / 非 M·S 档）给出可操作提示后中止，不再裸发必败命令。
      * 2. 开启曝光：0x9207 → 0x100E → 0x100F 多级降级，busy（0x2019/0xA200）短暂等待重试。
      * 3. 全程响应码可见：失败中文化 + 忙态可重试，不再「点了没反应」。
@@ -433,11 +433,11 @@ class RemoteShootingManager @Inject constructor(
 
         return withContext(Dispatchers.IO) {
             try {
-                // ---- 前置：进入远程控制模式并切到 M 档（gphoto2 _put_Nikon_Bulb 同款，best-effort）----
+                // ---- 前置：进入远程控制模式并切到 M 档----
                 // 画面模式=联动：曝光期间临时进入控制模式（0x90C2(1)，相机屏熄并显示
                 //   「已连接到智能设备」），收门后自动退出恢复相机屏显示；
                 // 画面模式=遥控：用户已显式进入控制模式，这里不再重复进出（收门后保持）。
-                // gphoto2 开 B 门先 changecameramode(1) 再写 0x500E=1（Exposure Mode = Full
+                //  开 B 门先 changecameramode(1) 再写 0x500E=1（Exposure Mode = Full
                 // Manual），拨盘不在 M/S 档时也有机会远程完成；两步都允许失败（部分机身只读）。
                 if (settings.remoteDisplayMode == AppSettings.DISPLAY_MODE_REMOTE) {
                     bulbControlModeEntered = false
@@ -547,9 +547,9 @@ class RemoteShootingManager @Inject constructor(
      * B 门结束曝光（v1.0.3 全链路修复）。
      *
      * 收门策略（逐级降级，任一成功即收门）：
-     * ① 恢复切档前的快门值（改快门值即结束曝光，digiCamControl 模型）——
+     * ① 恢复切档前的快门值——
      *    曝光中机身可能持续回 DeviceBusy，重试放宽到 6×600ms；
-     * ② **0x920C(0,0) TerminateCapture**——gphoto2 `_put_Nikon_Bulb` 收门的权威实现，
+     * ② **0x920C(0,0) TerminateCapture**—— TerminateCapture 收门的权威实现，
      *    是 0x9207 开启的长曝光的官方配套结束命令（v1.0.2 缺失它导致 15s 定时曝光
      *    实际远超设定值：旧版只有恢复快门 + 0x1010 两条路，Z 系无线对两者都回忙/不支持）；
      * ③ 0x1010 TerminateOpenCapture（0x100F 路径的配套，保留兜底）。
@@ -762,15 +762,15 @@ class RemoteShootingManager @Inject constructor(
     /**
      * 开始视频录制（Nikon 0x920A StartMovieRecInCard）。
      *
-     * 对齐影犀的实测链路（其 STA 录像可正常跑通）：
-     * 1. **0x9435(1) 进入应用模式**（gphoto2 ChangeApplicationMode）；
+     * ：
+     * 1. **0x9435(1) 进入应用模式**；
      * 2. **直接发 0x920A**——多数 Z 系机身录像是「录像优先」，不强制监看；
      * 3. 仅当机身以 0xA00B（NotLiveView）拒绝时，才启动监看后重试（复用 LiveViewManager
      *    的禁止条件预读 / busy 重试 / 验帧链路）；
      * 4. DeviceBusy → 等待重试；结束/失败路径统一退出应用模式（0x9435(0)）。
      *
      * v1.0.2 的 0x90C2(ChangeCameraMode) 序列在真机上表现为：相机闪现「已连接到智能设备」
-     * 不到一秒即退出且未开录——0x90C2 是 B 门/拍照的远程控制入口（gphoto2 仅在 B 门使用），
+     * 不到一秒即退出且未开录——0x90C2 是 B 门/拍照的远程控制入口，
      * 不属于录像链路，本版已从录像路径移除。
      */
     suspend fun startVideoRecording(): Boolean {
@@ -787,7 +787,7 @@ class RemoteShootingManager @Inject constructor(
             try {
                 _shootingState.value = ShootingState.VIDEO_PREPARING
 
-                // ① 进入应用模式（影犀 ChangeApplicationMode(1)；失败不阻断——部分机型不需要）
+                // ① 进入应用模式
                 changeApplicationMode(enter = true)
                 delay(VIDEO_MODE_SETTLE_MS)
 
@@ -803,7 +803,7 @@ class RemoteShootingManager @Inject constructor(
                                 "Video recording started (lvStartedHere=$lvStartedHere)"
                             )
                             // 需求 7：应用模式切换后确认监看仍在跑；掉了就重启一次
-                            // （对齐 libgphoto2「CaptureComplete 后 restart liveview」）
+                            // 
                             if (graceForMovie) ensureLiveViewAfterModeChange()
                             return@withContext true
                         }
@@ -859,8 +859,8 @@ class RemoteShootingManager @Inject constructor(
     /**
      * 应用模式切换（进入/退出录像）后确认监看仍在运行，掉了就重启一次。
      *
-     * 依据：libgphoto2 在收到 CaptureComplete / CaptureCompleteRecInSdram 时，
-     * 若处于 liveview 会调用 `ptp_nikon_start_liveview` 重启；参考实现影犀也有
+     * 依据： 在收到 CaptureComplete / CaptureCompleteRecInSdram 时，
+     * 若处于 liveview 会调用 `ptp_nikon_start_liveview` 重启；参考实现也有
      * `USB remote LiveView restart after camera mode failure / after config retry`。
      * 只重启一次并带短暂沉降等待，避免与正在恢复的相机抢通道。
      */
@@ -888,7 +888,7 @@ class RemoteShootingManager @Inject constructor(
                     when {
                         ok -> {
                             _shootingState.value = ShootingState.IDLE
-                            // 退出应用模式（影犀 ChangeApplicationMode(0)）
+                            // 退出应用模式
                             changeApplicationMode(enter = false)
                             // 需求 7：停止录像 → 退出"期望停流"并确认监看恢复
                             // （相机恢复推流后画面自动回来，无需用户手动点"开始监看"）
