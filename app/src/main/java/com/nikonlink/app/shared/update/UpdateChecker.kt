@@ -44,6 +44,14 @@ data class QuarkLink(
     val versionLabel: String?
 )
 
+/**
+ * 百度网盘链接（每版新分享，提取码内嵌在 URL 的 `?pwd=` 中，点击即自动填充）。
+ */
+data class BaiduLink(
+    val url: String,
+    val versionLabel: String?
+)
+
 /** 检查结果：`Failed` 一律代表「没查出来」，调用方不得据此提示有更新 */
 sealed class UpdateResult {
     /** 已是最新（含：latest 是 prerelease/draft 且未开启预览） */
@@ -66,7 +74,13 @@ sealed class UpdateResult {
         /** 夸克网盘下载链接（Release body 固定标记解析结果，无标记为 null） */
         val quarkUrl: String? = null,
         /** 夸克提取码（与 [quarkUrl] 同源，无标记为 null） */
-        val quarkCode: String? = null
+        val quarkCode: String? = null,
+        /**
+         * 百度网盘下载链接（Release body 固定标记解析结果，无标记为 null）。
+         * 百度每版生成新链接且提取码内嵌在 URL 的 `?pwd=` 里，点击即自动填充，
+         * 因此不再单独提供提取码字段。
+         */
+        val baiduUrl: String? = null
     ) : UpdateResult()
 
     data class Failed(val reason: FailReason) : UpdateResult()
@@ -109,11 +123,21 @@ class UpdateChecker @Inject constructor(
         private val QUARK_URL_REGEX = Regex("https?://pan\\.quark\\.cn/s/[A-Za-z0-9]+")
         private val QUARK_CODE_REGEX = Regex("提取码[:：\\s]*([A-Za-z0-9]{4})")
 
-        /** 夸克链接缓存：GitHub 不可达时设置页夸克入口的离线兜底 */
+        /**
+         * Release body 中百度网盘标记的解析规则（发版流程按固定格式写入）：
+         * `百度网盘：https://pan.baidu.com/s/xxxxxxxxxxx?pwd=xxxx`
+         * 百度每版生成新链接、提取码内嵌 `?pwd=`，故只取整条链接；解析不到返回 null。
+         */
+        private val BAIDU_URL_REGEX =
+            Regex("https?://pan\\.baidu\\.com/s/[A-Za-z0-9_-]+(?:\\?pwd=[A-Za-z0-9]{4})?")
+
+        /** 网盘链接缓存：GitHub 不可达时设置页网盘入口的离线兜底 */
         private const val QUARK_PREFS = "update_channel"
         private const val QUARK_KEY_URL = "quark_url"
         private const val QUARK_KEY_CODE = "quark_code"
         private const val QUARK_KEY_VERSION = "quark_version"
+        private const val BAIDU_KEY_URL = "baidu_url"
+        private const val BAIDU_KEY_VERSION = "baidu_version"
     }
 
     private val gson = Gson()
@@ -220,6 +244,10 @@ class UpdateChecker @Inject constructor(
         val quark = parseQuarkLink(fullBody)?.let { (url, code) ->
             QuarkLink(url, code, versionLabel).also(::persistQuarkCache)
         }
+        // 百度通道：与夸克同源解析，成功即落缓存；解析失败只意味着本版本没有百度链接
+        val baidu = parseBaiduLink(fullBody)?.let {
+            BaiduLink(it, versionLabel).also(::persistBaiduCache)
+        }
 
         return UpdateResult.Available(
             versionLabel = versionLabel,
@@ -229,7 +257,8 @@ class UpdateChecker @Inject constructor(
             publishedAtLabel = release.publishedAt?.let(::formatPublishDate),
             releaseUrl = release.htmlUrl,
             quarkUrl = quark?.url,
-            quarkCode = quark?.code
+            quarkCode = quark?.code,
+            baiduUrl = baidu?.url
         )
     }
 
@@ -243,11 +272,23 @@ class UpdateChecker @Inject constructor(
         QuarkLink(url, sp.getString(QUARK_KEY_CODE, null), sp.getString(QUARK_KEY_VERSION, null))
     }.getOrNull()
 
-    /** Release body 固定标记 → (链接, 提取码)；无标记返回 null */
+    /**
+     * Release body 固定标记 → (链接, 提取码)；无标记返回 null。
+     *
+     * **按行匹配**：只在含「夸克网盘」的那一行里找，避免百度的 `?pwd=` 或
+     * 未来百度行尾的「提取码：xxxx」被误当成夸克提取码。
+     */
     private fun parseQuarkLink(body: String): Pair<String, String?>? {
-        val url = QUARK_URL_REGEX.find(body)?.value ?: return null
-        val code = QUARK_CODE_REGEX.find(body)?.groupValues?.getOrNull(1)
+        val line = body.lineSequence().firstOrNull { it.contains("夸克网盘") } ?: return null
+        val url = QUARK_URL_REGEX.find(line)?.value ?: return null
+        val code = QUARK_CODE_REGEX.find(line)?.groupValues?.getOrNull(1)
         return url to code
+    }
+
+    /** Release body 固定标记 → 百度链接（含内嵌 `?pwd=`）；无标记返回 null。同按行匹配 */
+    private fun parseBaiduLink(body: String): String? {
+        val line = body.lineSequence().firstOrNull { it.contains("百度网盘") } ?: return null
+        return BAIDU_URL_REGEX.find(line)?.value
     }
 
     /** 夸克链接缓存落盘；缓存失败只影响兜底能力，不影响本次更新结果 */
@@ -259,6 +300,26 @@ class UpdateChecker @Inject constructor(
                 .putString(QUARK_KEY_VERSION, link.versionLabel)
                 .apply()
         }.onFailure { e -> Timber.tag(TAG).w(e, "Persist quark cache failed") }
+    }
+
+    /**
+     * 最近一次缓存的百度网盘链接。
+     * 检查更新成功解析到标记时写入；GitHub 不可达时设置页百度入口靠它兜底，无缓存返回 null。
+     */
+    fun cachedBaiduLink(): BaiduLink? = runCatching {
+        val sp = context.getSharedPreferences(QUARK_PREFS, Context.MODE_PRIVATE)
+        val url = sp.getString(BAIDU_KEY_URL, null)?.takeIf { it.isNotBlank() } ?: return null
+        BaiduLink(url, sp.getString(BAIDU_KEY_VERSION, null))
+    }.getOrNull()
+
+    /** 百度链接缓存落盘；缓存失败只影响兜底能力，不影响本次更新结果 */
+    private fun persistBaiduCache(link: BaiduLink) {
+        runCatching {
+            context.getSharedPreferences(QUARK_PREFS, Context.MODE_PRIVATE).edit()
+                .putString(BAIDU_KEY_URL, link.url)
+                .putString(BAIDU_KEY_VERSION, link.versionLabel)
+                .apply()
+        }.onFailure { e -> Timber.tag(TAG).w(e, "Persist baidu cache failed") }
     }
 
     /** ISO8601 时间戳 → yyyy-MM-dd（F6 弹窗日期展示；解析失败返回 null 不阻塞更新流程） */
