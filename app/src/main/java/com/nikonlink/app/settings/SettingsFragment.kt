@@ -40,7 +40,7 @@ import javax.inject.Inject
  * 落地画质/保存路径/连接偏好/5GHz优先/自动下载设置项（AppSettings 读写一体），
  * 意见反馈改为系统邮件意图，通用设置新增「导出日志」（AppEventLogger 链路日志）、
  * 「检查更新」（UpdateChecker 查 GitHub Releases + 失败降级，不做 APK 自下载安装）、
- * 「国内镜像下载」（与 GitHub 并列的国内直连下载入口，PRD 镜像下载通道）。
+ * 「夸克网盘下载」（与 GitHub 并列的国内直连下载入口，PRD 夸克网盘更新通道）。
  */
 @AndroidEntryPoint
 class SettingsFragment : Fragment() {
@@ -114,18 +114,18 @@ class SettingsFragment : Fragment() {
         binding.tvCacheValue.text = formatCacheSize(requireContext())
         binding.tvUpdateValue.text = BuildConfig.VERSION_NAME
         binding.tvUpdateValue.setTextColor(resolveColor(R.color.text_tertiary))
-        restoreMirrorRow()
+        restoreQuarkRow()
     }
 
-    /** 国内镜像入口副文案（PRD 镜像下载通道 §4.2）：优先展示缓存版本，无缓存给引导提示 */
-    private fun restoreMirrorRow() {
-        val cached = updateChecker.cachedMirrorLink()
-        binding.tvMirrorValue.text = when {
+    /** 夸克网盘入口副文案（PRD 夸克网盘更新通道 §4.2）：优先展示缓存版本，无缓存给引导提示 */
+    private fun restoreQuarkRow() {
+        val cached = updateChecker.cachedQuarkLink()
+        binding.tvQuarkValue.text = when {
             cached == null -> "暂无网盘链接"
             cached.versionLabel != null -> "可下载 ${cached.versionLabel}"
             else -> "可下载"
         }
-        binding.tvMirrorValue.setTextColor(resolveColor(R.color.text_tertiary))
+        binding.tvQuarkValue.setTextColor(resolveColor(R.color.text_tertiary))
     }
 
     private fun setupRows() {
@@ -233,9 +233,9 @@ class SettingsFragment : Fragment() {
         binding.rowCheckUpdate.pressEffect()
         binding.rowCheckUpdate.setOnClickListener { checkUpdate() }
 
-        // 国内镜像下载：与 GitHub 通道并列的国内直连下载入口（PRD 镜像下载通道 §4.2）
-        binding.rowMirrorUpdate.pressEffect()
-        binding.rowMirrorUpdate.setOnClickListener { openMirrorDownload() }
+        // 夸克网盘下载：与 GitHub 通道并列的国内直连下载入口（PRD 夸克网盘更新通道 §4.2）
+        binding.rowQuarkUpdate.pressEffect()
+        binding.rowQuarkUpdate.setOnClickListener { openQuarkDownload() }
 
         binding.rowAbout.pressEffect()
         binding.rowAbout.setOnClickListener {
@@ -284,32 +284,32 @@ class SettingsFragment : Fragment() {
     }
 
     /**
-     * 意见反馈（用户交流群）。
+     * 意见反馈（QQ 交流群）。
      *
      * 三个出口：
      * - 复制群号 → 系统剪贴板（Android 13+ 由系统自带复制提示，低版本自行 Toast）
-     * - 加入用户交流群 → mqqwpa:// 群会话 scheme 拉起 加群应用 的群资料 / 申请加群页
-     * - 未安装 加群应用 → 明确提示 + 引导复制群号后手动搜索添加
+     * - 加入 QQ 群 → mqqwpa:// 群会话 scheme 拉起 QQ 的群资料 / 申请加群页
+     * - 未安装 QQ → 明确提示 + 引导复制群号后手动搜索添加
      *
-     * Android 11+ 的包可见性限制要求在 manifest 里用 `<queries>` 声明 加群应用 包名与该 scheme，
-     * 否则 [android.content.pm.PackageManager.queryIntentActivities] 查不到 加群应用，会误判为未安装。
+     * Android 11+ 的包可见性限制要求在 manifest 里用 `<queries>` 声明 QQ 包名与该 scheme，
+     * 否则 [android.content.pm.PackageManager.queryIntentActivities] 查不到 QQ，会误判为未安装。
      */
     private fun showFeedbackDialog() {
-        val groupNumber = getString(R.string.feedback_group_number)
+        val groupNumber = getString(R.string.feedback_qq_group_number)
         MaterialAlertDialogBuilder(requireContext())
-            .setTitle(R.string.feedback_group_title)
-            .setMessage(getString(R.string.feedback_group_message, groupNumber))
-            .setPositiveButton("加入用户交流群") { _, _ -> joinUserGroup(groupNumber) }
-            .setNeutralButton(R.string.feedback_copy_group_number) { _, _ -> copyGroupNumber(groupNumber) }
+            .setTitle(R.string.feedback_qq_group_title)
+            .setMessage(getString(R.string.feedback_qq_group_message, groupNumber))
+            .setPositiveButton("加入 QQ 群") { _, _ -> joinQqGroup(groupNumber) }
+            .setNeutralButton(R.string.feedback_copy_group_number) { _, _ -> copyQqGroupNumber(groupNumber) }
             .setNegativeButton("取消", null)
             .show()
     }
 
     /** 复制群号到剪贴板；Android 13+ 系统自带复制气泡，只在低版本或失败时提示 */
-    private fun copyGroupNumber(groupNumber: String) {
+    private fun copyQqGroupNumber(groupNumber: String) {
         val ok = runCatching {
             val manager = requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            manager.setPrimaryClip(ClipData.newPlainText("群号", groupNumber))
+            manager.setPrimaryClip(ClipData.newPlainText("QQ 群号", groupNumber))
         }.isSuccess
         if (!ok || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             toast(if (ok) getString(R.string.feedback_copied) else getString(R.string.feedback_copy_failed))
@@ -317,33 +317,33 @@ class SettingsFragment : Fragment() {
     }
 
     /**
-     * 拉起加群。
+     * 拉起 QQ 加群。
      *
-     * `mqqwpa://im/chat?chat_type=group&uin=<群号>` 是 加群应用 对外公开的群会话协议，
-     * 尚未加群时打开的是群资料页并给出「申请加群」入口，加群应用 / TIM 均可响应。
+     * `mqqwpa://im/chat?chat_type=group&uin=<群号>` 是 QQ 对外公开的群会话协议，
+     * 尚未加群时打开的是群资料页并给出「申请加群」入口，QQ / TIM 均可响应。
      * 查不到可响应的应用即判定为未安装，转提示引导用户复制群号手动添加。
      */
-    private fun joinUserGroup(groupNumber: String) {
-        eventLogger.event("setting", "key" to "feedback_join_group")
+    private fun joinQqGroup(groupNumber: String) {
+        eventLogger.event("setting", "key" to "feedback_join_qq")
         val intent = Intent(
             Intent.ACTION_VIEW,
             Uri.parse("mqqwpa://im/chat?chat_type=group&uin=$groupNumber&version=1")
         )
-        val hasGroupApp = runCatching {
+        val hasQq = runCatching {
             requireContext().packageManager.queryIntentActivities(intent, 0)
         }.getOrDefault(emptyList()).isNotEmpty()
 
-        if (hasGroupApp && runCatching { startActivity(intent) }.isSuccess) return
-        Timber.w("Launch 加群应用 group failed or 加群应用 not installed, fallback to manual hint")
-        showGroupAppNotInstalledDialog(groupNumber)
+        if (hasQq && runCatching { startActivity(intent) }.isSuccess) return
+        Timber.w("Launch QQ group failed or QQ not installed, fallback to manual hint")
+        showQqNotInstalledDialog(groupNumber)
     }
 
-    /** 未安装对应应用（或拉起失败）：明确告知 + 给出复制群号出口 */
-    private fun showGroupAppNotInstalledDialog(groupNumber: String) {
+    /** 未安装 QQ（或拉起失败）：明确告知 + 给出复制群号出口 */
+    private fun showQqNotInstalledDialog(groupNumber: String) {
         MaterialAlertDialogBuilder(requireContext())
-            .setTitle(R.string.feedback_group_app_not_installed)
-            .setMessage(getString(R.string.feedback_group_app_not_installed_message, groupNumber))
-            .setPositiveButton(R.string.feedback_copy_group_number) { _, _ -> copyGroupNumber(groupNumber) }
+            .setTitle(R.string.feedback_qq_not_installed)
+            .setMessage(getString(R.string.feedback_qq_not_installed_message, groupNumber))
+            .setPositiveButton(R.string.feedback_copy_group_number) { _, _ -> copyQqGroupNumber(groupNumber) }
             .setNegativeButton("关闭", null)
             .show()
     }
@@ -378,9 +378,9 @@ class SettingsFragment : Fragment() {
                 is UpdateResult.Available -> {
                     b.tvUpdateValue.text = "发现 ${result.versionLabel}"
                     b.tvUpdateValue.setTextColor(resolveColor(R.color.accent))
-                    // 本次解析到镜像链接时顺带刷新网盘入口副文案（缓存已在 UpdateChecker 落盘）
-                    if (result.mirrorUrl != null) {
-                        b.tvMirrorValue.text = "可下载 ${result.versionLabel}"
+                    // 本次解析到夸克链接时顺带刷新网盘入口副文案（缓存已在 UpdateChecker 落盘）
+                    if (result.quarkUrl != null) {
+                        b.tvQuarkValue.text = "可下载 ${result.versionLabel}"
                     }
                     showUpdateDialog(result)
                 }
@@ -397,25 +397,25 @@ class SettingsFragment : Fragment() {
     }
 
     /**
-     * 国内镜像下载入口（PRD 镜像下载通道 §4.2）。
+     * 夸克网盘下载入口（PRD 夸克网盘更新通道 §4.2）。
      * 链接来源：最近一次检查更新解析到的缓存；无缓存时只明确提示，不影响任何其他流程。
      */
-    private fun openMirrorDownload() {
-        val link = updateChecker.cachedMirrorLink()
+    private fun openQuarkDownload() {
+        val link = updateChecker.cachedQuarkLink()
         if (link == null) {
             toast("暂无网盘链接，请先检查更新")
             return
         }
         eventLogger.event(
             "update_check",
-            "action" to "mirror_open",
+            "action" to "quark_open",
             "version" to link.versionLabel
         )
         openUrl(link.url)
     }
 
     /**
-     * 新版本对话框（F6 + 镜像下载通道 §4.3）：实现收敛在 [UpdatePrompt]，
+     * 新版本对话框（F6 + 夸克网盘更新通道 §4.3）：实现收敛在 [UpdatePrompt]，
      * 供设置页手动检查与 MainActivity 启动自动检查共用（含防重入）。
      */
     private fun showUpdateDialog(result: UpdateResult.Available) {

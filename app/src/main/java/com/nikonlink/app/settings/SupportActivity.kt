@@ -40,7 +40,7 @@ class SupportActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "Support"
         private const val GITHUB_URL = "https://github.com/Wan-1230/N-link"
-        private const val QR_FILE_NAME = "n-link-donate-qr.png"
+        private const val QR_FILE_NAME = "n-link-donate-wechat.png"
     }
 
     private lateinit var binding: ActivitySupportBinding
@@ -66,7 +66,7 @@ class SupportActivity : AppCompatActivity() {
     private fun showZoomDialog() {
         val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
         val imageView = ImageView(this).apply {
-            setImageResource(R.drawable.ic_donate_qr)
+            setImageResource(R.drawable.ic_donate_wechat_qr)
             adjustViewBounds = true
         }
         imageView.setOnClickListener { dialog.dismiss() }
@@ -86,7 +86,7 @@ class SupportActivity : AppCompatActivity() {
 
     /** 二维码位图（从打包资源解码，保存/分享共用同一份） */
     private suspend fun loadQrBitmap(): Bitmap = withContext(Dispatchers.IO) {
-        BitmapFactory.decodeResource(resources, R.drawable.ic_donate_qr)
+        BitmapFactory.decodeResource(resources, R.drawable.ic_donate_wechat_qr)
     }
 
     /** 把二维码写到 cache/share 下的临时文件，供保存与分享复用 */

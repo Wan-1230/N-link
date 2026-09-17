@@ -12,9 +12,9 @@ import com.nikonlink.app.shared.common.AppEventLogger
 import timber.log.Timber
 
 /**
- * 更新弹窗（PRD「镜像下载通道」§4.3 / §4.5）
+ * 更新弹窗（PRD「夸克网盘更新通道」§4.3 / §4.5）
  *
- * - 「国内镜像下载（推荐）」全宽主按钮置顶（最高曝光位），「GitHub 更新」全宽次按钮，
+ * - 「夸克网盘下载（国内推荐）」全宽主按钮置顶（最高曝光位），「GitHub 更新」全宽次按钮，
  *   「查看完整日志 / 稍后」文字按钮；无对应链接时隐藏对应按钮
  * - [showIfNotShowing] 带进程级防重入：启动自动检查与设置页手动检查不会叠出两个弹窗
  * - [openUrl] 含「无浏览器时复制地址」兜底，设置页与弹窗按钮共用
@@ -33,9 +33,9 @@ object UpdatePrompt {
 
         val meta = buildString {
             result.publishedAtLabel?.let { append("发布于 ").append(it) }
-            result.mirrorCode?.let {
+            result.quarkCode?.let {
                 if (isNotEmpty()) append(" · ")
-                append("提取码：").append(it).append("（打开镜像下载页时输入）")
+                append("提取码：").append(it).append("（打开夸克分享页时输入）")
             }
             if (result.versionUnknown) {
                 if (isNotEmpty()) append("\n")
@@ -55,19 +55,19 @@ object UpdatePrompt {
             .create()
         dialog.setOnDismissListener { showing = false }
 
-        // 镜像通道：视觉主导位（全宽黑底主按钮），打开分享页
-        view.findViewById<Button>(R.id.btnUpdateMirror).apply {
-            if (result.mirrorUrl == null) {
+        // 夸克通道：视觉主导位（全宽黑底主按钮），打开分享页
+        view.findViewById<Button>(R.id.btnUpdateQuark).apply {
+            if (result.quarkUrl == null) {
                 visibility = View.GONE
             } else {
                 setOnClickListener {
                     dialog.dismiss()
                     eventLogger.event(
                         "update_check",
-                        "action" to "mirror_open",
+                        "action" to "quark_open",
                         "version" to result.versionLabel
                     )
-                    openUrl(context, eventLogger, result.mirrorUrl)
+                    openUrl(context, eventLogger, result.quarkUrl)
                 }
             }
         }
