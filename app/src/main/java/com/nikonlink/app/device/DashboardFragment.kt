@@ -563,7 +563,7 @@ class DashboardFragment : Fragment() {
             viewModel.disconnectUsb()
         }
 
-        // STA 主机注册（ZDROP 式）：先引导用户在相机端进入「连接至 PC」向导，再执行注册
+        // STA 主机注册：先引导用户在相机端进入「连接至 PC」向导，再执行注册
         binding.btnStaHostRegister.pressEffect()
         binding.btnStaHostRegister.setOnClickListener {
             MaterialAlertDialogBuilder(requireContext())

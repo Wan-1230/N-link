@@ -42,7 +42,7 @@ class CameraParameterManager @Inject constructor(
     private val ptpSession: PtpSessionManager,
     private val usbPtpManager: UsbPtpManager,
     private val transferManager: TransferManager,
-    private val digeekerClient: DigeekerShutterCountClient
+    private val remoteCountClient: RemoteShutterCountClient
 ) {
     companion object {
         private const val TAG = "CameraParams"
@@ -403,7 +403,7 @@ class CameraParameterManager @Inject constructor(
     }
 
     /**
-     * 快门次数：机身属性普遍不提供，直接后台导出照片到缓存并走 digeeker 解析。
+     * 快门次数：机身属性普遍不提供，直接后台导出照片到缓存并走在线解析。
      */
     private fun ensureShutterCountQuery(force: Boolean = false) {
         if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) return
@@ -435,7 +435,7 @@ class CameraParameterManager @Inject constructor(
 
                 // 两级解析（可行性验证结论：尼康无快门计数 PTP 属性，只能走照片 MakerNotes）：
                 // ① 本地解析 MakerNotes 0x00A7——离线、私密、零流量；
-                // ② 本地失败（旧机型加密 MakerNote / 结构变体）→ Digeeker 云端解析兜底。
+                // ② 本地失败（旧机型加密 MakerNote / 结构变体）→ 在线解析兜底。
                 val local = NikonShutterCountParser.parseFile(target)
                 if (local != null && local >= 0) {
                     _cameraInfo.value = _cameraInfo.value.copy(
@@ -448,14 +448,14 @@ class CameraParameterManager @Inject constructor(
                     return@launch
                 }
 
-                val count = digeekerClient.queryShutterCount(target)
+                val count = remoteCountClient.queryShutterCount(target)
                 if (count != null && count >= 0) {
                     _cameraInfo.value = _cameraInfo.value.copy(
                         shutterCount = count,
                         shutterCountSource = "云端解析",
                         shutterQueryState = ShutterCountState.SUCCESS
                     )
-                    Timber.tag(TAG).i("Shutter count resolved via digeeker: $count")
+                    Timber.tag(TAG).i("Shutter count resolved via remote parser: $count")
                 } else {
                     markShutterQueryFailed()
                 }
@@ -667,7 +667,7 @@ class CameraParameterManager @Inject constructor(
      * 不同机身对快门的暴露方式不一致：
      * - 标准 0x500D（ExposureTime，1/10000s）：部分机身只读、不刷新，个别机型量纲还不符合规范；
      * - 厂商 0xD100（ShutterSpeed，高 16 位分子/低 16 位分母的打包分数）：Z 系列遥控模式下
-     *   的实际控制属性（参考 ZRelay / SnapBridge 生态的双源实现）。
+     *   的实际控制属性。
      *
      * 优先取 0xD100 的合法值，读不到再回退 0x500D；拿到曝光秒数后 snap 到档位表
      * （显示名与滚轮定位统一用档位 raw，保证三处口径一致）。两者都非法时：
@@ -891,7 +891,7 @@ class CameraParameterManager @Inject constructor(
     }
 
     /**
-     * 切到 B 门档（0x500D = 0xFFFFFFFF，digiCamControl Bulb 模型）。
+     * 切到 B 门档。
      *
      * 必须绕过 [setShutterSpeed] 的 0.5s–30s 档位钳位——那是长曝光失效的隐性阻断之一：
      * 即使 UI 提供了 B 门档，经过钳位后写下去的也永远是 30s。

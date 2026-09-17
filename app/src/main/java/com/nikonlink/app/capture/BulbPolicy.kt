@@ -6,18 +6,18 @@ import com.nikonlink.app.device.ptp.PtpConstants
  * B 门 / 长曝光链路的纯决策核心（可单测）。
  *
  * 参照实现：
- * - digiCamControl（NikonBase.cs）：B 门 = 快门值 0x500D 写 0xFFFFFFFF（需 M/S 档）+ 触发拍摄；
+ * - （NikonBase.cs）：B 门 = 快门值 0x500D 写 0xFFFFFFFF（需 M/S 档）+ 触发拍摄；
  *   收门 = 恢复原快门值（Nikon 模型：改快门值即结束曝光）。
  * - 0x9207 InitiateCaptureRecInMedia(0xFFFFFFFF, 0x0000)：无 AF 拍摄到卡，USB/WiFi 双通道通用，
- *   快门处于 Bulb 时该命令即开启曝光（digiCamControl Live View 拍照同款入口）。
- * - ZRelay `0xA200 BulbReleaseBusy`：收门时机身忙于写卡，需等待重试而非报错。
+ *   快门处于 Bulb 时该命令即开启曝光。
+ * -  `0xA200 BulbReleaseBusy`：收门时机身忙于写卡，需等待重试而非报错。
  *
  * 失效根因对照（v1.0.2 反馈）：旧链路裸发 0x100F InitiateOpenCapture——Z 系无线协议普遍不支持该
  * 操作码、且机身快门不在 Bulb 档时必然失败，失败又无任何反馈，用户感知为「点了没反应」。
  */
 object BulbPolicy {
 
-    /** 0x500D ExposureTime 的 B 门档 raw 值（digiCamControl：SetProperty 0xFFFFFFFF） */
+    /** 0x500D ExposureTime 的 B 门档 raw 值 */
     const val SHUTTER_BULB_RAW: Int = 0xFFFFFFFF.toInt()
 
     /** DeviceBusy / BulbReleaseBusy 的最大重试次数（与录像链路口径一致） */
@@ -46,7 +46,7 @@ object BulbPolicy {
 
     /**
      * 开启曝光的多级尝试序列（逐级降级，任一级成功即进入曝光态）：
-     * ① 0x9207 存储参数=0xFFFFFFFF（gphoto2 capture2 语义：no-AF + 存到卡）；
+     * ① 0x9207 存储参数=0xFFFFFFFF；
      * ② 0x9207 存储参数=真实存储 ID——v1.0.2 真机反馈"存储 ID 无效"：部分机身把
      *    该参数按**存储 ID** 解释且不接受 0xFFFFFFFF，需用 GetStorageIDs 的实际值重试；
      * ③ 0x100E 标准单张拍摄（老机型兜底）；
@@ -98,7 +98,7 @@ object BulbPolicy {
 
     /**
      * 收门命令降级序列（配合「恢复切档前快门值」之后使用）：
-     * ① 0x920C(0,0) TerminateCapture —— gphoto2 `_put_Nikon_Bulb` 收门的权威实现
+     * ① 0x920C(0,0) TerminateCapture ——  TerminateCapture 收门的权威实现
      *    （`ptp_nikon_terminatecapture(params, 0, 0)`），是 0x9207 长曝光的官方配套结束命令；
      * ② 0x1010(0) TerminateOpenCapture —— 0x100F 路径的配套，保留兜底。
      * v1.0.2 只有 0x1010 一条路，Z 系无线普遍不支持 → 收门必败 → 定时曝光远超设定值。

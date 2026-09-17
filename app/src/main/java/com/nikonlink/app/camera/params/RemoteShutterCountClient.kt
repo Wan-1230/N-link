@@ -17,14 +17,14 @@ import javax.inject.Singleton
  * 尼康快门次数查询客户端。
  *
  * 机身 PTP 不提供快门次数时，App 自动把相机照片导出到缓存，
- * 通过 https://nikon.digeeker.com/ 的 EXIF 解析接口读取 MakerNotes.ShutterCount。
+ * 通过在线 EXIF 解析接口读取 MakerNotes.ShutterCount。
  * 接口约定（实测确认）：check -> chunk -> merge -> view。
  */
 @Singleton
-class DigeekerShutterCountClient @Inject constructor() {
+class RemoteShutterCountClient @Inject constructor() {
 
     companion object {
-        private const val TAG = "Digeeker"
+        private const val TAG = "ShutterCount"
         private const val API_BASE = "https://api.digeeker.com"
         private const val CHUNK_SIZE = 5 * 1024 * 1024
         private const val CONNECT_TIMEOUT_MS = 15_000
@@ -49,13 +49,13 @@ class DigeekerShutterCountClient @Inject constructor() {
             )
             val uploadId = checkBody.optJSONObject("data")?.optString("upload_id").orEmpty()
             if (uploadId.isBlank()) {
-                Timber.tag(TAG).w("Digeeker check did not return upload_id")
+                Timber.tag(TAG).w("ShutterCount check did not return upload_id")
                 return@withContext null
             }
 
             var offset = 0L
             for (index in 0 until totalChunks) {
-                val chunkFile = File.createTempFile("digeeker_chunk_$index", ".bin", file.parentFile).apply {
+                val chunkFile = File.createTempFile("sc_chunk_$index", ".bin", file.parentFile).apply {
                     deleteOnExit()
                 }
                 file.inputStream().use { input ->
@@ -99,18 +99,18 @@ class DigeekerShutterCountClient @Inject constructor() {
             )
             val exifId = mergeBody.optJSONObject("data")?.optString("exif_id").orEmpty()
             if (exifId.isBlank()) {
-                Timber.tag(TAG).w("Digeeker merge did not return exif_id")
+                Timber.tag(TAG).w("ShutterCount merge did not return exif_id")
                 return@withContext null
             }
 
             val viewBody = getText("/v1/exif/view/$exifId")
             extractShutterCount(viewBody).also { count ->
                 if (count != null) {
-                    Timber.tag(TAG).i("Shutter count from digeeker: $count")
+                    Timber.tag(TAG).i("Shutter count from remote parser: $count")
                 }
             }
         } catch (e: Exception) {
-            Timber.tag(TAG).w(e, "Digeeker shutter count query failed")
+            Timber.tag(TAG).w(e, "ShutterCount shutter count query failed")
             null
         }
     }
@@ -125,7 +125,7 @@ class DigeekerShutterCountClient @Inject constructor() {
         }
         val body = readResponse(connection)
         return runCatching { JSONObject(body) }
-            .getOrElse { throw IOException("Digeeker invalid JSON: $body") }
+            .getOrElse { throw IOException("ShutterCount invalid JSON: $body") }
     }
 
     private fun getText(path: String): String {
@@ -201,7 +201,7 @@ class DigeekerShutterCountClient @Inject constructor() {
         }
         val body = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
         if (code !in 200..299) {
-            throw IOException("Digeeker HTTP $code: ${body.take(200)}")
+            throw IOException("ShutterCount HTTP $code: ${body.take(200)}")
         }
         return body
     }

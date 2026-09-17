@@ -6,10 +6,10 @@ import java.nio.ByteBuffer
 /**
  * 尼康快门次数本地解析器（PRD 2.4 / 设备页「快门次数」可行性验证的产物）。
  *
- * 可行性结论（调研 libgphoto2 ptp.h / digiCamControl）：
+ * 可行性结论：
  * - 尼康**不提供**快门计数的 PTP 属性（0xD100 是厂商快门速度，0xD1AC 是佳能的计数）；
  * - 业界标准做法是从照片 EXIF 的 **MakerNotes 0x00A7 (ShutterCount)** 解析；
- * - 本地解析失败（旧机型加密 MakerNote / 结构变体）时回退 Digeeker 云端解析。
+ * - 本地解析失败（旧机型加密 MakerNote / 结构变体）时回退在线解析。
  *
  * 解析路径（JPEG 为主，采样文件由查询链路挑选最小的 JPEG）：
  * 1. 定位 APP1 "Exif\0\0" 段 → TIFF 头（II/MM）；

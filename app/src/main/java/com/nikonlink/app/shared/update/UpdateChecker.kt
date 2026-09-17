@@ -117,7 +117,7 @@ class UpdateChecker @Inject constructor(
 
         /**
          * Release body 中夸克网盘标记的解析规则（发版流程按固定格式写入）：
-         * `夸克网盘：https://pan.quark.cn/s/xxxx 提取码：xxxx`
+         * `夸克网盘：https://pan\\.quark\\.cn/s/xxxx 提取码：xxxx`
          * 解析不到 / 格式变化都返回 null，不影响主流程。
          */
         private val QUARK_URL_REGEX = Regex("https?://pan\\.quark\\.cn/s/[A-Za-z0-9]+")

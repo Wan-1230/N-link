@@ -348,7 +348,7 @@ class RemoteFragment : Fragment() {
             // 光圈档位与镜头联动，打开滚轮前先刷新一次（内部会读一次当前焦距）
             "光圈" -> openAperturePicker(param)
             "快门" -> {
-                // B 门作为独立档追加在 30s 之后（digiCamControl/ZRelay「Bulb/Time」同款模型）；
+                // B 门作为独立档追加在 30s 之后；
                 // raw 0xFFFFFFFF 会被常规档位钳位吞掉，确认时走 setShutterBulb 专用路径
                 val bulbRaw = BulbPolicy.SHUTTER_BULB_RAW
                 val rawValues = paramsViewModel.commonShutterSpeeds + bulbRaw

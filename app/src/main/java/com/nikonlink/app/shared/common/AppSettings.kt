@@ -40,7 +40,7 @@ class AppSettings @Inject constructor(
         /** WiFi STA 子模式：相机与手机连接同一 WiFi（默认） */
         const val STA_MODE_SAME_WIFI = "same_wifi"
 
-        /** WiFi STA 子模式：相机连接手机热点（ZDROP 的 PHONE_HOTSPOT 模式） */
+        /** WiFi STA 子模式：相机连接手机热点 */
         const val STA_MODE_PHONE_HOTSPOT = "phone_hotspot"
     }
 
