@@ -115,6 +115,7 @@ class SettingsFragment : Fragment() {
         binding.tvUpdateValue.text = BuildConfig.VERSION_NAME
         binding.tvUpdateValue.setTextColor(resolveColor(R.color.text_tertiary))
         restoreQuarkRow()
+        restoreBaiduRow()
     }
 
     /** 夸克网盘入口副文案（PRD 夸克网盘更新通道 §4.2）：优先展示缓存版本，无缓存给引导提示 */
@@ -126,6 +127,17 @@ class SettingsFragment : Fragment() {
             else -> "可下载"
         }
         binding.tvQuarkValue.setTextColor(resolveColor(R.color.text_tertiary))
+    }
+
+    /** 百度网盘入口副文案（与夸克入口同构）：优先展示缓存版本，无缓存给引导提示 */
+    private fun restoreBaiduRow() {
+        val cached = updateChecker.cachedBaiduShare()
+        binding.tvBaiduValue.text = when {
+            cached == null -> "暂无网盘链接"
+            cached.second != null -> "可下载 ${cached.second}"
+            else -> "可下载"
+        }
+        binding.tvBaiduValue.setTextColor(resolveColor(R.color.text_tertiary))
     }
 
     private fun setupRows() {
@@ -236,6 +248,10 @@ class SettingsFragment : Fragment() {
         // 夸克网盘下载：与 GitHub 通道并列的国内直连下载入口（PRD 夸克网盘更新通道 §4.2）
         binding.rowQuarkUpdate.pressEffect()
         binding.rowQuarkUpdate.setOnClickListener { openQuarkDownload() }
+
+        // 百度网盘下载：与夸克并列的国内直连下载入口（照夸克入口新增）
+        binding.rowBaiduUpdate.pressEffect()
+        binding.rowBaiduUpdate.setOnClickListener { openBaiduDownload() }
 
         binding.rowAbout.pressEffect()
         binding.rowAbout.setOnClickListener {
@@ -382,6 +398,10 @@ class SettingsFragment : Fragment() {
                     if (result.quarkUrl != null) {
                         b.tvQuarkValue.text = "可下载 ${result.versionLabel}"
                     }
+                    // 本次解析到百度链接时同样刷新副文案
+                    if (result.baiduUrl != null) {
+                        b.tvBaiduValue.text = "可下载 ${result.versionLabel}"
+                    }
                     showUpdateDialog(result)
                 }
 
@@ -412,6 +432,24 @@ class SettingsFragment : Fragment() {
             "version" to link.versionLabel
         )
         openUrl(link.url)
+    }
+
+    /**
+     * 百度网盘下载入口（与 [openQuarkDownload] 同构）。
+     * 链接来源：最近一次检查更新解析到的缓存；无缓存时只明确提示，不影响任何其他流程。
+     */
+    private fun openBaiduDownload() {
+        val link = updateChecker.cachedBaiduShare()
+        if (link == null) {
+            toast("暂无网盘链接，请先检查更新")
+            return
+        }
+        eventLogger.event(
+            "update_check",
+            "action" to "baidu_open",
+            "version" to link.second
+        )
+        openUrl(link.first)
     }
 
     /**
