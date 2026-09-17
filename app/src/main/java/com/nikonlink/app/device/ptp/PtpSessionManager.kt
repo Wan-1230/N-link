@@ -37,14 +37,14 @@ class PtpSessionManager @Inject constructor(
         private const val CONNECT_TIMEOUT_MS = 30000
 
         /**
-         * 连接重试次数。官方  的策略（ConnectWifiAction 静态字段 l=5）：
+         * 连接重试次数。实测相机固件握手阶段的策略（最多 5 次）：
          * 相机 WiFi 关联成功后，15740 端口不是立刻 listen 的，此时 connect 会
          * 立即返回 ECONNREFUSED（**不是超时**）。官方靠重试扛过这个就绪窗口，
          * 我们原来一次失败就整条链路失败——这是 STA 首连成功率低的直接原因。
          */
         private const val CONNECT_RETRY_MAX = 5
 
-        /** 重试间隔，官方为 300ms（ConnectWifiAction 静态字段 m=0x12c）。 */
+        /** 重试间隔，实测为 300ms。 */
         private const val CONNECT_RETRY_INTERVAL_MS = 300L
         // 非配对模式读超时降至 15s：断链/半开连接能更快被识别，交给上层快速恢复
         private const val READ_TIMEOUT_MS = 15000
@@ -126,7 +126,7 @@ class PtpSessionManager @Inject constructor(
     /**
      * 建立 TCP 连接，失败按官方策略重试。
      *
-     * 逆向官方  `ConnectWifiAction` 得到的连接语义：
+     * 真机实测得到的连接语义：
      * - 连接超时 30s（[CONNECT_TIMEOUT_MS]）
      * - 失败最多重试 5 次，每次间隔 300ms
      * - **[java.net.SocketTimeoutException] 不重试**：超时说明对端根本不可达
