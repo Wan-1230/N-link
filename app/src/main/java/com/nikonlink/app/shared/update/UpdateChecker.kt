@@ -35,10 +35,10 @@ enum class FailReason(val message: String, val offerReleasePage: Boolean) {
 }
 
 /**
- * 国内镜像下载链接（PRD「镜像下载通道」§3：每版本新分享）。
+ * 夸克网盘下载链接（PRD「夸克网盘更新通道」§3：每版本新分享）。
  * [url]/[code] 来自 Release body 固定标记（发版流程写入），[versionLabel] 为当时的版本名。
  */
-data class MirrorLink(
+data class QuarkLink(
     val url: String,
     val code: String?,
     val versionLabel: String?
@@ -63,10 +63,10 @@ sealed class UpdateResult {
         val versionUnknown: Boolean = false,
         val publishedAtLabel: String? = null,
         val releaseUrl: String? = null,
-        /** 国内镜像下载链接（Release body 固定标记解析结果，无标记为 null） */
-        val mirrorUrl: String? = null,
-        /** 镜像提取码（与 [mirrorUrl] 同源，无标记为 null） */
-        val mirrorCode: String? = null
+        /** 夸克网盘下载链接（Release body 固定标记解析结果，无标记为 null） */
+        val quarkUrl: String? = null,
+        /** 夸克提取码（与 [quarkUrl] 同源，无标记为 null） */
+        val quarkCode: String? = null
     ) : UpdateResult()
 
     data class Failed(val reason: FailReason) : UpdateResult()
@@ -102,18 +102,18 @@ class UpdateChecker @Inject constructor(
         private const val NOTES_MAX_LEN = 500
 
         /**
-         * Release body 中国内镜像标记的解析规则（发版流程按固定格式写入）：
-         * `国内镜像：https://pan\\.quark\\.cn/s/xxxx 提取码：xxxx`
+         * Release body 中夸克网盘标记的解析规则（发版流程按固定格式写入）：
+         * `夸克网盘：https://pan\\.quark\\.cn/s/xxxx 提取码：xxxx`
          * 解析不到 / 格式变化都返回 null，不影响主流程。
          */
-        private val MIRROR_URL_REGEX = Regex("https?://pan\\.quark\\.cn/s/[A-Za-z0-9]+")
-        private val MIRROR_CODE_REGEX = Regex("提取码[:：\\s]*([A-Za-z0-9]{4})")
+        private val QUARK_URL_REGEX = Regex("https?://pan\\.quark\\.cn/s/[A-Za-z0-9]+")
+        private val QUARK_CODE_REGEX = Regex("提取码[:：\\s]*([A-Za-z0-9]{4})")
 
-        /** 镜像链接缓存：GitHub 不可达时设置页镜像入口的离线兜底 */
-        private const val MIRROR_PREFS = "update_channel"
-        private const val MIRROR_KEY_URL = "mirror_url"
-        private const val MIRROR_KEY_CODE = "mirror_code"
-        private const val MIRROR_KEY_VERSION = "mirror_version"
+        /** 夸克链接缓存：GitHub 不可达时设置页夸克入口的离线兜底 */
+        private const val QUARK_PREFS = "update_channel"
+        private const val QUARK_KEY_URL = "quark_url"
+        private const val QUARK_KEY_CODE = "quark_code"
+        private const val QUARK_KEY_VERSION = "quark_version"
     }
 
     private val gson = Gson()
@@ -215,10 +215,10 @@ class UpdateChecker @Inject constructor(
         }
         val versionLabel = remote?.let { "v$it" } ?: remoteTag.ifEmpty { release.name ?: "新版本" }
 
-        // 镜像通道（PRD §4.1）：从完整 body 解析固定标记，成功即落缓存供离线兜底；
+        // 夸克通道（PRD §4.1）：从完整 body 解析固定标记，成功即落缓存供离线兜底；
         // 解析失败只意味着本版本没有网盘链接，绝不动主结果
-        val mirror = parseMirrorLink(fullBody)?.let { (url, code) ->
-            MirrorLink(url, code, versionLabel).also(::persistMirrorCache)
+        val quark = parseQuarkLink(fullBody)?.let { (url, code) ->
+            QuarkLink(url, code, versionLabel).also(::persistQuarkCache)
         }
 
         return UpdateResult.Available(
@@ -228,37 +228,37 @@ class UpdateChecker @Inject constructor(
             versionUnknown = remote == null,
             publishedAtLabel = release.publishedAt?.let(::formatPublishDate),
             releaseUrl = release.htmlUrl,
-            mirrorUrl = mirror?.url,
-            mirrorCode = mirror?.code
+            quarkUrl = quark?.url,
+            quarkCode = quark?.code
         )
     }
 
     /**
-     * 最近一次缓存的国内镜像链接。
-     * 检查更新成功解析到标记时写入；GitHub 不可达时设置页镜像入口靠它兜底，无缓存返回 null。
+     * 最近一次缓存的夸克网盘链接。
+     * 检查更新成功解析到标记时写入；GitHub 不可达时设置页夸克入口靠它兜底，无缓存返回 null。
      */
-    fun cachedMirrorLink(): MirrorLink? = runCatching {
-        val sp = context.getSharedPreferences(MIRROR_PREFS, Context.MODE_PRIVATE)
-        val url = sp.getString(MIRROR_KEY_URL, null)?.takeIf { it.isNotBlank() } ?: return null
-        MirrorLink(url, sp.getString(MIRROR_KEY_CODE, null), sp.getString(MIRROR_KEY_VERSION, null))
+    fun cachedQuarkLink(): QuarkLink? = runCatching {
+        val sp = context.getSharedPreferences(QUARK_PREFS, Context.MODE_PRIVATE)
+        val url = sp.getString(QUARK_KEY_URL, null)?.takeIf { it.isNotBlank() } ?: return null
+        QuarkLink(url, sp.getString(QUARK_KEY_CODE, null), sp.getString(QUARK_KEY_VERSION, null))
     }.getOrNull()
 
     /** Release body 固定标记 → (链接, 提取码)；无标记返回 null */
-    private fun parseMirrorLink(body: String): Pair<String, String?>? {
-        val url = MIRROR_URL_REGEX.find(body)?.value ?: return null
-        val code = MIRROR_CODE_REGEX.find(body)?.groupValues?.getOrNull(1)
+    private fun parseQuarkLink(body: String): Pair<String, String?>? {
+        val url = QUARK_URL_REGEX.find(body)?.value ?: return null
+        val code = QUARK_CODE_REGEX.find(body)?.groupValues?.getOrNull(1)
         return url to code
     }
 
-    /** 镜像链接缓存落盘；缓存失败只影响兜底能力，不影响本次更新结果 */
-    private fun persistMirrorCache(link: MirrorLink) {
+    /** 夸克链接缓存落盘；缓存失败只影响兜底能力，不影响本次更新结果 */
+    private fun persistQuarkCache(link: QuarkLink) {
         runCatching {
-            context.getSharedPreferences(MIRROR_PREFS, Context.MODE_PRIVATE).edit()
-                .putString(MIRROR_KEY_URL, link.url)
-                .putString(MIRROR_KEY_CODE, link.code)
-                .putString(MIRROR_KEY_VERSION, link.versionLabel)
+            context.getSharedPreferences(QUARK_PREFS, Context.MODE_PRIVATE).edit()
+                .putString(QUARK_KEY_URL, link.url)
+                .putString(QUARK_KEY_CODE, link.code)
+                .putString(QUARK_KEY_VERSION, link.versionLabel)
                 .apply()
-        }.onFailure { e -> Timber.tag(TAG).w(e, "Persist mirror cache failed") }
+        }.onFailure { e -> Timber.tag(TAG).w(e, "Persist quark cache failed") }
     }
 
     /** ISO8601 时间戳 → yyyy-MM-dd（F6 弹窗日期展示；解析失败返回 null 不阻塞更新流程） */

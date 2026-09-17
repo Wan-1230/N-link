@@ -525,7 +525,7 @@
                     android:background="@color/divider" />
 
                 <LinearLayout
-                    android:id="@+id/rowMirrorUpdate"
+                    android:id="@+id/rowQuarkUpdate"
                     android:layout_width="match_parent"
                     android:layout_height="52dp"
                     android:gravity="center_vertical"
@@ -536,12 +536,12 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="国内镜像下载"
+                        android:text="夸克网盘下载"
                         android:textColor="@color/text_primary"
                         android:textSize="14sp" />
 
                     <TextView
-                        android:id="@+id/tvMirrorValue"
+                        android:id="@+id/tvQuarkValue"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="暂无网盘链接"

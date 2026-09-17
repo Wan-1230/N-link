@@ -57,7 +57,7 @@ N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等�
 
 - **快门次数查询**：机身属性不直接提供时，自动解析照片元数据得出
 - 拍摄参数预设管理、传输完成通知、RAW 处理策略
-- **应用内更新**：启动时自动检查（只提示正式版），更新弹窗纯文本呈现
+- **应用内更新**：启动时自动检查（只提示正式版），解析网盘回退链接写入本地缓存，更新弹窗纯文本呈现
 - 支持与反馈页（问题反馈 / 交流群 / 捐赠入口）
 - 黑白极简设计语言：DayNight 自适应主题、8px 圆角、PressEffect 按压反馈
 
@@ -79,7 +79,11 @@ N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等�
 
 ### 下载安装（普通用户）
 
-从本仓库的 [Releases 页面](https://github.com/Wan-1230/N-link/releases/latest) 下载最新 APK；安装时允许「未知来源」即可。应用内「检查更新」会在启动时自动比对正式版并提示。
+| 渠道 | 说明 |
+|------|------|
+| **Releases 页面** | [最新 Release](https://github.com/Wan-1230/N-link/releases/latest) 下载 APK（国内访问不稳定时用下方网盘） |
+| **网盘** | [公开永久链接（免提取码）](https://pan.quark.cn/s/d060f7f350e8)，目录 `/N-Link/releases/` 恒为最新版（历史版本归档于 `/N-Link/_archive-releases/`） |
+| **应用内检查更新** | 启动时自动检查（只提示正式版），Releases 不可达时自动回退到网盘缓存链接 |
 
 ### WiFi STA 连接教程
 
@@ -189,7 +193,7 @@ app/src/main/java/com/nikonlink/app/
 
 ## 📋 更新日志
 
-> 从新到旧保留全部版本记录；应用内「检查更新」仅提示正式版。最新版下载见 [Releases 页面](https://github.com/Wan-1230/N-link/releases/latest)。
+> 从新到旧保留全部版本记录；应用内「检查更新」仅提示正式版。最新版下载见 [Releases 页面](https://github.com/Wan-1230/N-link/releases/latest) 或上方网盘。
 
 ### v2.0.1 — 2026-09-17
 
