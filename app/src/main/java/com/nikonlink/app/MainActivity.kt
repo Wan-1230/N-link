@@ -266,7 +266,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 启动自动检查更新（PRD 镜像下载通道 §4.5）。
+     * 启动自动检查更新（PRD 夸克网盘更新通道 §4.5）。
      *
      * - 每进程一次：onCreate 触发，与主界面加载并行，不阻塞首帧
      * - 有新版本 → 等主界面 resumed 后弹更新弹窗（UpdatePrompt 内置防重入，
