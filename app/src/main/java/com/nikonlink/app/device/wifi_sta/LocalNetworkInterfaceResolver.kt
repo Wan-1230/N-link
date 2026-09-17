@@ -27,7 +27,7 @@ import javax.inject.Singleton
  * `sta_fail reason=no_wifi_network attempt=1`、耗时恒定 16.2s。
  *
  * **唯一能拿到手机自身热点接口的手段是 `NetworkInterface.getNetworkInterfaces()`**
- * —— 这正是  的做法（其 dex 中存在该方法调用，而我们全项目零使用）。
+ * —— 这是唯一可靠的判定方式。
  *
  * ## 为什么不能靠接口名硬编码
  *
