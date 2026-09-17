@@ -28,6 +28,7 @@ import com.nikonlink.app.shared.common.AppSettings
 import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
@@ -103,6 +104,9 @@ class PreviewActivity : AppCompatActivity() {
     /** 每页下载结果缓存：position -> 已下载本地路径（避免滑动后丢失下载态） */
     private val downloadResults = mutableMapOf<Int, String>()
 
+    /** 当前页进度订阅协程（onStart 订阅 / onStop 取消 / 切页重订阅） */
+    private var progressJob: Job? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityPreviewBinding.inflate(layoutInflater)
@@ -143,6 +147,85 @@ class PreviewActivity : AppCompatActivity() {
         }
     }
 
+    // ---------- 进度订阅（按 handle，退出再进入仍显示实时进度） ----------
+
+    override fun onStart() {
+        super.onStart()
+        // 页面可见时订阅当前文件的下载进度；重新进入（onStop→onStart）会再次订阅并按当前进度渲染
+        subscribeProgress()
+    }
+
+    override fun onStop() {
+        // 页面不可见时取消订阅（释放 Flow 收集），不丢进度——下次进入重新订阅即可
+        progressJob?.cancel()
+        progressJob = null
+        super.onStop()
+    }
+
+    /** 订阅当前文件的下载进度；切页 / onStart 都会重订阅，实现「退出再进入仍显示进度」 */
+    private fun subscribeProgress() {
+        progressJob?.cancel()
+        progressJob = lifecycleScope.launch {
+            transferManager.observeDownloadProgress(file.handle).collect { progress ->
+                renderDownloadProgress(progress)
+            }
+        }
+    }
+
+    /** 按 DownloadProgress 渲染底部下载栏（订阅驱动，单一数据源） */
+    private fun renderDownloadProgress(progress: DownloadProgress) {
+        when (progress) {
+            is DownloadProgress.Downloading -> {
+                binding.progressDownload.visibility = View.VISIBLE
+                val totalKnown = progress.total > 0 && progress.total != 0xFFFFFFFFL
+                binding.progressDownload.isIndeterminate = !totalKnown
+                if (totalKnown) {
+                    val pct = (progress.received * 100 / progress.total).toInt().coerceIn(0, 100)
+                    binding.progressDownload.progress = pct
+                    binding.tvDownloadLabel.text = "下载中 $pct%"
+                } else {
+                    binding.progressDownload.progress = 0
+                    binding.tvDownloadLabel.text = "下载中"
+                }
+                binding.iconDownload.setImageResource(R.drawable.ic_download)
+            }
+
+            DownloadProgress.Queued -> {
+                binding.progressDownload.visibility = View.VISIBLE
+                binding.progressDownload.isIndeterminate = true
+                binding.iconDownload.setImageResource(R.drawable.ic_download)
+                binding.tvDownloadLabel.text = "排队中"
+            }
+
+            is DownloadProgress.Completed -> {
+                binding.progressDownload.visibility = View.GONE
+                binding.progressDownload.isIndeterminate = false
+                binding.progressDownload.progress = 100
+                binding.iconDownload.setImageResource(R.drawable.ic_check)
+                binding.iconDownload.scaleX = 1f
+                binding.iconDownload.scaleY = 1f
+                binding.tvDownloadLabel.text = "已完成"
+                downloadResults[currentPosition] = progress.localPath
+            }
+
+            is DownloadProgress.Failed -> {
+                binding.progressDownload.visibility = View.GONE
+                binding.iconDownload.setImageResource(R.drawable.ic_download)
+                binding.tvDownloadLabel.text = "重试"
+            }
+
+            DownloadProgress.NotQueued -> {
+                binding.progressDownload.visibility = View.GONE
+                binding.progressDownload.isIndeterminate = false
+                binding.progressDownload.progress = 0
+                binding.iconDownload.setImageResource(R.drawable.ic_download)
+                binding.iconDownload.scaleX = 1f
+                binding.iconDownload.scaleY = 1f
+                binding.tvDownloadLabel.text = "下载"
+            }
+        }
+    }
+
     // ---------- 列表重建与 ViewPager ----------
 
     private fun buildFilesFromIntent(): List<CameraFile> {
@@ -178,7 +261,7 @@ class PreviewActivity : AppCompatActivity() {
                 file = files[position]
                 updateTopBar()
                 refreshMarkState()   // 切页立即刷新标记态（不等待 mark 变化事件）
-                syncDownloadUi(position)
+                subscribeProgress()  // 切到新文件 → 重订阅其下载进度，进度条跟随切换
             }
         })
     }
@@ -590,28 +673,6 @@ class PreviewActivity : AppCompatActivity() {
                     }
                 }
             }
-        }
-    }
-
-    /** 切页时根据下载缓存同步底部下载栏（已下载显示完成，否则复位） */
-    private fun syncDownloadUi(position: Int) {
-        val path = downloadResults[position]
-        if (path != null) {
-            binding.progressDownload.visibility = View.GONE
-            binding.progressDownload.isIndeterminate = false
-            binding.progressDownload.progress = 100
-            binding.iconDownload.setImageResource(R.drawable.ic_check)
-            binding.iconDownload.scaleX = 1f
-            binding.iconDownload.scaleY = 1f
-            binding.tvDownloadLabel.text = "已完成"
-        } else {
-            binding.progressDownload.visibility = View.GONE
-            binding.progressDownload.isIndeterminate = false
-            binding.progressDownload.progress = 0
-            binding.iconDownload.setImageResource(R.drawable.ic_download)
-            binding.iconDownload.scaleX = 1f
-            binding.iconDownload.scaleY = 1f
-            binding.tvDownloadLabel.text = "下载"
         }
     }
 
