@@ -266,7 +266,10 @@ object PtpConstants {
     // 启动 LiveView 前先设定该值，否则相机可能拒绝 StartLiveView
     const val PROP_VALUE_REMOTE_MODE = 0x8012
 
-    // 触摸对焦坐标范围约 x:0~4000, y:0~3000
+    // 相机 AF 坐标域（ChangeAfArea 0x9205 的目标点取值范围），固定 x:0~4000, y:0~3000 = 4:3。
+    // 注意：这是相机坐标箱（4:3），而 Live View 实际帧可能不是 4:3（如 640×424≈3:2）。
+    // 触摸对焦时不能直接 nx*4000/ny*3000，必须按帧真实宽高比把这个 4:3 箱缩放后再映射
+    // （见 LiveViewManager.mapTapToAfCoord），否则会产生系统偏移。数值本身为相机域，勿改。
     const val AF_COORD_MAX_X = 4000
     const val AF_COORD_MAX_Y = 3000
 

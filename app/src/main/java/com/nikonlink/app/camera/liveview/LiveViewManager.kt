@@ -1,5 +1,6 @@
 package com.nikonlink.app.camera.liveview
 
+import android.graphics.BitmapFactory
 import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.usb.UsbPtpManager
@@ -108,6 +109,17 @@ class LiveViewManager @Inject constructor(
     private var frameCount = 0
     private var lastFpsTime = 0L
 
+    /**
+     * 最新监看帧的像素尺寸。用于把归一化点击换算到相机 AF 坐标域时校正宽高比：
+     * 相机 AF 坐标箱 AF_COORD_MAX_X×Y 是固定 4:3，而 Live View 实际帧可能不是 4:3，
+     * 直接 x*4000/y*3000 会产生系统性偏移，必须按帧真实比例缩放。
+     * 仅在未知时解析一次 JPEG 头（监看期间分辨率固定），stop 时归零。
+     */
+    @Volatile
+    private var framePixelWidth = 0
+    @Volatile
+    private var framePixelHeight = 0
+
     /** 进入无线控制模式前的曝光程序模式，停止监看时恢复（wireless control mode exited） */
     private var savedExposureMode: ByteArray? = null
 
@@ -194,6 +206,10 @@ class LiveViewManager @Inject constructor(
                     if (usbPtpManager.isConnected()) usbPtpManager.setKeepAlivePaused(true)
                     startFrameLoop()
                     Timber.tag(TAG).i("✓ Live View started")
+                    // 启动后一次性试读候选 AF 属性码，打日志供真机标定（只读、不阻断）
+                    scope?.launch(Dispatchers.IO) {
+                        runCatching { probeCameraAfProperties("af_readback_start") }
+                    }
                 } else {
                     // 全链路优化: 启动失败时恢复原曝光模式，
                     // 避免相机卡在无线控制模式导致后续下载被拒绝
@@ -373,6 +389,9 @@ class LiveViewManager @Inject constructor(
         }
         _liveViewState.value = LiveViewState.STOPPED
         _fps.value = 0
+        // 帧尺寸随本次监看会话失效，下次启动重新解析
+        framePixelWidth = 0
+        framePixelHeight = 0
         // 停止监看后退出无线控制模式，恢复原曝光程序模式
         restoreExposureModeIfNeeded()
         Timber.tag(TAG).i("Live View stopped")
@@ -454,6 +473,10 @@ class LiveViewManager @Inject constructor(
                             timestamp = frameStart,
                             latencyMs = latency
                         )
+                        // 仅在帧尺寸未知时解析一次 JPEG 头，供触摸对焦按真实比例换算
+                        if (framePixelWidth == 0 || framePixelHeight == 0) {
+                            updateFrameSize(imageData)
+                        }
                         _latestFrame.tryEmit(frame)
                         consecutiveErrors = 0
 
@@ -590,12 +613,11 @@ class LiveViewManager @Inject constructor(
         if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) return false
         return withContext(Dispatchers.IO) {
             try {
-                // 触摸对焦坐标范围约 x:0~4000, y:0~3000，
-                // 将归一化坐标映射到该范围
-                val afX = (x * PtpConstants.AF_COORD_MAX_X).toInt()
-                    .coerceIn(0, PtpConstants.AF_COORD_MAX_X)
-                val afY = (y * PtpConstants.AF_COORD_MAX_Y).toInt()
-                    .coerceIn(0, PtpConstants.AF_COORD_MAX_Y)
+                // 归一化点击 (x,y ∈ 0..1，相对监看图像内容) → 相机 AF 坐标域。
+                // 关键修正：AF 坐标箱(AF_COORD_MAX_X×Y)固定 4:3，而 Live View 帧可能不是 4:3，
+                // 直接 x*4000/y*3000 会按 4:3 解释点击、在帧≠4:3 时产生系统偏移；
+                // 改为按帧真实宽高比把内容矩形居中嵌入箱子里再映射（见 mapTapToAfCoord）。
+                val (afX, afY) = mapTapToAfCoord(x, y)
 
                 val response = onActiveChannel(
                     wifi = {
@@ -614,7 +636,25 @@ class LiveViewManager @Inject constructor(
                         wifi = { ptpSession.afDrive() },
                         usb = { usbPtpManager.afDrive() }
                     )
-                    Timber.tag(TAG).d("Touch focus: ($afX, $afY)")
+                    Timber.tag(TAG).d(
+                        "Touch focus: tap=($x,$y) -> af=($afX,$afY) frame=${framePixelWidth}x$framePixelHeight"
+                    )
+                    // 下发成功后再回读相机 AF 相关属性，尝试确认相机真实对焦点。
+                    // 候选码语义尚未经真机标定，现仅打日志、不解析坐标；无法确认时
+                    // 降级为「只显示点击位置」（viewFocusIndicator 本地框），绝不画不符框。
+                    scope?.launch(Dispatchers.IO) {
+                        runCatching { probeCameraAfProperties("af_tap") }
+                    }
+                } else {
+                    // 下发失败：相机实际对焦点未知，明确降级为只显示点击位置
+                    eventLogger.event(
+                        "af_indicator",
+                        "mode" to "tap_only",
+                        "reason" to "area_set_failed",
+                        "afX" to afX,
+                        "afY" to afY
+                    )
+                    Timber.tag(TAG).w("Touch focus area set failed; show tap-only indicator")
                 }
                 response
             } catch (e: Exception) {
@@ -623,6 +663,98 @@ class LiveViewManager @Inject constructor(
             }
         }
     }
+
+    /**
+     * 归一化点击 (nx,ny ∈ 0..1，相对监看图像内容) → 相机 AF 坐标 (0..AF_COORD_MAX_X, 0..AF_COORD_MAX_Y)。
+     *
+     * 相机 AF 坐标箱是固定 4:3 的域，而 Live View 帧可能是别的比例（如 640×424≈3:2）。
+     * 若直接 nx*4000 / ny*3000，等于把帧当成 4:3，纵向/横向会被系统性拉伸偏移。
+     * 正确做法：把「帧内容矩形」以保比例方式（letterbox 居中）嵌入 4:3 箱子，
+     * 再把归一化点击映射到该内容矩形内。帧=4:3 时退化为旧直乘逻辑（无偏移）。
+     * 帧尺寸未知时退回 4:3 直乘兜底，避免除零。
+     */
+    private fun mapTapToAfCoord(nx: Float, ny: Float): Pair<Int, Int> {
+        val boxW = PtpConstants.AF_COORD_MAX_X
+        val boxH = PtpConstants.AF_COORD_MAX_Y
+        val fw = framePixelWidth
+        val fh = framePixelHeight
+        val (cx, cy) = if (fw > 0 && fh > 0) {
+            val frameAspect = fw.toFloat() / fh
+            val boxAspect = boxW.toFloat() / boxH
+            if (frameAspect > boxAspect) {
+                // 帧更宽：内容占满箱子宽，纵向信箱居中
+                val contentH = boxW / frameAspect
+                val padY = (boxH - contentH) / 2f
+                Pair(nx * boxW, padY + ny * contentH)
+            } else {
+                // 帧更高/更窄：内容占满箱子高，横向信箱居中
+                val contentW = boxH * frameAspect
+                val padX = (boxW - contentW) / 2f
+                Pair(padX + nx * contentW, ny * boxH)
+            }
+        } else {
+            // 未知帧尺寸：兜底 4:3 直乘
+            Pair(nx * boxW, ny * boxH)
+        }
+        return cx.toInt().coerceIn(0, boxW) to cy.toInt().coerceIn(0, boxH)
+    }
+
+    /**
+     * 解析监看帧 JPEG 头拿到像素宽高（仅 bounds，不解码像素），用于触摸对焦比例校正。
+     * 仅在帧尺寸未知时调用一次；解析失败静默忽略（下次帧再试）。
+     */
+    private fun updateFrameSize(data: ByteArray) {
+        try {
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            val start = findJpegStart(data)
+            BitmapFactory.decodeByteArray(data, start, data.size - start, opts)
+            if (opts.outWidth > 0 && opts.outHeight > 0) {
+                framePixelWidth = opts.outWidth
+                framePixelHeight = opts.outHeight
+                Timber.tag(TAG).d("LiveView frame size: ${framePixelWidth}x${framePixelHeight}")
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    /** 在原始 JPEG 字节流中定位 SOI(0xFFD8)，容错相机可能的前导数据 */
+    private fun findJpegStart(data: ByteArray): Int {
+        for (i in 0 until data.size - 1) {
+            if ((data[i].toInt() and 0xFF) == 0xFF && (data[i + 1].toInt() and 0xFF) == 0xD8) return i
+        }
+        return 0
+    }
+
+    /**
+     * 只读回读候选 AF 相关设备属性（尼康厂商 0xD0xx/0xD1xx 段），逐个试读并记录成败，
+     * 打到 Timber 与 AppEventLogger 供真机标定「哪个码对应真实对焦点」。
+     * 不解析坐标、不据此绘制对焦点框；标定前一律由调用方降级为只显示点击位置。
+     * [phase] 仅用于区分日志事件（启动校准 / 触摸时回读），不含 v2.0.2 的 af_calib/af_probe 命名。
+     */
+    private suspend fun probeCameraAfProperties(phase: String) {
+        val outcomes = AfReadback.probeAll { readDevicePropValue(it) }
+        var readable = 0
+        for (o in outcomes) {
+            if (o.available) {
+                readable++
+                Timber.tag(TAG).i("AF prop 0x%04X %s = %s", o.code, o.label, o.rawHex)
+            } else {
+                Timber.tag(TAG).i("AF prop 0x%04X %s = unavailable (%s)", o.code, o.label, o.error)
+            }
+        }
+        eventLogger.event(
+            phase,
+            "candidates" to outcomes.size,
+            "readable" to readable,
+            "codes" to outcomes.filter { it.available }.joinToString(",") { "0x%04X".format(it.code) }
+        )
+    }
+
+    /** 走当前活跃通道只读回读单条设备属性值（只读，不改连接层） */
+    private suspend fun readDevicePropValue(code: Int): ByteArray? = onActiveChannel(
+        wifi = { ptpSession.getDevicePropValue(code) },
+        usb = { usbPtpManager.getDevicePropValue(code) }
+    )
 
     /**
      * 手动对焦驱动
