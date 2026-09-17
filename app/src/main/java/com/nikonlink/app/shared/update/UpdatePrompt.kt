@@ -71,6 +71,22 @@ object UpdatePrompt {
                 }
             }
         }
+        // 百度通道：与夸克同为国内直连，列在 GitHub 之上；无链接时隐藏
+        view.findViewById<Button>(R.id.btnUpdateBaidu).apply {
+            if (result.baiduUrl == null) {
+                visibility = View.GONE
+            } else {
+                setOnClickListener {
+                    dialog.dismiss()
+                    eventLogger.event(
+                        "update_check",
+                        "action" to "baidu_open",
+                        "version" to result.versionLabel
+                    )
+                    openUrl(context, eventLogger, result.baiduUrl)
+                }
+            }
+        }
         view.findViewById<Button>(R.id.btnUpdateGithub).setOnClickListener {
             dialog.dismiss()
             openUrl(context, eventLogger, result.url)
