@@ -38,7 +38,7 @@ class LiveViewManager @Inject constructor(
         private const val FRAME_INTERVAL_MS = 66L  // ~15fps，预留保活通道余量防断联
         private const val MAX_CONSECUTIVE_ERRORS = 5
 
-        /** RC-9：StartLiveView 成功后等待相机完成切换（gphoto2 实测 ~250ms）再验帧 */
+        /** RC-9：StartLiveView 成功后等待相机完成切换再验帧 */
         private const val LV_START_SETTLE_MS = 300L
 
         /** RC-10：最多重试轮数，每轮都重发 0x9201 */

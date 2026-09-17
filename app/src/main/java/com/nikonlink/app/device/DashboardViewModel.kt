@@ -176,7 +176,7 @@ class DashboardViewModel @Inject constructor(
     val staRegisterNeeded: StateFlow<Boolean> = connectionManager.staRegisterNeeded
 
     /**
-     * STA 主机注册（ZDROP 式）：AP 模式连上相机后，把本机 GUID 注册为相机信任主机，
+     * STA 主机注册：AP 模式连上相机后，把本机 GUID 注册为相机信任主机，
      * 之后相机切 STA 模式才会放行握手。前置引导（相机进「连接至 PC」向导）由 UI 完成。
      */
     fun registerStaHost() {

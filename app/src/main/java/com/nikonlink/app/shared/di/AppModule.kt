@@ -22,7 +22,7 @@ import com.nikonlink.app.camera.gallery.ThumbnailCache
 import com.nikonlink.app.camera.liveview.LiveViewManager
 import com.nikonlink.app.capture.RemoteShootingManager
 import com.nikonlink.app.camera.params.CameraParameterManager
-import com.nikonlink.app.camera.params.DigeekerShutterCountClient
+import com.nikonlink.app.camera.params.RemoteShutterCountClient
 import com.nikonlink.app.camera.gallery.TransferManager
 import com.nikonlink.app.shared.common.AppEventLogger
 import com.nikonlink.app.shared.common.AppSettings
@@ -118,13 +118,13 @@ object AppModule {
         ptpSessionManager: PtpSessionManager,
         usbPtpManager: UsbPtpManager,
         transferManager: TransferManager,
-        digeekerShutterCountClient: DigeekerShutterCountClient
+        remoteShutterCountClient: RemoteShutterCountClient
     ): CameraParameterManager = CameraParameterManager(
         context,
         ptpSessionManager,
         usbPtpManager,
         transferManager,
-        digeekerShutterCountClient
+        remoteShutterCountClient
     )
 
     @Provides
