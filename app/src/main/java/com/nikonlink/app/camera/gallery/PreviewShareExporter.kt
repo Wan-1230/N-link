@@ -34,7 +34,7 @@ class PreviewShareExporter @Inject constructor(
     companion object {
         private const val TAG = "ShareExporter"
 
-        /** 预览副本长边上限（微信发图不被二压的常用尺寸） */
+        /** 预览副本长边上限（社交平台分享不被二次压缩的常用尺寸） */
         const val PREVIEW_LONG_EDGE = 2048
         private const val PREVIEW_JPEG_QUALITY = 90
         private const val SHARE_SUB_DIR = "share"

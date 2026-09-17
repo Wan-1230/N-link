@@ -448,7 +448,7 @@ class ConnectionManager @Inject constructor(
     }
 
     /**
-     * STA 主机注册（ZDROP 式）：在已建立的 PTP 会话内发送
+     * STA 主机注册：在已建立的 PTP 会话内发送
      * PrepareHost(0x952B) / ConfirmHost(0x935A)，把本机 GUID 注册为相机信任主机。
      * 注册成功后，相机切 STA 模式才会放行 InitCommandRequest（否则会 InitFail 拒绝）。
      *
