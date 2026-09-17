@@ -369,7 +369,7 @@ class TransferViewModel @Inject constructor(
         }
         // v1.0.2 反馈：机身实体快门拍的照片相册不刷新——captureEvents 只覆盖 App 内
         // 遥控拍摄，机身拍照只会以 PTP ObjectAdded(0x4002) 事件上报（WiFi/USB 两条
-        // 事件通道都在发，此前无人消费）。这里对齐 ZDROP 的实时刷新机制：收到即排一次同步，
+        // 事件通道都在发，此前无人消费）。这里，
         // 连拍/间隔由 scheduleCaptureSync 的 800ms 合并窗口去抖，不会拉爆 PTP 通道。
         viewModelScope.launch {
             ptpSession.events.collect { event ->

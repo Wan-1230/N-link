@@ -408,7 +408,7 @@ class UsbPtpManager @Inject constructor(
      * 可能仍认为会话被占用，此时 OpenSession 返回 `0x2019 DeviceBusy`/`0x201E`，
      * 旧版直接判失败 → 退避重连 → 用户体感"要插拔好几次才连得上"。
      *
-     * **做法**（对齐参考实现影犀的 `fresh PTP session failed after stale-session
+     * **做法**（对齐参考实现的 `fresh PTP session failed after stale-session
      * recovery`）：CloseSession(0x1003) 清掉相机侧残留 → DeviceReady → 重试 OpenSession 一次。
      * 只重试一次，避免在真·不可用（相机休眠/线缆故障）时形成忙等。
      */
@@ -510,7 +510,7 @@ class UsbPtpManager @Inject constructor(
      * 而 USB bulk IN 是无消息边界的字节流——超过 64KB 的容器（GetObject 下载、
      * 0x90C4 高清缩略图、多数 0x9203 监看帧）的续包被当垃圾丢弃、嵌在数据尾部的
      * Response 永远识别不到，导致每次必然 5s 超时且数据损坏/丢失。
-     * 现按「先读 12 字节头，再按声明长度组装/流式消费」的标准做法（gphoto2 同款）：
+     * 现按「先读 12 字节头，再按声明长度组装/流式消费」的标准做法：
      * - 容器跨读重组：按 header.length 继续读取直至消费完整容器
      * - 大数据容器流式直写 sink / 累积缓冲（内存 O(64KB)，不再整容器驻留）
      * - 粘连拆分：一次读取同时含数据尾部 + Response 头时正确切片
@@ -675,7 +675,7 @@ class UsbPtpManager @Inject constructor(
 
     /**
      * 流失步/超时后的标准 USB 恢复：CLEAR_FEATURE(ENDPOINT_HALT) 两个 bulk 端点。
-     * 与 libgphoto2 的 usb_clear_halt 等价，清掉端点停顿状态让后续事务重新开始。
+     * 与  的 usb_clear_halt 等价，清掉端点停顿状态让后续事务重新开始。
      */
     private fun clearHaltBothEndpoints() {
         val conn = usbConnection ?: return
