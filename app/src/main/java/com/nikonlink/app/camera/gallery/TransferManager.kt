@@ -979,6 +979,71 @@ class TransferManager @Inject constructor(
         queryTransferredHandles(handles)
 
     /**
+     * 按 handle 精确订阅某文件的下载进度。
+     *
+     * 预览页需求：退出预览再进入，仍显示该文件的实时下载进度。
+     * 数据来源（只读，不改动队列调度/去重/重试逻辑）：
+     * - 队列内部状态（[queue] 快照 + 当前传输态 [transferState]）→ 排队中 / 下载中(含进度) / 已完成 / 失败
+     * - 已完成记录（Room transfer_history）→ 已落盘的本地路径
+     */
+    fun observeDownloadProgress(handle: Int): Flow<DownloadProgress> {
+        return combine(queue, transferState) { q, ts -> deriveProgressPhase(handle, q, ts) }
+            .distinctUntilChanged()
+            .flatMapLatest { phase ->
+                when (phase) {
+                    is ProgressPhase.Downloading ->
+                        flowOf(DownloadProgress.Downloading(phase.received, phase.total))
+                    ProgressPhase.Queued -> flowOf(DownloadProgress.Queued)
+                    ProgressPhase.Failed -> flowOf(DownloadProgress.Failed(""))
+                    ProgressPhase.Done -> flow {
+                        emit(DownloadProgress.Completed(completedLocalPath(handle).orEmpty()))
+                    }
+                    ProgressPhase.Absent -> flow {
+                        val path = completedLocalPath(handle)
+                        emit(if (path != null) DownloadProgress.Completed(path) else DownloadProgress.NotQueued)
+                    }
+                }
+            }
+    }
+
+    /**
+     * 纯函数：把队列快照 + 全局传输态归约成单个 handle 的进度阶段。
+     * 不含 DB 查询，避免每次进度 tick 都打库；DB 查询放到 [observeDownloadProgress] 的 flatMapLatest 里，
+     * 仅在进入 Done/Absent 阶段时才查一次（完成/未下载态稳定，distinctUntilChanged 会折叠后续 tick）。
+     */
+    private fun deriveProgressPhase(
+        handle: Int,
+        q: List<TransferTask>,
+        ts: TransferState
+    ): ProgressPhase {
+        if (ts is TransferState.Downloading && ts.file.handle == handle) {
+            return ProgressPhase.Downloading(ts.received, ts.total)
+        }
+        if (ts is TransferState.Completed && ts.file.handle == handle) {
+            return ProgressPhase.Done
+        }
+        return when (val status = q.firstOrNull { it.file.handle == handle }?.status) {
+            TransferTaskStatus.PENDING -> ProgressPhase.Queued
+            TransferTaskStatus.DOWNLOADING -> ProgressPhase.Queued
+            TransferTaskStatus.FAILED -> ProgressPhase.Failed
+            TransferTaskStatus.COMPLETED -> ProgressPhase.Done
+            else -> ProgressPhase.Absent
+        }
+    }
+
+    /** 只读查询该 handle 已完成记录的本地路径（优先 DAO，Hilt 未就绪时兑底逐条比对） */
+    private suspend fun completedLocalPath(handle: Int): String? {
+        val record = historyDaoOrNull()?.let { dao ->
+            runCatching { dao.getByHandle(handle) }
+                .onFailure { Timber.tag(TAG).w(it, "getByHandle failed handle=$handle") }
+                .getOrNull()
+        } ?: runCatching { transferRepository.getCompletedRecords() }
+            .getOrDefault(emptyList())
+            .firstOrNull { it.fileHandle == handle }
+        return record?.takeIf { it.status == "completed" }?.localPath
+    }
+
+    /**
      * 全部已完成的传输记录（v1.3.0 「本地删除 → 状态恢复未下载」自愈用）。
      * 记录里带 localPath / fileName / fileSize，用于与本地媒体库比对。
      */
@@ -1560,6 +1625,31 @@ sealed class TransferResult {
     data class Success(val path: String) : TransferResult()
     data class Failed(val reason: String) : TransferResult()
     data object Cancelled : TransferResult()
+}
+
+/**
+ * 单个文件的下载进度（预览页按 handle 订阅，对应 [TransferManager.observeDownloadProgress]）。
+ */
+sealed class DownloadProgress {
+    /** 不在队列中，也未下载过 → 显示「下载」按钮态 */
+    data object NotQueued : DownloadProgress()
+    /** 已入队，等待下载 */
+    data object Queued : DownloadProgress()
+    /** 下载中（received/total 字节） */
+    data class Downloading(val received: Long, val total: Long) : DownloadProgress()
+    /** 已完成（本地路径） */
+    data class Completed(val localPath: String) : DownloadProgress()
+    /** 下载失败 */
+    data class Failed(val reason: String) : DownloadProgress()
+}
+
+/** 进度归约中间态：纯内存判定，不含 DB 查询 */
+private sealed class ProgressPhase {
+    data class Downloading(val received: Long, val total: Long) : ProgressPhase()
+    data object Queued : ProgressPhase()
+    data object Failed : ProgressPhase()
+    data object Done : ProgressPhase()
+    data object Absent : ProgressPhase()
 }
 
 /**
