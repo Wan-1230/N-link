@@ -48,6 +48,15 @@
         android:textSize="15sp" />
 
     <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnUpdateBaidu"
+        style="@style/NlButton.Primary"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_marginTop="10dp"
+        android:text="百度网盘下载（国内推荐）"
+        android:textSize="15sp" />
+
+    <com.google.android.material.button.MaterialButton
         android:id="@+id/btnUpdateGithub"
         style="@style/NlButton.Outline"
         android:layout_width="match_parent"
