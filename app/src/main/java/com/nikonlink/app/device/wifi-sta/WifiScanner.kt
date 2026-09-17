@@ -168,7 +168,7 @@ class WifiScanner @Inject constructor(
         hotspotMode: Boolean = false
     ): List<WifiCameraCandidate> {
         val results = ConcurrentHashMap.newKeySet<WifiCameraCandidate>()
-        // ZDROP 同款：扫描期间进程级绑定到 WiFi 网络。双卡手机默认路由在蜂窝时，
+        // 扫描期间进程级绑定到 WiFi 网络。双卡手机默认路由在蜂窝时，
         // 组播/NSD/网段探测 socket 的路由都可能被抢，仅靠逐 socket 绑定不可靠。
         // 调用方没给网络（STA 首次发现）时，先向系统申请一张 WiFi 网再扫，
         // 否则 mDNS 组播会发到蜂窝网口上，永远等不到相机响应。
@@ -209,7 +209,7 @@ class WifiScanner @Inject constructor(
                 // ConnectivityManager 看不到 Tethering 的热点接口，导致手机开热点时
                 // subnets 为空 → 网段扫描只剩过时的 192.168.43.x 硬编码；
                 // 同时上层还会误判 no_wifi_network 直接收口。
-                // 这里改用 NetworkInterface.getNetworkInterfaces()（ZDROP 同款）把
+                // 这里改用 NetworkInterface.getNetworkInterfaces()把
                 // 热点网段补回来，`subnets` 从此在热点场景下也是真实可用的。
                 val kernelSubnets = runCatching { localInterfaces.subnets() }.getOrDefault(emptyList())
                 diag.kernelSubnets.set(
@@ -253,7 +253,7 @@ class WifiScanner @Inject constructor(
                     }
                     awaitAll(mdnsJob, subnetJob, nsdJob, arpJob)
 
-                    // ── v1.3.2 第二轮补扫（对齐 ZDROP 的重试语义）────────────────
+                    // ── v1.3.2 第二轮补扫────────────────
                     // 第一轮用 800ms 短超时压缩总耗时；若一条路径都没出候选，
                     // 用 2.5s 长超时对网段再扫一遍 —— 覆盖"相机刚从休眠唤醒"的场景，
                     // 这时第一轮的短超时必然全部落空。
@@ -540,7 +540,7 @@ class WifiScanner @Inject constructor(
      *
      * 依据：尼康机身会进入 WiFi 休眠，从唤醒到完成 PTP 握手可能耗时 2~3 秒，
      * 第一轮的 800ms 短超时对它必然全部落空；而"TCP 通但没回握手"的地址
-     * 在这一轮按"待唤醒"候选收下（ZDROP 同款：先记下来再刷新端点）。
+     * 在这一轮按"待唤醒"候选收下。
      * 总耗时可控：只在第一轮颗粒无收时才执行。
      */
     private suspend fun collectSlowSubnet(
@@ -605,14 +605,14 @@ class WifiScanner @Inject constructor(
             return
         }
 
-        // "host:port" -> mDNS 服务名（ZDROP 直接拿 serviceName 当相机名展示，
+        // "host:port" -> mDNS 服务名（ 直接拿 serviceName 当相机名展示，
         // 比统一显示"尼康相机"更容易在列表里认出目标机身）
         val discovered = ConcurrentHashMap<String, String>()
         val done = CompletableDeferred<Unit>()
 
         // v1.0.2 修复：NsdManager 同一时刻只允许一个 resolve 在途，旧版对两个服务
         // 类型的发现结果并发 resolveService，部分 resolve 静默失败 → 同一WiFi下
-        // "搜索不到相机" 的主因之一。改为单飞队列串行 resolve（ZDROP 的 NSD 用法）。
+        // "搜索不到相机" 的主因之一。改为单飞队列串行 resolve。
         val resolveQueue = java.util.concurrent.ConcurrentLinkedQueue<NsdServiceInfo>()
         val resolving = java.util.concurrent.atomic.AtomicBoolean(false)
         fun tryResolveNext() {
@@ -632,7 +632,7 @@ class WifiScanner @Inject constructor(
                         val host = p1?.host?.hostAddress
                         val port = p1?.port ?: 0
                         if (!host.isNullOrEmpty() && port > 0) {
-                            // 值取服务名（ZDROP 同款：mDNS 服务名即相机展示名）
+                            // 值取服务名
                             discovered["$host:$port"] = cleanServiceName(p1.serviceName)
                             nsdSeen.incrementAndGet()
                         }

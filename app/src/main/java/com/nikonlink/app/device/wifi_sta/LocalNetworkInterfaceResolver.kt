@@ -27,7 +27,7 @@ import javax.inject.Singleton
  * `sta_fail reason=no_wifi_network attempt=1`、耗时恒定 16.2s。
  *
  * **唯一能拿到手机自身热点接口的手段是 `NetworkInterface.getNetworkInterfaces()`**
- * —— 这正是 ZDROP 的做法（其 dex 中存在该方法调用，而我们全项目零使用）。
+ * —— 这正是  的做法（其 dex 中存在该方法调用，而我们全项目零使用）。
  *
  * ## 为什么不能靠接口名硬编码
  *
@@ -68,7 +68,7 @@ class LocalNetworkInterfaceResolver @Inject constructor(
      * - 非回环；
      * - 有 IPv4 地址；
      * - **排除链路本地地址 `169.254.x.x`**（DHCP 失败时的自分配地址，路由不可用
-     *   —— 对齐 ZDROP 的 `ignored link-local endpoint`）。
+     *   —— 。
      *
      * @return 按网卡名排序；读不到网卡列表时返回空列表（不抛异常）。
      */

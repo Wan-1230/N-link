@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 更新弹窗自定义视图（PRD 夸克网盘更新通道 §4.3）：
-     夸克网盘下载 = 全宽主按钮置顶（最高曝光位），GitHub 更新 = 全宽次按钮，
+<!-- 更新弹窗自定义视图（PRD 镜像下载通道 §4.3）：
+     国内镜像下载 = 全宽主按钮置顶（最高曝光位），GitHub 更新 = 全宽次按钮，
      查看完整日志 / 稍后 = 文字按钮。无对应链接时由代码隐藏对应按钮。
      全宽 + 权重布局，窄屏/分屏/大屏下按钮不换行不截断。 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -39,12 +39,12 @@
         android:textSize="13sp" />
 
     <com.google.android.material.button.MaterialButton
-        android:id="@+id/btnUpdateQuark"
+        android:id="@+id/btnUpdateMirror"
         style="@style/NlButton.Primary"
         android:layout_width="match_parent"
         android:layout_height="48dp"
         android:layout_marginTop="20dp"
-        android:text="夸克网盘下载（国内推荐）"
+        android:text="国内镜像下载（推荐）"
         android:textSize="15sp" />
 
     <com.google.android.material.button.MaterialButton

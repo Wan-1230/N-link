@@ -16,7 +16,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * STA 网络请求器（对标 ZDROP `t1/s` 的网络申请链路）。
+ * STA 网络请求器。
  *
  * ## 为什么要主动 `requestNetwork`
  *
@@ -31,7 +31,7 @@ import javax.inject.Singleton
  *
  * `ConnectivityManager.requestNetwork()` 是系统提供的"我要用这张网"的显式声明：
  * 注册期间系统会维持该网络不被回收，并通过 [NetworkCallback] 把可用/丢失事件
- * 推给我们 —— ZDROP 正是靠它把 STA 链路跑稳的。
+ * 推给我们 ——  正是靠它把 STA 链路跑稳的。
  *
  * ## 与 [WifiNetworkMonitor] 的分工
  *
@@ -73,7 +73,7 @@ class StaNetworkRequester @Inject constructor(
      *
      * 选网策略（两级）：
      * 1. 快路径：已有 WiFi 网络里挑**链路地址与相机 IP 同网段**的那个
-     *    （ZDROP `t1/q` 同款判定）。手机开热点时相机在热点子网、上游 WiFi 在
+     *    。手机开热点时相机在热点子网、上游 WiFi 在
      *    另一个子网，按"任意 WiFi 网络"选会绑错路由，所以必须按子网匹配；
      * 2. 慢路径：向系统 `requestNetwork` 并等待回调，期间持续按子网匹配。
      *

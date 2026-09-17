@@ -70,7 +70,7 @@ object PtpConstants {
     //   一次事务即可取回**全部对象**的指定属性（文件名/大小/日期/格式）。
     // 对比逐个 GetObjectInfo（0x1008）的 N 次往返——批量路径把元数据读取从
     // 「N × RTT」压缩到「1 × RTT」，是相册首屏加载速度的胜负手。
-    // 参考：PixCake 内嵌的 com.truesight.cameraptp SDK 同样使用 MtpGetObjectPropList。
+    // 参考： 内嵌的 com.truesight.cameraptp SDK 同样使用 MtpGetObjectPropList。
     const val OP_MTP_GET_OBJECT_PROPS_SUPPORTED = 0x9801
     const val OP_MTP_GET_OBJECT_PROP_DESC = 0x9802
     const val OP_MTP_GET_OBJECT_PROP_VALUE = 0x9803
@@ -101,27 +101,27 @@ object PtpConstants {
     const val OP_NIKON_AF_CAPTURE_SDRAM = 0x90CB
 
     /**
-     * 尼康「PC 主机注册」厂商操作码（STA 准入门控，来源：ZDROP 1.0.190
+     * 尼康「PC 主机注册」厂商操作码（STA 准入门控，来源： 1.0.190
      * `Lt1/n2;->l0` 反汇编实锤）。
      *
      * 背景：尼康相机在 STA 模式（相机连路由器/手机热点）下对未注册的
      * InitCommandRequest 直接回 InitFail(0x0005) 拒绝；AP 模式无此门控。
      * 需先在 AP 模式会话内完成主机注册，相机记住 client GUID 后 STA 才放行。
      *
-     * 时序（ZDROP 字节码）：OpenSession(0x1002, 1) → PREPARE（无参数）→
+     * 时序：OpenSession(0x1002, 1) → PREPARE（无参数）→
      * 等待 ~8.5s（相机应用 host profile）→ CONFIRM（参数固定 0x2001 = OK）。
      * 前置条件：相机停在「连接至 PC」首次配置向导。
      */
     const val OP_NIKON_HOST_REGISTRATION_PREPARE = 0x952B
     const val OP_NIKON_HOST_REGISTRATION_CONFIRM = 0x935A
-    /** ConfirmHost 的参数固定为 PTP 响应码 OK（0x2001），ZDROP 字节码常量。 */
+    /** ConfirmHost 的参数固定为 PTP 响应码 OK（0x2001）， 字节码常量。 */
     const val HOST_REGISTRATION_CONFIRM_OK = 0x2001
-    /** PrepareHost 后相机应用 host profile 的等待时长（ZDROP 为固定 sleep 8500ms）。 */
+    /** PrepareHost 后相机应用 host profile 的等待时长。 */
     const val HOST_REGISTRATION_SETTLE_MS = 8500L
 
     /**
-     * Nikon 应用模式切换（gphoto2: ChangeApplicationMode，1 参数）。
-     * 影犀的录像链路：开录前 0x9435(1) 进入应用模式，收录后 0x9435(0) 退出。
+     * Nikon 应用模式切换。
+     * 的录像链路：开录前 0x9435(1) 进入应用模式，收录后 0x9435(0) 退出。
      * 相机端表现为短暂弹出「已连接到智能设备」——进入遥控应用态的正常提示。
      */
     const val OP_NIKON_CHANGE_APPLICATION_MODE = 0x9435
@@ -153,7 +153,7 @@ object PtpConstants {
     const val RESPONSE_NIKON_NOT_LIVE_VIEW = 0xA00B
 
     /**
-     * Nikon 0xA004 = **InvalidStatus**（libgphoto2 ptp.h: `PTP_RC_NIKON_InvalidStatus`）。
+     * Nikon 0xA004 = **InvalidStatus**。
      * 旧代码误标为「拒绝开启实时取景」——真实语义是「相机当前状态不允许该操作」：
      * 录制/监看场景下最常见的触发是**模式拨盘不在所需位置**（录制需视频档、
      * 监看需照片档）或机身停留在回放/菜单界面。
@@ -161,15 +161,15 @@ object PtpConstants {
     const val RESPONSE_NIKON_INVALID_STATUS = 0xA004
 
     /**
-     * Nikon 厂商操作码 0x90C2 ChangeCameraMode（libgphoto2: `PTP_OC_NIKON_ChangeCameraMode`，
-     * digiCamControl NikonBase.LockCamera/UnLockCamera 同款）：参数 1 = 进入机身控制模式，
-     * 参数 0 = 退出。digiCamControl 的录像时序为 ChangeCameraMode(1) → StartMovieRecInCard(0x920A)，
+     * Nikon 厂商操作码 0x90C2 ChangeCameraMode（: `NIKON_ChangeCameraMode`，
+     * 已知实现 同款）：参数 1 = 进入机身控制模式，
+     * 参数 0 = 退出。 的录像时序为 ChangeCameraMode(1) → StartMovieRecInCard(0x920A)，
      * 结束后 ChangeCameraMode(0) 恢复，避免相机滞留控制模式影响后续拍照/下载。
      */
     const val OP_NIKON_CHANGE_CAMERA_MODE = 0x90C2
 
     /**
-     * Nikon 厂商响应码 0xA200：B 门收门时机身正在处理曝光写卡（ZRelay 同名证据
+     * Nikon 厂商响应码 0xA200：B 门收门时机身正在处理曝光写卡（ 同名证据
      * `0xA200 BulbReleaseBusy`）。结束 B 门遇此码应短暂等待后重试，而非报错。
      *
      * 注：0x9207 InitiateCaptureRecInMedia 常量在本文件上方已有定义（快门多源归一化时引入），
@@ -217,10 +217,10 @@ object PtpConstants {
     /**
      * 尼康私有事件（v1.3.0 需求 5：逐张实时加载的核心信号）。
      *
-     * **依据**：libgphoto2 `camlibs/ptp2/ptp.h` —— `PTP_EC_Nikon_ObjectAddedInSDRAM = 0xC101`、
+     * **依据**： `camlibs/ptp2/ptp.h` —— `NIKON_ObjectAddedInSDRAM = 0xC101`、
      * `PTP_EC_Nikon_CaptureCompleteRecInSdram = 0xC102`；其 capture 流程正是等这两个事件
-     * （见 gphoto/libgphoto2 issue #846）。参考实现同样以它们为触发：
-     * PixCake（`NikonObjectAddedInSdram` + `onRamObjectAdded`）、影犀（`Nikon_ObjectAddedInSDRAM`）。
+     * 。参考实现同样以它们为触发：
+     * （`NikonObjectAddedInSdram` + `onRamObjectAdded`）、（`Nikon_ObjectAddedInSDRAM`）。
      *
      * **为什么必须处理**：尼康机身拍照后主要上报的是这两个私有事件，标准 `0x4002` 在部分
      * 机型上延迟或不来 —— 这正是旧版「相册间歇性刷新」的根因。
@@ -239,7 +239,7 @@ object PtpConstants {
 
     /**
      * Nikon 厂商属性: LiveView 禁止条件位图（只读）。
-     * 官方文档未公布各 bit 含义，gphoto2 / ZRelay 也仅有状态名没有权威位定义，
+     * 官方文档未公布各 bit 含义， /  也仅有状态名没有权威位定义，
      * 因此只能做日志记录与错误提示富化：非 0 时不应阻断流程，永远以相机实际
      * 返回码为准。
      */

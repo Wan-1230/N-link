@@ -95,7 +95,7 @@ class WifiNetworkMonitor @Inject constructor(
     /**
      * 把整个进程绑定到 [network]（null = 恢复系统默认路由）。
      *
-     * ZDROP 的 STA 链路即采用进程级绑定（bindProcessToNetwork）：相机 AP/STA 网络
+     *  的 STA 链路即采用进程级绑定（bindProcessToNetwork）：相机 AP/STA 网络
      * 无 Internet 能力时，部分机型的默认路由仍指向蜂窝网，仅靠逐 socket bindSocket
      * 覆盖不全（mDNS、NSD、探测 socket、三方库自建的 socket 都可能漏绑）。
      * 进程级绑定一次性解决所有 socket 的路由问题；连接/扫描结束务必传 null 恢复，
@@ -128,11 +128,11 @@ class WifiNetworkMonitor @Inject constructor(
     }
 
     /**
-     * 等待一个**子网覆盖 [host]** 的 WiFi 网络并返回（ZDROP 同款路由匹配）。
+     * 等待一个**子网覆盖 [host]** 的 WiFi 网络并返回。
      *
      * 双卡手机/开热点场景下 `awaitWifiNetwork` 返回的"任意 WiFi 网络"可能不是
      * 通向相机的那张网（如手机自己开热点时，相机在热点子网而非上游 WiFi 子网），
-     * 逐 socket 绑定也救不了路由。这里按 ZDROP t1.q 的做法：遍历网络的
+     * 逐 socket 绑定也救不了路由。这里按标准做法
      * LinkProperties，选"链路地址与相机 IP 同网段"的那个网络。
      * 找不到精确匹配时回退任意 WiFi 网络；超时返回 null。
      */
@@ -178,7 +178,7 @@ class WifiNetworkMonitor @Inject constructor(
     /**
      * 连接生命周期内持有 WifiLock + MulticastLock，支持**会话级重复持有**。
      *
-     * RC-5：`WIFI_MODE_FULL_HIGH_PERF` 是 ZRelay/影犀/ZDROP 三方共识；
+     * RC-5：`WIFI_MODE_FULL_HIGH_PERF` 是 // 三方共识；
      * v1.1.0：改为引用计数。连接成功后由 [retainLocks] 追加一次持有，
      * 连接循环的 finally 里 [releaseLocks] 只减不释放 —— 否则会话还活着但锁
      * 已经归还，息屏 2 分钟后系统照样回收 WiFi（三方 APK 都是会话级持锁）。

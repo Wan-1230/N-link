@@ -78,7 +78,7 @@ class WifiDirectConnector @Inject constructor(
         private const val PROGRESS_TICK_MS = 1500L
 
         /**
-         * FIX-5：连接前等待相机起监听的总窗口（ZDROP `refreshing discovery before connect`）。
+         * FIX-5：连接前等待相机起监听的总窗口。
          *
          * 相机在 STA 下不会立刻监听 15740，需要先应用 host profile，实测有数秒延迟。
          */
@@ -242,7 +242,7 @@ class WifiDirectConnector @Inject constructor(
                 attempt++
 
                 // RC-4: 每次尝试都等待并重新解析 Network，不用循环外缓存的旧句柄；
-                // v1.0.2: 按相机 IP 的子网匹配选网（ZDROP 同款）——手机热点模式下
+                // v1.0.2: 按相机 IP 的子网匹配选网——手机热点模式下
                 // 相机在热点子网而非上游 WiFi 子网，"任意 WiFi 网络"会绑错路由
                 // FIX-2：三条路径**并行**竞争，不再串行叠加（旧版 8s + 8s = 16.2s 才出结果）
                 // 并行等待期间通过 onRetry 推进度文案，避免长时间静止无反馈
@@ -262,7 +262,7 @@ class WifiDirectConnector @Inject constructor(
                 // 该接口有正常 IPv4 与直连路由。此时 `Socket()` 走默认路由即可到达相机，
                 // 根本不需要 Network 句柄（PtpSessionManager.createSocket(null) 就是普通 Socket）。
                 //
-                // 这正是 ZDROP 的 `socketFactory=default-route-fallback` 语义：
+                // 这正是  的 `socketFactory=default-route-fallback` 语义：
                 // **绑网失败时回落到默认路由继续连，而不是判死。**
                 val defaultRouteFallback = network == null &&
                     localInterfaces.hasLocalWifiLikeInterface()
@@ -318,14 +318,14 @@ class WifiDirectConnector @Inject constructor(
                     onFail("no_wifi_network")
                     return
                 }
-                // ZDROP 同款：进程级绑定到 WiFi 网络，杜绝双卡手机蜂窝默认路由
+                // 进程级绑定到 WiFi 网络，杜绝双卡手机蜂窝默认路由
                 // 抢走 PTP/IP 通道（socket 级绑定无法覆盖所有创建点）。
                 // RC-6：defaultRouteFallback 时 network 为 null，此时**不绑**，
                 // 交由内核按路由表选出口（热点接口有正常直连路由）。
                 network?.let { networkMonitor.bindProcessTo(it) }
 
-                // ── FIX-5：连接前刷新发现（对齐 ZDROP "refreshing discovery before connect"）──
-                // ZDROP 在每次真正 connect 之前都会先刷一次对端可达性，原因是：
+                // ── FIX-5：连接前刷新发现──
+                //  在每次真正 connect 之前都会先刷一次对端可达性，原因是：
                 // 相机（尤其 STA 下）会**延迟几秒才在 15740 上监听** —— 它需要先完成
                 // host profile 的应用/注册（我逆向到的
                 // `STA connect deferred while camera applies host profile remaining=`）。
@@ -370,7 +370,7 @@ class WifiDirectConnector @Inject constructor(
                     return
                 }
 
-                // 连接前可达性刷新（对齐 ZDROP "refreshing discovery before connect"）：
+                // 连接前可达性刷新：
                 // 直接打一次 TCP 15740，把"相机不在这个地址/没醒"和"PTP 握手失败"分开，
                 // 让用户拿到的原因是有信息量的，而不是统一的"连接失败"。
                 val unreachable = !probeReachable(network, endpoint)
@@ -450,7 +450,7 @@ class WifiDirectConnector @Inject constructor(
      * 现在三条路径同时发起，**用 channel 收第一个非 null 结果**（真正的"谁快用谁"，
      * 而不是按固定顺序 await —— 否则最慢的那条仍会把整体拖满）。
      * 每 [PROGRESS_TICK_MS] 回调一次 [onProgress]，让 UI 能显示"正在准备网络…"
-     * 而不是长时间静止 —— 对齐 ZDROP 的 `LocalRouteReadiness` 进度语义。
+     * 而不是长时间静止 —— 。
      *
      * ## 为什么用 channel 而不是 `select`
      *
@@ -515,7 +515,7 @@ class WifiDirectConnector @Inject constructor(
     /**
      * FIX-5：等待相机在 [PRECONNECT_WAIT_MS] 内起 PTP/IP 监听。
      *
-     * 对齐 ZDROP `refreshing discovery before connect`。相机在 STA 模式下不会立刻
+     * 。相机在 STA 模式下不会立刻
      * 监听 15740 —— 它要先应用 host profile（逆向到的
      * `STA connect deferred while camera applies host profile remaining=`）。
      * 这段时间直接 connect 必然超时。
@@ -565,7 +565,7 @@ class WifiDirectConnector @Inject constructor(
     private fun hasAnyWifiNetwork(): Boolean = localInterfaces.hasLocalWifiLikeInterface()
 
     /**
-     * 连接前可达性刷新（对齐 ZDROP `refreshing discovery before connect`）。
+     * 连接前可达性刷新。
      *
      * 直接用 2.5s 超时打一次 TCP 15740 + PTP/IP Init：能连上说明相机在线，
      * 之前失败就是握手层问题（配对码/会话占用）；连不上说明地址已失效或相机休眠，
