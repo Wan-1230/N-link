@@ -2,6 +2,7 @@ package com.nikonlink.app.device.wifi_sta
 
 import com.nikonlink.app.device.model.ConnectionEvent
 import com.nikonlink.app.device.connect.ConnectionStateMachine
+import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpIpProbe
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.wifi.WifiEndpoint
@@ -576,15 +577,33 @@ class WifiDirectConnector @Inject constructor(
         runCatching { PtpIpProbe.probe(endpoint, timeoutMs = 2500L, network = network) }
             .getOrDefault(false)
 
-    /** 机器可读原因 → 用户可读文案（STA 场景的失败分类） */
-    private fun describeStaFailure(reason: String?, endpoint: WifiEndpoint): String = when (reason) {
-        "no_wifi_network" -> "手机未连接 WiFi：请先连上相机所在的同一个 WiFi / 热点后重试"
-        "camera_unreachable" ->
-            "相机不可达（${endpoint.host}）：请确认相机已开机、处于「连接智能设备」状态，" +
-                "且与本机在同一网络；地址可能已变化，建议重新扫描"
-        "ptp_handshake_failed" ->
-            "相机在线但 PTP/IP 握手失败：请在相机上完成配对确认（按 OK），或断开后重新连接"
-        "invalid_endpoint" -> "IP 地址无效，请填写形如 192.168.1.1 的 IPv4 地址"
-        else -> "WiFi 相机连接失败：请确认相机与手机在同一网络后重试"
+    /**
+     * 机器可读原因 → 用户可读文案（STA 场景的失败分类，P1 分级）。
+     *
+     * 仅扩展分支与文案，不改动调用它的连接流程（connect / resolveNetwork / 冷却 / 绑定时机）。
+     * [ptpSession.lastInitFailReason] 由 PtpSessionManager 在收到 InitFail 包时写入；
+     * 非 InitFail（对端关闭 / 读超时 / 事件通道失败）时为 null。
+     */
+    private fun describeStaFailure(reason: String?, endpoint: WifiEndpoint): String {
+        val initFailReason = ptpSession.lastInitFailReason.value
+        return when (reason) {
+            "no_wifi_network" -> "手机未连接 WiFi：请先连上相机所在的同一个 WiFi / 热点后重试"
+            "camera_unreachable" ->
+                "未找到相机（${endpoint.host}）。请确认相机已开启 WiFi、且手机与相机在同一网络"
+            "ptp_handshake_failed" -> when {
+                // InitFail 且 failReason==1（connection_in_use / 主机未认可）→ 引导做主机注册
+                initFailReason == PtpConstants.INIT_FAIL_CONNECTION_IN_USE ->
+                    "相机未认可本机。请在相机上完成主机注册后重试"
+                // InitFail 其它原因码 → 带上原因码文字，便于排查
+                initFailReason != null ->
+                    "相机拒绝了 PTP/IP 握手（${PtpConstants.describeInitFailReason(initFailReason)}）。" +
+                        "请确认相机停在「连接至智能设备」画面，或先完成主机注册"
+                // 非 InitFail：TCP 已通但随后断开 / 读超时（对端关闭或等待连接画面已退出）
+                else ->
+                    "相机接受了连接但随后断开（${endpoint.host}）。请检查相机是否仍停留在等待连接的画面"
+            }
+            "invalid_endpoint" -> "IP 地址无效，请填写形如 192.168.1.1 的 IPv4 地址"
+            else -> "WiFi 相机连接失败：请确认相机与手机在同一网络后重试"
+        }
     }
 }

@@ -23,6 +23,7 @@ import com.nikonlink.app.device.wifi_sta.WifiScanner
 import com.nikonlink.app.device.data.DeviceRepository
 import com.nikonlink.app.camera.gallery.TransferManager
 import com.nikonlink.app.shared.common.AppEventLogger
+import com.nikonlink.app.shared.device.RomDetector
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -63,6 +64,12 @@ class ConnectionManager @Inject constructor(
         private const val PREFS_WIFI_5G_PREFER = "wifi_band_5g_prefer"
         /** STA 主机注册标记：相机已记住本机 GUID（门控解除） */
         private const val PREFS_STA_HOST_REGISTERED = "sta_host_registered"
+
+        // P0：目标地址分级取值的来源标识（event 字段，便于日志区分真实地址与兜底）
+        private const val SOURCE_BLE_CREDENTIAL = "ble_credential"
+        private const val SOURCE_DISCOVERED = "discovered"
+        private const val SOURCE_DEFAULT_FALLBACK = "default_fallback"
+        private const val DEFAULT_FALLBACK_HOST = "192.168.1.1"
     }
 
     private var scope: CoroutineScope? = null
@@ -77,6 +84,12 @@ class ConnectionManager @Inject constructor(
     private var recoveryJob: Job? = null
     /** STA 直连场景：WiFi 路由器断网标记（网络恢复后触发 PTP 重建） */
     private var staNetworkLost = false
+
+    /**
+     * P0：本轮/会话内确认过的真实相机 IP（BLE 凭证给出、历史连接过且当前可达、或真实地址建链成功）。
+     * 一旦拿到过，后续重试优先用它，不再退回默认兜底地址——消除日志里"12:14 又打回 192.168.1.1"的回退。
+     */
+    private var realCameraIp: String? = null
 
     private val _connectionMetrics = MutableStateFlow(ConnectionMetrics())
     val connectionMetrics: StateFlow<ConnectionMetrics> = _connectionMetrics.asStateFlow()
@@ -595,8 +608,14 @@ class ConnectionManager @Inject constructor(
         eventListener?.let { stateMachine.removeEventListener(it) }
         val listener: (ConnectionEvent) -> Unit = { event ->
             if (event is ConnectionEvent.ErrorOccurred) {
-                _statusMessage.value = event.message
-                Timber.tag(TAG).w("Connection error surfaced to UI: ${event.message}")
+                // P2：小米/红米系 ROM 在连接失败时追加针对性引导。仅改提示文案，不改变任何
+                // 连接 / 重试 / 绑定行为（RomDetector 只读 Build / 系统属性，且用 runCatching 包住）。
+                _statusMessage.value = if (RomDetector.isXiaomi) {
+                    "${event.message}\n${RomDetector.XIAOMI_HINT}"
+                } else {
+                    event.message
+                }
+                Timber.tag(TAG).w("Connection error surfaced to UI: ${_statusMessage.value}")
             }
         }
         eventListener = listener
@@ -718,14 +737,44 @@ class ConnectionManager @Inject constructor(
         // 等待 WiFi 网络稳定
         delay(500)
         wifiManager.bindToActiveWifi()
-        val credential = bleManager.wifiCredential.replayCache.firstOrNull()
-        val host = credential?.ipAddress ?: "192.168.1.1"
-        val port = credential?.port ?: 15740
+
+        // P0：目标地址分级取值，避免一直在默认地址（192.168.1.1）上空转。
+        // 优先级：BLE 凭证 ipAddress → 本轮已发现真实相机 IP → 历史连接过且当前可达的 IP → 默认兜底
+        val (host, port, source) = resolvePtpTarget()
+        val isFallback = source == SOURCE_DEFAULT_FALLBACK
+        Timber.tag(TAG).i("PTP target resolved host=$host port=$port source=$source")
+        eventLogger.event(
+            "ptp_target",
+            "host" to host, "port" to port, "source" to source, "fallback" to isFallback
+        )
+
+        // 兜底地址（默认 192.168.1.1）：只试 1 轮（3 次）就收口，不让它跨 generation 空转，
+        // 把时间让给真正的发现/扫描流程。一旦本轮发现过真实相机 IP，后续重试会优先用它（见 resolvePtpTarget）。
+        // ⚠ 重要：AP 模式（手机连相机热点）下，192.168.1.1 就是相机的合法地址
+        // （相机做热点时自任网关），不属于"盲猜兜底"。只有"未连上任何 WiFi"时该地址才是盲猜。
+        // 若对 AP 模式也限制尝试次数，会在相机尚未就绪时过早放弃，反而更连不上。
+        val apConnected = runCatching { wifiManager.isConnected() }.getOrDefault(false)
+        if (isFallback && !apConnected) {
+            repeat(3) { attempt ->
+                val success = ptpSession.connect(host, port)
+                if (success) {
+                    Timber.tag(TAG).i("✓ PTP session ready (attempt ${attempt + 1})")
+                    stateMachine.dispatch(ConnectionEvent.WifiConnected)
+                    return
+                }
+                if (attempt < 2) delay(1500L * (attempt + 1))
+            }
+            Timber.tag(TAG).w("PTP fallback address exhausted, stopping retry to yield to discovery")
+            stateMachine.dispatch(ConnectionEvent.WifiDisconnected)
+            return
+        }
 
         // Fix STA/AP: 相机可能尚未就绪，连试 3 次再判定失败
         repeat(3) { attempt ->
             val success = ptpSession.connect(host, port)
             if (success) {
+                // 真实地址建链成功 → 记录为已发现 IP，后续重试优先使用
+                realCameraIp = host
                 Timber.tag(TAG).i("✓ PTP session ready (attempt ${attempt + 1})")
                 stateMachine.dispatch(ConnectionEvent.WifiConnected)
                 return
@@ -734,6 +783,44 @@ class ConnectionManager @Inject constructor(
         }
         Timber.tag(TAG).w("PTP session failed, will retry on next WiFi reconnect")
         stateMachine.dispatch(ConnectionEvent.WifiDisconnected)
+    }
+
+    /**
+     * P0：分级解析 PTP/IP 目标地址。
+     *
+     * 这是「连接目标选择」，不触碰 bindProcessToNetwork / requestNetwork 等网络绑定逻辑。
+     * 优先级：
+     *  1. BLE 凭证里的相机 IP（AP 模式 BLE 通道交换得到，最权威）
+     *  2. 本轮已发现/确认过的真实相机 IP（[realCameraIp]，不退回默认）
+     *  3. 历史连接过的相机 IP（发现结果来源），需当前可达（PTP/IP Init 探测通过）才采用
+     *  4. 默认兜底 192.168.1.1（调用方只试 1 轮并收口）
+     */
+    private suspend fun resolvePtpTarget(): Triple<String, Int, String> {
+        val credential = bleManager.wifiCredential.replayCache.firstOrNull()
+        val credIp = credential?.ipAddress?.takeIf { it.isNotBlank() && it != DEFAULT_FALLBACK_HOST }
+        val credPort = credential?.port ?: 15740
+
+        // 优先级 1：BLE 凭证里的相机 IP
+        if (credIp != null) {
+            realCameraIp = credIp
+            return Triple(credIp, credPort, SOURCE_BLE_CREDENTIAL)
+        }
+        // 优先级 2：本轮已发现/确认过的真实相机 IP（一旦拿到过，后续重试优先用它）
+        if (!realCameraIp.isNullOrBlank()) {
+            return Triple(realCameraIp!!, credPort, SOURCE_DISCOVERED)
+        }
+        // 优先级 3：历史连接过的相机 IP（发现结果来源），当前可达才采用
+        val last = runCatching { deviceRepository.getLastAutoConnectDevice() }.getOrNull()
+        val lastEndpoint = last?.let { WifiEndpoint.parse(it.address) }
+        if (lastEndpoint != null && lastEndpoint.host != DEFAULT_FALLBACK_HOST) {
+            val network = runCatching { wifiManager.currentWifiNetwork() }.getOrNull()
+            if (PtpIpProbe.probe(lastEndpoint, timeoutMs = 800L, network = network)) {
+                realCameraIp = lastEndpoint.host
+                return Triple(lastEndpoint.host, lastEndpoint.port, SOURCE_DISCOVERED)
+            }
+        }
+        // 兜底：硬编码默认地址（调用方只试 1 轮并收口，不再跨 generation 空转）
+        return Triple(DEFAULT_FALLBACK_HOST, 15740, SOURCE_DEFAULT_FALLBACK)
     }
 
     /**
