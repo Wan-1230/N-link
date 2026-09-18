@@ -6,7 +6,7 @@
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.1.0-7F52FF?style=flat-square&logo=kotlin)
 ![minSdk](https://img.shields.io/badge/minSdk-29-00ACC1?style=flat-square)
 ![targetSdk](https://img.shields.io/badge/targetSdk-35-00897B?style=flat-square)
-![Version](https://img.shields.io/badge/version-2.1.0-546E7A?style=flat-square)
+![Version](https://img.shields.io/badge/version-2.1.1-546E7A?style=flat-square)
 
 N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等）的开源 Android 应用，打通 **连接 → 浏览 → 传输 → 遥控 → 监看** 的完整链路，以「永不断联」为核心卖点：
 
@@ -72,11 +72,11 @@ N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等�
 
 | 版本 | 亮点 |
 |------|------|
+| **v2.1.1** | 连接目标地址智能分级（消除默认地址空转）· 连接失败提示分级（未找到 / 需注册 / 已中断）· 新增小米（MIUI/HyperOS）识别与针对性引导 |
 | **v2.1.0** | 预览下载进度保持（退出重进仍显示）· 触摸对焦坐标按实时画面实际比例校正 · 新增百度网盘下载通道 · 连接保持 v2.0.1 稳定表现 |
 | **v2.0.1** | WiFi STA 链路打通（相机连手机热点 / 同路由器）· 新增「STA 主机注册」· 热点网段枚举修复 · 组播发现崩溃修复 · 连接耗时缩短与失败原因可见化 |
 | **v1.3.1** | WiFi 连接页不再误显示 USB 提示 · USB 探测改为主动连接才提示 · 提示文案不再被截断（短文案 + 卡片完整指引） |
 | **v1.3.0** | 第三方镜头不再被显示成 NIKKOR · 相册「✓ 已下载」角标 · 删除本地照片后状态自动恢复 · 拍摄后逐张即时入册 · USB 状态行修复 · 录像中监看断流修复 · 拍摄模式写入后回读确认 |
-| **v1.2.2** | 监看心跳响应校验（修复偶发断连）· event 通道读超时 · WiFi STA 链路重构 · 相册快速翻页动画修复 |
 
 ---
 
@@ -88,7 +88,7 @@ N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等�
 |------|------|
 | **GitHub Releases** | [最新 Release](https://github.com/Wan-1230/N-link/releases/latest) 下载 APK（国内访问不稳定时用下方夸克网盘） |
 | **夸克网盘** | [公开永久链接（免提取码）](https://pan.quark.cn/s/d060f7f350e8)，目录 `/N-Link/releases/` 恒为最新版（历史版本归档于 `/N-Link/_archive-releases/`） |
-| **百度网盘** | [本版分享链接](https://pan.baidu.com/s/1l2-UpGSr8Ks7UdGOtihMWg?pwd=cdhb)（提取码内嵌于链接，点击自动填充），目录 `/N-Link/releases/` 恒为最新版 |
+| **百度网盘** | [本版分享链接](https://pan.baidu.com/s/1En5BTc9ojBwUiP4D9PvDXg?pwd=55ms)（提取码内嵌于链接，点击自动填充），目录 `/N-Link/releases/` 恒为最新版 |
 | **应用内检查更新** | 启动时自动检查（只提示正式版），GitHub 不可达时自动回退到夸克网盘缓存链接 |
 
 ### WiFi STA 连接教程
@@ -202,6 +202,15 @@ app/src/main/java/com/nikonlink/app/
 ## 📋 更新日志
 
 > 从新到旧保留全部版本记录；应用内「检查更新」仅提示正式版。最新版下载见 [GitHub Releases](https://github.com/Wan-1230/N-link/releases/latest) 或上方夸克网盘。
+
+### v2.1.1 — 2026-09-18
+
+无线连接的诊断与效率优化；连接功能保持 v2.1.0 已验证的稳定状态。
+
+- **连接目标地址优化**：自动优先使用蓝牙配对凭证与本轮发现的相机地址，消除此前长时间在默认地址上空转重试的问题
+- **连接失败提示分级**：区分「未找到相机」「相机未认可本机（需完成主机注册）」「连接后中断」等情形，提示更具体可操作
+- **小米 / 红米设备识别**：自动识别 MIUI / HyperOS 设备，连接失败时附加针对性引导（附近设备与定位权限、智能网络切换等）
+- **连接稳定性保持**：AP 直连、WiFi STA、USB 有线三种连接方式，保持 v2.1.0 已验证的表现
 
 ### v2.1.0 — 2026-09-18
 
@@ -376,6 +385,7 @@ N-Link 第一个正式版：通过 WiFi / USB 以 PTP 协议控制尼康相机�
 - [x] v1.3.1：设备页连接文案修复（WiFi 场景误显示 USB 提示 / 提示文案截断）
 - [x] v2.0.1：WiFi STA 链路打通（主机注册 / 热点网段识别 / 默认路由回落 / 组播发现修复 / 注册入口与教程）
 - [x] v2.1.0：预览下载进度保持 / 触摸对焦坐标校正 / 新增百度网盘下载通道
+- [x] v2.1.1：连接地址分级与失败提示分级 / 小米（MIUI/HyperOS）识别引导
 - [ ] Phase 4：**AI 修图**（PRD 已完成，编辑器开发中）
 - [ ] 监看色彩与 LUT（PRD 已完成，待开发）
 - [ ] 更多机型适配与兼容性验证、iOS 规划
