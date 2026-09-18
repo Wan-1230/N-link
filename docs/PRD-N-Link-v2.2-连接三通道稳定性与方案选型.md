@@ -728,6 +728,30 @@ WMA 写凭据（若 V-3 通过）或 USB 侧完成注册（回退方案）；双
 
 ---
 
+## 十五、v2.2.0 实施状态（8 号包 `N-Link-v2.2.0-release-8号包-连接P0.apk`）
+
+> 分支 `research-connection-prd-v2.2`，提交：`e29ac85`(PRD) → `96eb34e`(代码) → `a11d685`(版本号 19)。
+> 构建 `:app:assembleRelease` 通过，`:app:testReleaseUnitTest` 通过，release 签名校验为 N-Link 证书。
+
+| 差距项 | 状态 | 落点 |
+|---|---|---|
+| G1 AP 网关学习 | ✅ 已实现 | 新增 `device/wifi_ap/ApGatewayResolver.kt`（1200ms 就绪 + 两次采样稳定化 + 排除自身/169.254/广播 + 出厂地址 TCP 试探），接入 `resolvePtpTarget`（新来源 `ap_gateway`）与 `connectToWifiCamera` 的「先学地址再配对」路径 |
+| G2 AP 摆脱 BLE 前提 | ✅ 已实现 | `ApGatewayResolver.isOnCameraAp()`（SSID 判相机热点）+ `WifiManager.alreadyOnThisAp()` 收养已连网络；`reconnect()` 不再因内存凭证丢失静默失败 |
+| G3 TCP-only 快筛 | ✅ 已实现 | `PtpIpProbe.tcpConnectOnly()` + `WifiScanner` 网段扫/ARP 扫两段式（`STA_TCP_ONLY`） |
+| G5 specifier 加固 | ✅ 部分 | 改用带超时的三参 `requestNetwork`、去掉协程超时包裹、释放后 ≥1500ms 才重请求。**未做**：BSSID 精确请求与 WPA3 显式分支（需先确定 `0x2004` 里 BSSID/安全字段的真实偏移，属 V-4/V-1 范畴） |
+| G7 传输期心跳保护 | ✅ 已实现 | `PtpSessionManager.bulkDepth`（`getObject`/`getPartialObject` 计数），在途时不累计 `missedBeats`、不触发 30s idle 判死；写失败仍判死 |
+| G8 USB detach 宽限窗 | ✅ 已实现 | `enterDetachGraceWindow()` 3s 轮询，命中即静默重连 |
+| G9 OTG/枚举分类文案 | ✅ 已实现 | 「总线全空」vs「有设备无尼康」分流，小米系给 OTG 路径与 10 分钟自动关闭提示 |
+| G10 >2GB 续传 | ✅ 安全化 | 偏移超出 32 位范围时退出续传改走整文件下载（修掉 `toInt()` 回绕写坏文件）。**真正的 `GetPartialObject64` 需按机身定标 → V-9** |
+| 回退闸门 | ✅ 已实现 | `ConnFlags` 总闸 + 设置页「v2.2 连接改进」开关（关闭即回 v2.1.1 行为）+ 单项 key |
+| G4 热点 `TetheringEventCallback` | ⛔ 本包受阻 | `android.net.TetheringManager` 不在 compileSdk 34/35 的**公开** stub 中（`android-36/android.jar` 才收录），AGP 8.7.3 不支持 compileSdk 36；不做隐藏 API 反射 hack。随 §10.4 targetSdk 36 一并做 |
+| G6 全局尝试预算 | ⏸ 推迟 | 需要真机成功率数据才能定阈值，盲改有「过早放弃」风险 → v2.2.1 |
+| G11 PreflightGate / ROM 矩阵、G12 统一漏斗 | ⏸ 推迟 | 本包只加了 `ap_gateway`/`ap_host_override`/`usb_grace_*` 等新事件；`assets/compat/*.json` 与码表收口放 v2.2.1（依赖 G12 先出基线） |
+
+**验证包对应的验收项**：AC-1（换网段仍能连上）、AC-2（关蓝牙仍可连 AP）、AC-3（断开后马上再连）、AC-5（>60s 大文件不被心跳掐断）、AC-6（拔插一次自动恢复 + OTG 关闭时的提示文案）。
+
+---
+
 ## 附录 A：证据文件索引
 
 | 文件 | 内容 |
