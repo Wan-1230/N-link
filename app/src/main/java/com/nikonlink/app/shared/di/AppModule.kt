@@ -51,23 +51,26 @@ object AppModule {
     @Provides
     @Singleton
     fun provideWifiManager(
-        @ApplicationContext context: Context
-    ): WifiManager = WifiManager(context)
+        @ApplicationContext context: Context,
+        connFlags: com.nikonlink.app.device.connect.ConnFlags
+    ): WifiManager = WifiManager(context, connFlags)
 
     @Provides
     @Singleton
     fun provideWifiScanner(
         @ApplicationContext context: Context,
         networkRequester: StaNetworkRequester,
-        localInterfaces: LocalNetworkInterfaceResolver
-    ): WifiScanner = WifiScanner(context, networkRequester, localInterfaces)
+        localInterfaces: LocalNetworkInterfaceResolver,
+        connFlags: com.nikonlink.app.device.connect.ConnFlags
+    ): WifiScanner = WifiScanner(context, networkRequester, localInterfaces, connFlags)
 
     @Provides
     @Singleton
     fun providePtpSessionManager(
         identityStore: PtpIdentityStore,
-        eventLogger: AppEventLogger
-    ): PtpSessionManager = PtpSessionManager(identityStore, eventLogger)
+        eventLogger: AppEventLogger,
+        connFlags: com.nikonlink.app.device.connect.ConnFlags
+    ): PtpSessionManager = PtpSessionManager(identityStore, eventLogger, connFlags)
 
     @Provides
     @Singleton
@@ -86,7 +89,9 @@ object AppModule {
         deviceRepository: DeviceRepository,
         transferManager: TransferManager,
         connector: WifiDirectConnector,
-        eventLogger: AppEventLogger
+        eventLogger: AppEventLogger,
+        apGatewayResolver: com.nikonlink.app.device.wifi_ap.ApGatewayResolver,
+        connFlags: com.nikonlink.app.device.connect.ConnFlags
     ): ConnectionManager = ConnectionManager(
         context,
         bleManager,
@@ -98,7 +103,9 @@ object AppModule {
         deviceRepository,
         transferManager,
         connector,
-        eventLogger
+        eventLogger,
+        apGatewayResolver,
+        connFlags
     )
 
     @Provides
@@ -184,8 +191,9 @@ object AppModule {
     @Singleton
     fun provideUsbPtpManager(
         @ApplicationContext context: Context,
-        eventLogger: AppEventLogger
-    ): UsbPtpManager = UsbPtpManager(context, eventLogger)
+        eventLogger: AppEventLogger,
+        connFlags: com.nikonlink.app.device.connect.ConnFlags
+    ): UsbPtpManager = UsbPtpManager(context, eventLogger, connFlags)
 
     @Provides
     @Singleton

@@ -8,6 +8,7 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import dagger.hilt.android.qualifiers.ApplicationContext
+import com.nikonlink.app.device.connect.ConnFlags
 import com.nikonlink.app.device.ptp.PtpIpProbe
 import com.nikonlink.app.device.wifi.WifiEndpoint
 import java.io.ByteArrayOutputStream
@@ -44,7 +45,8 @@ import javax.inject.Singleton
 class WifiScanner @Inject constructor(
     @ApplicationContext private val context: Context,
     private val networkRequester: StaNetworkRequester,
-    private val localInterfaces: LocalNetworkInterfaceResolver
+    private val localInterfaces: LocalNetworkInterfaceResolver,
+    private val connFlags: ConnFlags
 ) {
     companion object {
         private const val TAG = "WifiScanner"
@@ -508,7 +510,18 @@ class WifiScanner @Inject constructor(
                     try {
                         if (System.currentTimeMillis() >= deadline) return@async
                         probed.incrementAndGet()
-                        when (PtpIpProbe.probeDetailed(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)) {
+                        // v2.2（PRD §5.2 T-S3）：两段式筛选 —— 先用「只连 TCP、不发握手」快筛
+                        // 掉绝大多数空地址。对每个地址都发一次 InitCommand 不仅慢，还会反复
+                        // 挤占相机**唯一**的 PTP/IP 客户端槽位，反而把真正要连的目标挤下线。
+                        val tcpOpen = if (connFlags.isEnabled(ConnFlags.STA_TCP_ONLY)) {
+                            PtpIpProbe.tcpConnectOnly(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)
+                        } else true
+                        val verdict = if (tcpOpen) {
+                            PtpIpProbe.probeDetailed(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)
+                        } else {
+                            PtpIpProbe.ProbeResult.TIMEOUT
+                        }
+                        when (verdict) {
                             PtpIpProbe.ProbeResult.OK -> {
                                 diag.probeOk.incrementAndGet()
                                 results.add(WifiCameraCandidate(host, PTP_PORT, "尼康相机", "WiFi"))
@@ -736,7 +749,18 @@ class WifiScanner @Inject constructor(
                     try {
                         if (results.any { it.ipAddress == host }) return@async
                         probed.incrementAndGet()
-                        when (PtpIpProbe.probeDetailed(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)) {
+                        // v2.2（PRD §5.2 T-S3）：两段式筛选 —— 先用「只连 TCP、不发握手」快筛
+                        // 掉绝大多数空地址。对每个地址都发一次 InitCommand 不仅慢，还会反复
+                        // 挤占相机**唯一**的 PTP/IP 客户端槽位，反而把真正要连的目标挤下线。
+                        val tcpOpen = if (connFlags.isEnabled(ConnFlags.STA_TCP_ONLY)) {
+                            PtpIpProbe.tcpConnectOnly(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)
+                        } else true
+                        val verdict = if (tcpOpen) {
+                            PtpIpProbe.probeDetailed(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)
+                        } else {
+                            PtpIpProbe.ProbeResult.TIMEOUT
+                        }
+                        when (verdict) {
                             PtpIpProbe.ProbeResult.OK -> {
                                 diag.probeOk.incrementAndGet()
                                 results.add(
