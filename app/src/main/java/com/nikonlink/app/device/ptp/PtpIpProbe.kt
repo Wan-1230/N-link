@@ -111,6 +111,33 @@ object PtpIpProbe {
         }
     }
 
+    /**
+     * **只做 TCP 连接，不发 PTP/IP 握手**（PRD v2.2 §5.2 T-S3）。
+     *
+     * 网段盲扫期间对每个地址发 InitCommand 有两个代价：① 每个候选多花一个握手超时；
+     * ② 尼康机身同时只允许一个 PTP/IP 客户端，握手会挤占/污染配对槽，反而让真正的
+     * 目标连不上。因此扫描阶段用本函数筛出「端口开着的活主机」，只对最终候选做
+     * [probeDetailed]。
+     */
+    suspend fun tcpConnectOnly(
+        host: String,
+        port: Int = PtpConstants.DEFAULT_PORT,
+        timeoutMs: Long = 500L,
+        network: Network? = null
+    ): Boolean = withContext(Dispatchers.IO) {
+        val effective = timeoutMs.coerceIn(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS).toInt()
+        try {
+            val socket = if (network != null) network.socketFactory.createSocket() else Socket()
+            socket.use {
+                it.connect(InetSocketAddress(host, port), effective)
+                true
+            }
+        } catch (e: Exception) {
+            Timber.tag(TAG).v("TCP-only screen miss for %s:%d: %s", host, port, e.message)
+            false
+        }
+    }
+
     private const val MIN_TIMEOUT_MS = 300L
 
     /**

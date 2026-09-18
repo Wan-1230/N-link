@@ -28,12 +28,19 @@ import javax.inject.Singleton
  */
 @Singleton
 class WifiManager @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val connFlags: com.nikonlink.app.device.connect.ConnFlags
 ) {
     companion object {
         private const val TAG = "WifiManager"
         private const val CONNECT_TIMEOUT_MS = 15000L
         private const val SCAN_SETTLE_MS = 1500L
+
+        /**
+         * 释放上一个 specifier 请求到再次请求同一 AP 的最小间隔。
+         * 框架拆旧网络未完成时重请求会立刻 onUnavailable（v2.2 T-A1）。
+         */
+        private const val MIN_REREQUEST_GAP_MS = 1500L
 
         /** 将 WiFi 频率（MHz）映射为可读频段标签。 */
         fun bandLabel(frequencyMhz: Int): String = when {
@@ -70,6 +77,9 @@ class WifiManager @Inject constructor(
 
     private var currentCredential: WifiCredential? = null
 
+    /** 上一次 unregister/释放的时间戳，用于 [MIN_REREQUEST_GAP_MS] 节流。 */
+    private var lastReleaseAt = 0L
+
     fun start(scope: CoroutineScope) {
         this.scope = scope
         registerNetworkCallback()
@@ -101,6 +111,21 @@ class WifiManager @Inject constructor(
     suspend fun connectToCamera(credential: WifiCredential, preferBand5GHz: Boolean): Boolean {
         if (isConnected()) return true
         currentCredential = credential
+
+        // v2.2（T-A3）：手机已经手动连上这个热点时，不必再向系统申请专属网络 ——
+        // 这正是「新固件凭证被 LsSec 加密、拿不到 SSID/密码之外的信息」时的通路。
+        // 直接认定已连接，地址交给 ApGatewayResolver 学。
+        if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.AP_BLELESS) &&
+            alreadyOnThisAp(credential.ssid)
+        ) {
+            Timber.tag(TAG).i("Already joined AP '%s' at system level, adopting it", credential.ssid)
+            activeNetwork = resolveWifiNetwork()
+            _wifiState.value = WifiChannelState.CONNECTED
+            _networkAvailable.tryEmit(activeNetwork ?: return true)
+            scope?.launch { refreshWifiBand() }
+            return true
+        }
+
         _wifiState.value = WifiChannelState.CONNECTING
 
         return withContext(Dispatchers.Main) {
@@ -112,10 +137,20 @@ class WifiManager @Inject constructor(
                 }
                 var outcome = false
                 for (band in bands) {
+                    // v2.2（T-A1-4）：距离上次释放不足 MIN_REREQUEST_GAP_MS 时先等。
+                    // 框架还在拆旧网络就重请求同一个 AP，会秒回 onUnavailable
+                    // （用户侧表现：断开后马上再扫就连不上）。
+                    awaitReleaseGap(credential.ssid)
                     val result = CompletableDeferred<Boolean>()
                     val callback = createRequestCallback(result)
                     val request = buildCameraApRequest(credential, band)
-                    connectivityManager.requestNetwork(request, callback)
+                    if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.AP_SPECIFIER)) {
+                        // 带超时的三参重载：无超时版本在密码错/AP 不在广播时会永久挂起，
+                        // 上层 withTimeoutOrNull 只是放弃等待，系统侧请求仍注册着（泄漏配额）。
+                        connectivityManager.requestNetwork(request, callback, CONNECT_TIMEOUT_MS.toInt())
+                    } else {
+                        connectivityManager.requestNetwork(request, callback)
+                    }
                     this@WifiManager.networkCallback = callback
                     Timber.tag(TAG).i(
                         "Requesting camera AP '%s' band=%s",
@@ -123,7 +158,11 @@ class WifiManager @Inject constructor(
                         if (band == 0) "auto" else if (band == 5) "5GHz" else band.toString()
                     )
 
-                    val connected = withTimeoutOrNull(CONNECT_TIMEOUT_MS) { result.await() }
+                    val connected = if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.AP_SPECIFIER)) {
+                        result.await()
+                    } else {
+                        withTimeoutOrNull(CONNECT_TIMEOUT_MS) { result.await() }
+                    }
                     if (connected == true) {
                         outcome = true
                         break
@@ -132,6 +171,7 @@ class WifiManager @Inject constructor(
                     runCatching {
                         connectivityManager.unregisterNetworkCallback(callback)
                     }
+                    lastReleaseAt = System.currentTimeMillis()
                     if (this@WifiManager.networkCallback === callback) {
                         this@WifiManager.networkCallback = null
                     }
@@ -149,6 +189,26 @@ class WifiManager @Inject constructor(
                 _wifiFrequencyMhz.value = 0
                 false
             }
+        }
+    }
+
+    /** 手机当前是否已经连着这个 SSID（系统层手动连接的场景）。 */
+    private fun alreadyOnThisAp(ssid: String): Boolean {
+        if (ssid.isBlank()) return false
+        val current = runCatching {
+            @Suppress("DEPRECATION")
+            wifiManager.connectionInfo?.ssid?.trim('"')
+        }.getOrNull()
+        return !current.isNullOrBlank() && current.equals(ssid, ignoreCase = true)
+    }
+
+    private suspend fun awaitReleaseGap(ssid: String) {
+        if (!connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.AP_SPECIFIER)) return
+        val since = System.currentTimeMillis() - lastReleaseAt
+        if (lastReleaseAt > 0 && since < MIN_REREQUEST_GAP_MS) {
+            Timber.tag(TAG).i("Holding %dms before re-requesting '%s' (framework still tearing down)",
+                MIN_REREQUEST_GAP_MS - since, ssid)
+            delay(MIN_REREQUEST_GAP_MS - since)
         }
     }
 
@@ -211,6 +271,7 @@ class WifiManager @Inject constructor(
             } catch (_: Exception) {}
         }
         networkCallback = null
+        lastReleaseAt = System.currentTimeMillis()
         connectivityManager.bindProcessToNetwork(null)
         activeNetwork = null
         _wifiState.value = WifiChannelState.DISCONNECTED
@@ -223,7 +284,18 @@ class WifiManager @Inject constructor(
      */
     suspend fun reconnect(): Boolean {
         if (isConnected()) return true
-        val credential = currentCredential ?: return false
+        // v2.2（T-A3）：进程被杀后内存凭证丢失（旧版此处直接 return false，静默不重连）。
+        // 只要手机还挂在相机热点上，就按「已连接」收养该网络，地址由网关学习给出。
+        val credential = currentCredential ?: run {
+            val ssid = runCatching {
+                @Suppress("DEPRECATION")
+                wifiManager.connectionInfo?.ssid?.trim('"')
+            }.getOrNull()
+            if (ApGatewayResolver.looksLikeCameraAp(ssid)) {
+                Timber.tag(TAG).i("Recovering WiFi channel without in-memory credential (SSID=%s)", ssid)
+                WifiCredential(ssid = ssid!!, password = "", ipAddress = "")
+            } else return false
+        }
         Timber.tag(TAG).i("Attempting WiFi reconnect to ${credential.ssid}")
         return connectToCamera(credential)
     }
