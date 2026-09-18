@@ -55,7 +55,9 @@ class ConnectionManager @Inject constructor(
     private val deviceRepository: DeviceRepository,
     private val transferManager: TransferManager,
     private val connector: WifiDirectConnector,
-    private val eventLogger: AppEventLogger
+    private val eventLogger: AppEventLogger,
+    private val apGatewayResolver: com.nikonlink.app.device.wifi_ap.ApGatewayResolver,
+    private val connFlags: ConnFlags
 ) {
     companion object {
         private const val TAG = "ConnectionMgr"
@@ -68,6 +70,7 @@ class ConnectionManager @Inject constructor(
         // P0：目标地址分级取值的来源标识（event 字段，便于日志区分真实地址与兜底）
         private const val SOURCE_BLE_CREDENTIAL = "ble_credential"
         private const val SOURCE_DISCOVERED = "discovered"
+        private const val SOURCE_AP_GATEWAY = "ap_gateway"
         private const val SOURCE_DEFAULT_FALLBACK = "default_fallback"
         private const val DEFAULT_FALLBACK_HOST = "192.168.1.1"
     }
@@ -218,6 +221,50 @@ class ConnectionManager @Inject constructor(
             return
         }
 
+        // v2.2（PRD §5.1 T-A2/T-A3）：AP 模式下相机自任网关，手机已连相机热点时
+        // 「网关就是相机」——先学地址再发起配对，用户/历史给的地址（尤其是默认
+        // 192.168.1.1）只在学不出来时作为兜底。学不到（如 STA 场景网关是路由器）
+        // 时按原地址继续，行为与 v2.1.1 一致。
+        val learnFirst = connFlags.isEnabled(ConnFlags.AP_GATEWAY) &&
+            ((connFlags.isEnabled(ConnFlags.AP_BLELESS) && apGatewayResolver.isOnCameraAp()) ||
+                endpoint.host == DEFAULT_FALLBACK_HOST)
+        if (learnFirst) {
+            _connectionHint.value = null
+            pairedDeviceAddress = endpoint.address
+            userDisconnectRequested = false
+            // RC-1：先登记 job 再派发状态，避免状态机观察者并发发起第二次连接
+            pairingJob = scope?.launch(Dispatchers.IO) {
+                val learned = runCatching {
+                    apGatewayResolver.resolve(
+                        network = wifiManager.getActiveNetwork(),
+                        wifiNetwork = wifiManager.currentWifiNetwork()
+                    )
+                }.getOrNull()
+                val target = learned?.let {
+                    WifiEndpoint.parse("wifi:${it.host}:${endpoint.port}") ?: endpoint
+                } ?: endpoint
+                if (target.host != endpoint.host) {
+                    eventLogger.event(
+                        "ap_host_override",
+                        "from" to endpoint.host, "to" to target.host, "stable" to learned!!.stable
+                    )
+                    Timber.tag(TAG).i("AP gateway learned: %s -> %s", endpoint.host, target.host)
+                }
+                withContext(Dispatchers.Main) { beginWifiPairing(target, deviceName) }
+            }
+            stateMachine.dispatch(ConnectionEvent.StartConnect)
+            return
+        }
+
+        beginWifiPairing(endpoint, deviceName)
+        stateMachine.dispatch(ConnectionEvent.StartConnect)
+    }
+
+    /**
+     * 真正发起一次 WiFi 相机配对/连接（RC-1/2/7/8 的并发治理都在 connector 内部）。
+     * 调用方负责在合适时机派发 [ConnectionEvent.StartConnect]。
+     */
+    private fun beginWifiPairing(endpoint: WifiEndpoint, deviceName: String?) {
         _connectionHint.value = null
         pairedDeviceAddress = endpoint.address
         userDisconnectRequested = false
@@ -269,7 +316,6 @@ class ConnectionManager @Inject constructor(
                 // 这里不再重复设置，避免两处文案互相覆盖
             }
         )
-        stateMachine.dispatch(ConnectionEvent.StartConnect)
     }
 
     /**
@@ -808,6 +854,24 @@ class ConnectionManager @Inject constructor(
         // 优先级 2：本轮已发现/确认过的真实相机 IP（一旦拿到过，后续重试优先用它）
         if (!realCameraIp.isNullOrBlank()) {
             return Triple(realCameraIp!!, credPort, SOURCE_DISCOVERED)
+        }
+        // 优先级 2.5（v2.2 T-A2）：AP 模式下网关就是相机 —— 不依赖 BLE 凭证，
+        // 也不依赖出厂地址猜测。学不到时（非 AP 场景 / 网关是路由器）继续往下走。
+        if (connFlags.isEnabled(ConnFlags.AP_GATEWAY)) {
+            val apConnected = runCatching { wifiManager.isConnected() }.getOrDefault(false)
+            if (apConnected || apGatewayResolver.isOnCameraAp()) {
+                val learned = runCatching {
+                    apGatewayResolver.resolve(
+                        network = wifiManager.getActiveNetwork(),
+                        wifiNetwork = wifiManager.currentWifiNetwork()
+                    )
+                }.getOrNull()
+                if (learned != null) {
+                    realCameraIp = learned.host
+                    Timber.tag(TAG).i("PTP target from AP gateway=${learned.host} stable=${learned.stable}")
+                    return Triple(learned.host, learned.port, SOURCE_AP_GATEWAY)
+                }
+            }
         }
         // 优先级 3：历史连接过的相机 IP（发现结果来源），当前可达才采用
         val last = runCatching { deviceRepository.getLastAutoConnectDevice() }.getOrNull()

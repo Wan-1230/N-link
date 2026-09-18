@@ -696,6 +696,18 @@ class TransferManager @Inject constructor(
             val remaining = (file.size - totalReceived).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
             val size = minOf(chunkSize, remaining)
 
+            // v2.2（G10）：标准 PTP GetPartialObject 的 offset 是 **32 位**，>2GB 的文件
+            // 续传时 totalReceived.toInt() 会回绕成负数、把文件写坏（旧版 4K 长 MOV 必现）。
+            // 尼康/MTP 的 64 位变体（GetPartialObject64）要按机身验证后才能用，
+            // 这里先安全退出续传，由下面的整文件下载兜底。
+            if (totalReceived > (Int.MAX_VALUE - size).toLong()) {
+                Timber.tag(TAG).w(
+                    "Resume offset %d beyond 32-bit partial range, aborting chunked resume",
+                    totalReceived
+                )
+                break
+            }
+
             // WiFi 与 USB 统一流式写盘：partialObject 的数据阶段直接写入 sink，
             // 内存 O(64KB)（USB 事务层按容器重组流式转发，不再整块缓冲）
             val before = target.length()
@@ -720,8 +732,9 @@ class TransferManager @Inject constructor(
 
         if (totalReceived >= file.size) return true
 
-        // 部分传输完全不支持时，清掉占位文件后整文件下载并带进度。
-        if (startOffset == 0L && totalReceived == 0L) {
+        // 部分传输完全不支持、或文件大到 32 位续传范围之外时，清掉占位文件后整文件下载。
+        // GetObject 没有 offset 参数，因此 >2GB 文件走这条路是安全的（只是不能续传）。
+        if (startOffset == 0L || startOffset > Int.MAX_VALUE - 1L) {
             target.delete()
             return downloadWhole(transport, file, target, onProgress)
         }

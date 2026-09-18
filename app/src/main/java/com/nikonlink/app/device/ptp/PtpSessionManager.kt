@@ -24,7 +24,8 @@ import javax.inject.Singleton
 @Singleton
 class PtpSessionManager @Inject constructor(
     private val identityStore: PtpClientIdentity,
-    private val eventLogger: AppEventLogger
+    private val eventLogger: AppEventLogger,
+    private val connFlags: com.nikonlink.app.device.connect.ConnFlags
 ) {
 
     companion object {
@@ -632,8 +633,13 @@ class PtpSessionManager @Inject constructor(
         onProgress: ((Long, Long) -> Unit)? = null,
         sink: OutputStream? = null
     ): ByteArray? {
-        val result = sendCommandWithData(PtpConstants.OP_GET_OBJECT, listOf(handle), onProgress, sink)
-        return (result as? PtpDataResult.Success)?.data
+        bulkDepth.incrementAndGet()
+        try {
+            val result = sendCommandWithData(PtpConstants.OP_GET_OBJECT, listOf(handle), onProgress, sink)
+            return (result as? PtpDataResult.Success)?.data
+        } finally {
+            bulkDepth.decrementAndGet()
+        }
     }
 
     /**
@@ -647,13 +653,23 @@ class PtpSessionManager @Inject constructor(
         maxBytes: Int,
         sink: OutputStream? = null
     ): ByteArray? {
-        val result = sendCommandWithData(
-            PtpConstants.OP_GET_PARTIAL_OBJECT,
-            listOf(handle, offset, maxBytes),
-            sink = sink
-        )
-        return (result as? PtpDataResult.Success)?.data
+        bulkDepth.incrementAndGet()
+        try {
+            val result = sendCommandWithData(
+                PtpConstants.OP_GET_PARTIAL_OBJECT,
+                listOf(handle, offset, maxBytes),
+                sink = sink
+            )
+            return (result as? PtpDataResult.Success)?.data
+        } finally {
+            bulkDepth.decrementAndGet()
+        }
     }
+
+    /** 当前在途的批量传输数（>0 时心跳不判死，见 PRD v2.2 §5.2/§5.3）。 */
+    private val bulkDepth = AtomicInteger(0)
+
+    fun isBulkTransferActive(): Boolean = bulkDepth.get() > 0
 
     /**
      * 删除相机存储卡中的对象。
@@ -848,6 +864,14 @@ class PtpSessionManager @Inject constructor(
                 if (lastEventActivityAt > activityBeforePing) {
                     // 相机回了 Pong 或主动发了探针：链路活
                     missedBeats = 0
+                } else if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.TRANSFER_HEARTBEAT) &&
+                    bulkDepth.get() > 0
+                ) {
+                    // v2.2（G7，v2.0.2 PRD §二-2）：批量传输在途时相机把带宽和固件注意力
+                    // 都给了命令通道，event 通道长时间静默是**正常**的。旧实现在这里累计
+                    // missedBeats 并在 ~30s 判死，于是大文件/视频下载被自己的心跳掐断。
+                    // 写失败仍然会走上面的 ping_write_failed 分支判死，不会漏掉真断链。
+                    Timber.tag(TAG).v("keepAlive: silence during bulk transfer, not counting")
                 } else {
                     missedBeats++
                     Timber.tag(TAG).w(
@@ -859,7 +883,10 @@ class PtpSessionManager @Inject constructor(
                     }
                 }
                 // 兜底：event 通道超过 30s 毫无活动即判定链路已死，交给上层恢复流程
-                if (System.currentTimeMillis() - lastEventActivityAt > NO_ACTIVITY_TIMEOUT_MS) {
+                if (System.currentTimeMillis() - lastEventActivityAt > NO_ACTIVITY_TIMEOUT_MS &&
+                    !(connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.TRANSFER_HEARTBEAT) &&
+                        bulkDepth.get() > 0)
+                ) {
                     Timber.tag(TAG).w(
                         "keepAlive: no event-channel activity for ${NO_ACTIVITY_TIMEOUT_MS}ms, link dead"
                     )

@@ -57,6 +57,9 @@ class SettingsFragment : Fragment() {
     @Inject
     lateinit var updateChecker: UpdateChecker
 
+    @Inject
+    lateinit var connFlags: com.nikonlink.app.device.connect.ConnFlags
+
     /** 检查更新防抖时间戳：1.5s 内重复点击忽略（PRD S3 / AC-5） */
     private var lastUpdateClickAt = 0L
 
@@ -101,6 +104,8 @@ class SettingsFragment : Fragment() {
     private fun restoreState() {
         binding.switchAutoDownload.isChecked = settings.autoDownload
         binding.switchWifi5G.isChecked = settings.preferWifi5GHz
+        // v2.2 回退总闸：关闭后所有新连接逻辑回到 v2.1.1 行为
+        binding.switchConn22.isChecked = connFlags.masterEnabled()
         binding.switchMarkAutoDownload.isChecked = settings.markAutoDownload
         binding.switchShareKeepGps.isChecked = settings.shareKeepGps
         binding.tvQualityValue.text = settings.downloadQuality
@@ -200,6 +205,19 @@ class SettingsFragment : Fragment() {
         binding.switchWifi5G.setOnCheckedChangeListener { _, checked ->
             settings.preferWifi5GHz = checked
             eventLogger.event("setting", "key" to "wifi_band_5g_prefer", "value" to checked)
+        }
+
+        // v2.2 连接改造总闸。多数开关是每次调用时读取、立即生效；
+        // 热点网络观察在启动时注册，需要重进 App 才切换 —— 提示里说清楚。
+        binding.switchConn22.setOnCheckedChangeListener { _, checked ->
+            connFlags.setMasterEnabled(checked)
+            eventLogger.event("setting", "key" to "conn22_enabled", "value" to checked)
+            android.widget.Toast.makeText(
+                requireContext(),
+                if (checked) "已启用 v2.2 连接改进"
+                else "已回退到 v2.1.1 连接行为（热点网络部分需重进 App 生效）",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
         }
 
         // 通用设置

@@ -37,12 +37,21 @@ import javax.inject.Singleton
 @Singleton
 class UsbPtpManager @Inject constructor(
     private val context: Context,
-    private val eventLogger: AppEventLogger
+    private val eventLogger: AppEventLogger,
+    private val connFlags: com.nikonlink.app.device.connect.ConnFlags
 ) {
     companion object {
         private const val TAG = "UsbPtp"
         private const val ACTION_USB_PERMISSION = "com.nikonlink.app.USB_PERMISSION"
         private const val BULK_TIMEOUT_MS = 5000
+
+        /**
+         * v2.2（PRD §5.3 T-U1）：DETACHED 后的宽限窗口。
+         * 线松、相机自动休眠唤醒、Hub 复位都会表现为一次瞬断再连；立刻判死会把
+         * 「碰了一下线」变成用户眼中的「App 又把连接搞断了」。
+         */
+        private const val DETACH_GRACE_MS = 3000L
+        private const val GRACE_POLL_MS = 400L
 
         /** 监看帧专用短超时：一帧卡顿只损失 2.5s，而非拖满 5s 后连续失败停监看 */
         private const val LV_FRAME_TIMEOUT_MS = 2500
@@ -109,11 +118,17 @@ class UsbPtpManager @Inject constructor(
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     Timber.tag(TAG).w("USB device detached")
-                    // 物理拔出：撤销退避重连并清空错误提示（属正常断开而非故障）
-                    reconnectJob?.cancel()
-                    reconnectJob = null
-                    _usbErrorMessage.value = null
-                    disconnect()
+                    // v2.2（T-U1）：先进宽限窗轮询，不立刻拆会话。相机休眠唤醒 / 线材瞬断
+                    // 会在 3s 内以同一 VID/PID 重新出现，命中就直接重连，用户无感。
+                    if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_GRACE)) {
+                        enterDetachGraceWindow()
+                    } else {
+                        // 物理拔出：撤销退避重连并清空错误提示（属正常断开而非故障）
+                        reconnectJob?.cancel()
+                        reconnectJob = null
+                        _usbErrorMessage.value = null
+                        disconnect()
+                    }
                 }
                 ACTION_USB_PERMISSION -> {
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
@@ -181,7 +196,20 @@ class UsbPtpManager @Inject constructor(
         Timber.tag(TAG).d("No Nikon camera found on USB bus (notify=$notifyWhenAbsent)")
         if (!notifyWhenAbsent) return
         // 用户主动连接 USB 但总线上没有相机：给出明确终态，否则 UI 会停在「正在建立 USB 通道...」
-        _usbErrorMessage.value = "未检测到 USB 相机：请用数据线连接相机并开机，再点连接"
+        // v2.2（T-U2）：区分「总线全空」与「有设备但没有尼康」——前者在小米系基本是
+        // OTG 开关没开（且约 10 分钟无操作会自动关），旧文案让用户白白拔插十几次。
+        _usbErrorMessage.value = when {
+            connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_OTG_HINT) &&
+                deviceList.isEmpty() && com.nikonlink.app.shared.device.RomDetector.isXiaomi ->
+                "未检测到 USB 相机，且 USB 总线上没有任何设备：小米/红米需先在「设置 → 更多连接 → OTG 连接」打开 OTG（约 10 分钟无操作会自动关闭），再重新插拔数据线"
+
+            connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_OTG_HINT) &&
+                deviceList.isEmpty() ->
+                "未检测到 USB 相机，且 USB 总线上没有任何设备：请确认使用的是数据线（非仅充电线）、手机已开启 OTG/外接供电，并点亮相机屏幕"
+
+            else ->
+                "未检测到 USB 相机：请用数据线连接相机并开机，再点连接；若相机菜单里有「USB 连接方式」请设为 PTP"
+        }
         _usbState.value = UsbConnectionState.DISCONNECTED
     }
 
@@ -296,7 +324,10 @@ class UsbPtpManager @Inject constructor(
                 vendorId = device.vendorId,
                 productId = device.productId,
                 cameraModel = UsbPtpProtocol.getCameraName(device.productId),
-                serialNumber = device.serialNumber ?: "unknown"
+                // 部分 OEM 在未授权/隐私策略下读 serialNumber 直接抛 SecurityException，
+                // 那会把整个连接流程带崩（v2.2 T-U1）；退化为 VID:PID 身份键。
+                serialNumber = runCatching { device.serialNumber }.getOrNull()
+                    ?: "no-permission-${device.vendorId}:${device.productId}"
             )
             eventLogger.event(
                 "usb_open",
@@ -353,6 +384,42 @@ class UsbPtpManager @Inject constructor(
             _usbErrorMessage.value = "USB 连接异常：${e.message ?: "未知错误"}（接口可能被占用，请重新插拔）"
             _usbState.value = UsbConnectionState.ERROR
             scheduleReconnect()
+        }
+    }
+
+    /**
+     * v2.2（PRD §5.3 T-U1）：拔出后的宽限窗口。
+     *
+     * 窗口内不做任何拆除动作，只轮询总线；相机以同一 VID/PID 重新出现就静默重连。
+     * 窗口耗尽仍未出现才按真实拔出来处理（保持与旧版一致的终态）。
+     */
+    private fun enterDetachGraceWindow() {
+        reconnectJob?.cancel()
+        val host = this.scope ?: run { disconnect(); return }
+        _usbState.value = UsbConnectionState.CONNECTING
+        host.launch {
+            val deadline = System.currentTimeMillis() + DETACH_GRACE_MS
+            var revived = false
+            while (System.currentTimeMillis() < deadline) {
+                delay(GRACE_POLL_MS)
+                val device = usbManager.deviceList.values.firstOrNull {
+                    UsbPtpProtocol.isNikonCamera(it.vendorId, it.productId)
+                }
+                if (device != null) {
+                    revived = true
+                    Timber.tag(TAG).i("Camera returned within grace window, reconnecting")
+                    eventLogger.event("usb_grace_revived")
+                    if (usbManager.hasPermission(device)) openConnection(device)
+                    else requestPermissionAndConnect(device)
+                    break
+                }
+            }
+            if (!revived) {
+                Timber.tag(TAG).w("Grace window expired -> real disconnect")
+                eventLogger.event("usb_grace_expired")
+                _usbErrorMessage.value = null
+                disconnect()
+            }
         }
     }
 
