@@ -540,6 +540,10 @@ class PhotoGridAdapter(
             } else {
                 binding.progressThumb.visibility = View.VISIBLE
                 binding.ivThumb.setImageBitmap(null)
+                // 局部 payload 刷新也要能自愈：内存被 LruCache 驱逐后，只重绘不补请求
+                // 会把这个格子永远留在转圈态。requestThumbnail 内部按 handle 去重，
+                // 与 onBindViewHolder 里的按需请求重复调用不会多发一次网络请求。
+                if (!fastScrolling) onRequestThumb(file)
             }
         }
     }

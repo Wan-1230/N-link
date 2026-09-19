@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
+import com.nikonlink.app.device.connect.ConnFlags
 import com.nikonlink.app.device.ptp.MtpObjectPropListParser
 import com.nikonlink.app.device.ptp.MtpObjectProps
 import com.nikonlink.app.device.ptp.PtpDataResult
@@ -67,7 +68,8 @@ class TransferManager @Inject constructor(
     private val thumbnailCache: ThumbnailCache,
     private val wifiManager: WifiManager,
     private val settings: AppSettings,
-    private val eventLogger: AppEventLogger
+    private val eventLogger: AppEventLogger,
+    private val connFlags: ConnFlags
 ) {
     companion object {
         private const val TAG = "TransferMgr"
@@ -273,6 +275,22 @@ class TransferManager @Inject constructor(
     fun stop() {
         cancelAll()
         scope = null
+    }
+
+    /**
+     * 当前是否有原图批量传输在跑（PRD v2.2 G9）。
+     *
+     * 用途是让 UI 层在传输期间**让路**：缩略图（0x100A 小图 / 0x90C4 高清）与原图分块
+     * 走的是同一条串行 PTP 命令通道，网格持续插队的请求会把「单张下载」的吞吐拖垮
+     * —— 这就是「全屏页单张很快、网格批量下载每张都慢」的成因。
+     * 关掉 [ConnFlags.TRANSFER_THUMB_YIELD] 后恒为 false，回到抢占通道的旧行为。
+     */
+    fun isBulkTransferRunning(): Boolean {
+        if (!connFlags.isEnabled(ConnFlags.TRANSFER_THUMB_YIELD)) return false
+        if (_transferState.value is TransferState.Downloading) return true
+        // 队列里还有没开跑的任务：两张之间的空档（Completed / 重试 delay）不算「闲下来了」，
+        // 否则缩略图会在每张缝隙里集体涌进来，等于没让路。
+        return _queue.value.any { it.status == TransferTaskStatus.PENDING }
     }
 
     /**
@@ -629,11 +647,19 @@ class TransferManager @Inject constructor(
                 )
             }
 
-            val savedPath = saveFileToMediaStore(prepareFileToSave(tempFile, file), file.fileName)
+            val prepared = prepareFileToSave(tempFile, file)
+            val savedPath = saveFileToMediaStore(prepared, file.fileName)
+            if (prepared !== tempFile) runCatching { prepared.delete() }  // 压缩副本已进相册，别留在缓存目录里累积
             if (savedPath != null) {
-                // 已下载原图 → 用原图生成高清缩略图回填缓存（0x90C4/0x100A 的小图从此不再展示）
-                regenerateThumbnailFromLocal(file.handle, tempFile)
-                tempFile.delete()
+                // 已下载原图 → 用原图生成高清缩略图回填缓存（0x90C4/0x100A 的小图从此不再展示）。
+                // 挪到关键路径之外：全尺寸 JPEG 解码 + 缩放重编码要几百毫秒，串行卡在
+                // 队列里就是「批量下载每张都慢一截」的一部分，而它只影响相册显示质量。
+                val thumbSource = tempFile
+                val thumbJob = scope?.launch(Dispatchers.IO) {
+                    regenerateThumbnailFromLocal(file.handle, thumbSource)
+                    thumbSource.delete()
+                }
+                if (thumbJob == null) tempFile.delete()
                 transferRepository.recordTransfer(file.handle, file.fileName, file.size, savedPath)
                 _transferState.value = TransferState.Completed(file)
                 resetTransferSpeed()
