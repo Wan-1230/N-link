@@ -728,7 +728,7 @@ WMA 写凭据（若 V-3 通过）或 USB 侧完成注册（回退方案）；双
 
 ---
 
-## 十五、v2.2.0 实施状态（8 号包 `N-Link-v2.2.0-release-8号包-连接P0.apk`）
+## 十五、v2.2.0 实施状态（验证包 `dist/N-Link-v2.2.0-release-连接P0.apk`）
 
 > 分支 `research-connection-prd-v2.2`，提交：`e29ac85`(PRD) → `96eb34e`(代码) → `a11d685`(版本号 19)。
 > 构建 `:app:assembleRelease` 通过，`:app:testReleaseUnitTest` 通过，release 签名校验为 N-Link 证书。
