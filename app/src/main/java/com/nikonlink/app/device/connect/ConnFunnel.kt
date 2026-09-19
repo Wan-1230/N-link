@@ -61,6 +61,7 @@ class ConnFunnel @Inject constructor(
             PERM_LOCATION("perm_location", "缺少定位权限（Android 12 及以下扫描 WiFi 必需）", "授予定位权限"),
             LOC_SWITCH_OFF("loc_switch_off", "系统「位置信息」总开关未开", "下拉快捷面板打开位置信息"),
             BATT_RESTRICTED("batt_restricted", "App 处于电池优化名单，后台易被系统回收", "在电池设置里设为「无限制」"),
+            AUTOSTART_REMINDER("autostart_reminder", "该机型 ROM 有自启动/后台白名单策略，息屏长传输可能被系统冻结", null),
             OTG_DISABLED("otg_disabled", "USB 总线上没有任何设备", RomDetector.otgHint()),
             AVOID_BAD_WIFI("avoid_bad_wifi", "系统开启了「避开不良网络 / 智能切换」，会主动断开没有网络的相机热点", "关闭 WLAN+ / 智能网络切换"),
             VPN_ACTIVE("vpn_active", "存在 VPN 通道，相机流量可能被劫持", "连接期间关闭 VPN"),

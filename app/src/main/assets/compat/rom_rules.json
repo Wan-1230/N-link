@@ -1,0 +1,163 @@
+{
+  "_comment": "逐 ROM 后台/权限策略矩阵（PRD v2.2 §6.1 / §6.2，落地路线 10.1 第 7 条）。改这个文件不需要改代码：匹配、深链、文案全部由 CompatRules 解析。component 只做「候选入口」，运行时一律 resolveActivity() 校验，拿不到就退回纯文案，所以写错或系统 OTA 后失效都不会崩。lastVerified=null 表示尚未真机验证。",
+  "version": 1,
+  "updatedAt": "2026-09-20",
+  "sources": {
+    "killRating": "https://dontkillmyapp.com/api/v1/output.json（2026-09-20 快照；0=原生行为，5=查杀最重）",
+    "components": "PRD v2.2 §6.2.3 与业界公开的同名入口，均未经本机逐一验证"
+  },
+  "rules": [
+    {
+      "id": "xiaomi-hyperos",
+      "family": "XIAOMI",
+      "killRating": 5,
+      "impact": "后台查杀 + OTG 独立开关 + WLAN+ 默认开启：息屏后连接被打断、USB 总线突然清空、无网络的相机热点被系统踢掉，三类现象都出在这台机器上",
+      "match": {
+        "manufacturer": ["xiaomi"],
+        "brand": ["xiaomi", "redmi", "poco"],
+        "props": ["ro.miui.ui.version.name", "ro.mi.os.version.name"],
+        "apiMin": 29
+      },
+      "tricks": [
+        {
+          "id": "autostart",
+          "text": "小米/红米：设置 → 应用设置 → 自启动管理，允许 N-Link 自启动",
+          "component": "com.miui.securitycenter/com.miui.permcenter.autostart.AutoStartManagementActivity",
+          "lastVerified": null
+        },
+        {
+          "id": "battery",
+          "text": "小米/红米：设置 → 应用设置 → 应用管理 → N-Link → 省电策略 → 选「无限制」",
+          "component": "com.miui.powerkeeper/com.miui.powerkeeper.ui.HiddenAppsConfigActivity",
+          "lastVerified": null
+        },
+        {
+          "id": "otg",
+          "text": "小米/红米：设置 → 更多连接 → OTG 连接（约 10 分钟无操作会自动关闭，重连前请确认它是开的）",
+          "lastVerified": "2026-09-19"
+        },
+        {
+          "id": "wlan_plus",
+          "text": "小米/红米：设置 → WLAN → 高级设置 → 关闭「WLAN+」与「首次连接提醒需开放网络」，否则没有网络的相机热点会被自动断开",
+          "lastVerified": "2026-09-19"
+        }
+      ]
+    },
+    {
+      "id": "huawei-honor",
+      "family": "HUAWEI",
+      "killRating": 5,
+      "impact": "默认按启动管理白名单杀后台，息屏后 BLE 扫描与 PTP 心跳一起停",
+      "match": {
+        "manufacturer": ["huawei", "honor"],
+        "brand": ["huawei", "honor"],
+        "props": ["ro.build.hw_emui_api_level"],
+        "apiMin": 29
+      },
+      "tricks": [
+        {
+          "id": "autostart",
+          "text": "华为/荣耀：手机管家 → 应用启动管理 → N-Link → 关闭「自动管理」，在弹窗里同时允许自启动/关联启动/后台活动",
+          "component": "com.huawei.systemmanager/com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+          "lastVerified": null
+        },
+        {
+          "id": "battery",
+          "text": "华为/荣耀：设置 → 电池 → 应用启动管理，把 N-Link 设为手动允许",
+          "component": "com.huawei.systemmanager/.optimize.process.ProtectActivity",
+          "lastVerified": null
+        },
+        {
+          "id": "wlan_plus",
+          "text": "华为/荣耀：设置 → WLAN → 更多 WLAN 设置 → 关闭「WLAN 助理」（智能选择最佳网络），否则会切走相机热点",
+          "lastVerified": null
+        }
+      ]
+    },
+    {
+      "id": "vivo",
+      "family": "VIVO",
+      "killRating": 3,
+      "impact": "后台高耗电默认拦截，且 OTG 有独立开关（真机数据点：vivo + Z50II 的 AP 通道正常，USB 侧需开 OTG）",
+      "match": {
+        "manufacturer": ["vivo"],
+        "brand": ["vivo", "iqoo"],
+        "props": ["ro.vivo.os.version"],
+        "apiMin": 29
+      },
+      "tricks": [
+        {
+          "id": "autostart",
+          "text": "vivo/iQOO：i 管家 → 应用后台高权限（或 设置 → 电池 → 后台耗电管理），允许 N-Link 后台运行",
+          "component": "com.vivo.permissionmanager/com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
+          "lastVerified": null
+        },
+        {
+          "id": "otg",
+          "text": "vivo/iQOO：设置 → 其他网络与连接 → OTG 连接（约 10 分钟无操作会自动关闭，重连前请确认它是开的）",
+          "lastVerified": "2026-09-19"
+        },
+        {
+          "id": "wlan_plus",
+          "text": "vivo/iQOO：设置 → WLAN → 高级选项 → 关闭「WLAN+」与「自动切换数据网络」，否则无网络的相机热点会被断开",
+          "lastVerified": null
+        }
+      ]
+    },
+    {
+      "id": "oppo-family",
+      "family": "OPPO",
+      "killRating": 5,
+      "impact": "ColorOS 全家桶（OPPO/一加/realme）自启动与耗电管理默认关闭，OTG 同样有独立开关",
+      "match": {
+        "manufacturer": ["oppo", "oneplus", "realme"],
+        "brand": ["oppo", "oneplus", "realme"],
+        "props": ["ro.build.version.opporom", "ro.oppo.version"],
+        "apiMin": 29
+      },
+      "tricks": [
+        {
+          "id": "autostart",
+          "text": "OPPO/一加/realme：设置 → 应用 → 自启动管理，允许 N-Link；再在「耗电保护」里关闭对 N-Link 的冻结",
+          "component": "com.coloros.safecenter/com.coloros.permission.startup.StartupAppListActivity",
+          "lastVerified": null
+        },
+        {
+          "id": "otg",
+          "text": "OPPO/一加/realme：设置 → 系统设置（或「其他设置」）→ OTG 连接 → 开启（长时间不用会自动关闭）",
+          "lastVerified": "2026-09-19"
+        }
+      ]
+    },
+    {
+      "id": "samsung",
+      "family": "SAMSUNG",
+      "killRating": 5,
+      "impact": "One UI 的「_put_apps_to_sleep / 深度休眠应用」会静默冻结后台连接，且没有任何自启动开关可给",
+      "match": {
+        "manufacturer": ["samsung"],
+        "brand": ["samsung"],
+        "apiMin": 29
+      },
+      "tricks": [
+        {
+          "id": "battery",
+          "text": "三星：设置 → 常规管理 → 电池 → 后台使用限制 → 确认 N-Link 不在「休眠应用 / 深度休眠应用」里，并关闭「新放到休眠列表的应用」",
+          "component": "com.samsung.android.lool/com.samsung.android.sm.ui.battery.BatteryActivity",
+          "lastVerified": null
+        }
+      ]
+    },
+    {
+      "id": "stock-android",
+      "family": "OTHER",
+      "killRating": 0,
+      "impact": "原生/近原生系统：后台查杀与 OTG 都没有厂商额外策略，连接失败应按链路本身排查",
+      "match": {
+        "manufacturer": ["google", "hmd global", "nokia", "htc", "motorola", "sony", "asus"],
+        "apiMin": 29
+      },
+      "tricks": []
+    }
+  ]
+}
