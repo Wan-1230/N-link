@@ -85,3 +85,4 @@ Desktop.ini
 # External native build
 .cxx/
 .externalNativeBuild/
+/.gradle-home/
