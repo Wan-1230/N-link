@@ -19,6 +19,11 @@ import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.nikonlink.app.shared.ui.glass.DepthLift
+import com.nikonlink.app.MainActivity
+import com.nikonlink.app.shared.ui.glass.DockInset
+import com.nikonlink.app.shared.ui.glass.GlassInsetAware
+import com.nikonlink.app.shared.ui.glass.GlassMotion
 import com.nikonlink.app.shared.ui.glass.GlassRegistry
 import com.nikonlink.app.shared.ui.glass.GlassTokens
 import com.nikonlink.app.shared.ui.glass.NlGlass
@@ -52,10 +57,13 @@ import kotlinx.coroutines.launch
  * 视频模式：录制按钮 + 实心圆点时长标识（灰度）
  */
 @AndroidEntryPoint
-class RemoteFragment : Fragment() {
+class RemoteFragment : Fragment(), GlassInsetAware {
 
     private var _binding: FragmentRemoteBinding? = null
     private val binding get() = _binding!!
+
+    /** 本页是固定布局（监看 2/3 + 参数 1/3），dock 悬浮时整块内容抬起来让位即可 */
+    private var dockInset: DockInset? = null
 
     private val viewModel: RemoteShootingViewModel by viewModels()
     private val paramsViewModel: CameraParamsViewModel by viewModels()
@@ -92,7 +100,13 @@ class RemoteFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        dockInset = DockInset(binding.root)
+        applyDockSpace()
         styleModeSlot()
+        UiFlags.observe(this) {
+            styleModeSlot()
+            applyDockSpace()
+        }
         setupLiveViewArea()
         setupParamRow()
         setupShutter()
@@ -169,7 +183,17 @@ class RemoteFragment : Fragment() {
         }
     }
 
+    private fun applyDockSpace() {
+        if (_binding == null) return
+        dockInset?.applyPadding((activity as? MainActivity)?.dockSpace() ?: 0)
+        DepthLift.apply(binding.root, requireContext())
+    }
+
+    override fun onDockSpaceChanged(dockSpace: Int) = applyDockSpace()
+
     override fun onDestroyView() {
+        UiFlags.unobserve(this)
+        dockInset = null
         super.onDestroyView()
         paramsViewModel.stopModeWatch()
         liveViewViewModel.stopLiveView()
@@ -819,10 +843,31 @@ class RemoteFragment : Fragment() {
         }
     }
 
-    private fun setVideoMode(video: Boolean) {
+    /**
+     * 把滑块归到当前选中标签上：宽度取标签宽、位移取标签左边（两者同在一个
+     * 带 padding 的 FrameLayout 里，起点一致，不用再补内缩）。
+     *
+     * 标签是 wrap_content，首帧宽度还是 0 —— 这时 post 一次再归位，且不做动画，
+     * 避免进页面时滑块从左边飞一下。
+     */
+    private fun layoutModeIndicator(animated: Boolean) {
+        val sel = if (videoMode) binding.btnModeVideo else binding.btnModePhoto
+        val ind = binding.modeIndicator
+        if (sel.width == 0) {
+            sel.post { layoutModeIndicator(false) }
+            return
+        }
+        val lp = ind.layoutParams
+        if (lp.width != sel.width) {
+            lp.width = sel.width
+            ind.layoutParams = lp
+        }
+        GlassMotion.slidePill(ind, sel.x, animated)
+    }
+
+    private fun setVideoMode(video: Boolean, animated: Boolean = true) {
         videoMode = video
-        binding.btnModePhoto.setBackgroundResource(if (!video) R.drawable.bg_chip_selected else 0)
-        binding.btnModeVideo.setBackgroundResource(if (video) R.drawable.bg_chip_selected else 0)
+        layoutModeIndicator(animated)
         binding.btnModePhoto.setTextColor(
             resources.getColor(if (!video) R.color.on_primary else R.color.text_primary, null)
         )

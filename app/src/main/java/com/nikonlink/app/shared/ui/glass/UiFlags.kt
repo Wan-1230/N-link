@@ -46,7 +46,35 @@ object UiFlags {
         DISPERSION to false,
     )
 
-    private val listeners = mutableListOf<() -> Unit>()
+    /**
+     * 页面级的重涂回调（PRD §9.4）。
+     *
+     * 为什么不让设置页开关直接 `activity.recreate()`：整页销毁重建会先把
+     * `windowBackground`（纯白）闪一帧出来，视觉上就是"闪屏"。改成各页注册自己的
+     * 重涂函数，开关切换时原地刷新。
+     * 用 owner 做键 → 同一个页面重复注册自动覆盖，`unobserve(owner)` 精确摘除，
+     * 不会因为 lambda 引用相等性问题漏摘。
+     */
+    private const val MAX_OBSERVERS = 64
+
+    private val pageObservers = LinkedHashMap<Any, () -> Unit>()
+
+    fun observe(owner: Any, block: () -> Unit) {
+        if (pageObservers.size > MAX_OBSERVERS) {
+            // 兜底清掉已死对象，避免长期持有（正常路径靠 unobserve）
+            pageObservers.entries.removeAll { it.key == null }
+        }
+        pageObservers[owner] = block
+    }
+
+    fun unobserve(owner: Any) {
+        pageObservers.remove(owner)
+    }
+
+    /** 开关变更后通知所有已注册的界面重涂材质 */
+    fun notifyChanged() {
+        pageObservers.values.toList().forEach { runCatching(it) }
+    }
 
     fun prefs(c: Context): SharedPreferences =
         c.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -108,18 +136,5 @@ object UiFlags {
             ?.isPowerSaveMode == true
     } catch (e: Exception) {
         false
-    }
-
-    fun addOnChangeListener(l: () -> Unit) {
-        if (!listeners.contains(l)) listeners.add(l)
-    }
-
-    fun removeOnChangeListener(l: () -> Unit) {
-        listeners.remove(l)
-    }
-
-    /** 开关变更后通知所有已注册的界面重涂材质（即时生效，不重启 Activity） */
-    fun notifyChanged() {
-        listeners.toList().forEach { it() }
     }
 }

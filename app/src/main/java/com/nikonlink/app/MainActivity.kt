@@ -8,8 +8,12 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.os.SystemClock
 import android.provider.Settings
+import android.view.MotionEvent
 import android.view.View
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
@@ -18,6 +22,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.DrawableRes
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updatePadding
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.withResumed
@@ -28,6 +36,9 @@ import com.nikonlink.app.settings.SettingsFragment
 import com.nikonlink.app.camera.gallery.TransferFragment
 import com.nikonlink.app.device.service.ConnectionService
 import com.nikonlink.app.shared.common.AppEventLogger
+import com.nikonlink.app.shared.ui.glass.GlassCoordinator
+import com.nikonlink.app.shared.ui.glass.GlassInsetAware
+import com.nikonlink.app.shared.ui.glass.GlassRegistry
 import com.nikonlink.app.shared.ui.glass.GlassTokens
 import com.nikonlink.app.shared.ui.glass.UiFlags
 import com.nikonlink.app.shared.ui.glass.applyGlass
@@ -62,15 +73,21 @@ class MainActivity : AppCompatActivity() {
         /** v2.2 基线：dock 不悬浮时的高度，「经典外观」要逐值还原（AC-12） */
         private const val DOCK_BASELINE_HEIGHT_DP = 60
 
+        /** 无操作多久后收起 dock */
+        private const val DOCK_IDLE_HIDE_MS = 3_800L
+        private const val DOCK_REVEAL_MS = 260L
+        private const val DOCK_HIDE_MS = 200L
+
+        /** 判定"点一下"而非"滑动"的阈值 */
+        private const val TAP_MAX_MS = 220L
+        private const val TAP_SLOP_DP = 14f
+
         /** 启动自动检查更新：每进程只跑一次（旋转/重建 Activity 不重跑） */
         @Volatile
         private var autoCheckStarted = false
     }
 
     private lateinit var binding: ActivityMainBinding
-
-    /** 「经典外观 / 降低透明度」开关变更时重涂 dock */
-    private val glassRefresh: () -> Unit = { runOnUiThread { styleDock() } }
 
     @Inject
     lateinit var updateChecker: UpdateChecker
@@ -80,6 +97,29 @@ class MainActivity : AppCompatActivity() {
 
     /** 上一次按下返回键的时间戳；0 表示当前不在「待退出」窗口内 */
     private var lastBackPressedAt = 0L
+
+    // ---- dock 悬浮与自动隐藏（PRD §4 dock 项、§7.2 insets）----
+
+    /** 状态栏 / 底部导航条的 insets，edge-to-edge 后必须自己算 */
+    private var statusInset = 0
+    private var navInset = 0
+
+    /** dock 当前是否被隐藏 */
+    private var dockHidden = false
+
+    /** 只有可滚动的页面（设备 / 相册 / 设置）才允许自动隐藏 */
+    private var dockAutoHideAllowed = false
+
+    /** dock 完全下沉时的位移量（同时用作"遮住内容的高度"） */
+    private var dockHideOffset = 0f
+
+    private val hideDockRunnable = Runnable {
+        if (dockAutoHideAllowed && UiFlags.glassEnabled(this)) hideDock()
+    }
+
+    private var downX = 0f
+    private var downY = 0f
+    private var downAt = 0L
 
     private val dashboardFragment = DashboardFragment()
     private val transferFragment = TransferFragment()
@@ -120,13 +160,19 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 逐窗 edge-to-edge：让玻璃能铺到状态栏与手势条底下，也才有"内容从 dock 底下滚过"。
+        // 其他 Activity（预览/监看/打赏）保持 themes.xml 的 opt-out，不在这次范围内。
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
         setupFragments()
         setupBottomNav()
-        UiFlags.addOnChangeListener(glassRefresh)
-        styleDock()
+        applyDock()
+        applyWindowInsets()
+        UiFlags.observe(this) { applyDock() }
         setupBackExit()
         handleOpenTab(intent)
         checkPermissionsAndStart()
@@ -134,41 +180,175 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        UiFlags.removeOnChangeListener(glassRefresh)
+        UiFlags.unobserve(this)
         super.onDestroy()
     }
 
     /**
-     * 底部导航 dock 的材质与几何（PRD §4）。
+     * 手动分发 insets（edge-to-edge）。
      *
-     * 几何（悬浮内缩、高度、去掉 1px 分割线）和材质一起做，且关闭玻璃时**逐值还原**
-     * XML 里的 v2.2 基线 —— 回退闸门要求"关掉后逐像素等于 v2.2"，只还原 background
-     * 是不够的（AC-12）。
+     * 只给根布局挂监听、自己算状态栏/导航条高度，不改 themes.xml 的全局 opt-out，
+     * 这样 SupportActivity 等页面不受影响（PRD 风险 R5：去 opt-out 会引发全局回归）。
      */
-    private fun styleDock() {
+    private fun applyWindowInsets() {
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+            )
+            statusInset = bars.top
+            navInset = bars.bottom
+            applyDock()
+            insets
+        }
+    }
+
+    /**
+     * dock 的材质 + 几何 + 悬浮偏移（PRD §4 dock 项、§7.2）。
+     *
+     * 关玻璃时**逐值还原** v2.2 基线：容器不再有负 margin、根布局自己垫 navInset
+     * （等效于原来的 fitsSystemWindows）、恢复不透明底与 1px 分割线 ——
+     * 回退闸门要求逐像素相等（AC-12），只换 background 是不够的。
+     */
+    private fun applyDock() {
         val glass = UiFlags.glassEnabled(this)
         val bar = binding.bottomBar
-        val lp = bar.layoutParams as android.widget.LinearLayout.LayoutParams
+        val barLp = bar.layoutParams as android.widget.LinearLayout.LayoutParams
+        val boxLp = binding.fragmentContainer.layoutParams as android.widget.LinearLayout.LayoutParams
+
+        val dockH = resources.getDimensionPixelSize(R.dimen.glass_dock_height)
+        val side = resources.getDimensionPixelSize(R.dimen.glass_dock_inset_h)
+        // dock 底部内缩要避开系统手势条，否则悬浮玻璃会被手势区切一半
+        val bottom = resources.getDimensionPixelSize(R.dimen.glass_dock_inset_bottom) + navInset
+
+        val statusLp = binding.statusGlass.layoutParams
+        statusLp.height = statusInset
+        binding.statusGlass.layoutParams = statusLp
         if (glass) {
-            val insetH = resources.getDimensionPixelSize(R.dimen.glass_dock_inset_h)
-            lp.height = resources.getDimensionPixelSize(R.dimen.glass_dock_height)
-            lp.marginStart = insetH
-            lp.marginEnd = insetH
-            lp.bottomMargin = resources.getDimensionPixelSize(R.dimen.glass_dock_inset_bottom)
-            bar.layoutParams = lp
-            bar.applyGlass { GlassTokens.dock(it.context) }
+            binding.statusGlass.applyGlass { GlassTokens.statusStrip(it.context) }
+        } else {
+            GlassRegistry.unregister(binding.statusGlass)
+            binding.statusGlass.setBackgroundColor(ContextCompat.getColor(this, R.color.background))
+        }
+
+        if (glass) {
+            barLp.height = dockH
+            barLp.marginStart = side
+            barLp.marginEnd = side
+            barLp.bottomMargin = bottom
+            bar.layoutParams = barLp
+            // 负 margin：容器向下多占 dock 那一条，dock 随后盖在内容之上 → 真悬浮 + 实时模糊
+            boxLp.bottomMargin = -(dockH + bottom)
+            binding.fragmentContainer.layoutParams = boxLp
+            binding.root.updatePadding(bottom = 0)
+            // dock 压在内容之上，把容器当背景纹理源 → 真透景 + 真折射
+            bar.applyGlass(GlassCoordinator.attach(binding.fragmentContainer)) {
+                GlassTokens.dock(it.context)
+            }
             // 分割线的分隔职责交给玻璃的四条边信息
             binding.navDivider.visibility = View.GONE
+            dockHideOffset = (dockH + bottom + bar.paddingBottom).toFloat()
+            // 重涂后按当前隐藏态复位
+            animateDock(if (dockHidden) dockHideOffset else 0f, animated = false)
         } else {
-            lp.height = DOCK_BASELINE_HEIGHT_DP.dpToPx()
-            lp.marginStart = 0
-            lp.marginEnd = 0
-            lp.bottomMargin = 0
-            bar.layoutParams = lp
+            barLp.height = DOCK_BASELINE_HEIGHT_DP.dpToPx()
+            barLp.marginStart = 0
+            barLp.marginEnd = 0
+            barLp.bottomMargin = 0
+            bar.layoutParams = barLp
+            boxLp.bottomMargin = 0
+            binding.fragmentContainer.layoutParams = boxLp
+            binding.root.updatePadding(bottom = navInset)
             bar.background = null
             bar.setBackgroundColor(ContextCompat.getColor(this, R.color.nav_background))
             binding.navDivider.visibility = View.VISIBLE
+            dockHideOffset = 0f
+            animateDock(0f, animated = false)
+            dockHidden = false
         }
+        // 通知当前页重算底部内衬（内容要能滚出 dock 那一条）
+        contentInsetsChanged()
+    }
+
+    private fun contentInsetsChanged() {
+        tabFragments.forEach { (it as? GlassInsetAware)?.onDockSpaceChanged(dockSpace()) }
+    }
+
+    /** dock 实际遮住内容的高度，页面给滚动容器加 paddingBottom 用 */
+    fun dockSpace(): Int =
+        if (UiFlags.glassEnabled(this)) dockHideOffset.toInt() else 0
+
+    // ---------------- dock 自动隐藏（滚动方向 + 无操作超时）----------------
+
+    /**
+     * 页面滚动时上报方向：dy &gt; 0 表示内容向上推进（往下浏览）→ dock 下沉让位；
+     * dy &lt; 0 表示往回看 → dock 回弹。对齐 iOS 大标题/工具栏的手势习惯。
+     */
+    fun reportContentScroll(dy: Int) {
+        if (dy == 0 || !dockAutoHideAllowed || !UiFlags.glassEnabled(this)) return
+        if (dy > 0) hideDock() else showDock()
+    }
+
+    /** 由 [switchToTab] 驱动：拍摄页是固定布局、不可滚动，不允许自动隐藏 */
+    private fun setDockAutoHide(allowed: Boolean) {
+        dockAutoHideAllowed = allowed && UiFlags.glassEnabled(this)
+        if (!dockAutoHideAllowed) showDock()
+        restartIdleTimer()
+    }
+
+    private fun restartIdleTimer() {
+        binding.root.removeCallbacks(hideDockRunnable)
+        if (dockAutoHideAllowed) {
+            binding.root.postDelayed(hideDockRunnable, DOCK_IDLE_HIDE_MS)
+        }
+    }
+
+    private fun showDock(animated: Boolean = true) = animateDock(0f, animated)
+
+    private fun hideDock(animated: Boolean = true) {
+        if (dockHideOffset > 0f) animateDock(dockHideOffset.toFloat(), animated)
+    }
+
+    private fun animateDock(to: Float, animated: Boolean) {
+        val bar = binding.bottomBar
+        dockHidden = to != 0f
+        val motion = animated && UiFlags.motionEnabled(this)
+        bar.animate().cancel()
+        if (!motion) {
+            bar.translationY = to
+            return
+        }
+        bar.animate()
+            .translationY(to)
+            .setDuration(if (to == 0f) DOCK_REVEAL_MS else DOCK_HIDE_MS)
+            // 回弹用轻微过冲（PRD §6.1 SPRING_DOCK 的手感），下沉用减速
+            .setInterpolator(if (to == 0f) OvershootInterpolator(3.2f) else DecelerateInterpolator())
+            .start()
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = ev.x
+                downY = ev.y
+                downAt = SystemClock.uptimeMillis()
+                restartIdleTimer()
+            }
+            MotionEvent.ACTION_UP -> {
+                // 只认"点一下"（没有明显位移、且短于滑动判定时间）→ dock 回弹。
+                // 不能用 onUserInteraction：它对整个手势的每个 MOVE 都触发，
+                // 会把"上滑隐藏"立刻抵消掉。
+                if (isTap(ev)) showDock()
+            }
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun isTap(up: MotionEvent): Boolean {
+        if (!dockHidden || !dockAutoHideAllowed) return false
+        val dt = SystemClock.uptimeMillis() - downAt
+        val dist = Math.hypot((up.x - downX).toDouble(), (up.y - downY).toDouble())
+        return dt < TAP_MAX_MS &&
+            dist < TAP_SLOP_DP.toDouble() * resources.displayMetrics.density.toDouble()
     }
 
     private fun Int.dpToPx(): Int =
@@ -235,6 +415,11 @@ class MainActivity : AppCompatActivity() {
             currentTab = index
         }
         applyTabStyle(index)
+        // 拍摄页是固定布局（监看 + 参数区），没有"滚动让位"这回事 → 不自动隐藏
+        setDockAutoHide(index != TAB_REMOTE)
+        // 切页时背景内容整体换掉，玻璃纹理要作废重采
+        (binding.fragmentContainer.getTag(R.id.glass_coordinator)
+            as? GlassCoordinator)?.invalidate()
     }
 
     /** 选中态：实心图标 + 加粗文字；未选中：线性图标 + 常规字重 */

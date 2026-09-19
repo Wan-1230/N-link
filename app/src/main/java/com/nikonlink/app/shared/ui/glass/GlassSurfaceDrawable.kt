@@ -17,6 +17,7 @@ import android.view.View
 import android.view.ViewOutlineProvider
 import android.view.animation.DecelerateInterpolator
 import androidx.core.content.ContextCompat
+import androidx.core.view.updatePadding
 import com.nikonlink.app.R
 import java.lang.ref.WeakReference
 
@@ -151,6 +152,13 @@ class GlassSurfaceDrawable(
         val sc = canvas.save()
         canvas.clipPath(clipPath)
 
+        // 底片完全淡出时连 clip 与模糊 blit 一起省掉（顶栏静止态就是这条路）
+        val pa = plateAlpha.coerceIn(0f, 1f)
+        if (pa < 0.004f) {
+            canvas.restoreToCount(sc)
+            return
+        }
+
         // ---- ① 背景模糊 + 边缘折射 ----
         var backdropUsed = false
         val coord = coordinator
@@ -165,20 +173,23 @@ class GlassSurfaceDrawable(
         // ---- ② 染色 tint（含对比度自适应） ----
         fill.shader = null
         fill.style = Paint.Style.FILL
-        fill.color = guardedTint(host, m, if (backdropUsed) coord?.avgLuminance ?: -1f else -1f)
+        val tint = guardedTint(host, m, if (backdropUsed) coord?.avgLuminance ?: -1f else -1f)
+        fill.color = if (pa == 1f) tint else Color.argb(
+            (Color.alpha(tint) * pa).toInt(), Color.red(tint), Color.green(tint), Color.blue(tint),
+        )
         canvas.drawRect(boundsRect, fill)
 
         // 按下：提浓，"玻璃变厚了"
         if (press > 0f && m.pressAlphaDelta > 0) {
             fill.color = Color.argb(
-                (m.pressAlphaDelta * press).toInt().coerceIn(0, 255),
+                ((m.pressAlphaDelta * press) * pa).toInt().coerceIn(0, 255),
                 Color.red(m.tintColor), Color.green(m.tintColor), Color.blue(m.tintColor),
             )
             canvas.drawRect(boundsRect, fill)
         }
 
         // ---- ③ 内顶高光：顶端 1dp 量级的渐变，按下时被削弱（"光被打散"） ----
-        val rimKeep = (1f - (1f - m.rimPressKeep) * press).coerceIn(0f, 1f)
+        val rimKeep = (1f - (1f - m.rimPressKeep) * press).coerceIn(0f, 1f) * pa
         rimShader?.let { shader ->
             if (rimKeep > 0.02f) {
                 fill.shader = shader
@@ -221,6 +232,25 @@ class GlassSurfaceDrawable(
         canvas.drawPath(outline, stroke)
         canvas.restoreToCount(sc)
     }
+
+    /**
+     * 玻璃底片的整体不透明度（0..1），只影响**材质本身**，不影响子 View。
+     *
+     * 顶栏要"内容滚进来才浮现"，但不能用 `View.alpha` —— 那会连标题和图标一起淡掉。
+     * 用 `Drawable.setAlpha` 也不行：绘制时每次都重设 `paint.color`，会把它覆盖掉。
+     */
+    @Volatile var plateAlpha: Float = 1f
+        set(value) {
+            val v = value.coerceIn(0f, 1f)
+            if (field == v) return
+            field = v
+            invalidateSelf()
+        }
+
+    private fun modulate(color: Int, factor: Float): Int = Color.argb(
+        (Color.alpha(color) * factor.coerceIn(0f, 1f)).toInt(),
+        Color.red(color), Color.green(color), Color.blue(color),
+    )
 
     /**
      * 把纹理中属于本面的区域画进来，可选走透镜折射。
@@ -360,6 +390,47 @@ fun View.renderChipBackground(selected: Boolean) {
 }
 
 /**
+ * 把 dock 遮住的高度叠加到某个视图的底部内衬上，并且能**精确还原**。
+ *
+ * 首次构造时捕获视图自己的 paddingBottom / bottomMargin，所以「经典外观」
+ * （dockSpace=0）会把值原样写回去，不会留下玻璃时代加的内衬（AC-12 逐像素相等）。
+ * 可滚动的列表用 [applyPadding]（配 clipToPadding=false，内容才滚得出 dock 底下）；
+ * 贴底的固定 chrome 用 [applyMargin]（它不该被遮住，只能抬起来）。
+ */
+class DockInset(private val view: View) {
+
+    private val basePadding = view.paddingBottom
+    private val baseMargin =
+        (view.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.bottomMargin ?: 0
+
+    fun applyPadding(dockSpace: Int) {
+        val target = basePadding + dockSpace
+        if (view.paddingBottom != target) view.updatePadding(bottom = target)
+    }
+
+    fun applyMargin(dockSpace: Int) {
+        val lp = view.layoutParams as? android.view.ViewGroup.MarginLayoutParams ?: return
+        val target = baseMargin + dockSpace
+        if (lp.bottomMargin != target) {
+            lp.bottomMargin = target
+            view.layoutParams = lp
+        }
+    }
+}
+
+/**
+ * 页面按 dock 是否悬浮来调整自己滚动容器的底部内衬（PRD §7.2）。
+ *
+ * dock 悬浮时容器用负 margin 多占了一条 dock 的高度，内容必须自己加
+ * `paddingBottom` + `clipToPadding=false` 才滚得出 dock 底下 —— 这既是可读性要求，
+ * 也正是"内容从玻璃底下滚过"能看到透景的原因。经典外观下 dockSpace=0，内衬归零，
+ * 与 v2.2 逐像素相等。
+ */
+interface GlassInsetAware {
+    fun onDockSpaceChanged(dockSpace: Int)
+}
+
+/**
  * 一个入口把一个面变成玻璃：不重排布局、不换 class，
  * 只换 background + outline/elevation —— 回退闸门因此能做到"逐像素等于 v2.2"。
  *
@@ -370,6 +441,7 @@ fun View.renderChipBackground(selected: Boolean) {
  */
 fun View.applyGlass(
     coordinator: GlassCoordinator? = null,
+    register: Boolean = true,
     provider: GlassMaterialProvider,
 ): View {
     val material = provider.get(this)
@@ -385,7 +457,7 @@ fun View.applyGlass(
             }
         }
     }
-    GlassRegistry.register(this, provider)
+    if (register) GlassRegistry.register(this, provider)
     coordinator?.let {
         it.reportBlurNeed(material.blurDp)
         it.invalidate()
@@ -401,7 +473,7 @@ object GlassRegistry {
 
     init {
         // 开关变更时全量重涂。object 只在第一个玻璃面登记时初始化，那时才需要监听
-        UiFlags.addOnChangeListener { reapplyAll() }
+        UiFlags.observe(this) { reapplyAll() }
     }
 
     private val entries = mutableListOf<WeakReference<Pair<View, GlassMaterialProvider>>>()

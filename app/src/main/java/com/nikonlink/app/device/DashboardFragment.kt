@@ -21,8 +21,16 @@ import androidx.core.view.doOnLayout
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
+import com.nikonlink.app.shared.ui.glass.DepthLift
+import com.nikonlink.app.shared.ui.glass.DockInset
+import com.nikonlink.app.shared.ui.glass.GlassInsetAware
+import com.nikonlink.app.shared.ui.glass.GlassMotion
+import com.nikonlink.app.shared.ui.glass.GlassRegistry
 import com.nikonlink.app.shared.ui.glass.GlassTokens
+import com.nikonlink.app.shared.ui.glass.GlassTopBar
 import com.nikonlink.app.shared.ui.glass.NlGlass
+import com.nikonlink.app.shared.ui.glass.UiFlags
+import com.nikonlink.app.shared.ui.glass.applyGlass
 import com.nikonlink.app.shared.ui.glass.renderChipBackground
 import com.nikonlink.app.MainActivity
 import com.nikonlink.app.R
@@ -53,10 +61,16 @@ import kotlinx.coroutines.launch
  * 交互：下拉刷新状态，点击设备卡片快速重连，入口带缩放反馈
  */
 @AndroidEntryPoint
-class DashboardFragment : Fragment() {
+class DashboardFragment : Fragment(), GlassInsetAware {
 
     private var _binding: FragmentDashboardBinding? = null
     private val binding get() = _binding!!
+
+    /** dock 悬浮时给滚动内容叠加的底部内衬 */
+    private var dockInset: DockInset? = null
+
+    /** 顶栏玻璃随滚动浮现 */
+    private var topBarFx: GlassTopBar? = null
     private val viewModel: DashboardViewModel by viewModels()
     private val paramsViewModel: CameraParamsViewModel by viewModels()
 
@@ -82,6 +96,11 @@ class DashboardFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        setupDockFloat()
+        UiFlags.observe(this) {
+            applyDockSpace()
+            styleTopBar()
+        }
         setupObservers()
         setupInteractions()
         setupModeTabs()
@@ -730,16 +749,7 @@ class DashboardFragment : Fragment() {
     private fun updateModeTabs(animate: Boolean) {
         if (modeTabWidth > 0) {
             val targetX = currentMode.ordinal * modeTabWidth
-            binding.modeTabIndicator.animate().cancel()
-            if (animate) {
-                binding.modeTabIndicator.animate()
-                    .translationX(targetX.toFloat())
-                    .setDuration(220)
-                    .setInterpolator(DecelerateInterpolator())
-                    .start()
-            } else {
-                binding.modeTabIndicator.translationX = targetX.toFloat()
-            }
+            GlassMotion.slidePill(binding.modeTabIndicator, targetX.toFloat(), animate)
         }
         modeTabsViews.forEachIndexed { index, tab ->
             val selected = index == currentMode.ordinal
@@ -1027,7 +1037,50 @@ class DashboardFragment : Fragment() {
 
     private fun dpF(value: Float): Float = value * resources.displayMetrics.density
 
+    /**
+     * dock 悬浮进内容区之后，本页要自己做两件事：
+     *  ① 给滚动内容叠加底部内衬，否则最后一屏卡片会被 dock 盖住；
+     *  ② 把滚动方向上报给 MainActivity 驱动 dock 自动隐藏。
+     * clipToPadding=false 是"内容能滚到玻璃底下"的前提，也是看得见真透景的原因。
+     */
+    private fun setupDockFloat() {
+        binding.scrollContent.clipToPadding = false
+        dockInset = DockInset(binding.scrollContent)
+        applyDockSpace()
+        styleTopBar()
+        binding.scrollContent.setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
+            (activity as? MainActivity)?.reportContentScroll(scrollY - oldScrollY)
+            topBarFx?.onScroll(scrollY)
+        }
+    }
+
+    /** 顶栏玻璃随滚动浮现（PRD §4 顶栏项）。经典外观下顶栏没有自己的底，逐值还原。 */
+    private fun styleTopBar() {
+        val title = binding.tvTitle
+        if (!UiFlags.glassEnabled(requireContext())) {
+            topBarFx = null
+            GlassRegistry.unregister(binding.topBar)
+            binding.topBar.background = null
+            binding.topDivider.visibility = View.VISIBLE
+            title.apply { alpha = 1f; translationY = 0f; scaleX = 1f; scaleY = 1f }
+            return
+        }
+        binding.topBar.applyGlass(register = false) { GlassTokens.topBar(it.context) }
+        topBarFx = GlassTopBar(binding.topBar, title, binding.topDivider)
+        topBarFx?.onScroll(binding.scrollContent.scrollY)
+    }
+
+    private fun applyDockSpace() {
+        if (_binding == null) return
+        dockInset?.applyPadding((activity as? MainActivity)?.dockSpace() ?: 0)
+        DepthLift.apply(binding.root, requireContext())
+    }
+
+    override fun onDockSpaceChanged(dockSpace: Int) = applyDockSpace()
+
     override fun onDestroyView() {
+        UiFlags.unobserve(this)
+        dockInset = null
         super.onDestroyView()
         pairingDialog?.dismiss()
         pairingDialog = null

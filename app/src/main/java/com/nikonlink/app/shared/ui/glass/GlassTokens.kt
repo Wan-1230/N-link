@@ -1,8 +1,11 @@
 package com.nikonlink.app.shared.ui.glass
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Color
 import android.util.TypedValue
+import android.view.View
+import android.view.animation.PathInterpolator
 import androidx.core.content.ContextCompat
 import com.nikonlink.app.R
 
@@ -62,9 +65,147 @@ data class GlassMaterial(
 }
 
 /**
+ * 卡片抬升（PRD §3.4；用户反馈"玻璃不明显处至少给阴影，要有立体感"）。
+ *
+ * 这些面背后是页面底色，做真玻璃等于什么都透不出来（PRD §1.2 三判据第一条），
+ * 所以它们不该磨砂 —— 但"平"是 v2.2 刻意压平的结果（`cardElevation 0dp` +
+ * 所有按钮 `stateListAnimator @null`），不是设计意图里的"永远没有层次"。
+ * 这里补的是**真实 GPU 阴影**：`bg_card` 是带圆角的 GradientDrawable，
+ * View 默认 outline 就取自 background，所以只设 elevation 就能得到正确的圆角软阴影，
+ * 不需要自绘、也不进模糊帧预算。
+ *
+ * 认卡片的方式刻意保守：**圆角恰好等于 `card_radius`(12dp) 的矩形 GradientDrawable**。
+ * 于是 `bg_card` / `bg_card_dark` 命中，chip(20dp)、info_grid_item(8dp)、
+ * 以及已经上了玻璃材质的面（不是 GradientDrawable）都不命中。
+ *
+ * 关键前提（已核对）：全仓 `res/layout` 里 `android:elevation` 命中 **0** 次，
+ * 所以"经典外观 → 归零"是逐值还原，不是近似（AC-12）。
+ */
+object DepthLift {
+
+    fun apply(root: View, context: Context) {
+        val lift = if (UiFlags.glassEnabled(context)) {
+            context.resources.getDimension(R.dimen.glass_elevation_l1)
+        } else {
+            0f
+        }
+        walk(root, lift)
+    }
+
+    private fun walk(view: View, lift: Float) {
+        val d = view.background as? android.graphics.drawable.GradientDrawable
+        if (d != null && d.shape == android.graphics.drawable.GradientDrawable.RECTANGLE) {
+            val want = CARD_RADIUS_DP * view.resources.displayMetrics.density
+            // 只认 12dp 圆角矩形 = bg_card / bg_card_dark；chip(20)、格子(8) 不命中
+            if (kotlin.math.abs(d.cornerRadius - want) < 0.6f) view.elevation = lift
+        }
+        if (view is android.view.ViewGroup) {
+            for (i in 0 until view.childCount) walk(view.getChildAt(i), lift)
+        }
+    }
+
+    private const val CARD_RADIUS_DP = 12f
+}
+
+/**
+ * 顶栏随滚动浮现（PRD §4 顶栏项 / §6.5 滚动联动）。
+ *
+ * 诚实说明一件事：这三页的顶栏**不是覆盖式** —— 设备页顶栏下面还压着连接模式三选行、
+ * 相册页还压着筛选 chip 行，所以列表内容不会真的从标题底下穿过。这里做的是 iOS
+ * 实际给用户的两件事：
+ *   ① 玻璃底片随滚动从全透明浮到不透明（只淡底片，标题与图标不受影响 —— 不能用
+ *      `View.alpha`，那会把子 View 一起淡掉）；
+ *   ② 标题轻微上移 + 缩到 0.92，读作"给内容让位"，但不消失，避免丢失定位感。
+ * 真正的"内容穿过标题栏"要把页面根换成 FrameLayout + 覆盖式顶栏，属结构改造，未做。
+ */
+class GlassTopBar(
+    private val bar: View,
+    private val title: View?,
+    private val divider: View?,
+) {
+
+    private var progress = -1f
+    private val risePx = RISE_DP * bar.resources.displayMetrics.density
+
+    fun onScroll(offsetPx: Int, collapsePx: Int = DEFAULT_COLLAPSE_DP.toInt()) {
+        val glass = UiFlags.glassEnabled(bar.context)
+        divider?.visibility = if (glass) View.GONE else View.VISIBLE
+        if (!glass) {
+            if (progress != 0f) settle(0f)
+            return
+        }
+        val t = offsetPx.toFloat() / (collapsePx * bar.resources.displayMetrics.density)
+            .coerceAtLeast(1f)
+        settle(t.coerceIn(0f, 1f))
+    }
+
+    private fun settle(t: Float) {
+        if (t == progress) return
+        progress = t
+        (bar.background as? GlassSurfaceDrawable)?.plateAlpha = t
+        title?.apply {
+            alpha = 1f - 0.08f * t
+            translationY = -risePx * t
+            scaleX = 1f - 0.08f * t
+            scaleY = 1f - 0.08f * t
+        }
+    }
+
+    companion object {
+        /** 滚过多远顶栏玻璃完全浮现 */
+        private const val DEFAULT_COLLAPSE_DP = 72f
+
+        /** 标题上移距离 */
+        private const val RISE_DP = 6f
+    }
+}
+
+/**
+ * 玻璃语言的运动参数（PRD §6）。
+ *
+ * 这里只放已经在用的那一条：分段控件指示胶囊的"液态"位移。
+ * 固定时长 + Decelerate 之所以看着生硬，是因为它只有位置在动 ——
+ * iOS 那个手感来自**位置轻微过冲 + 途中横向拉伸、落位时压回**，
+ * 让胶囊看起来像一滴有表面张力的液体而不是一个贴纸。
+ */
+object GlassMotion {
+
+    private const val SLIDE_MS = 380L
+
+    /** 途中最大横向拉伸比例 */
+    private const val STRETCH = 0.18f
+
+    fun slidePill(target: View, toX: Float, animated: Boolean) {
+        val ctx = target.context
+        target.animate().cancel()
+        val from = target.translationX
+        val dist = toX - from
+        if (!animated || !UiFlags.motionEnabled(ctx) || kotlin.math.abs(dist) < 1f) {
+            target.translationX = toX
+            target.scaleX = 1f
+            target.scaleY = 1f
+            return
+        }
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = SLIDE_MS
+            // 末端过冲的曲线（0.2,0.9,0.2,1.05 近似临界阻尼偏弹）
+            interpolator = PathInterpolator(0.2f, 0.9f, 0.2f, 1.05f)
+            addUpdateListener { a ->
+                val v = a.animatedValue as Float
+                target.translationX = from + dist * v
+                val s = v.coerceIn(0f, 1f)
+                val bulge = kotlin.math.sin(Math.PI * s).toFloat()
+                target.scaleX = 1f + STRETCH * bulge
+                target.scaleY = 1f - STRETCH * 0.35f * bulge
+            }
+            start()
+        }
+    }
+}
+/**
  * Token 解析（值见 `res/values/glass.xml` 与 `values-night/glass.xml`）。
  *
- * 命名即用途：dock / hud / floatingBar / chip / heroDark / cardGlass，
+ * 命名即用途：dock / hud / floatingBar / chip / statusStrip，
  * 新增界面用这里的工厂而不是自己拼参数，配额和一致性才不会漂。
  */
 object GlassTokens {
@@ -161,6 +302,27 @@ object GlassTokens {
         },
         5f, 1.04f,
     )
+
+    /**
+     * 页面顶栏：贴边通栏 → 半径 0（贴屏幕边的圆角像漏涂），
+     * 分隔职责由内底反光 + 外描边承担，所以 XML 里那条 1px divider 在玻璃态下让位。
+     * 底片初始 plateAlpha=0，随滚动浮现（见 [GlassTopBar]）。
+     */
+    fun topBar(c: Context): GlassMaterial = base(
+        c, GlassLevel.L3_FLOATING, R.dimen.glass_radius_s, R.dimen.glass_blur_m,
+        R.color.glass_tint_content, R.color.text_primary,
+    ).copy(radiusPx = 0f, elevationPx = 0f)
+
+    /** 状态栏那一条。当前只做 tint + 底部反光（radius 0，通栏）；
+     * 等各页顶栏改成覆盖式、内容能滚到状态栏底下之后，这里才会出现真透景。
+     */
+    fun statusStrip(c: Context): GlassMaterial = base(
+        c, GlassLevel.L2_CONTROL, R.dimen.glass_radius_s, R.dimen.glass_blur_m,
+        R.color.glass_tint_flat, R.color.text_primary,
+    ).copy(radiusPx = 0f, blurDp = 0f)
+
+    /** 浅色染色（供"贴在内容上的通栏"改写 hud 材质时用，日夜各自成对） */
+    fun tintLight(c: Context): Int = color(c, R.color.glass_tint_content)
 
     /** 行内小控件玻璃（chip / 分段槽）。L2 不吃实时模糊，只吃 tint + rim */
     fun chip(c: Context): GlassMaterial = base(
