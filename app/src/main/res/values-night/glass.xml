@@ -8,18 +8,20 @@
     <!-- 染色 tint（夜间反相） -->
     <color name="glass_tint_flat">#F2000000</color>
     <color name="glass_tint_content">#BF000000</color>
+    <color name="glass_tint_floating">#8F000000</color>
     <color name="glass_tint_moving">#E6000000</color>
     <color name="glass_tint_dark">#BFFFFFFF</color>
     <color name="glass_tint_scrim">#99000000</color>
     <color name="glass_tint_press">#14FFFFFF</color>
 
     <!-- 四条边信息：夜间整体提亮 -->
-    <color name="glass_stroke_outer">#24FFFFFF</color>
+    <color name="glass_stroke_outer">#1FFFFFFF</color>
     <color name="glass_rim_top">#40FFFFFF</color>
-    <color name="glass_rim_bottom">#33FFFFFF</color>
+    <color name="glass_rim_bottom">#26FFFFFF</color>
     <color name="glass_edge_lens">#33FFFFFF</color>
+    <color name="glass_hairline_fitted">#33FFFFFF</color>
 
-    <!-- 阴影：夜间压到几乎不可见 -->
+    <!-- 阴影：夜间压到几乎不可见（层级交给 rim 高光承担） -->
     <color name="glass_shadow_key">#0A000000</color>
     <color name="glass_shadow_ambient">#0A000000</color>
     <color name="glass_shadow_floating">#14FFFFFF</color>

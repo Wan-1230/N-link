@@ -205,8 +205,11 @@
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent">
 
-            <!-- 模块 4.5：滑动指示器（选中胶囊随 Tab 切换平移动画 180ms） -->
+            <!-- 模块 4.5：滑动指示器（选中胶囊随 Tab 切换平移动画 180ms）。
+                 玻璃态下这枚 40dp 药丸本身就是悬浮玻璃面（bg_chip 实心底让位给材质），
+                 经典外观下它还是那颗 #F0F0F0 胶囊。 -->
             <FrameLayout
+                android:id="@+id/albumTabPill"
                 android:layout_width="match_parent"
                 android:layout_height="40dp"
                 android:background="@drawable/bg_chip"

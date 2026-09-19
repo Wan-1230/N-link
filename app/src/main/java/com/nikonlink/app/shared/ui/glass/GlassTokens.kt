@@ -53,6 +53,12 @@ data class GlassMaterial(
     val magnify: Float = 1f,
     /** 色散强度（相对位移比例）。默认 0：见 PRD §3.7 与 Q1 的灰阶冲突 */
     val dispersion: Float = 0f,
+    /**
+     * 通栏面（贴屏幕边、radius=0）：不描整圈外描边，只留一条发丝线。
+     * 圆角矩形的整圈描边放到通栏上，就是上下两条 20% 黑的横线 —— 走查里那
+     * 「滑动时标题框上下两条黑线」正是它，它把分隔职责抢走了，反而盖过内容。
+     */
+    val fullBleed: Boolean = false,
 ) {
     /** 不透明实底（降低透明度 / 经典外观） */
     val opaqueTint: Int
@@ -97,7 +103,12 @@ object DepthLift {
         if (d != null && d.shape == android.graphics.drawable.GradientDrawable.RECTANGLE) {
             val want = CARD_RADIUS_DP * view.resources.displayMetrics.density
             // 只认 12dp 圆角矩形 = bg_card / bg_card_dark；chip(20)、格子(8) 不命中
-            if (kotlin.math.abs(d.cornerRadius - want) < 0.6f) view.elevation = lift
+            if (kotlin.math.abs(d.cornerRadius - want) < 0.6f) {
+                view.elevation = lift
+                // 卡片只有 1.5dp，默认阴影在浅底上是一条贴边的硬灰边；
+                // 压过 alpha 之后才是"纸片离开桌面"的那点软影子
+                if (lift > 0f) view.applySoftShadow()
+            }
         }
         if (view is android.view.ViewGroup) {
             for (i in 0 until view.childCount) walk(view.getChildAt(i), lift)
@@ -124,19 +135,55 @@ class GlassTopBar(
     private val divider: View?,
 ) {
 
+    /** 已应用的进度；-1 = 还没应用过（首帧不该播动画） */
     private var progress = -1f
+    private var target = -1f
     private val risePx = RISE_DP * bar.resources.displayMetrics.density
+
+    /** 追帧循环里只允许排一个 runnable，否则滚动中每帧各排一个，队列会自己长起来 */
+    private var chasing = false
+    private val chaser = object : Runnable {
+        override fun run() {
+            if (!bar.isAttachedToWindow) {
+                chasing = false
+                settle(target.coerceAtLeast(0f))
+                return
+            }
+            val d = target - progress
+            if (kotlin.math.abs(d) < EPS) {
+                chasing = false
+                settle(target)
+                return
+            }
+            settle(progress + d * SMOOTH)
+            bar.postOnAnimation(this)
+        }
+    }
 
     fun onScroll(offsetPx: Int, collapsePx: Int = DEFAULT_COLLAPSE_DP.toInt()) {
         val glass = UiFlags.glassEnabled(bar.context)
         divider?.visibility = if (glass) View.GONE else View.VISIBLE
         if (!glass) {
-            if (progress != 0f) settle(0f)
+            glide(0f)
             return
         }
-        val t = offsetPx.toFloat() / (collapsePx * bar.resources.displayMetrics.density)
-            .coerceAtLeast(1f)
-        settle(t.coerceIn(0f, 1f))
+        val span = (collapsePx * bar.resources.displayMetrics.density).coerceAtLeast(1f)
+        val t = (offsetPx.toFloat() / span).coerceIn(0f, 1f)
+        // smoothstep：两端慢、中间快。线性映射下刚开始滚的几像素就会跳一大截，
+        // 停到边界时又会突然补满 —— 读作"抖"。
+        glide(t * t * (3f - 2f * t))
+    }
+
+    private fun glide(to: Float) {
+        if (to == target) return
+        target = to
+        if (progress < 0f || !UiFlags.motionEnabled(bar.context)) {
+            settle(to)   // 首帧与「减少动效」下直接落位，不追帧
+            return
+        }
+        if (chasing) return
+        chasing = true
+        bar.postOnAnimation(chaser)
     }
 
     private fun settle(t: Float) {
@@ -146,8 +193,10 @@ class GlassTopBar(
         title?.apply {
             alpha = 1f - 0.08f * t
             translationY = -risePx * t
-            scaleX = 1f - 0.08f * t
-            scaleY = 1f - 0.08f * t
+            // 0.955 而不是 0.92：标题是定位锚，缩得太狠读作"被压下去"，
+            // 配合 4dp 上移只留一点"给内容让位"的意思
+            scaleX = 1f - 0.045f * t
+            scaleY = 1f - 0.045f * t
         }
     }
 
@@ -156,7 +205,13 @@ class GlassTopBar(
         private const val DEFAULT_COLLAPSE_DP = 72f
 
         /** 标题上移距离 */
-        private const val RISE_DP = 6f
+        private const val RISE_DP = 4f
+
+        /** 每帧向目标推进的比例 —— 追帧平滑，不是逐帧硬赋值 */
+        private const val SMOOTH = 0.22f
+
+        /** 收敛判定：再小到这个差就一步到位并停下 */
+        private const val EPS = 0.004f
     }
 }
 
@@ -271,11 +326,15 @@ object GlassTokens {
             dispersion = if (UiFlags.dispersionEnabled(c)) 0.35f else 0f,
         )
 
-    /** 底部悬浮导航 dock（L3，r28，24dp 模糊） */
+    /**
+     * 底部悬浮导航 dock（L3，r28，24dp 模糊）。
+     * tint 用 `floating` 而不是 `content`：悬浮控件要**透**得过去，
+     * 85% 白压在白页上等于不透明，模糊与折射就全白做了（PRD §3.3 走查修正）。
+     */
     fun dock(c: Context): GlassMaterial = lens(
         c,
         base(c, GlassLevel.L3_FLOATING, R.dimen.glass_radius_xl, R.dimen.glass_blur_m,
-            R.color.glass_tint_content, R.color.text_primary),
+            R.color.glass_tint_floating, R.color.text_primary),
         6f, 1.06f,
     )
 
@@ -283,8 +342,20 @@ object GlassTokens {
     fun floatingBar(c: Context): GlassMaterial = lens(
         c,
         base(c, GlassLevel.L3_FLOATING, R.dimen.glass_radius_xl, R.dimen.glass_blur_m,
-            R.color.glass_tint_content, R.color.text_primary),
+            R.color.glass_tint_floating, R.color.text_primary),
         6f, 1.06f,
+    )
+
+    /**
+     * 相册页底部的「相机照片 / 已标记 / 本地照片」分段胶囊：与 dock 同一套悬浮语言，
+     * 只差半径跟着 40dp 的高度收成整圆端（r20）。
+     */
+    fun tabPill(c: Context): GlassMaterial = lens(
+        c,
+        base(c, GlassLevel.L3_FLOATING, R.dimen.glass_radius_xl, R.dimen.glass_blur_m,
+            R.color.glass_tint_floating, R.color.text_primary)
+            .copy(radiusPx = dp(c, 20f)),
+        5f, 1.05f,
     )
 
     /** 监看 / 预览 HUD（L3，60dp 模糊，背后是视频流所以 tint 用暗面参数） */
@@ -311,7 +382,7 @@ object GlassTokens {
     fun topBar(c: Context): GlassMaterial = base(
         c, GlassLevel.L3_FLOATING, R.dimen.glass_radius_s, R.dimen.glass_blur_m,
         R.color.glass_tint_content, R.color.text_primary,
-    ).copy(radiusPx = 0f, elevationPx = 0f)
+    ).copy(radiusPx = 0f, elevationPx = 0f, fullBleed = true)
 
     /** 状态栏那一条。当前只做 tint + 底部反光（radius 0，通栏）；
      * 等各页顶栏改成覆盖式、内容能滚到状态栏底下之后，这里才会出现真透景。
@@ -319,10 +390,7 @@ object GlassTokens {
     fun statusStrip(c: Context): GlassMaterial = base(
         c, GlassLevel.L2_CONTROL, R.dimen.glass_radius_s, R.dimen.glass_blur_m,
         R.color.glass_tint_flat, R.color.text_primary,
-    ).copy(radiusPx = 0f, blurDp = 0f)
-
-    /** 浅色染色（供"贴在内容上的通栏"改写 hud 材质时用，日夜各自成对） */
-    fun tintLight(c: Context): Int = color(c, R.color.glass_tint_content)
+    ).copy(radiusPx = 0f, blurDp = 0f, fullBleed = true, rimBottomColor = 0)
 
     /** 行内小控件玻璃（chip / 分段槽）。L2 不吃实时模糊，只吃 tint + rim */
     fun chip(c: Context): GlassMaterial = base(

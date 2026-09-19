@@ -1123,24 +1123,32 @@ class TransferFragment : Fragment(), GlassInsetAware {
         topBarFx?.onScroll(binding.gridPhotos.computeVerticalScrollOffset())
     }
 
-    /** 分段标签行：透过它看得见照片在糊（它自己不带底色，见 XML 的 transparent） */
+    /**
+     * 分段胶囊改成与导航 dock 同一套悬浮语言（走查第 2 条）。
+     *
+     * 旧做法是整行铺一层通栏 flat 玻璃、里面再压一枚 `bg_chip`（#F0F0F0 实心）——
+     * 那层实心底把玻璃彻底盖死，看上去就是 dock 上方一条白 bar。现在实心底只留给
+     * 经典外观，玻璃态下**胶囊自己就是玻璃面**：真模糊 + 边缘折射 + 半透 tint，
+     * 左右内缩与 dock 对齐（同一列上、下两枚悬浮件），滚动时照片从它底下穿过。
+     */
     private fun styleAlbumTabRow() {
         val row = binding.albumTabRow
-        if (!UiFlags.glassEnabled(requireContext())) {
-            // 经典外观：退回完全透明的行（v2.2 就是靠页面底色垫着，没有自己的底）
-            GlassRegistry.unregister(row)
-            row.elevation = 0f
-            row.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+        val pill = binding.albumTabPill
+        val glass = UiFlags.glassEnabled(requireContext())
+        val side = if (glass) {
+            resources.getDimensionPixelSize(R.dimen.glass_dock_inset_h)
+        } else {
+            dp(20)
+        }
+        row.setPaddingRelative(side, row.paddingTop, side, row.paddingBottom)
+        val coord = glassBackdrop
+        if (!glass || coord == null) {
+            GlassRegistry.unregister(pill)
+            pill.elevation = 0f
+            pill.setBackgroundResource(R.drawable.bg_chip)
             return
         }
-        val coord = glassBackdrop ?: return
-        row.applyGlass(coord) {
-            GlassTokens.hud(it.context).copy(
-                radiusPx = 0f,
-                tintColor = GlassTokens.tintLight(it.context),
-                onColor = ContextCompat.getColor(it.context, R.color.text_primary),
-            )
-        }
+        pill.applyGlass(coord) { GlassTokens.tabPill(it.context) }
     }
 
     private fun applyDockSpace() {

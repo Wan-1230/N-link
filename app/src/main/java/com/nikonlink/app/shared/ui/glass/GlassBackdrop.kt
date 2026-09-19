@@ -126,6 +126,13 @@ class GlassCoordinator private constructor(val source: View) {
     /** 纹理就绪后需要重绘的玻璃面（弱引用，避免 View 泄漏） */
     internal val hosts = mutableListOf<WeakReference<GlassSurfaceDrawable>>()
 
+    /** 由 [applyGlass] 登记：一面玻璃认了一个内容源 */
+    internal fun addHost(surface: GlassSurfaceDrawable) {
+        hosts.removeAll { it.get() == null }
+        if (hosts.none { it.get() === surface }) hosts.add(WeakReference(surface))
+        if (hosts.size > 64) hosts.removeAt(0)
+    }
+
     private val downscale = GlassTokens.num(source.context, R.dimen.glass_backdrop_downscale)
         .coerceIn(0.05f, 0.25f)
     private val maxEdge = source.resources.getInteger(R.integer.glass_backdrop_max_long_edge)
@@ -253,10 +260,19 @@ class GlassCoordinator private constructor(val source: View) {
         }
         if (pixels == null) return
 
-        Canvas(bmp).apply {
-            drawColor(Color.TRANSPARENT)
-            scale(tw.toFloat() / sw, th.toFloat() / sh)
-            source.draw(this)
+        // 采集时让子树里的玻璃面自我屏蔽：内容列里也挂着玻璃（相册页的分段胶囊、
+        // 选择操作坞），不屏蔽就会把"上一帧的自己"糊进纹理，每采一次浓一层，
+        // 看着像玻璃起雾。屏蔽后那几块采到的是它们身下的内容，才是干净的背景。
+        val snapshot = hosts.toList()
+        snapshot.forEach { it.get()?.suppressedDraw = true }
+        try {
+            Canvas(bmp).apply {
+                drawColor(Color.TRANSPARENT)
+                scale(tw.toFloat() / sw, th.toFloat() / sh)
+                source.draw(this)
+            }
+        } finally {
+            snapshot.forEach { it.get()?.suppressedDraw = false }
         }
         bmp.getPixels(pixels, 0, tw, 0, 0, tw, th)
 

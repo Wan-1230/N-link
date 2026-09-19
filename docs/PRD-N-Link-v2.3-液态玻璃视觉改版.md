@@ -176,7 +176,8 @@ fragment_liveview.xml:222,248,274,300,326  5 × #99FFFFFF 硬编码
 | Token | 日间 | 夜间 | 说明 |
 |---|---|---|---|
 | `glass_tint_flat` | `#F2FFFFFF` (95%) | `#F2000000` (95%) | 背景为**扁平底色**时（等价于实体卡，只是边缘有 rim/shadow） |
-| `glass_tint_content` | `#D9FFFFFF` (85%) | `#BF000000` (75%) | 背景为**图片/监看画面**且静止 |
+| `glass_tint_content` | `#D9FFFFFF` (85%) | `#BF000000` (75%) | 背景为**图片/监看画面**且静止（顶栏、贴内容的面） |
+| `glass_tint_floating` | `#8FFFFFFF` (56%) | `#8F000000` (56%) | **悬浮件专用**：dock / 分段胶囊 / 选择操作坞。v2.3 首版它们共用 85%，压在白页上等于不透明 —— 模糊与折射全被 tint 吃掉，走查因此反馈"看不到底下在动"（§15.5e D3） |
 | `glass_tint_moving` | `#EAFFFFFF` (92%) | `#E6000000` (90%) | 内容**正在滚动/播放**时自动提浓 |
 | `glass_tint_scrim` | `#99000000` | `#99000000` | 弹窗/BottomSheet 之后的全局遮罩（沿用现值 `liveview_scrim`） |
 | `glass_tint_dark` | `#BF000000` | `#BFFFFFFF` | 反色卡（现 `dark_card`）玻璃化 |
@@ -185,6 +186,9 @@ fragment_liveview.xml:222,248,274,300,326  5 × #99FFFFFF 硬编码
 规范细则：
 
 - **静止 → `content`，运动 → `moving`**，切换用 150ms `FastOutSlowIn`，不做突变（突变看起来像闪屏）。
+- ** tint 越透，越依赖 §9.3 的自适应兜底 **：悬浮件起手 56%，暗底（深色系照片）上会把文字压成低对比，
+  所以 `guardedTint` 把加浓行程从 3 档放宽到 6 档 ×7%，仍不达标才整面退回不透明白底。
+  这条是"透"与"可读"之间唯一的安全带，不许为了好看拆掉。
 - 玻璃化**不得改变任何文字颜色 token**（`text_primary/secondary/tertiary` 原样）。可读性只靠 tint 与 §9.3 的自适应解决。这条让"回退到经典外观"变得极其简单： tint 关掉即回到现设计。
 - 夜间**阴影几乎不可见**，故夜间层级职责**转交给 rim 高光**（§3.4）：夜间 rim 强度 ×1.6，阴影 ×0.6。
 
@@ -205,18 +209,22 @@ fragment_liveview.xml:222,248,274,300,326  5 × #99FFFFFF 硬编码
 
 | Token | 日间 | 夜间 | 规格 |
 |---|---|---|---|
-| `glass_stroke_outer` | `#33000000` (20%) | `#24FFFFFF` (14%) | 0.5dp，勾边界 |
+| `glass_stroke_outer` | `#2B000000` (17%) | `#1FFFFFFF` (12%) | 0.5dp，勾边界。**只描圆角面**：通栏面（顶栏/状态栏条）不描整圈，见下方细则 |
 | `glass_rim_top_start` | `#66FFFFFF` | `#40FFFFFF` | 1dp 线性渐变起点（顶端） |
 | `glass_rim_top_end` | `#00FFFFFF` | `#00FFFFFF` | 渐变终点（透明） |
-| `glass_rim_bottom` | `#1A000000` | `#33FFFFFF` | 0.5dp，内透光 |
+| `glass_rim_bottom` | `#14000000` (8%) | `#26FFFFFF` (15%) | 1px，内透光。v2.3 首版是 26% 黑，通栏面上就是一条黑线 |
 | `glass_edge_lens` | `#4DFFFFFF` | `#33FFFFFF` | **四角加强**的 1.5dp 亮线（折射假象的主要来源，§3.6） |
-| `glass_shadow_key` | `#14000000`，y 2dp，blur 8dp | `#0A000000` | 主阴影 |
-| `glass_shadow_ambient` | `#0F000000`，y 8dp，blur 24dp | `#0A000000` | 环境阴影 |
-| `glass_shadow_floating` | `#1F000000`，y 12dp，blur 40dp | `#14FFFFFF` | **仅 L3** |
+| `glass_shadow_key` | `#33000000` | `#0A000000` | **喂给 GPU 投影管线的 spot 着色**（`outlineSpotShadowColor`），系统还会按高度再衰减一层 |
+| `glass_shadow_ambient` | `#1A000000` | `#0A000000` | 同上，`outlineAmbientShadowColor` |
+| `glass_shadow_floating` | `#1F000000` | `#14FFFFFF` | 预留：L3 若需再分档时用（当前 L3/L1 共用上面两档着色） |
+| `glass_elevation_l3` | 8dp | — | L3 悬浮件（dock / 胶囊 / 操作坞）。原 10dp，阴影边缘偏硬，降一档 |
+| `glass_elevation_l1` | 1.5dp | — | 卡片抬升（`DepthLift`）。原 2dp |
 
 规范细则：
 
-- **禁止用 `elevation`/`stateListAnimator` 表达层级**。现有 `stateListAnimator @null` 与 `cardElevation 0dp` 的意图（压平）**保留**，层次一律由「双层自绘阴影 + rim」表达。原因：elevation 阴影是矩形轮廓投影，圆角大时脏；且会隐式引入 Material 的触摸反馈，与 D1 的按压重写打架。
+- **通栏面不描整圈边**（v2.3.1 修正）。`radiusPx=0` 的贴边面（页面顶栏、状态栏条）如果照 §3.4 那条"四条边"的图纸画整圈 0.5dp 描边，落到屏幕上就是**上下两条黑横线** —— 走查第 3 条报的"滑动时标题框上下两条黑线（疑似阴影）"就是它，跟阴影无关。这类面走 `fullBleed`：只留内顶高光 + 一条内底反光，分隔职责交给它；状态栏条连内底反光都不画，避免和顶栏接出一条缝。
+- **阴影用 `elevation` + token 着色**（v2.3.1 对本节原条文的推翻）。初版写的是"禁止用 elevation，一律双层自绘阴影"，理由是大圆角下矩形轮廓投影脏。实现期改成走系统的 GPU 投影管线（`ViewOutlineProvider` 给圆角轮廓 + `outlineSpot/AmbientShadowColor` 按 token 着色），实测比自绘更省（不进模糊帧预算）、且**着色可控** —— 脏的不是 elevation，是默认那层"纯黑×系统 alpha"。`stateListAnimator @null` 与按钮不抬升的既有意图**保留**：本条只放开 L1 卡片与 L3 悬浮件，按压反馈仍走 §3.5 的自绘 tint。
+- **静止 → `content`，运动 → `moving`** 的 tint 规则不变；**层级只表达"可悬浮的东西"**：L2 行内小控件依然不抬升（靠 rim 与 tint 区分），免得整屏都在投影。
 - 阴影用 `ViewOutlineProvider` + `elevation` 只在 **L3** 允许（需要真模糊的面已经有硬件层，边际成本低）；L1/L2 必须走 Drawable 自绘（两层 `layer-list` 渐变模拟）。
 - rim 高光在**按压时被削弱、抬起时最强**（§6.2）——这是"玻璃被按下去"这一错觉的关键，比缩放更重要。**宁可砍缩放，也不能砍 rim。**
 
@@ -820,6 +828,24 @@ FrameLayout + 覆盖式顶栏，属结构改造，仍未做。
 
 **没有一并做的事**：拍摄页 dock 底下仍是空白 —— 那里背后本来就没有可透之物（§1.2 三判据），把监看画面拉到底下属于页面结构改造，不是这次的 bug。
 
+### 15.5e 第七包：阴影与悬浮件走查（v2.3.1）
+
+第二轮真机走查的 4 条反馈，逐条落到代码级根因：
+
+| # | 反馈 | 根因 | 处理 |
+|---|---|---|---|
+| **D1** | 阴影生硬、不协调 | ①`glass_shadow_*` 三个 token 定下来之后**从来没被接进渲染**（附录 A 里有、代码里没人读），实际用的是系统默认"纯黑 × 高度衰减"那套；②L3 10dp 对一枚 62dp 的药丸偏重，卡片 2dp 在浅底上贴边成一条硬灰边 | `View.applySoftShadow()`：`outlineSpotShadowColor`/`outlineAmbientShadowColor` 按 token 着色（API 28+，本仓 minSdk 29 直接调），`applyGlass` 与 `DepthLift` 都接上；L3 10→8dp、L1 2→1.5dp；`glass_rim_bottom` 26%→8% 黑 |
+| **D2** | 相册页底部三个选项要"和导航栏一致"：悬浮、去白条、玻璃化 | 旧实现给整行铺了一层通栏 flat 玻璃，**里面又压了一枚 `bg_chip`（#F0F0F0 实心）** —— 那层实心底就是走查里的"白条"，玻璃被它盖得一点透不出来 | 玻璃面从"整行"挪到**那枚 40dp 药丸本身**（`albumTabPill`，新增 id）：`GlassTokens.tabPill()` = dock 同套材质（真模糊 24dp + 折射 + L3 抬升），半径跟着高度收成 r20 整圆端，左右内缩改用 `glass_dock_inset_h`(12dp) 与 dock 对齐 → 上下两枚同语言的悬浮件。实心底只留给经典外观（AC-12：`setPaddingRelative(20dp)` + `bg_chip` 逐值还原） |
+| **D3** | 悬浮件要半透明，滚动时看得见底下的模糊内容在动 | `dock`/`floatingBar` 用的是 `glass_tint_content` = **85% 白**，压在白页上等于不透明，模糊与折射全被 tint 吃掉 | 新增 `glass_tint_floating`（日/夜均 56%）给 dock、分段胶囊、选择操作坞；配套把 `guardedTint` 的加浓行程从 3 档放宽到 6 档 ×7%（暗照片上仍守 WCAG AA 4.5:1，兜底退回不透明白底不变） |
+| **D4** | 滑动时标题框上下两条黑线（疑似阴影） | **不是阴影**。是 §3.4"四条边"图纸落到 `radiusPx=0` 的通栏面上：整圈 0.5dp × 20% 黑描边在贴屏幕边的顶栏上就是上下两条横线，状态栏条再叠一条底反光 → 标题框被框成一条灰带 | `GlassMaterial.fullBleed`：通栏面跳过整圈外描边与四角透镜，只留内顶高光 + 一条更轻的内底反光；`statusStrip` 连内底反光也不画（否则与顶栏接出一条缝）。见 §3.4 细则 |
+| **D5** | 标题缩放动画生硬 | `settle()` 是**逐帧硬赋值**：进度线性映射滚动偏移（起始几像素就跳一大截）、fling 中每帧被硬拽、落位时又突然补满 | `GlassTopBar` 改 **smoothstep 映射 + 追帧平滑**（每帧向目标推进 22%，收敛后 `postOnAnimation` 自动停）；幅度收小：缩放 0.92→0.955、上移 6dp→4dp（标题是定位锚，缩狠了读作"被压下去"）。关闭动效开关时一步到位，不追帧 |
+| **D6** | **采集自反馈**（顺手挖出来的，不修则 D3 立刻翻车） | dock 与相册页悬浮件的纹理源换成 `fragmentContainer` 之后，玻璃面**自己就在被采集的子树里** → 每采一次把上一帧的自己糊进去，越采越浓，看久了像玻璃起雾 | `GlassSurfaceDrawable.suppressedDraw`：`refreshNow()` 采集期间让所有登记过的面自我屏蔽（`draw()` 直接 return），那几块在纹理里画成父层底色，采到的才是它们身下的真背景。零额外布局/绘制轮次 —— 比 `setVisibility(INVISIBLE)` 那套做法便宜（后者每次采集多一轮 requestLayout） |
+| **D7** | **新采的纹理没人重画**（同上，顺手挖出来的） | `GlassCoordinator.hosts` 从头到尾**没有一处登记**：`refreshNow()` 遍历它回调重绘，但 `applyGlass` 只 `reportBlurNeed`+`invalidate` 过一次 → 采到新背景之后没有任何面会被叫回来画，玻璃实际停在第一帧 | `applyGlass` 里 `coordinator.addHost(surface)`（弱引用 + 去重 + 64 上限）。这条补上之后 §15.5d B3 的滚动驱动才真正闭环 |
+
+**这一包顺带纠正了两处"看起来实现了其实没接上"**：D6/D7 都是上一包（统一纹理源 + 滚动驱动采集）落地时才暴露的链路缺口 —— 单独看代码像已经工作，真机上是"玻璃不糊 / 玻璃起雾"。测试必须上真机，编译通过不代表视觉链路通。
+
+
+
 ### 15.6 反馈里**没做完**的事（别当成已交付）
 
 1. ~~三页顶栏的滚动渐隐~~ → **已按可达成形式做完**（见 §15.5b：底片浮现 + 标题上移缩放）。
@@ -869,6 +895,8 @@ FrameLayout + 覆盖式顶栏，属结构改造，仍未做。
 <integer name="glass_pixelcopy_min_interval_ms">30</integer>
 <integer name="glass_tilt_sample_ms">60</integer>
 ```
+**v2.3.1 实际落地差异**（改动了上面这些值，走查驱动，理由见 §15.5e）：`stroke_outer #2B000000`/夜 `#1FFFFFFF`、`rim_bottom #14000000`/夜 `#26FFFFFF`、`shadow_key #33000000`、`shadow_ambient #1A000000`（这两个现在真的被 `outlineSpot/AmbientShadowColor` 读取）、新增 `tint_floating #8FFFFFFF`/夜 `#8F000000`、`elevation_l3 8dp`、`elevation_l1 1.5dp`。表里 `glass_radius_pill`/`glass_blur_max_px`/`glass_max_anim_surfaces` 等仍未落地（配额靠代码约定，见 §8.2）。
+
 **夜间差异（`values-night`）**：`stroke_outer #24FFFFFF`、`rim_top #40FFFFFF`、`rim_bottom #33FFFFFF`、`edge_lens #33FFFFFF`、`shadow_key #0A000000`、`shadow_ambient #0A000000`、`shadow_floating #14FFFFFF`（夜间用亮环代阴影）、`tint_flat #F2000000`、`tint_content #BF000000`、`tint_moving #E6000000`、`tint_dark #BFFFFFFF`。
 **大屏差异（`values-w840dp`）**：`glass_max_blur_surfaces` → 4；`glass_dock_max_width` → 480dp；`glass_dock_orientation` → vertical。
 
