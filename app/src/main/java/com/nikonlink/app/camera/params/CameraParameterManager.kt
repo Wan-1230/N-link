@@ -5,6 +5,7 @@ import com.nikonlink.app.capture.BulbPolicy
 import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.usb.UsbPtpManager
+import com.nikonlink.app.camera.gallery.CameraFile
 import com.nikonlink.app.camera.gallery.CameraFileFormat
 import com.nikonlink.app.camera.gallery.TransferManager
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -403,7 +404,9 @@ class CameraParameterManager @Inject constructor(
     }
 
     /**
-     * 快门次数：机身属性普遍不提供，直接后台导出照片到缓存并走 digeeker 解析。
+     * 快门次数：尼康机身**不提供**任何快门计数的 PTP 属性（对照 libgphoto2：佳能 0xD1AC /
+     * 奥林巴斯 0xD059 / 富士 0xD154 都有，尼康没有），唯一数据源是照片 EXIF 的
+     * MakerNote `0x00A7`。所以链路固定为「挑一张样张 → 只读文件头 → 本机解析」，全程离线。
      */
     private fun ensureShutterCountQuery(force: Boolean = false) {
         if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) return
@@ -412,57 +415,15 @@ class CameraParameterManager @Inject constructor(
         if (!shutterQueryInProgress.compareAndSet(false, true)) return
 
         _cameraInfo.value = _cameraInfo.value.copy(
-            shutterQueryState = ShutterCountState.QUERYING
+            shutterQueryState = ShutterCountState.QUERYING,
+            shutterFailReason = ShutterFailReason.NONE
         )
         val job = scope?.launch(Dispatchers.IO) {
             try {
-                val photos = transferManager.fetchPhotoList()
-                val targetDir = File(context.cacheDir, "n-link_shutter").apply { mkdirs() }
-                val sample = photos.filter { it.format == CameraFileFormat.JPEG }
-                    .minByOrNull { it.size }
-                    ?: photos.minByOrNull { it.size }
-                if (sample == null) {
-                    markShutterQueryFailed()
-                    return@launch
-                }
-
-                val target = File(targetDir, "shutter_sample_${sample.handle}.jpg")
-                val downloaded = transferManager.downloadPhotoToCache(sample, target)
-                if (!downloaded) {
-                    markShutterQueryFailed()
-                    return@launch
-                }
-
-                // 两级解析（可行性验证结论：尼康无快门计数 PTP 属性，只能走照片 MakerNotes）：
-                // ① 本地解析 MakerNotes 0x00A7——离线、私密、零流量；
-                // ② 本地失败（旧机型加密 MakerNote / 结构变体）→ Digeeker 云端解析兜底。
-                val local = NikonShutterCountParser.parseFile(target)
-                if (local != null && local >= 0) {
-                    _cameraInfo.value = _cameraInfo.value.copy(
-                        shutterCount = local,
-                        shutterCountSource = "本机解析",
-                        shutterQueryState = ShutterCountState.SUCCESS
-                    )
-                    Timber.tag(TAG).i("Shutter count resolved locally: $local")
-                    target.delete()
-                    return@launch
-                }
-
-                val count = digeekerClient.queryShutterCount(target)
-                if (count != null && count >= 0) {
-                    _cameraInfo.value = _cameraInfo.value.copy(
-                        shutterCount = count,
-                        shutterCountSource = "云端解析",
-                        shutterQueryState = ShutterCountState.SUCCESS
-                    )
-                    Timber.tag(TAG).i("Shutter count resolved via digeeker: $count")
-                } else {
-                    markShutterQueryFailed()
-                }
-                target.delete()
+                runShutterCountQuery()
             } catch (e: Exception) {
                 Timber.tag(TAG).w(e, "Shutter count query failed")
-                markShutterQueryFailed()
+                markShutterQueryFailed(ShutterFailReason.READ_FAILED)
             } finally {
                 shutterQueryInProgress.set(false)
             }
@@ -474,13 +435,127 @@ class CameraParameterManager @Inject constructor(
         }
     }
 
+    /** 逐个样本试「局读 → 本机解析」，第一个拿到的读数即采纳；全部失败才按原因报错 */
+    private suspend fun runShutterCountQuery() {
+        val samples = ShutterSamplePicker.candidates(transferManager.fetchPhotoList())
+        if (samples.isEmpty()) {
+            Timber.tag(TAG).w("Shutter count: no photo on card")
+            markShutterQueryFailed(ShutterFailReason.NO_MEDIA)
+            return
+        }
+
+        var bytesObtained = false
+        var keptFile: File? = null
+        // 每轮开头清一次：上一轮的留档样本既不该被本轮误用，也不该累积
+        shutterCacheDir().listFiles()?.forEach { it.delete() }
+        for (sample in samples) {
+            when (val outcome = readShutterSample(sample)) {
+                is ShutterSampleOutcome.Parsed -> {
+                    publishShutterCount(outcome.reading, sample)
+                    return
+                }
+                is ShutterSampleOutcome.Unparsed -> {
+                    bytesObtained = true
+                    keptFile = outcome.keptFile ?: keptFile
+                }
+                ShutterSampleOutcome.NoBytes -> Unit
+            }
+        }
+
+        // 最后一级兜底：把整张样张交给云端解析。本机解析已覆盖全部现代机型，
+        // 这里只服务「旧机身笔记结构变体 / 小 JPEG 把 MakerNote 裁掉了」这类少数情况。
+        val lastResort = keptFile ?: downloadForCloudFallback(samples.first())
+        if (lastResort != null) {
+            bytesObtained = true
+            NikonShutterCountParser.parseFile(lastResort)?.let {
+                publishShutterCount(it, samples.first())
+                lastResort.delete()
+                return
+            }
+            val count = digeekerClient.queryShutterCount(lastResort)
+            if (count != null && count >= 0) {
+                _cameraInfo.value = _cameraInfo.value.copy(
+                    shutterCount = count,
+                    shutterCountSource = ShutterCountSource.CLOUD,
+                    shutterVerified = false,
+                    shutterQueryState = ShutterCountState.SUCCESS,
+                    shutterFailReason = ShutterFailReason.NONE
+                )
+                Timber.tag(TAG).i("Shutter count resolved via digeeker: %d", count)
+                lastResort.delete()
+                return
+            }
+        }
+
+        Timber.tag(TAG).w(
+            "Shutter count unresolved after %d samples (bytesObtained=%s)",
+            samples.size, bytesObtained
+        )
+        markShutterQueryFailed(
+            if (bytesObtained) ShutterFailReason.PARSE_FAILED else ShutterFailReason.READ_FAILED
+        )
+    }
+
+    /** 云端兜底用的整文件导出；失败返回 null */
+    private suspend fun downloadForCloudFallback(sample: CameraFile): File? {
+        val target = File(shutterCacheDir(), "cloud_${sample.handle}.${sample.fileName.substringAfterLast('.', "dat")}")
+        return if (transferManager.downloadPhotoToCache(sample, target)) target else null
+    }
+
+    private fun shutterCacheDir(): File = File(context.cacheDir, "n-link_shutter").apply { mkdirs() }
+
+    /** 单个样本：优先局读，退回整文件下载。三种结局见 [ShutterSampleOutcome] */
+    private suspend fun readShutterSample(sample: CameraFile): ShutterSampleOutcome {
+        if (!partialReadUnsupported) {
+            val head = transferManager.readObjectHead(sample, EXIF_HEAD_BYTES)
+            if (head != null) {
+                return NikonShutterCountParser.parse(head)?.let { ShutterSampleOutcome.Parsed(it) }
+                    ?: ShutterSampleOutcome.Unparsed(null)
+            }
+            partialReadUnsupported = true
+            Timber.tag(TAG).i("GetPartialObject unavailable, falling back to full download")
+        }
+
+        val target = File(shutterCacheDir(), "sample_${sample.handle}.${sample.fileName.substringAfterLast('.', "dat")}")
+        if (!transferManager.downloadPhotoToCache(sample, target)) return ShutterSampleOutcome.NoBytes
+        return NikonShutterCountParser.parseFile(target)?.let {
+            target.delete()
+            ShutterSampleOutcome.Parsed(it)
+        } ?: ShutterSampleOutcome.Unparsed(target) // 解不出时留档，供云端兜底与离线定位
+    }
+
+    private sealed interface ShutterSampleOutcome {
+        data class Parsed(val reading: NikonShutterCountParser.Reading) : ShutterSampleOutcome
+        data class Unparsed(val keptFile: File?) : ShutterSampleOutcome
+        object NoBytes : ShutterSampleOutcome
+    }
+
+    private fun publishShutterCount(r: NikonShutterCountParser.Reading, sample: CameraFile) {
+        _cameraInfo.value = _cameraInfo.value.copy(
+            shutterCount = r.shutterCount,
+            shutterCountSource = ShutterCountSource.LOCAL,
+            shutterVerified = r.verified,
+            shutterQueryState = ShutterCountState.SUCCESS,
+            shutterFailReason = ShutterFailReason.NONE
+        )
+        Timber.tag(TAG).i(
+            "Shutter count %d from %s (layout=%s verified=%s mechanical=%d)",
+            r.shutterCount, sample.fileName, r.layout, r.verified, r.mechanicalCount
+        )
+    }
+
     fun retryShutterCountQuery() {
+        partialReadUnsupported = false
         ensureShutterCountQuery(force = true)
     }
 
-    private fun markShutterQueryFailed() {
+    /** 局读不可用是通道级属性，一次会话内记住，避免每个样本都白等一次失败往返 */
+    private var partialReadUnsupported = false
+
+    private fun markShutterQueryFailed(reason: ShutterFailReason) {
         _cameraInfo.value = _cameraInfo.value.copy(
-            shutterQueryState = ShutterCountState.FAILED
+            shutterQueryState = ShutterCountState.FAILED,
+            shutterFailReason = reason
         )
     }
 
@@ -1519,8 +1594,12 @@ fun resolvePickerIndex(rawValues: List<Int>, currentRaw: Int): Int {
 data class CameraInfo(
     val batteryLevel: Int = -1,
     val shutterCount: Int = -1,
-    /** 快门次数来源标注：本机解析 / 云端解析（空串 = 尚未查询成功） */
-    val shutterCountSource: String = "",
+    /** 读数来源；null = 尚未查询成功。文案由 UI 侧本地化 */
+    val shutterCountSource: ShutterCountSource? = null,
+    /** 读数是否通过 `0x00A5 + 0x00A6 == 0x00A7` 恒等式校验；false = 仅数值合理，UI 需标注 */
+    val shutterVerified: Boolean = false,
+    /** 查询失败的具体原因，供 UI 给出可行动的提示 */
+    val shutterFailReason: ShutterFailReason = ShutterFailReason.NONE,
     val storageFreeMb: Long = -1,
     val storageTotalMb: Long = -1,
     val storageDescription: String = "",
@@ -1548,6 +1627,51 @@ enum class ShutterCountState {
     QUERYING,
     SUCCESS,
     FAILED
+}
+
+/** 查询失败原因：区分「卡上没照片」与「链路读不到」与「读到了但解不出」，三者给用户的指引完全不同 */
+enum class ShutterFailReason {
+    NONE,
+    NO_MEDIA,
+    READ_FAILED,
+    PARSE_FAILED
+}
+
+/** 读数来源：本机解析全程离线；云端解析会把原片交给第三方，UI 必须区分展示 */
+enum class ShutterCountSource {
+    LOCAL,
+    CLOUD
+}
+
+/** 只读到文件头这么多字节就够：真机实测尼康 MakerNote 落在文件头 0.8~29KB 区间，1MB 富余充足 */
+private const val EXIF_HEAD_BYTES = 1_048_576
+
+/**
+ * 快门次数样张挑选。
+ *
+ * 读数必须来自**最新**那张：`0x00A7` 是「拍摄该照片那一刻」的计数，挑到卡上留存的旧照片
+ * （甚至是换机身前的照片）就会报出一个偏低的假数值。此前按「文件最小」挑样张，
+ * 正好最容易挑到这种旧图。
+ *
+ * 同时间戳时 RAW 优先：NEF 的 MakerNote 不会被机身侧 JPEG 压缩环节裁剪。
+ * 小 JPEG 里被裁掉的情况虽然少见，但 NEF 永远更稳。
+ */
+internal object ShutterSamplePicker {
+
+    /** 最多尝试的样张数：再多也只是在链路已经出问题时继续拖时间 */
+    private const val MAX_SAMPLES = 3
+
+    fun candidates(files: List<CameraFile>): List<CameraFile> =
+        files.asSequence()
+            .filter { it.format == CameraFileFormat.JPEG || it.format == CameraFileFormat.RAW }
+            .distinctBy { it.handle }
+            .sortedWith(
+                compareByDescending<CameraFile> { it.captureTimeMillis ?: Long.MIN_VALUE }
+                    .thenByDescending { if (it.format == CameraFileFormat.RAW) 1 else 0 }
+                    .thenByDescending { it.handle }
+            )
+            .take(MAX_SAMPLES)
+            .toList()
 }
 
 private data class PtpDeviceInfo(

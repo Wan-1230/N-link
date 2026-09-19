@@ -38,7 +38,9 @@ import com.nikonlink.app.databinding.ItemWifiCandidateBinding
 import timber.log.Timber
 import com.nikonlink.app.databinding.FragmentDashboardBinding
 import com.nikonlink.app.camera.params.CameraParamsViewModel
+import com.nikonlink.app.camera.params.ShutterCountSource
 import com.nikonlink.app.camera.params.ShutterCountState
+import com.nikonlink.app.camera.params.ShutterFailReason
 import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
@@ -272,18 +274,32 @@ class DashboardFragment : Fragment() {
                 if (info.modelName.isNotBlank()) binding.tvCameraName.text = info.modelName
                 if (info.lensName.isNotBlank()) binding.tvLens.text = info.lensName
 
-                // 快门次数行：连接后常驻可点（未查询/失败/成功均可点击触发或刷新）。
-                // 可行性：尼康无快门计数 PTP 属性 → 采样照片 MakerNotes 本地解析，失败走云端兜底
+                // 快门次数：尼康无快门计数 PTP 属性，读数来自样张照片 MakerNote 的 0x00A7。
+                // 来源与可信度必须呈现给用户 —— 「未校验」表示只过了数值合理性、没过恒等式；
+                // 「云端解析」表示原片被交给第三方解析，见 PRD v2.4。
                 val shutterRowVisible = info.shutterQueryState != ShutterCountState.NONE ||
                         info.modelName.isNotBlank()
                 binding.rowShutterCount.visibility =
                     if (shutterRowVisible) View.VISIBLE else View.GONE
                 binding.tvShutterCount.text = when (info.shutterQueryState) {
-                    ShutterCountState.QUERYING -> "查询中…"
-                    ShutterCountState.SUCCESS -> "${info.shutterCount} 次" +
-                            if (info.shutterCountSource.isNotBlank()) "（${info.shutterCountSource}）" else ""
-                    ShutterCountState.FAILED -> "查询失败，点击重试"
-                    ShutterCountState.NONE -> "未查询 · 点击查询"
+                    ShutterCountState.QUERYING -> getString(R.string.shutter_count_querying)
+                    ShutterCountState.SUCCESS -> getString(
+                        R.string.shutter_count_value, info.shutterCount
+                    ) + when {
+                        info.shutterCountSource == ShutterCountSource.CLOUD ->
+                            getString(R.string.shutter_count_source_cloud)
+                        info.shutterVerified ->
+                            getString(R.string.shutter_count_source_local)
+                        else -> getString(R.string.shutter_count_source_local_unverified)
+                    }
+                    ShutterCountState.FAILED -> getString(
+                        when (info.shutterFailReason) {
+                            ShutterFailReason.NO_MEDIA -> R.string.shutter_count_failed_no_media
+                            ShutterFailReason.PARSE_FAILED -> R.string.shutter_count_failed_parse
+                            else -> R.string.shutter_count_failed_read
+                        }
+                    )
+                    ShutterCountState.NONE -> getString(R.string.shutter_count_idle)
                 }
                 binding.tvShutterCount.isClickable = shutterRowVisible
                 binding.tvShutterCount.setOnClickListener {
