@@ -167,7 +167,7 @@ class GlassSurfaceDrawable(
             if (coord.mapRect(host, srcRect)) {
                 backdropUsed = drawBackdrop(canvas, coord, m)
             }
-            if (!backdropUsed) coord.requestRefreshFromDraw()
+            if (!backdropUsed) coord.requestRefresh()
         }
 
         // ---- ② 染色 tint（含对比度自适应） ----
@@ -421,9 +421,9 @@ class DockInset(private val view: View) {
 /**
  * 页面按 dock 是否悬浮来调整自己滚动容器的底部内衬（PRD §7.2）。
  *
- * dock 悬浮时容器用负 margin 多占了一条 dock 的高度，内容必须自己加
- * `paddingBottom` + `clipToPadding=false` 才滚得出 dock 底下 —— 这既是可读性要求，
- * 也正是"内容从玻璃底下滚过"能看到透景的原因。经典外观下 dockSpace=0，内衬归零，
+ * dock 是覆盖层、内容列铺满整屏，所以滚动容器必须自己加
+ * `paddingBottom` + `clipToPadding=false`：既是"最后一屏不被 dock 盖住"的可读性要求，
+ * 也正是看得见内容从玻璃底下滚过的前提。经典外观下 dockSpace=0，内衬归零，
  * 与 v2.2 逐像素相等。
  */
 interface GlassInsetAware {

@@ -607,15 +607,15 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         _binding = null
     }
 
-    /** dock 悬浮时给列表底部让出一条，并把滚动方向报给 MainActivity 驱动自动隐藏 */
+    /** dock 悬浮时给列表底部让出一条，并在滚动时驱动 dock 背景重采（内容才看得见从玻璃底下划过） */
     private fun setupDockFloat() {
         binding.settingsScroll.clipToPadding = false
         dockInset = DockInset(binding.settingsScroll)
         applyDockSpace()
         styleTopBar()
-        binding.settingsScroll.setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
-            (activity as? MainActivity)?.reportContentScroll(scrollY - oldScrollY)
+        binding.settingsScroll.setOnScrollChangeListener { _, _, scrollY, _, _ ->
             topBarFx?.onScroll(scrollY)
+            (activity as? MainActivity)?.dockBackdrop?.requestRefresh()
         }
     }
 

@@ -8,12 +8,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
-import android.os.SystemClock
 import android.provider.Settings
-import android.view.MotionEvent
 import android.view.View
-import android.view.animation.DecelerateInterpolator
-import android.view.animation.OvershootInterpolator
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
@@ -73,15 +69,6 @@ class MainActivity : AppCompatActivity() {
         /** v2.2 基线：dock 不悬浮时的高度，「经典外观」要逐值还原（AC-12） */
         private const val DOCK_BASELINE_HEIGHT_DP = 60
 
-        /** 无操作多久后收起 dock */
-        private const val DOCK_IDLE_HIDE_MS = 3_800L
-        private const val DOCK_REVEAL_MS = 260L
-        private const val DOCK_HIDE_MS = 200L
-
-        /** 判定"点一下"而非"滑动"的阈值 */
-        private const val TAP_MAX_MS = 220L
-        private const val TAP_SLOP_DP = 14f
-
         /** 启动自动检查更新：每进程只跑一次（旋转/重建 Activity 不重跑） */
         @Volatile
         private var autoCheckStarted = false
@@ -98,28 +85,14 @@ class MainActivity : AppCompatActivity() {
     /** 上一次按下返回键的时间戳；0 表示当前不在「待退出」窗口内 */
     private var lastBackPressedAt = 0L
 
-    // ---- dock 悬浮与自动隐藏（PRD §4 dock 项、§7.2 insets）----
+    // ---- dock 悬浮几何（PRD §4 dock 项、§7.2 insets）----
 
     /** 状态栏 / 底部导航条的 insets，edge-to-edge 后必须自己算 */
     private var statusInset = 0
     private var navInset = 0
 
-    /** dock 当前是否被隐藏 */
-    private var dockHidden = false
-
-    /** 只有可滚动的页面（设备 / 相册 / 设置）才允许自动隐藏 */
-    private var dockAutoHideAllowed = false
-
-    /** dock 完全下沉时的位移量（同时用作"遮住内容的高度"） */
-    private var dockHideOffset = 0f
-
-    private val hideDockRunnable = Runnable {
-        if (dockAutoHideAllowed && UiFlags.glassEnabled(this)) hideDock()
-    }
-
-    private var downX = 0f
-    private var downY = 0f
-    private var downAt = 0L
+    /** dock 盖在内容的哪一条上头 = 页面滚动容器要垫的底部内衬；经典外观下为 0 */
+    private var dockFootprint = 0
 
     private val dashboardFragment = DashboardFragment()
     private val transferFragment = TransferFragment()
@@ -205,15 +178,18 @@ class MainActivity : AppCompatActivity() {
     /**
      * dock 的材质 + 几何 + 悬浮偏移（PRD §4 dock 项、§7.2）。
      *
-     * 关玻璃时**逐值还原** v2.2 基线：容器不再有负 margin、根布局自己垫 navInset
-     * （等效于原来的 fitsSystemWindows）、恢复不透明底与 1px 分割线 ——
+     * dock 是内容列**之外**的覆盖层，永远钉在屏幕底边，不随滚动位移。
+     * 悬浮感全部来自几何与材质：内容列铺满整屏 → 列表能从 dock 玻璃底下滚过去，
+     * dock 采内容列做真模糊。
+     *
+     * 关玻璃时**逐值还原** v2.2 基线：内容列自己垫出 dock 那一条（等效于原来的
+     * fitsSystemWindows + 占位 dock）、恢复不透明底与 1px 分割线 ——
      * 回退闸门要求逐像素相等（AC-12），只换 background 是不够的。
      */
     private fun applyDock() {
         val glass = UiFlags.glassEnabled(this)
         val bar = binding.bottomBar
-        val barLp = bar.layoutParams as android.widget.LinearLayout.LayoutParams
-        val boxLp = binding.fragmentContainer.layoutParams as android.widget.LinearLayout.LayoutParams
+        val barLp = bar.layoutParams as android.widget.FrameLayout.LayoutParams
 
         val dockH = resources.getDimensionPixelSize(R.dimen.glass_dock_height)
         val side = resources.getDimensionPixelSize(R.dimen.glass_dock_inset_h)
@@ -236,120 +212,48 @@ class MainActivity : AppCompatActivity() {
             barLp.marginEnd = side
             barLp.bottomMargin = bottom
             bar.layoutParams = barLp
-            // 负 margin：容器向下多占 dock 那一条，dock 随后盖在内容之上 → 真悬浮 + 实时模糊
-            boxLp.bottomMargin = -(dockH + bottom)
-            binding.fragmentContainer.layoutParams = boxLp
-            binding.root.updatePadding(bottom = 0)
-            // dock 压在内容之上，把容器当背景纹理源 → 真透景 + 真折射
-            bar.applyGlass(GlassCoordinator.attach(binding.fragmentContainer)) {
-                GlassTokens.dock(it.context)
-            }
+            // 内容通到底：dock 盖在内容之上而不是挤在内容之下 → 看得见内容从底下划过
+            binding.contentColumn.updatePadding(bottom = 0)
+            dockFootprint = dockH + bottom
             // 分割线的分隔职责交给玻璃的四条边信息
             binding.navDivider.visibility = View.GONE
-            dockHideOffset = (dockH + bottom + bar.paddingBottom).toFloat()
-            // 重涂后按当前隐藏态复位
-            animateDock(if (dockHidden) dockHideOffset else 0f, animated = false)
+            // dock 压在内容之上，把内容列当背景纹理源 → 真透景 + 真折射
+            bar.applyGlass(dockBackdrop) { GlassTokens.dock(it.context) }
         } else {
             barLp.height = DOCK_BASELINE_HEIGHT_DP.dpToPx()
             barLp.marginStart = 0
             barLp.marginEnd = 0
-            barLp.bottomMargin = 0
+            barLp.bottomMargin = navInset
             bar.layoutParams = barLp
-            boxLp.bottomMargin = 0
-            binding.fragmentContainer.layoutParams = boxLp
-            binding.root.updatePadding(bottom = navInset)
+            binding.contentColumn.updatePadding(bottom = barLp.height + navInset)
+            dockFootprint = 0
+            GlassRegistry.unregister(bar)
             bar.background = null
             bar.setBackgroundColor(ContextCompat.getColor(this, R.color.nav_background))
+            bar.elevation = 0f
             binding.navDivider.visibility = View.VISIBLE
-            dockHideOffset = 0f
-            animateDock(0f, animated = false)
-            dockHidden = false
         }
         // 通知当前页重算底部内衬（内容要能滚出 dock 那一条）
         contentInsetsChanged()
     }
+
+    /**
+     * dock 的背景纹理源 = 整个内容区（一张 1/8 降采样、复用的位图）。
+     * 页面滚动时要驱动它重采，否则玻璃底下是定格的 —— 见 [GlassCoordinator.requestRefresh]。
+     */
+    val dockBackdrop: GlassCoordinator?
+        get() = if (UiFlags.glassEnabled(this)) {
+            GlassCoordinator.attach(binding.fragmentContainer)
+        } else {
+            null
+        }
 
     private fun contentInsetsChanged() {
         tabFragments.forEach { (it as? GlassInsetAware)?.onDockSpaceChanged(dockSpace()) }
     }
 
     /** dock 实际遮住内容的高度，页面给滚动容器加 paddingBottom 用 */
-    fun dockSpace(): Int =
-        if (UiFlags.glassEnabled(this)) dockHideOffset.toInt() else 0
-
-    // ---------------- dock 自动隐藏（滚动方向 + 无操作超时）----------------
-
-    /**
-     * 页面滚动时上报方向：dy &gt; 0 表示内容向上推进（往下浏览）→ dock 下沉让位；
-     * dy &lt; 0 表示往回看 → dock 回弹。对齐 iOS 大标题/工具栏的手势习惯。
-     */
-    fun reportContentScroll(dy: Int) {
-        if (dy == 0 || !dockAutoHideAllowed || !UiFlags.glassEnabled(this)) return
-        if (dy > 0) hideDock() else showDock()
-    }
-
-    /** 由 [switchToTab] 驱动：拍摄页是固定布局、不可滚动，不允许自动隐藏 */
-    private fun setDockAutoHide(allowed: Boolean) {
-        dockAutoHideAllowed = allowed && UiFlags.glassEnabled(this)
-        if (!dockAutoHideAllowed) showDock()
-        restartIdleTimer()
-    }
-
-    private fun restartIdleTimer() {
-        binding.root.removeCallbacks(hideDockRunnable)
-        if (dockAutoHideAllowed) {
-            binding.root.postDelayed(hideDockRunnable, DOCK_IDLE_HIDE_MS)
-        }
-    }
-
-    private fun showDock(animated: Boolean = true) = animateDock(0f, animated)
-
-    private fun hideDock(animated: Boolean = true) {
-        if (dockHideOffset > 0f) animateDock(dockHideOffset.toFloat(), animated)
-    }
-
-    private fun animateDock(to: Float, animated: Boolean) {
-        val bar = binding.bottomBar
-        dockHidden = to != 0f
-        val motion = animated && UiFlags.motionEnabled(this)
-        bar.animate().cancel()
-        if (!motion) {
-            bar.translationY = to
-            return
-        }
-        bar.animate()
-            .translationY(to)
-            .setDuration(if (to == 0f) DOCK_REVEAL_MS else DOCK_HIDE_MS)
-            // 回弹用轻微过冲（PRD §6.1 SPRING_DOCK 的手感），下沉用减速
-            .setInterpolator(if (to == 0f) OvershootInterpolator(3.2f) else DecelerateInterpolator())
-            .start()
-    }
-
-    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        when (ev.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                downX = ev.x
-                downY = ev.y
-                downAt = SystemClock.uptimeMillis()
-                restartIdleTimer()
-            }
-            MotionEvent.ACTION_UP -> {
-                // 只认"点一下"（没有明显位移、且短于滑动判定时间）→ dock 回弹。
-                // 不能用 onUserInteraction：它对整个手势的每个 MOVE 都触发，
-                // 会把"上滑隐藏"立刻抵消掉。
-                if (isTap(ev)) showDock()
-            }
-        }
-        return super.dispatchTouchEvent(ev)
-    }
-
-    private fun isTap(up: MotionEvent): Boolean {
-        if (!dockHidden || !dockAutoHideAllowed) return false
-        val dt = SystemClock.uptimeMillis() - downAt
-        val dist = Math.hypot((up.x - downX).toDouble(), (up.y - downY).toDouble())
-        return dt < TAP_MAX_MS &&
-            dist < TAP_SLOP_DP.toDouble() * resources.displayMetrics.density.toDouble()
-    }
+    fun dockSpace(): Int = dockFootprint
 
     private fun Int.dpToPx(): Int =
         (this * resources.displayMetrics.density).toInt()
@@ -415,11 +319,8 @@ class MainActivity : AppCompatActivity() {
             currentTab = index
         }
         applyTabStyle(index)
-        // 拍摄页是固定布局（监看 + 参数区），没有"滚动让位"这回事 → 不自动隐藏
-        setDockAutoHide(index != TAB_REMOTE)
-        // 切页时背景内容整体换掉，玻璃纹理要作废重采
-        (binding.fragmentContainer.getTag(R.id.glass_coordinator)
-            as? GlassCoordinator)?.invalidate()
+        // 切页时 dock 底下的内容整体换掉，玻璃纹理要作废重采
+        dockBackdrop?.invalidate()
     }
 
     /** 选中态：实心图标 + 加粗文字；未选中：线性图标 + 常规字重 */

@@ -1,38 +1,50 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   主框架：状态栏玻璃条 + 内容区 + 悬浮玻璃 dock。
-  不再用 fitsSystemWindows：改由 MainActivity 手动分发 insets，
-  这样玻璃才能既铺到状态栏底下、又能把 dock 压进内容区（PRD D2 / §7.2）。
+  根必须是 FrameLayout：dock 作覆盖层钉在底部，内容列自己铺满整屏。
+  （旧结构是竖向 LinearLayout + dock 用负 margin 挤进内容区，测量结果依赖父布局的
+   权重算术，实测内容并没有真的延伸到底 → dock 底下和它下面一条都是白的。）
+  不再用 fitsSystemWindows：改由 MainActivity 手动分发 insets（PRD D2 / §7.2）。
 -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/background"
-    android:orientation="vertical">
+    android:background="@color/background">
 
-    <!-- 状态栏区域的玻璃底。高度由 insets 在代码里给；经典外观下退回不透明页面底色 -->
-    <View
-        android:id="@+id/statusGlass"
+    <!-- 内容列。玻璃态 paddingBottom=0（通到底，内容从 dock 底下滚过）；
+         经典外观由代码垫上 dock 那一条，逐值等于 v2.2 -->
+    <LinearLayout
+        android:id="@+id/contentColumn"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:background="@color/background" />
+        android:layout_height="match_parent"
+        android:orientation="vertical">
 
-    <FrameLayout
-        android:id="@+id/fragmentContainer"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
+        <!-- 状态栏区域的玻璃底。高度由 insets 在代码里给；经典外观下退回不透明页面底色 -->
+        <View
+            android:id="@+id/statusGlass"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:background="@color/background" />
 
-    <View
-        android:id="@+id/navDivider"
-        android:layout_width="match_parent"
-        android:layout_height="@dimen/divider_height"
-        android:background="@color/divider" />
+        <FrameLayout
+            android:id="@+id/fragmentContainer"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
 
+        <View
+            android:id="@+id/navDivider"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/divider_height"
+            android:background="@color/divider" />
+    </LinearLayout>
+
+    <!-- 底部导航 dock：覆盖层，四周内缩由代码给（玻璃态）；经典外观下通栏贴底 -->
     <LinearLayout
         android:id="@+id/bottomBar"
         android:layout_width="match_parent"
         android:layout_height="60dp"
+        android:layout_gravity="bottom"
         android:background="@color/nav_background"
         android:orientation="horizontal">
 
@@ -141,4 +153,4 @@
         </LinearLayout>
     </LinearLayout>
 
-</LinearLayout>
+</FrameLayout>

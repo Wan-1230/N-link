@@ -1040,7 +1040,8 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     /**
      * dock 悬浮进内容区之后，本页要自己做两件事：
      *  ① 给滚动内容叠加底部内衬，否则最后一屏卡片会被 dock 盖住；
-     *  ② 把滚动方向上报给 MainActivity 驱动 dock 自动隐藏。
+     *  ② 滚动时驱动 dock 的背景纹理重采 —— 内容才会真的"从玻璃底下划过"，
+     *     否则 dock 糊着一张进页时的快照，悬浮感当场失效。
      * clipToPadding=false 是"内容能滚到玻璃底下"的前提，也是看得见真透景的原因。
      */
     private fun setupDockFloat() {
@@ -1048,9 +1049,9 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         dockInset = DockInset(binding.scrollContent)
         applyDockSpace()
         styleTopBar()
-        binding.scrollContent.setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
-            (activity as? MainActivity)?.reportContentScroll(scrollY - oldScrollY)
+        binding.scrollContent.setOnScrollChangeListener { _, _, scrollY, _, _ ->
             topBarFx?.onScroll(scrollY)
+            (activity as? MainActivity)?.dockBackdrop?.requestRefresh()
         }
     }
 

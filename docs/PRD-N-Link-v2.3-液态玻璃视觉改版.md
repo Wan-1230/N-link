@@ -765,10 +765,10 @@ fun View.applyGlass(m: GlassMaterial)   // 一个入口，内部按 tier 决定�
 
 | # | 反馈 | 根因（代码级） | 处理 |
 |---|---|---|---|
-| **F1** | 底部导航条没延伸进内容区、看不到透景 | ① `activity_main.xml` 根是**竖向 LinearLayout** + `fitsSystemWindows` → 内容容器在 dock 之上就结束了，dock 背后只有页面底色；② dock 从没拿到 `GlassCoordinator` | 逐窗 `setDecorFitsSystemWindows(false)`（**只改 MainActivity**，其他页仍受 `themes.xml` opt-out 保护，避开 R5 全局 insets 回归）；容器用**负 bottomMargin** 多占一条 dock 高度；dock 的纹理源 = `fragmentContainer` |
+| **F1** | 底部导航条没延伸进内容区、看不到透景 | ① `activity_main.xml` 根是**竖向 LinearLayout** + `fitsSystemWindows` → 内容容器在 dock 之上就结束了，dock 背后只有页面底色；② dock 从没拿到 `GlassCoordinator` | 逐窗 `setDecorFitsSystemWindows(false)`（**只改 MainActivity**，其他页仍受 `themes.xml` opt-out 保护，避开 R5 全局 insets 回归）；容器用**负 bottomMargin** 多占一条 dock 高度；dock 的纹理源 = `fragmentContainer`。**⚠ 已被 B1 推翻**：负 margin 在竖向 LinearLayout 里要靠父级权重算术生效，实测内容并没有真的铺到底 → dock 底下和它下面一条全是白的。根布局已换成 FrameLayout + dock 覆盖层 |
 | **F2** | dock 背景里有一个多余白条 | **三条白底叠在一起**：① dock 自己的 `@color/nav_background` 不透明；② `fragment_transfer.xml` 的 `albumTabRow` 带 `@color/background` 实心底（贴在 dock 上方，视觉上就是 dock 后面一条白带）；③ 非 edge-to-edge 留下的系统导航条白底 | ①→玻璃材质（T2+ 由 tint/rim 承担分隔）；②→改 `transparent` 并让 `albumTabRow` 自己也成玻璃面（透过它看得见网格在糊）；③→`statusBarColor`/`navigationBarColor` 透明 + 状态栏条玻璃底 |
 | **F3** | 内容会不会被悬浮 dock 盖住 | 悬浮后内容区变长，各页底部 chrome / 列表末项会躲到 dock 底下 | 新增 `GlassInsetAware` + `DockInset`：三个可滚动页（设备/相册/设置）把 dockSpace 叠成 `paddingBottom`（配 `clipToPadding=false`，这正是"内容滚到玻璃底下"的前提），相册的分段标签行用 `bottomMargin` 抬起来。**首次构造时捕获原值**，所以「经典外观」下逐值还原（AC-12） |
-| **F4** | dock 自动隐藏 | 无 | 上滑（内容向前浏览）下沉隐藏、下滑或**点一下**回弹、3.8s 无操作自动收起。用 `dispatchTouchEvent` 自己判 tap（**不能用 `onUserInteraction`** —— 它对手势里每个 MOVE 都触发，会立刻抵消"上滑隐藏"）。拍摄页固定布局 → 不允许自动隐藏 |
+| **F4** | dock 自动隐藏 | 无 | ~~上滑（内容向前浏览）下沉隐藏、下滑或**点一下**回弹、3.8s 无操作自动收起~~ **已整条撤销**（见 §15.5d B2）：悬浮玻璃的分寸感来自"它就固定在那儿，内容从它底下过"，dock 自己再跟着动，两层位移叠在一起读作抖动而不是流动，而且隐藏态下 dock 采到的纹理是过期的一帧 |
 | **F5** | 弹窗与背景模糊不同步、动画生硬 | MDC 自带转场只动面板，而 `blurBehindRadius` 与 `dimAmount` 是**开局即满值** → 背景先糊了、面板后才飘进来 | `NlGlass.applyBlurBehind`：关掉窗口自带转场，把**模糊半径 / 暗度 / 面板 alpha / 0.94→1 缩放**挂在同一条 `ValueAnimator`（220ms，emphasized 曲线）上一起推进。BottomSheet 自己会上滑，故只让它同步模糊与暗度（`animatePanel=false`），避免双重动画 |
 | **F6** | 开关重开闪屏 | 设置页用 `activity.recreate()` 让常驻 Fragment 重上材质 → 整页销毁重建，先闪一帧 `windowBackground` 白底 | 删掉 `recreate()`，改为 `UiFlags.observe(owner){}` **原地重涂注册表**（按 owner 做键，`unobserve` 精确摘除）。各页在 observer 里重涂 chips/操作坞/分段行并重算内衬 |
 | **F7** | 分段控件切换生硬 | 只有 `translationX` + 固定时长 + `Decelerate`，位置到位就停 | `GlassMotion.slidePill`：位置**轻微过冲** + 途中 `scaleX` 拉伸 18%、`scaleY` 压扁 6%，落位弹回 —— 让胶囊像一滴有表面张力的液体而不是贴纸。已接相册三 tab 与设备页三种连接方式 |
@@ -806,12 +806,27 @@ FrameLayout + 覆盖式顶栏，属结构改造，仍未做。
 | **预览页沉浸浏览**（§5.3） | 单击画面 → 上下工具栏与系统栏同步渐隐/浮现 | 用 `onSingleTapUp` 而不是 `onSingleTapConfirmed`：本页没有双击缩放，不必等 300ms 判定。出现 220ms `Decelerate`、消失 180ms `Accelerate`（**消失比出现快**，§6.3）。只在玻璃态生效，经典外观下工具栏常驻，不改既有交互 |
 | **卡片立体感**（§3.4；"玻璃不明显处至少给阴影"） | `DepthLift`：这些面背后是页面底色，做真玻璃等于什么都透不出来（§1.2 三判据），所以改给**真实 GPU 软阴影** | 认卡片的方式刻意保守——**圆角恰为 `card_radius`(12dp) 的矩形 GradientDrawable**，于是 `bg_card`/`bg_card_dark` 命中，chip(20dp)、格子(8dp)、已上玻璃的面（非 GradientDrawable）都不命中。前提已核对：**全仓 `res/layout` 里 `android:elevation` 命中 0 次**，所以"经典外观 → 归零"是逐值还原（AC-12）。阴影走 `ViewOutlineProvider` 默认取 background 轮廓，圆角卡片自动得到正确的圆角投影，不需要自绘，也不进模糊帧预算 |
 
+### 15.5d 第六包：dock 真悬浮的三处修正（走查反馈：悬浮是假的）
+
+反馈原话：「导航栏覆盖的地方和下边都是空白的」，要求**去掉随滚动移动**、**钉死在底部**、**看得见内容从底下划过**。三处根因，全部在代码级：
+
+| # | 根因 | 处理 |
+|---|---|---|
+| **B1** | **几何是假的**。`activity_main.xml` 根是竖向 `LinearLayout`，dock 靠内容容器的**负 bottomMargin** 挤进内容区 —— 加权子 View 的负 margin 要经过 `measureVertical` 的剩余空间算术，实测内容没有真的铺到屏幕底，于是 dock 那一条和它下面到屏幕底的一条都是页面底色 | 根换成 **FrameLayout**：`contentColumn`（状态条 + 容器 + 分割线）`match_parent` 铺满，dock 作为**同级覆盖层** `layout_gravity="bottom"`。两种外观都靠它，不再有任何 margin 魔术 —— 玻璃态 `contentColumn.paddingBottom=0`（内容通到底），经典态垫 `dock 高度 + navInset`（逐值等于 v2.2，AC-12） |
+| **B2** | **位移是多余的**。自动隐藏（上滑下沉 / 点按回弹 / 3.8s 收起）让 dock 自己也在动，两层位移叠加读作抖动；隐藏态下 dock 采到的还是过期纹理 | **整条删除**（`reportContentScroll`/`showDock`/`hideDock`/`animateDock`/空闲计时/`dispatchTouchEvent` 的 tap 判定一并移除），`dockSpace()` 从"当前位移量"变成常量 = dock  footprint（高度 + 四周内缩 + navInset）。对齐 iOS 26 悬浮标签栏与 Material3 边到边导航的事实做法：**栏固定，动的是内容** |
+| **B3** | **纹理是定格的**。`GlassCoordinator` 只在 `mapRect` 失败时请求重采，页面滚动既不 invalidate dock、dock 也不 invalidate 自己 → 背景从头到尾是进页那一帧的快照，"划过"根本无从谈起。相册页更糟：fling 期间 `setScrollSuppressing` **完全停采** | ① 新增 `requestRefresh()`，三个可滚动页在各自的滚动回调里驱动重采（采集本身按 `minRefreshMs` 节流，不会每帧一次）；② `setScrollSuppressing` 的语义从"冻采"改成"**降频**"：滚动期 70ms（≈14fps），静止期 150ms，停住时补采一次对齐位置。一张 1/8 纹理连采带糊 ≈1~2ms，占空比 ≈3%，换来的是背景跟着内容走 |
+| **B4** | 相册页的网格被约束在标签行**之上**（`swipeRefresh` → `bottomToTopOf=albumTabRow`），所以那块最该有透景的地方压根没有内容进过 dock 底下 | 玻璃态把 `swipeRefresh` 底边改锚 parent、网格 `paddingBottom` 连标签行那一条一起让出（`clipToPadding=false` 早就备着）；经典态锚回 `albumTabRow`，保持 v2.2 的"网格止于标签行之上" |
+| **B5** | 同屏两张纹理：标签行/操作坞采 `gridPhotos`、dock 采 `fragmentContainer`，两糊度不同步，上下紧挨着接缝一眼可见 | 统一到一个内容源（`fragmentContainer`），`TransferFragment.glassBackdrop` 改取 `MainActivity.dockBackdrop` |
+
+**没有一并做的事**：拍摄页 dock 底下仍是空白 —— 那里背后本来就没有可透之物（§1.2 三判据），把监看画面拉到底下属于页面结构改造，不是这次的 bug。
+
 ### 15.6 反馈里**没做完**的事（别当成已交付）
 
 1. ~~三页顶栏的滚动渐隐~~ → **已按可达成形式做完**（见 §15.5b：底片浮现 + 标题上移缩放）。
    仍缺的是"**内容真从标题底下滚过**"：要把 3 个页面根从"竖向 LinearLayout（顶栏 + 分割线 + 滚动区）"
    改成"FrameLayout + 覆盖式顶栏 + 滚动区 paddingTop"。这是 3 页各一次结构性改动，
-   和 dock 的负 margin 不是一回事。设置页因为 ScrollView 直接跟在头部后面，已经是覆盖式效果。
+   和 dock 的覆盖层改造（§15.5d B1）不是一回事 —— 后者已经做完并验证了这条路可行。
+   设置页因为 ScrollView 直接跟在头部后面，已经是覆盖式效果。
 2. **监看页 chrome 渐隐未做**：预览页单击切 chrome 没有冲突（§15.5c 已做）；监看页**单击=对焦**
    （`setupTouchAndScale` + `viewFocusIndicator`），拿同一个手势做渐隐会和对焦抢语义。
    要做得换触发条件（双指缩放中 / 录像开始后自动收起），方案未定所以没写。
