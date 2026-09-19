@@ -8,12 +8,14 @@
     android:orientation="vertical">
 
     <LinearLayout
+        android:id="@+id/topBar"
         android:layout_width="match_parent"
         android:layout_height="56dp"
         android:gravity="center_vertical"
         android:paddingHorizontal="@dimen/page_margin">
 
         <TextView
+            android:id="@+id/tvTitle"
             style="@style/NlText.Title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -21,11 +23,13 @@
     </LinearLayout>
 
     <View
+        android:id="@+id/topDivider"
         android:layout_width="match_parent"
         android:layout_height="@dimen/divider_height"
         android:background="@color/divider" />
 
     <ScrollView
+        android:id="@+id/settingsScroll"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:scrollbars="none">

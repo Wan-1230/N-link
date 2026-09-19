@@ -15,35 +15,51 @@
         android:orientation="horizontal"
         android:paddingHorizontal="@dimen/page_margin">
 
-        <LinearLayout
+        <!--
+          照片/视频切换：FrameLayout 槽 + 背后的**滑动指示块**。
+          以前是"选中的那个 TextView 换实心底"，所以切换是硬切；
+          现在指示块是一枚真滑块，位移与宽度跟着目标标签走（GlassMotion.slidePill）。
+          经典外观下把它瞬间归位（不带动画），观感与 v2.2 一致。
+        -->
+        <FrameLayout
             android:id="@+id/modeToggleSlot"
             android:layout_width="wrap_content"
             android:layout_height="34dp"
             android:background="@drawable/bg_chip"
-            android:orientation="horizontal"
             android:padding="3dp">
 
-            <TextView
-                android:id="@+id/btnModePhoto"
-                android:layout_width="wrap_content"
+            <View
+                android:id="@+id/modeIndicator"
+                android:layout_width="0dp"
                 android:layout_height="match_parent"
-                android:background="@drawable/bg_chip_selected"
-                android:gravity="center"
-                android:paddingHorizontal="18dp"
-                android:text="照片"
-                android:textColor="@color/on_primary"
-                android:textSize="13sp" />
+                android:background="@drawable/bg_chip_selected" />
 
-            <TextView
-                android:id="@+id/btnModeVideo"
+            <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="match_parent"
-                android:gravity="center"
-                android:paddingHorizontal="18dp"
-                android:text="视频"
-                android:textColor="@color/text_primary"
-                android:textSize="13sp" />
-        </LinearLayout>
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/btnModePhoto"
+                    android:layout_width="wrap_content"
+                    android:layout_height="match_parent"
+                    android:gravity="center"
+                    android:paddingHorizontal="18dp"
+                    android:text="照片"
+                    android:textColor="@color/on_primary"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/btnModeVideo"
+                    android:layout_width="wrap_content"
+                    android:layout_height="match_parent"
+                    android:gravity="center"
+                    android:paddingHorizontal="18dp"
+                    android:text="视频"
+                    android:textColor="@color/text_primary"
+                    android:textSize="13sp" />
+            </LinearLayout>
+        </FrameLayout>
 
         <View
             android:layout_width="0dp"

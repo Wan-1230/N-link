@@ -20,11 +20,19 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.SimpleItemAnimator
+import com.nikonlink.app.shared.ui.glass.DepthLift
+import com.nikonlink.app.shared.ui.glass.DockInset
 import com.nikonlink.app.shared.ui.glass.GlassCoordinator
+import com.nikonlink.app.shared.ui.glass.GlassInsetAware
+import com.nikonlink.app.shared.ui.glass.GlassMotion
+import com.nikonlink.app.shared.ui.glass.GlassRegistry
 import com.nikonlink.app.shared.ui.glass.GlassTokens
+import com.nikonlink.app.shared.ui.glass.GlassTopBar
 import com.nikonlink.app.shared.ui.glass.NlGlass
+import com.nikonlink.app.shared.ui.glass.UiFlags
 import com.nikonlink.app.shared.ui.glass.applyGlass
 import com.nikonlink.app.shared.ui.glass.renderChipBackground
+import com.nikonlink.app.MainActivity
 import com.nikonlink.app.R
 import com.nikonlink.app.databinding.FragmentTransferBinding
 import com.nikonlink.app.shared.ui.pressEffect
@@ -40,10 +48,17 @@ import javax.inject.Inject
  * 分类标签 + 3 列网格实时预览 + 长按多选 + 底部悬浮操作栏 + 全屏预览
  */
 @AndroidEntryPoint
-class TransferFragment : Fragment() {
+class TransferFragment : Fragment(), GlassInsetAware {
 
     private var _binding: FragmentTransferBinding? = null
     private val binding get() = _binding!!
+
+    /**
+     * dock 悬浮时叠加的底部内衬：列表用 padding（配 clipToPadding=false，
+     * 照片能滚到玻璃底下 → 看得到真透景），贴底的分段标签行用 margin 抬起来。
+     */
+    private var dockInsetGrid: DockInset? = null
+    private var dockInsetTabs: DockInset? = null
     private val viewModel: TransferViewModel by viewModels()
 
     @Inject
@@ -60,6 +75,9 @@ class TransferFragment : Fragment() {
 
     /** 悬浮操作坞的背景纹理源（= 照片网格）。fling 期间要暂停采集，见 setupGrid 的滚动监听 */
     private var glassBackdrop: GlassCoordinator? = null
+
+    /** 顶栏玻璃随滚动浮现 */
+    private var topBarFx: GlassTopBar? = null
 
     /** 模块 4.3：用户主动刷新后，数据合并完成时强制回列表顶部 */
     private var pendingScrollToTop = false
@@ -91,7 +109,10 @@ class TransferFragment : Fragment() {
         // 这是本 App 里"背后有可透之物"最典型的一处（PRD §5.1），
         // 所以它拿实时模糊；设备页那种纯白底上的卡片刻意不给。
         glassBackdrop = GlassCoordinator.attach(binding.gridPhotos)
-        binding.bottomBar.applyGlass(glassBackdrop) { GlassTokens.floatingBar(it.context) }
+        dockInsetGrid = DockInset(binding.gridPhotos)
+        dockInsetTabs = DockInset(binding.albumTabRow)
+        restyleGlass()
+        UiFlags.observe(this) { restyleGlass() }
         super.onViewCreated(view, savedInstanceState)
         setupGrid()
         setupChips()
@@ -166,6 +187,12 @@ class TransferFragment : Fragment() {
         // 快速滑动保护：滑动期间关掉格子动画并暂停缩略图请求，
         // 滚动停止后统一补请求可见项。详见 PhotoGridAdapter.fastScrolling 的说明。
         binding.gridPhotos.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                // dock 自动隐藏：内容向上推进（往下浏览）时收起，往回看时回弹
+                (activity as? MainActivity)?.reportContentScroll(dy)
+                topBarFx?.onScroll(rv.computeVerticalScrollOffset())
+            }
+
             override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
                 val fast = newState != RecyclerView.SCROLL_STATE_IDLE
                 adapter.setFastScrolling(fast)
@@ -409,10 +436,11 @@ class TransferFragment : Fragment() {
                 binding.tabIndicator.layoutParams.width = segWidth
                 binding.tabIndicator.requestLayout()
             }
-            binding.tabIndicator.animate()
-                .translationX(selectedIndex * segWidth.toFloat())
-                .setDuration(if (tabIndicatorInitialized) 180L else 0L)
-                .start()
+            GlassMotion.slidePill(
+                binding.tabIndicator,
+                selectedIndex * segWidth.toFloat(),
+                animated = tabIndicatorInitialized,
+            )
             tabIndicatorInitialized = true
         }
         binding.tabIndicator.post { applyIndicator(24) }
@@ -1061,7 +1089,71 @@ class TransferFragment : Fragment() {
         return " · ${String.format(Locale.US, "%.1f", mbPerSec)} MB/s"
     }
 
+    /**
+     * 玻璃开关变了就原地重涂：chips、悬浮操作坞、底部内衬。
+     * 不走 activity.recreate() —— 那会闪一帧白底 windowBackground。
+     */
+    private fun restyleGlass() {
+        if (_binding == null) return
+        renderChips(viewModel.photoFilter.value)
+        binding.bottomBar.applyGlass(glassBackdrop) { GlassTokens.floatingBar(it.context) }
+        styleAlbumTabRow()
+        styleTopBar()
+        applyDockSpace()
+    }
+
+    /** 顶栏玻璃随滚动浮现（本页顶栏下面就是 chip 行，所以没有 1px 分割线要处理） */
+    private fun styleTopBar() {
+        val bar = binding.topBar
+        val title = binding.tvTitle
+        if (!UiFlags.glassEnabled(requireContext())) {
+            topBarFx = null
+            GlassRegistry.unregister(bar)
+            bar.background = null
+            title.apply { alpha = 1f; translationY = 0f; scaleX = 1f; scaleY = 1f }
+            return
+        }
+        bar.applyGlass(register = false) { GlassTokens.topBar(it.context) }
+        topBarFx = GlassTopBar(bar, title, null)
+        topBarFx?.onScroll(binding.gridPhotos.computeVerticalScrollOffset())
+    }
+
+    /** 分段标签行：透过它看得见照片在糊（它自己不带底色，见 XML 的 transparent） */
+    private fun styleAlbumTabRow() {
+        val row = binding.albumTabRow
+        if (!UiFlags.glassEnabled(requireContext())) {
+            // 经典外观：退回完全透明的行（v2.2 就是靠页面底色垫着，没有自己的底）
+            GlassRegistry.unregister(row)
+            row.elevation = 0f
+            row.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            return
+        }
+        val coord = glassBackdrop ?: return
+        row.applyGlass(coord) {
+            GlassTokens.hud(it.context).copy(
+                radiusPx = 0f,
+                tintColor = GlassTokens.tintLight(it.context),
+                onColor = ContextCompat.getColor(it.context, R.color.text_primary),
+            )
+        }
+    }
+
+    private fun applyDockSpace() {
+        if (_binding == null) return
+        val space = (activity as? MainActivity)?.dockSpace() ?: 0
+        dockInsetGrid?.applyPadding(space)
+        dockInsetTabs?.applyMargin(space)
+        DepthLift.apply(binding.root, requireContext())
+    }
+
+    override fun onDockSpaceChanged(dockSpace: Int) = applyDockSpace()
+
     override fun onDestroyView() {
+        UiFlags.unobserve(this)
+        dockInsetGrid = null
+        dockInsetTabs = null
+        glassBackdrop = null
+        topBarFx = null
         super.onDestroyView()
         _binding = null
     }

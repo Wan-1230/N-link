@@ -94,6 +94,7 @@ class LiveViewFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
         requireActivity().window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         applyGlassHud()
+        UiFlags.observe(this) { applyGlassHud() }
         setupControls()
         setupShutter()
         setupParams()
@@ -761,6 +762,7 @@ class LiveViewFragment : Fragment() {
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
 
     override fun onDestroyView() {
+        UiFlags.unobserve(this)
         requireActivity().window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         viewModel.stopLiveView()
         super.onDestroyView()

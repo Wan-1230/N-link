@@ -19,6 +19,7 @@
         app:layout_constraintTop_toTopOf="parent">
 
         <TextView
+            android:id="@+id/tvTitle"
             style="@style/NlText.Title"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
@@ -194,7 +195,7 @@
             android:id="@+id/albumTabRow"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:background="@color/background"
+            android:background="@android:color/transparent"
             android:gravity="center"
             android:orientation="vertical"
             android:paddingHorizontal="20dp"

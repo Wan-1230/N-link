@@ -757,7 +757,73 @@ fun View.applyGlass(m: GlassMaterial)   // 一个入口，内部按 tier 决定�
 
 ---
 
+## 十五·续：第三包（dock 悬浮进内容 / 自动隐藏 / 弹窗动效 / 指示器液态滑动）
+
+> 用户走查后的反馈驱动的第三包。构建 `:app:assembleDebug` 通过。
+
+### 15.5 这一包做了什么
+
+| # | 反馈 | 根因（代码级） | 处理 |
+|---|---|---|---|
+| **F1** | 底部导航条没延伸进内容区、看不到透景 | ① `activity_main.xml` 根是**竖向 LinearLayout** + `fitsSystemWindows` → 内容容器在 dock 之上就结束了，dock 背后只有页面底色；② dock 从没拿到 `GlassCoordinator` | 逐窗 `setDecorFitsSystemWindows(false)`（**只改 MainActivity**，其他页仍受 `themes.xml` opt-out 保护，避开 R5 全局 insets 回归）；容器用**负 bottomMargin** 多占一条 dock 高度；dock 的纹理源 = `fragmentContainer` |
+| **F2** | dock 背景里有一个多余白条 | **三条白底叠在一起**：① dock 自己的 `@color/nav_background` 不透明；② `fragment_transfer.xml` 的 `albumTabRow` 带 `@color/background` 实心底（贴在 dock 上方，视觉上就是 dock 后面一条白带）；③ 非 edge-to-edge 留下的系统导航条白底 | ①→玻璃材质（T2+ 由 tint/rim 承担分隔）；②→改 `transparent` 并让 `albumTabRow` 自己也成玻璃面（透过它看得见网格在糊）；③→`statusBarColor`/`navigationBarColor` 透明 + 状态栏条玻璃底 |
+| **F3** | 内容会不会被悬浮 dock 盖住 | 悬浮后内容区变长，各页底部 chrome / 列表末项会躲到 dock 底下 | 新增 `GlassInsetAware` + `DockInset`：三个可滚动页（设备/相册/设置）把 dockSpace 叠成 `paddingBottom`（配 `clipToPadding=false`，这正是"内容滚到玻璃底下"的前提），相册的分段标签行用 `bottomMargin` 抬起来。**首次构造时捕获原值**，所以「经典外观」下逐值还原（AC-12） |
+| **F4** | dock 自动隐藏 | 无 | 上滑（内容向前浏览）下沉隐藏、下滑或**点一下**回弹、3.8s 无操作自动收起。用 `dispatchTouchEvent` 自己判 tap（**不能用 `onUserInteraction`** —— 它对手势里每个 MOVE 都触发，会立刻抵消"上滑隐藏"）。拍摄页固定布局 → 不允许自动隐藏 |
+| **F5** | 弹窗与背景模糊不同步、动画生硬 | MDC 自带转场只动面板，而 `blurBehindRadius` 与 `dimAmount` 是**开局即满值** → 背景先糊了、面板后才飘进来 | `NlGlass.applyBlurBehind`：关掉窗口自带转场，把**模糊半径 / 暗度 / 面板 alpha / 0.94→1 缩放**挂在同一条 `ValueAnimator`（220ms，emphasized 曲线）上一起推进。BottomSheet 自己会上滑，故只让它同步模糊与暗度（`animatePanel=false`），避免双重动画 |
+| **F6** | 开关重开闪屏 | 设置页用 `activity.recreate()` 让常驻 Fragment 重上材质 → 整页销毁重建，先闪一帧 `windowBackground` 白底 | 删掉 `recreate()`，改为 `UiFlags.observe(owner){}` **原地重涂注册表**（按 owner 做键，`unobserve` 精确摘除）。各页在 observer 里重涂 chips/操作坞/分段行并重算内衬 |
+| **F7** | 分段控件切换生硬 | 只有 `translationX` + 固定时长 + `Decelerate`，位置到位就停 | `GlassMotion.slidePill`：位置**轻微过冲** + 途中 `scaleX` 拉伸 18%、`scaleY` 压扁 6%，落位弹回 —— 让胶囊像一滴有表面张力的液体而不是贴纸。已接相册三 tab 与设备页三种连接方式 |
+
+**新增能力位**：`UiFlags.LENS`（折射，默认开）、`UiFlags.DISPERSION`（色散，默认关 —— 灰阶规范）。
+**新增纹理源**：`fragmentContainer`（dock）、`gridPhotos`（操作坞 + 分段标签行）、`ivLiveView`（监看 HUD）、`vpPreview`（预览工具栏）。同屏仍是"一个内容源一张纹理"。
+
+### 15.5b 第四包：顶栏随滚动浮现（§4 顶栏项 / §6.5 滚动联动的可达成）
+
+`GlassTopBar` + `GlassSurfaceDrawable.plateAlpha`。两个实现期发现的坑，记下来免得重踩：
+
+1. **不能用 `View.alpha` 淡顶栏** —— 那会把标题和图标一起淡掉。所以给 drawable 加了
+   `plateAlpha`（只作用在底片的 tint/rim/描边上），另加 `applyGlass(register=false)`：
+   顶栏不进 `GlassRegistry`，否则经典外观下重涂会画出一块 v2.2 并不存在的白底。
+2. **`ScrollView` 的 `oldScrollY` 本来就是上一帧的值**，`scrollY - oldScrollY` 直接可用，
+   不需要自己记 `lastScrollY`（第一版我多此一举加了字段，已删）。
+
+**诚实地说清楚做到了哪一步**：设备页与相册页的顶栏**不是覆盖式** —— 设备页顶栏底下压着连接模式三选行、
+相册页压着筛选 chip 行，所以列表内容不会真的从标题底下穿过。这里实现的是 iOS 实际给用户的两件事：
+底片随滚动从全透明浮到不透明、标题轻微上移 + 缩到 0.92（不消失，保留定位感），
+并把 1px 分割线交给玻璃的四条边信息。设置页的 `ScrollView` 直接跟在头部下面，
+是三者里唯一"内容真从标题底下滚过"的页面。要做成前两页那样，需要把页面根换成
+FrameLayout + 覆盖式顶栏，属结构改造，仍未做。
+
+`GlassMotion.slidePill` 已接相册三 tab 与设备页三种连接方式（过冲 + 途中横向拉伸 18%）。
+**拍摄页照片/视频那处仍没接**：它现在不是滑动指示器而是直接换实心底，
+必须先做成真指示器（M2 组件化）才谈得上液态滑动。
+
+
+### 15.5c 第五包：收尾反馈里的三条（滑块 / 沉浸渐隐 / 立体感）
+
+| 项 | 做法 | 关键取舍 |
+|---|---|---|
+| **拍摄页照片/视频切换不再硬切** | `modeToggleSlot` 换成 FrameLayout，选中态从"给标签换实心底"改成**背后一枚真滑块**，位移与宽度跟着目标标签走，接 `GlassMotion.slidePill` | 滑块在**两种外观下都是实心** `bg_chip_selected`（选中态必须实体，§3.3），两态只差"有没有动画"，所以经典外观天然等价于 v2.2。标签是 `wrap_content`，首帧宽度为 0 → `post` 一次并以 `animated=false` 归位，避免进页面时滑块从左边飞一下 |
+| **预览页沉浸浏览**（§5.3） | 单击画面 → 上下工具栏与系统栏同步渐隐/浮现 | 用 `onSingleTapUp` 而不是 `onSingleTapConfirmed`：本页没有双击缩放，不必等 300ms 判定。出现 220ms `Decelerate`、消失 180ms `Accelerate`（**消失比出现快**，§6.3）。只在玻璃态生效，经典外观下工具栏常驻，不改既有交互 |
+| **卡片立体感**（§3.4；"玻璃不明显处至少给阴影"） | `DepthLift`：这些面背后是页面底色，做真玻璃等于什么都透不出来（§1.2 三判据），所以改给**真实 GPU 软阴影** | 认卡片的方式刻意保守——**圆角恰为 `card_radius`(12dp) 的矩形 GradientDrawable**，于是 `bg_card`/`bg_card_dark` 命中，chip(20dp)、格子(8dp)、已上玻璃的面（非 GradientDrawable）都不命中。前提已核对：**全仓 `res/layout` 里 `android:elevation` 命中 0 次**，所以"经典外观 → 归零"是逐值还原（AC-12）。阴影走 `ViewOutlineProvider` 默认取 background 轮廓，圆角卡片自动得到正确的圆角投影，不需要自绘，也不进模糊帧预算 |
+
+### 15.6 反馈里**没做完**的事（别当成已交付）
+
+1. ~~三页顶栏的滚动渐隐~~ → **已按可达成形式做完**（见 §15.5b：底片浮现 + 标题上移缩放）。
+   仍缺的是"**内容真从标题底下滚过**"：要把 3 个页面根从"竖向 LinearLayout（顶栏 + 分割线 + 滚动区）"
+   改成"FrameLayout + 覆盖式顶栏 + 滚动区 paddingTop"。这是 3 页各一次结构性改动，
+   和 dock 的负 margin 不是一回事。设置页因为 ScrollView 直接跟在头部后面，已经是覆盖式效果。
+2. **监看页 chrome 渐隐未做**：预览页单击切 chrome 没有冲突（§15.5c 已做）；监看页**单击=对焦**
+   （`setupTouchAndScale` + `viewFocusIndicator`），拿同一个手势做渐隐会和对焦抢语义。
+   要做得换触发条件（双指缩放中 / 录像开始后自动收起），方案未定所以没写。
+3. ~~拍摄页切换的液态滑动~~ → **已做**（§15.5c：改成真滑块 + `slidePill`）。
+4. ~~内容卡片的立体感~~ → **已做**（§15.5c：`DepthLift`）。**按钮**仍未铺：
+   `NlButton.*` 的 `stateListAnimator @null` 是 v2.2 刻意为之，动它等于改按压手感，
+   风险面比卡片大，留到 M5 动效一起做。
+
+---
+
 ## 附录 A：Token 速查表（可直接抄进 `res/values/glass.xml` + `values-night/glass.xml`）
+
 
 ```xml
 <!-- 半径 -->

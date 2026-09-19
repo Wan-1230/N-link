@@ -16,6 +16,8 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.exifinterface.media.ExifInterface
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.RecyclerView
@@ -103,6 +105,10 @@ class PreviewActivity : AppCompatActivity() {
     /** 上下工具栏的背景纹理源（= ViewPager2 里的照片），换页时要作废 */
     private var previewGlass: GlassCoordinator? = null
 
+    /** 沉浸式浏览：工具栏是否可见 + 单击检测器 */
+    private var chromeVisible = true
+    private var chromeTap: android.view.GestureDetector? = null
+
     /** 整组照片（由 Intent 基本类型数组重建，format 用 classifyFormat 还原） */
     private lateinit var files: List<CameraFile>
 
@@ -130,6 +136,7 @@ class PreviewActivity : AppCompatActivity() {
         currentPosition = intent.getIntExtra(EXTRA_POSITION, 0).coerceIn(0, files.size - 1)
         file = files[currentPosition]
         applyGlassBars()
+        setupChromeToggle()
 
         updateTopBar()
         setupViewPager()
@@ -291,6 +298,61 @@ class PreviewActivity : AppCompatActivity() {
      * 背后是 ViewPager2 里的照片，所以能拿到真折射；白图顶上来时由
      * [GlassSurfaceDrawable] 的对比度自适应兜底（PRD §9.3）。
      */
+    /**
+     * 单击画面 → 上下工具栏同步渐隐/浮现（PRD §5.3 的沉浸式浏览，对齐 iOS 相册）。
+     *
+     * 用 `onSingleTapUp` 而不是 `onSingleTapConfirmed`：本页没有双击缩放，
+     * 不需要等 300ms 的"是不是双击"判定，点了就该立刻响应。
+     * 滑动时手指有位移，手势检测器不会回调 onSingleTapUp，所以翻页不会误触发。
+     *
+     * 只在玻璃态生效：经典外观下保持 v2.2 行为（工具栏常驻），不改既有交互。
+     */
+    private fun setupChromeToggle() {
+        if (!UiFlags.glassEnabled(this)) return
+        if (chromeTap != null) return
+        val tap = android.view.GestureDetector(this, object : android.view.GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapUp(e: android.view.MotionEvent): Boolean {
+                setChromeVisible(!chromeVisible)
+                return true
+            }
+        })
+        chromeTap = tap
+        binding.vpPreview.setOnTouchListener { _, ev -> tap.onTouchEvent(ev); false }
+    }
+
+    private fun setChromeVisible(visible: Boolean) {
+        chromeVisible = visible
+        val bars = listOf(binding.previewTopBar, binding.previewBottomBar)
+        val motion = UiFlags.motionEnabled(this)
+        bars.forEach {
+            it.animate().cancel()
+            if (!motion) {
+                it.alpha = if (visible) 1f else 0f
+                it.translationY = if (visible) 0f else
+                    if (it.id == R.id.previewTopBar) -it.height.toFloat() else it.height.toFloat()
+                it.isClickable = visible
+                return@forEach
+            }
+            val away = if (it.id == R.id.previewTopBar) -it.height.toFloat() else it.height.toFloat()
+            it.animate()
+                .alpha(if (visible) 1f else 0f)
+                .translationY(if (visible) 0f else away)
+                .setDuration(if (visible) 220L else 180L)
+                .setInterpolator(
+                    if (visible) android.view.animation.DecelerateInterpolator()
+                    else android.view.animation.AccelerateInterpolator()
+                )
+                .withEndAction { it.isClickable = visible }
+                .start()
+        }
+        // 隐藏时把系统栏一起收掉，才是真的沉浸
+        WindowCompat.getInsetsController(window, binding.root)
+            .apply {
+                if (visible) show(WindowInsetsCompat.Type.systemBars())
+                else hide(WindowInsetsCompat.Type.systemBars())
+            }
+    }
+
     private fun applyGlassBars() {
         val bars = listOf(binding.previewTopBar, binding.previewBottomBar)
         if (!UiFlags.glassEnabled(this)) {
