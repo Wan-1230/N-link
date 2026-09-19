@@ -9,6 +9,15 @@
 -keep class com.nikonlink.app.shared.update.** { *; }
 -keepattributes *Annotation*, Signature
 
+# 逐 ROM 兼容矩阵（assets/compat/rom_rules.json）的 Gson 数据模型。
+# 这些类没有 @SerializedName，Gson 是**按字段名**反射填充的，字段一被改名就读成 null，
+# 于是 release 包里整张表静默变空、退回内置文案（debug 不混淆，所以只有线上会犯）。
+# 只 keep 这四个数据类：device.connect 里其余都是连接主干，混淆收益是实的，不能整包 keep。
+-keep class com.nikonlink.app.device.connect.RomRulesFile { *; }
+-keep class com.nikonlink.app.device.connect.RomRule { *; }
+-keep class com.nikonlink.app.device.connect.RomRule$Match { *; }
+-keep class com.nikonlink.app.device.connect.RomRule$Trick { *; }
+
 # Hilt
 -keep class dagger.hilt.** { *; }
 -keep class javax.inject.** { *; }
