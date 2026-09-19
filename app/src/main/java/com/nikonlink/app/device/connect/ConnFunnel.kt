@@ -98,6 +98,7 @@ class ConnFunnel @Inject constructor(
 
             // ── 收尾 ──
             BUDGET_EXHAUSTED("budget_exhausted", "本轮重试次数已达上限，继续重试会被系统拉黑该网络", "在系统 WiFi 里「忽略」相机热点后重新连接"),
+            SUPERSEDED("superseded", "这一轮还没走完就被新的连接请求打断", "无需处理；日志里频繁出现说明连接被重复触发"),
             UNKNOWN("unknown", "连接失败", null)
         }
 
@@ -167,13 +168,27 @@ class ConnFunnel @Inject constructor(
         val attempt = current ?: return
         current = null
         attempt.finishedAt = System.currentTimeMillis()
+        // 收口时给一个**诚实**的结论：既没走到 READY、又没记过任何失败 = 这一轮是被
+        // 后来的连接请求顶掉的。旧实现直接取最后一步的原因码，于是日志里满是
+        // `conn_result stage=INTENT reason=ok` —— 看起来像成功，实际什么都没发生，
+        // 拿日志排查「为什么前两次连不上」时会被彻底带偏。
+        val lastStep = attempt.steps.lastOrNull()
+        val outcome = when {
+            lastStep == null -> Reason.UNKNOWN
+            lastStep.stage == Stage.READY -> Reason.OK
+            lastStep.reason == Reason.OK -> Reason.SUPERSEDED
+            else -> lastStep.reason ?: Reason.UNKNOWN
+        }
+        if (outcome == Reason.SUPERSEDED) {
+            attempt.steps += Step(lastStep?.stage ?: Stage.INTENT, attempt.finishedAt, outcome)
+        }
         _history.value = (listOf(attempt) + _history.value).take(HISTORY_LIMIT)
         eventLogger.event(
             "conn_result",
             "channel" to attempt.channel,
-            "stage" to attempt.lastStage.name,
+            "stage" to (lastStep?.stage ?: Stage.INTENT).name,
             "ms" to attempt.durationMs,
-            "reason" to (attempt.steps.lastOrNull()?.reason?.code ?: "unknown")
+            "reason" to outcome.code
         )
     }
 

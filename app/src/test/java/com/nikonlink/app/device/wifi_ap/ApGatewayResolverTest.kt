@@ -61,4 +61,22 @@ class ApGatewayResolverTest {
         assertTrue(ApGatewayResolver.isCameraGateway("192.168.1.1", own))
         assertTrue(ApGatewayResolver.isCameraGateway("10.0.0.1", own))
     }
+
+    /**
+     * 真机日志回归（Z50II + vivo，2026-09-19）：同一次热点连接里网关从
+     * `192.168.1.1` 变成了 `fe80::1`，PTP/IP 用不了链路本地 IPv6，
+     * 却因为它把可用的 IPv4 网关挤掉而连输两轮。
+     */
+    @Test
+    fun `IPv6 网关一律忽略，相机地址只收 IPv4`() {
+        val own = setOf("fe80::1234%wlan0", "192.168.1.100")
+        assertFalse(ApGatewayResolver.isCameraGateway("fe80::1", own))
+        assertFalse(ApGatewayResolver.isCameraGateway("::1", own))
+        assertFalse(ApGatewayResolver.isCameraGateway("fd00::1", own))
+        assertFalse(ApGatewayResolver.isCameraGateway("fe80::1%wlan0", own))
+        // 畸形 IPv4 同样不能当成相机
+        assertFalse(ApGatewayResolver.isCameraGateway("192.168.1.256", own))
+        assertFalse(ApGatewayResolver.isCameraGateway("192.168.1", own))
+        assertFalse(ApGatewayResolver.isCameraGateway("1.2.3.4.5", own))
+    }
 }

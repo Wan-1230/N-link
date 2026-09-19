@@ -1,6 +1,7 @@
 package com.nikonlink.app.device.wifi_sta
 
 import com.nikonlink.app.device.model.ConnectionEvent
+import com.nikonlink.app.device.connect.ConnFlags
 import com.nikonlink.app.device.connect.ConnectionStateMachine
 import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpIpProbe
@@ -57,7 +58,8 @@ class WifiDirectConnector @Inject constructor(
     private val networkRequester: StaNetworkRequester,
     private val localInterfaces: LocalNetworkInterfaceResolver,
     private val stateMachine: ConnectionStateMachine,
-    private val eventLogger: AppEventLogger
+    private val eventLogger: AppEventLogger,
+    private val connFlags: ConnFlags
 ) {
     companion object {
         private const val TAG = "WifiDirect"
@@ -87,6 +89,12 @@ class WifiDirectConnector @Inject constructor(
 
         /** FIX-5：单次探活超时（比扫描阶段长，覆盖相机唤醒时延） */
         private const val PRECONNECT_PROBE_TIMEOUT_MS = 1200L
+
+        /**
+         * 探活成功后留给机身的间歇：让相机把这条探测用的 TCP 连接收干净，
+         * 再去抢它唯一的 PTP/IP 客户端槽（见 [isCameraPortOpen]）。
+         */
+        private const val PROBE_SETTLE_MS = 400L
 
         /** FIX-5：前几轮才做连接前等待（后续轮次已经给过机会，不必每轮都等） */
         private const val PRECONNECT_MAX_ROUNDS = 3
@@ -537,13 +545,7 @@ class WifiDirectConnector @Inject constructor(
         val deadline = System.currentTimeMillis() + PRECONNECT_WAIT_MS
         var waited = 0L
         while (System.currentTimeMillis() < deadline) {
-            val ok = runCatching {
-                PtpIpProbe.probe(
-                    endpoint,
-                    timeoutMs = PRECONNECT_PROBE_TIMEOUT_MS,
-                    network = network
-                )
-            }.getOrDefault(false)
+            val ok = isCameraPortOpen(network, endpoint, PRECONNECT_PROBE_TIMEOUT_MS)
             if (ok) return true
             delay(400)
             waited += 400 + PRECONNECT_PROBE_TIMEOUT_MS
@@ -552,6 +554,36 @@ class WifiDirectConnector @Inject constructor(
             }
         }
         return false
+    }
+
+    /**
+     * 「相机端口现在接不接受连接」——连接前筛探与失败后归类的**唯一**入口。
+     *
+     * 默认只做到 TCP 层（[ConnFlags.PROBE_TCP_ONLY]），并且探通后让机身 400ms 把这条
+     * 探测连接回收掉，再由真实连接去抢那个唯一的客户端槽。
+     *
+     * 为什么不能顺手发一次 PTP/IP 握手：机身只有一台 PTP/IP 服务，一次 InitCommand
+     * 就是一次"客户端已接入"，我们探测完直接 close 只会留下一个半开会话占着槽。
+     * 真机日志（Z50II + vivo，2026-09-19）为此付出了两次"无法连接"：
+     * `ap_gateway probe=OK` 之后 8ms 发起配对 → 该次与随后两轮全部
+     * `sta_preconnect reachable=false` / `probe=rejected`，直到约 35s 后机身自己
+     * 收掉半开会话才一次连上（`connect phase=init ok=true`，13ms）。
+     */
+    private suspend fun isCameraPortOpen(
+        network: android.net.Network?,
+        endpoint: WifiEndpoint,
+        timeoutMs: Long
+    ): Boolean {
+        if (!connFlags.isEnabled(ConnFlags.PROBE_TCP_ONLY)) {
+            return runCatching {
+                PtpIpProbe.probe(endpoint, timeoutMs = timeoutMs, network = network)
+            }.getOrDefault(false)
+        }
+        val open = runCatching {
+            PtpIpProbe.tcpConnectOnly(endpoint.host, endpoint.port, timeoutMs, network)
+        }.getOrDefault(false)
+        if (open) delay(PROBE_SETTLE_MS)
+        return open
     }
 
     // ---------------- v1.3.2 STA 诊断与反馈辅助 ----------------
@@ -568,14 +600,13 @@ class WifiDirectConnector @Inject constructor(
     /**
      * 连接前可达性刷新（对齐 ZDROP `refreshing discovery before connect`）。
      *
-     * 直接用 2.5s 超时打一次 TCP 15740 + PTP/IP Init：能连上说明相机在线，
+     * 判定「这个地址还能不能用」交给 [isCameraPortOpen]：能连上说明相机在线，
      * 之前失败就是握手层问题（配对码/会话占用）；连不上说明地址已失效或相机休眠，
      * 这时重试 10 次也没有意义 —— 给出"不可达"的明确原因，用户可以去唤醒相机或
-     * 重新扫描。用比扫描阶段的 900ms 更长的超时，覆盖相机从休眠唤醒的时延。
+     * 重新扫描。
      */
     private suspend fun probeReachable(network: android.net.Network?, endpoint: WifiEndpoint): Boolean =
-        runCatching { PtpIpProbe.probe(endpoint, timeoutMs = 2500L, network = network) }
-            .getOrDefault(false)
+        isCameraPortOpen(network, endpoint, 2500L)
 
     /**
      * 机器可读原因 → 用户可读文案（STA 场景的失败分类，P1 分级）。
