@@ -411,6 +411,38 @@
                         app:thumbTint="@color/switch_thumb_tint"
                         app:trackTint="@color/switch_track_tint" />
                 </LinearLayout>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/divider_height"
+                    android:layout_marginStart="18dp"
+                    android:background="@color/divider" />
+
+                <!-- v2.2 PRD §7.3 / AC-7：环境预检 + 连接漏斗，可复制给开发者定位 -->
+                <LinearLayout
+                    android:id="@+id/rowConnDiag"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="18dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="连接诊断"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+
+                    <TextView
+                        android:id="@+id/tvConnDiagValue"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="环境检查 · 最近连接记录"
+                        android:textColor="@color/text_tertiary"
+                        android:textSize="13sp" />
+                </LinearLayout>
             </LinearLayout>
 
             <!-- 通用设置组 -->

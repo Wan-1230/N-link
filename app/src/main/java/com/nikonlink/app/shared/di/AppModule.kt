@@ -91,7 +91,9 @@ object AppModule {
         connector: WifiDirectConnector,
         eventLogger: AppEventLogger,
         apGatewayResolver: com.nikonlink.app.device.wifi_ap.ApGatewayResolver,
-        connFlags: com.nikonlink.app.device.connect.ConnFlags
+        connFlags: com.nikonlink.app.device.connect.ConnFlags,
+        funnel: com.nikonlink.app.device.connect.ConnFunnel,
+        preflight: com.nikonlink.app.device.connect.PreflightGate
     ): ConnectionManager = ConnectionManager(
         context,
         bleManager,
@@ -105,7 +107,9 @@ object AppModule {
         connector,
         eventLogger,
         apGatewayResolver,
-        connFlags
+        connFlags,
+        funnel,
+        preflight
     )
 
     @Provides

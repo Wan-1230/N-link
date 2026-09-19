@@ -57,7 +57,9 @@ class ConnectionManager @Inject constructor(
     private val connector: WifiDirectConnector,
     private val eventLogger: AppEventLogger,
     private val apGatewayResolver: com.nikonlink.app.device.wifi_ap.ApGatewayResolver,
-    private val connFlags: ConnFlags
+    private val connFlags: ConnFlags,
+    private val funnel: ConnFunnel,
+    private val preflight: PreflightGate
 ) {
     companion object {
         private const val TAG = "ConnectionMgr"
@@ -133,6 +135,14 @@ class ConnectionManager @Inject constructor(
         ptpSession.start(scope)
         usbPtpManager.start(scope)
         transferManager.start(scope)
+        // v2.2（G6）：重试预算 —— 超过上限就停手，避免把相机热点喂进系统黑名单
+        stateMachine.budgetEnabled = connFlags.isEnabled(ConnFlags.ATTEMPT_BUDGET)
+        stateMachine.onBudgetExhausted = { budget ->
+            funnel.fail(
+                ConnFunnel.Reason.BUDGET_EXHAUSTED,
+                "budget=$budget channel=${funnel.currentChannel() ?: "unknown"}"
+            )
+        }
         stateMachine.start(scope)
         connector.start(scope)
 
@@ -221,6 +231,26 @@ class ConnectionManager @Inject constructor(
             return
         }
 
+        // v2.2（G11/G12）：先预检再连接 —— 权限/位置开关/OTG 这类硬阻断不该靠重试去碰运气
+        val mode = if (endpoint.host == DEFAULT_FALLBACK_HOST) "AP?" else "host"
+        funnel.begin("WIFI", mode)
+        // 已经连在相机热点上时跳过硬阻断：这条路径不需要扫描权限，WLAN 也必然是开的，
+        // 拿权限项把用户当前能用的连接拦掉是倒退。
+        if (connFlags.isEnabled(ConnFlags.PREFLIGHT) && !apGatewayResolver.isOnCameraAp()) {
+            val blocker = preflight.firstBlocking(PreflightGate.CHANNEL_WIFI)
+            if (blocker != null) {
+                funnel.stage(ConnFunnel.Stage.PREFLIGHT, blocker.reason, blocker.label)
+                funnel.fail(blocker.reason, blocker.label)
+                stateMachine.dispatch(
+                    ConnectionEvent.ErrorOccurred(
+                        "${blocker.label}\n${blocker.reason.hint ?: "请检查系统设置后重试"}",
+                        recoverable = true
+                    )
+                )
+                return
+            }
+        }
+
         // v2.2（PRD §5.1 T-A2/T-A3）：AP 模式下相机自任网关，手机已连相机热点时
         // 「网关就是相机」——先学地址再发起配对，用户/历史给的地址（尤其是默认
         // 192.168.1.1）只在学不出来时作为兜底。学不到（如 STA 场景网关是路由器）
@@ -288,6 +318,7 @@ class ConnectionManager @Inject constructor(
                 }
             },
             onSuccess = {
+                funnel.stage(ConnFunnel.Stage.READY, detail = endpoint.display)
                 eventLogger.event("pair_ok", "host" to endpoint.host, "port" to endpoint.port)
                 _connectionHint.value = ConnectionHint(
                     "配对完成。OK确定",
@@ -307,6 +338,7 @@ class ConnectionManager @Inject constructor(
                 }
             },
             onFail = { reason ->
+                funnel.fail(mapConnectorReason(reason), reason)
                 _connectionHint.value = null
                 eventLogger.event(
                     "pair_fail",
@@ -695,8 +727,44 @@ class ConnectionManager @Inject constructor(
         scope?.launch {
             usbPtpManager.usbState.collect { state ->
                 Timber.tag(TAG).d("USB state changed: $state")
+                // v2.2（G12）：USB 也纳入同一条漏斗，别再各说各话
+                if (state == UsbConnectionState.CONNECTING && !funnel.hasOngoing("USB")) {
+                    funnel.begin("USB")
+                    funnel.stage(ConnFunnel.Stage.PREFLIGHT)
+                } else if (state == UsbConnectionState.CONNECTED && funnel.hasOngoing("USB")) {
+                    funnel.stage(ConnFunnel.Stage.READY)
+                }
+                if (state == UsbConnectionState.ERROR && funnel.hasOngoing("USB")) {
+                    funnel.fail(
+                        funnelReasonForUsbError(),
+                        usbPtpManager.usbErrorMessage.value ?: "usb_error"
+                    )
+                }
             }
         }
+    }
+
+    /** 把 USB 的分类文案映射回统一原因码。 */
+    private fun funnelReasonForUsbError(): ConnFunnel.Reason {
+        val msg = usbPtpManager.usbErrorMessage.value.orEmpty()
+        return when {
+            msg.contains("OTG") -> ConnFunnel.Reason.OTG_DISABLED
+            msg.contains("权限") -> ConnFunnel.Reason.USB_PERMISSION_DENIED
+            msg.contains("占用") || msg.contains("接口") -> ConnFunnel.Reason.CLAIM_FAILED
+            msg.contains("模式") -> ConnFunnel.Reason.NO_USB_INTERFACE
+            msg.contains("超时") -> ConnFunnel.Reason.SESSION_DROP
+            else -> ConnFunnel.Reason.UNKNOWN
+        }
+    }
+
+    /** 连接类失败码 → 统一原因码（不新增语义，只是收口）。 */
+    private fun mapConnectorReason(reason: String): ConnFunnel.Reason = when {
+        reason.contains("no_wifi_network") -> ConnFunnel.Reason.NO_WIFI_NETWORK
+        reason.contains("camera_unreachable") -> ConnFunnel.Reason.TCP_TIMEOUT
+        reason.contains("ptp_handshake") -> ConnFunnel.Reason.PTP_HANDSHAKE_FAILED
+        reason.contains("invalid_endpoint") -> ConnFunnel.Reason.NOT_ON_CAMERA_AP
+        reason.contains("not_started") -> ConnFunnel.Reason.AP_NOT_FOUND
+        else -> ConnFunnel.Reason.UNKNOWN
     }
 
     private fun recoverWifiSession(network: android.net.Network? = null) {
