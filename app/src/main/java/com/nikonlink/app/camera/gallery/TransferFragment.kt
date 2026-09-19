@@ -20,7 +20,11 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.SimpleItemAnimator
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.nikonlink.app.shared.ui.glass.GlassCoordinator
+import com.nikonlink.app.shared.ui.glass.GlassTokens
+import com.nikonlink.app.shared.ui.glass.NlGlass
+import com.nikonlink.app.shared.ui.glass.applyGlass
+import com.nikonlink.app.shared.ui.glass.renderChipBackground
 import com.nikonlink.app.R
 import com.nikonlink.app.databinding.FragmentTransferBinding
 import com.nikonlink.app.shared.ui.pressEffect
@@ -54,6 +58,9 @@ class TransferFragment : Fragment() {
     /** 模块 4.4：长按滑动多选控制器（未激活时事件完全透传） */
     private var dragSelect: DragSelectController? = null
 
+    /** 悬浮操作坞的背景纹理源（= 照片网格）。fling 期间要暂停采集，见 setupGrid 的滚动监听 */
+    private var glassBackdrop: GlassCoordinator? = null
+
     /** 模块 4.3：用户主动刷新后，数据合并完成时强制回列表顶部 */
     private var pendingScrollToTop = false
 
@@ -80,6 +87,11 @@ class TransferFragment : Fragment() {
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        // 多选悬浮操作坞：真玻璃，backdrop = 身后的照片网格。
+        // 这是本 App 里"背后有可透之物"最典型的一处（PRD §5.1），
+        // 所以它拿实时模糊；设备页那种纯白底上的卡片刻意不给。
+        glassBackdrop = GlassCoordinator.attach(binding.gridPhotos)
+        binding.bottomBar.applyGlass(glassBackdrop) { GlassTokens.floatingBar(it.context) }
         super.onViewCreated(view, savedInstanceState)
         setupGrid()
         setupChips()
@@ -157,6 +169,8 @@ class TransferFragment : Fragment() {
             override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
                 val fast = newState != RecyclerView.SCROLL_STATE_IDLE
                 adapter.setFastScrolling(fast)
+                // PRD §8.2 第 4 条 / AC-6：fling 期间零采集，停住后补采一次
+                glassBackdrop?.setScrollSuppressing(fast)
                 if (!fast) requestVisibleThumbnails()
             }
         })
@@ -266,7 +280,7 @@ class TransferFragment : Fragment() {
     private fun renderChips(current: PhotoFilter) {
         chipViews.forEach { (filter, chip) ->
             val selected = filter == current
-            chip.setBackgroundResource(if (selected) R.drawable.bg_chip_selected else R.drawable.bg_chip)
+            chip.renderChipBackground(selected)
             chip.setTextColor(
                 ContextCompat.getColor(
                     requireContext(),
@@ -282,7 +296,7 @@ class TransferFragment : Fragment() {
         val chip = chipNotDownloaded ?: return
         chip.visibility =
             if (viewModel.activeAlbum.value == AlbumSource.CAMERA) View.VISIBLE else View.GONE
-        chip.setBackgroundResource(if (enabled) R.drawable.bg_chip_selected else R.drawable.bg_chip)
+        chip.renderChipBackground(enabled)
         chip.setTextColor(
             ContextCompat.getColor(
                 requireContext(),
@@ -523,7 +537,7 @@ class TransferFragment : Fragment() {
             if (viewModel.activeAlbum.value == AlbumSource.MARKED &&
                 viewModel.selectedHandles.value.size > LARGE_SELECTION_WARNING
             ) {
-                MaterialAlertDialogBuilder(requireContext())
+                NlGlass.dialog(requireContext())
                     .setTitle("批量下载")
                     .setMessage(
                         "已选 ${viewModel.selectedHandles.value.size} 张，" +
@@ -541,7 +555,7 @@ class TransferFragment : Fragment() {
         binding.btnDelete.setOnClickListener {
             val count = viewModel.selectedHandles.value.size
             val isLocal = viewModel.activeAlbum.value == AlbumSource.LOCAL
-            MaterialAlertDialogBuilder(requireContext())
+            NlGlass.dialog(requireContext())
                 .setTitle("删除")
                 .setMessage(
                     if (isLocal) "确定要删除手机中的 $count 个本地文件吗？此操作不可恢复。"
@@ -832,13 +846,17 @@ class TransferFragment : Fragment() {
             launch {
                 // 渐进式缩略图：高清替换小图时 handle 集合不变，Set 相等不会触发上面的流，
                 // 因此单独监听升级计数，只重绘**可见范围**（十几项），避免全量 DiffUtil。
+                // 必须带 PAYLOAD_THUMB：不带 payload 会走 onBindViewHolder 全量重绑，
+                // 而全量重绑又对「内存里已被 LruCache 驱逐」的格子补发缩略图请求 →
+                // 一次高清替换引发一整批 PTP 请求，与正在跑的原图下载抢同一条串行命令通道
+                // （网格批量下载单张变慢的自激回路就在这里闭合）。
                 viewModel.thumbUpgradeTick.collect { tick ->
                     if (tick == 0L) return@collect
                     val lm = binding.gridPhotos.layoutManager as? GridLayoutManager ?: return@collect
                     val first = lm.findFirstVisibleItemPosition()
                     val last = lm.findLastVisibleItemPosition()
                     if (first >= 0 && last >= first) {
-                        adapter.notifyItemRangeChanged(first, last - first + 1)
+                        adapter.notifyThumbRangeChanged(first, last - first + 1)
                     }
                 }
             }
@@ -875,7 +893,7 @@ class TransferFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.clearMarksPrompt.collect { count ->
                 if (count <= 0) return@collect
-                MaterialAlertDialogBuilder(requireContext())
+                NlGlass.dialog(requireContext())
                     .setTitle("批量下载完成")
                     .setMessage("已下载 $count 张标记照片，是否清除这些标记？")
                     .setPositiveButton("清除") { _, _ -> viewModel.clearDownloadedMarks() }

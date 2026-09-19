@@ -607,9 +607,9 @@ class PtpSessionManager @Inject constructor(
      * 获取缩略图
      * PRD 2.1: 支持缩略图预览
      */
-    suspend fun getThumbnail(handle: Int): ByteArray? {
+    suspend fun getThumbnail(handle: Int): ByteArray? = withThumbLane {
         val result = sendCommandWithData(PtpConstants.OP_GET_THUMBNAIL, listOf(handle))
-        return (result as? PtpDataResult.Success)?.data
+        (result as? PtpDataResult.Success)?.data
     }
 
     /**
@@ -618,10 +618,27 @@ class PtpSessionManager @Inject constructor(
      * 0x90C4 返回机身生成的更大预览图。部分机型不支持该操作（返回错误响应），
      * 调用方必须能接受 null 并回退 [getThumbnail]。
      */
-    suspend fun getLargeThumbnail(handle: Int): ByteArray? {
+    suspend fun getLargeThumbnail(handle: Int): ByteArray? = withThumbLane {
         val result = sendCommandWithData(PtpConstants.OP_NIKON_GET_LARGE_THUMB, listOf(handle))
-        return (result as? PtpDataResult.Success)?.data
+        (result as? PtpDataResult.Success)?.data
     }
+
+    /**
+     * 缩略图专用道（PRD v2.2 G9）。
+     *
+     * 命令通道全局串行且 [Mutex] 是先到先服务：相册网格能同时排 3 张小图 + 2 张高清
+     * 缩略图，于是原图下载的下一次分块会排在**一整队**几百 KB 的缩略图后面 —— 批量
+     * 下载时每张都被反复插队，表现就是「全屏单张下载很快、网格里批量下载明显变慢」。
+     * 把缩略图收敛成「同时在途一张」后，下载分块最多被一张挡住，而不是被一队。
+     */
+    private suspend fun <T> withThumbLane(block: suspend () -> T): T =
+        if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.TRANSFER_THUMB_YIELD)) {
+            thumbLane.withLock { block() }
+        } else {
+            block()
+        }
+
+    private val thumbLane = Mutex()
 
     /**
      * 获取完整对象（照片下载）

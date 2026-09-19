@@ -756,6 +756,55 @@ WMA 写凭据（若 V-3 通过）或 USB 侧完成注册（回退方案）；双
 
 ---
 
+## 十六、v21 验证包修复：AP 前两次连不上 + 下载变慢/切页中断
+
+> 数据点来自用户导出的真机日志 `n-link_logs_1789823584116.txt`（Z50II + vivo，2026-09-19 21:08–21:13）。
+
+### 16.1 AP「前两次无法连接、第三次才成功」——**是软件问题**
+
+日志时间线（同一次点击序列）：
+
+```
+21:10:34.138  ap_gateway host=192.168.1.1 stable=true probe=OK      ← 我们的探测握手成功，机身唯一的 PTP/IP 客户端槽被自己占住
+21:10:34.146  sta_try gen=2 mode=pair host=192.168.1.1              ← 8ms 后发起真实配对
+21:10:37.372  sta_preconnect gen=2 attempt=1 reachable=false        ← 相机已经不接受第二个客户端
+21:10:40.058  conn_result stage=INTENT ms=7871 reason=ok            ← 第 1 次失败（漏斗把「被打断」记成了 ok）
+21:10:41.973  ap_gateway host=fe80::1 stable=true probe=rejected    ← 第 2 轮学到 IPv6 链路本地网关，把可用的 IPv4 网关挤掉
+21:11:00.275  sta_fail gen=3 reason=camera_unreachable attempt=3    ← 第 2 次失败
+21:11:15.029  sta_preconnect gen=5 attempt=1 reachable=true         ← 距首次探测约 35s，机身自己收掉半开会话
+21:11:15.043  connect phase=init ok=true session=3                  ← 第 3 次点击成功，13ms 建链
+```
+
+判定为软件的三条依据：① `probe=OK` 说明相机热点与 15740 监听**在第一次点击时就完全正常**，不是硬件/网络没起来；② 失败期间连裸 TCP 都被拒（`probe=rejected`），是「槽被占满」而非「地址错」的特征；③ 同一地址、同一网络、用户没有做任何其它操作，35s 后一次成功——与机身回收半开会话的时间尺度吻合。
+
+| 根因 | 修改点 |
+|---|---|
+| **自抢会话槽**：`ApGatewayResolver.resolve()` 与 `WifiDirectConnector` 的连接前探活、失败后归类都用 `probeDetailed`（发 `InitCommand`），而代码里 `tcpConnectOnly` 的注释早就写明「尼康机身同时只允许一个 PTP/IP 客户端，握手会挤占配对槽」。探测成功后 8ms 就去连，等于自己把门关上 | AP 路径可达性判据全部降到 **TCP 层**（`PtpIpProbe.tcpConnectOnly`），握手只由真实连接发一次；新增 `PROBE_SETTLE_MS=400` 让机身先回收探测用的 TCP；`resolve()` 出厂地址兜底循环里的第二次握手探测一并去掉 |
+| **IPv6 网关误学**：`isCameraGateway` 只排除 `169.254.`/`.0`/`.255`/`127.`，`fe80::1` 全部通过 → 两次采样把可用 IPv4 换成用不了的 link-local IPv6 | `isCameraGateway` 改为**只收点分十进制 IPv4**；新增 `ApGatewayResolverTest` 回归（含 `fe80::1`/`::1`/`fd00::1`/畸形 IPv4） |
+| **点击即另起一轮**：每次点连接都会 `generation++` 并 cancel 掉仍在指数退避中的旧循环、把退避从 1s 清零，30s 内 4 轮互相打断 | `connectToWifiCamera` 对**同一地址且循环仍在跑**的请求不再另起一轮，只提示「相机正在重试连接中」（自动重连路径若被跳过会死在 CONNECTING，故不采用冷却跳过方案） |
+| 稳定网关 + 已在相机热点上时，还要拿 4 个出厂地址各试一遍（每次都是对同一台相机的新连接） | 新增 `source=gateway-unverified`：机身没起监听时交给真实连接自己的重试去等，不再叠加试探 |
+| 漏斗把「被打断」写成 `reason=ok`，日志误导排查 | 新增原因码 `superseded`；`finish()` 收口时给出诚实结论 |
+
+开关：`conn22_probe_tcp_only`（总闸同 v2.2）。关掉后 `resolve`/探活回到「探测即握手」，可二分定位。
+
+**验收**：Z50II + vivo 上连点三次连接 → 期望第一次点击就成功；导出日志中不再出现 `probe=rejected`、`host=fe80::`、`sta_preconnect reachable=false` 与同毫秒的 `conn_attempt` 串；`connect phase=init ok=true` 应落在第一个 `conn_attempt` 之内。
+
+### 16.2 下载：批量单张变慢 + 切页中断
+
+两个现象**同源于一条设计缺口**：PTP 命令通道全局串行（`PtpSessionManager.commandMutex`），而缩略图与原图下载是同一条队伍里的平等请求；同时全屏页下载又绕过应用级队列、挂在页面生命周期上。
+
+| 现象 | 根因 | 修改点 |
+|---|---|---|
+| 网格里批量下载单张明显变慢，全屏页单张却快 | ① 网格可见项的 0x100A/0x90C4 请求排在下一次 4MB 分块前面（并发窗口 3+2，一次插队一整队）；② **自激回路**：每下一张 → 本地重生成缩略图 → `thumbnailUpgrades` → collector 反过来 `requestThumbnail` → 向相机**重取一次 0x90C4** → bump 升级计数 → 网格**无 payload 全量重绑** → 被 LruCache 驱逐的格子再补发一批请求；③ 全尺寸 JPEG 解码+重编码卡在队列关键路径上 | `PtpSessionManager` 新增缩略图专用道 `thumbLane`（缩略图收敛为同时在途一张）；collector 改为只重绘、绝不再走 PTP，并记入 `localHdThumbs` 使已本地生成高清图的格子永不再要 0x90C4；`thumbUpgradeTick` 改走 `notifyThumbRangeChanged`（带 payload）；`regenerateThumbnailFromLocal` 挪到队列之外的后台任务；`isBulkTransferRunning()` 期间新缩略图请求延后入 `deferredThumbs`，传输停了整批补发（缓存命中不受影响，不会白格） |
+| 全屏页点下载到一半切回缩略图 → 下载停住，必须重新进入这张再点一次才保存 | `PreviewActivity.download()` 在 `lifecycleScope` 里直接调 `downloadPhoto()`：退出页面即取消协程、传输就地被杀，半截临时文件无人续（v2.0.2 PRD §一 方案 A 一直未落地） | 预览页与 `TransferViewModel.downloadPhoto` 统一改走 `transferManager.enqueue()`（挂在 ConnectionService 的应用级 scope），按钮态/进度由既有的 `observeDownloadProgress(handle)` 单一数据源驱动；`Completed` 回填按 handle 定位页位，避免翻到别页时写错格子 |
+| （顺带）压缩画质下载把 `_compressed.jpg` 永久留在缓存目录 | `prepareFileToSave` 产出的副本没人删 | 落进相册后立即回收 |
+
+开关：`conn22_thumb_yield`（关掉即回到缩略图与下载抢通道的旧行为）。
+
+**验收**：① 选 10 张批量下载，对比完成通知里的 MB/s 与 `download_start`/`download_done` 时间戳，单张耗时应与全屏页单张同量级（≤15% 差）；② 全屏页点下载后立刻退回网格、再按 Home 退后台，回来后该张应自行完成（网格角标 + 系统相册可见），无需再点；③ 批量结束后原本转圈的格子应补齐缩略图（验证 deferred 排空）；④ 下载过程中网格滚动不出现永久白格。
+
+---
+
 ## 附录 A：证据文件索引
 
 | 文件 | 内容 |
