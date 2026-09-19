@@ -21,7 +21,9 @@ import androidx.core.view.doOnLayout
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.nikonlink.app.shared.ui.glass.GlassTokens
+import com.nikonlink.app.shared.ui.glass.NlGlass
+import com.nikonlink.app.shared.ui.glass.renderChipBackground
 import com.nikonlink.app.MainActivity
 import com.nikonlink.app.R
 import com.nikonlink.app.device.model.ConnectionState
@@ -350,7 +352,7 @@ class DashboardFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.connectionHint.collect { hint ->
                 if (hint != null) {
-                    val builder = MaterialAlertDialogBuilder(requireContext())
+                    val builder = NlGlass.dialog(requireContext())
                         .setTitle(
                             if (hint.kind == ConnectionHintKind.PAIRING_COMPLETE) "配对完成"
                             else "连接向导"
@@ -566,7 +568,7 @@ class DashboardFragment : Fragment() {
         // STA 主机注册（ZDROP 式）：先引导用户在相机端进入「连接至 PC」向导，再执行注册
         binding.btnStaHostRegister.pressEffect()
         binding.btnStaHostRegister.setOnClickListener {
-            MaterialAlertDialogBuilder(requireContext())
+            NlGlass.dialog(requireContext())
                 .setTitle("STA 主机注册")
                 .setMessage(
                     "注册只需做一次，完成后相机才会允许 N-Link 以 STA 方式连接。\n\n" +
@@ -666,15 +668,11 @@ class DashboardFragment : Fragment() {
         fun render() {
             val hotspot = viewModel.settings.staSubMode ==
                 com.nikonlink.app.shared.common.AppSettings.STA_MODE_PHONE_HOTSPOT
-            chipSame.setBackgroundResource(
-                if (!hotspot) R.drawable.bg_chip_selected else R.drawable.bg_chip
-            )
+            chipSame.renderChipBackground(!hotspot)
             chipSame.setTextColor(
                 ContextCompat.getColor(requireContext(), if (!hotspot) R.color.on_primary else R.color.text_primary)
             )
-            chipHotspot.setBackgroundResource(
-                if (hotspot) R.drawable.bg_chip_selected else R.drawable.bg_chip
-            )
+            chipHotspot.renderChipBackground(hotspot)
             chipHotspot.setTextColor(
                 ContextCompat.getColor(requireContext(), if (hotspot) R.color.on_primary else R.color.text_primary)
             )
@@ -978,7 +976,7 @@ class DashboardFragment : Fragment() {
             setPadding(56, 28, 56, 8)
             addView(input)
         }
-        MaterialAlertDialogBuilder(requireContext())
+        NlGlass.dialog(requireContext())
             .setTitle("手动连接 WiFi 相机")
             .setMessage(
                 if (mode == ConnectMode.WIFI_AP) {

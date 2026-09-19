@@ -6,7 +6,7 @@ import android.net.Uri
 import android.view.View
 import android.widget.Button
 import android.widget.TextView
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.nikonlink.app.shared.ui.glass.NlGlass
 import com.nikonlink.app.R
 import com.nikonlink.app.shared.common.AppEventLogger
 import timber.log.Timber
@@ -49,7 +49,7 @@ object UpdatePrompt {
         view.findViewById<TextView>(R.id.tvUpdateNotes).text = result.notes.ifBlank { "暂无更新说明。" }
 
         showing = true
-        val dialog = MaterialAlertDialogBuilder(context)
+        val dialog = NlGlass.dialog(context)
             .setTitle("发现新版本")
             .setView(view)
             .create()
@@ -121,7 +121,7 @@ object UpdatePrompt {
         }.isSuccess
         if (opened) return
 
-        MaterialAlertDialogBuilder(context)
+        NlGlass.dialog(context)
             .setTitle("无法打开链接")
             .setMessage("请手动复制以下地址到浏览器打开：\n\n$url")
             .setPositiveButton("确定", null)

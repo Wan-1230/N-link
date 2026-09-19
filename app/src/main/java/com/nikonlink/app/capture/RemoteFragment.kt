@@ -19,7 +19,11 @@ import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomsheet.BottomSheetDialog
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.nikonlink.app.shared.ui.glass.GlassRegistry
+import com.nikonlink.app.shared.ui.glass.GlassTokens
+import com.nikonlink.app.shared.ui.glass.NlGlass
+import com.nikonlink.app.shared.ui.glass.UiFlags
+import com.nikonlink.app.shared.ui.glass.applyGlass
 import com.nikonlink.app.R
 import com.nikonlink.app.databinding.DialogParamPickerBinding
 import com.nikonlink.app.databinding.FragmentRemoteBinding
@@ -88,6 +92,7 @@ class RemoteFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        styleModeSlot()
         setupLiveViewArea()
         setupParamRow()
         setupShutter()
@@ -411,7 +416,7 @@ class RemoteFragment : Fragment() {
         val current = paramsViewModel.exposureProgram.value
         val checkedIndex = modes.indexOfFirst { it.first == current.rawValue }
         val labels = modes.map { it.second }.toTypedArray()
-        MaterialAlertDialogBuilder(requireContext())
+        NlGlass.dialog(requireContext())
             .setTitle("拍摄模式（远程切换）")
             .setMessage("当前: ${current.currentValue.ifBlank { "--" }}")
             .setSingleChoiceItems(labels, checkedIndex) { dialog, which ->
@@ -539,7 +544,7 @@ class RemoteFragment : Fragment() {
         onConfirm: (Int) -> Unit
     ) {
         if (displayValues.isEmpty() || displayValues.size != rawValues.size) return
-        val dialog = BottomSheetDialog(requireContext())
+        val dialog = NlGlass.sheet(requireContext())
         val pickerBinding = DialogParamPickerBinding.inflate(layoutInflater)
         dialog.setContentView(pickerBinding.root)
 
@@ -641,7 +646,7 @@ class RemoteFragment : Fragment() {
         binding.btnTimer.pressEffect()
         binding.btnTimer.setOnClickListener {
             val options = arrayOf("关闭定时", "2 秒", "5 秒", "10 秒")
-            MaterialAlertDialogBuilder(requireContext())
+            NlGlass.dialog(requireContext())
                 .setTitle("定时拍摄")
                 .setItems(options) { _, which ->
                     when (which) {
@@ -686,7 +691,7 @@ class RemoteFragment : Fragment() {
                 "${if (it >= 60) "${it / 60} 分" else "$it 秒"}（自动收门）" to it
             } +
             listOf("切换为「间隔拍摄」" to -1)
-        MaterialAlertDialogBuilder(requireContext())
+        NlGlass.dialog(requireContext())
             .setTitle("B 门 / 长曝光（上次 ${settings.bulbDurationSeconds} 秒）")
             .setItems(presets.map { it.first }.toTypedArray()) { _, which ->
                 val seconds = presets[which].second
@@ -739,7 +744,7 @@ class RemoteFragment : Fragment() {
             "停止间隔拍摄",
             "切换为「B 门长曝光」"
         )
-        MaterialAlertDialogBuilder(requireContext())
+        NlGlass.dialog(requireContext())
             .setTitle("间隔拍摄")
             .setItems(options) { _, which ->
                 when (which) {
@@ -796,6 +801,22 @@ class RemoteFragment : Fragment() {
                         .start()
                 }
             }.start()
+    }
+
+    /**
+     * 照片/视频切换器的「槽」玻璃化（PRD §4 分段控件：槽=L2玻璃，滑块=实体）。
+     * 两个按钮本体保持实体填充 / 透明，所以选中态依旧一眼可辨（§3.3）。
+     * 注：这是把三处重复的分段控件收成一个组件（M2）之前的过渡做法。
+     */
+    private fun styleModeSlot() {
+        val slot = binding.modeToggleSlot
+        if (UiFlags.glassEnabled(requireContext())) {
+            slot.applyGlass { GlassTokens.chip(it.context) }
+        } else {
+            GlassRegistry.unregister(slot)
+            slot.elevation = 0f
+            slot.setBackgroundResource(R.drawable.bg_chip)
+        }
     }
 
     private fun setVideoMode(video: Boolean) {

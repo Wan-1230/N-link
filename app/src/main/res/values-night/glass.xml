@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  液态玻璃材质 token · 夜间（PRD v2.3 §3.3/§3.4）
+  必须与 values/glass.xml 逐项成对 —— 夜间阴影几乎不可见，
+  层级职责转交给 rim 高光（rim 提亮、阴影提黑）。
+-->
+<resources>
+    <!-- 染色 tint（夜间反相） -->
+    <color name="glass_tint_flat">#F2000000</color>
+    <color name="glass_tint_content">#BF000000</color>
+    <color name="glass_tint_moving">#E6000000</color>
+    <color name="glass_tint_dark">#BFFFFFFF</color>
+    <color name="glass_tint_scrim">#99000000</color>
+    <color name="glass_tint_press">#14FFFFFF</color>
+
+    <!-- 四条边信息：夜间整体提亮 -->
+    <color name="glass_stroke_outer">#24FFFFFF</color>
+    <color name="glass_rim_top">#40FFFFFF</color>
+    <color name="glass_rim_bottom">#33FFFFFF</color>
+    <color name="glass_edge_lens">#33FFFFFF</color>
+
+    <!-- 阴影：夜间压到几乎不可见 -->
+    <color name="glass_shadow_key">#0A000000</color>
+    <color name="glass_shadow_ambient">#0A000000</color>
+    <color name="glass_shadow_floating">#14FFFFFF</color>
+
+    <!-- 弹窗面板底 -->
+    <color name="glass_dialog_surface">#F01C1C1C</color>
+</resources>
