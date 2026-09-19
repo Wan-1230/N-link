@@ -96,10 +96,15 @@ class GlassCoordinator private constructor(val source: View) {
          *
          * 玻璃面每次绘制都可能请求重采，而重采完成又会触发一次重绘 —— 所以这个值就是
          * 纹理的刷新上限。150ms（≈6fps）对"模糊背景"已经看不出生硬，同时把 CPU
-         * 压在约 1% 占空比内。PRD §8.2 设想的"只在滚动停住时采集"是更省的做法，
-         * 需要给每个列表挂 OnScrollListener，留到下一期（AC-9 功耗项）。
+         * 压在约 1% 占空比内。
          */
         private const val MIN_REFRESH_MS = 150L
+
+        /**
+         * 滚动期的采集间隔。比静止期密，是因为这时候背景真的在动：
+         * 14fps 足以让"内容从玻璃底下划过"连续，而一次采集 ≈1~2ms、占空比 ≈3%。
+         */
+        private const val SCROLL_REFRESH_MS = 70L
 
         fun attach(source: View): GlassCoordinator =
             (source.getTag(R.id.glass_coordinator) as? GlassCoordinator)
@@ -155,18 +160,34 @@ class GlassCoordinator private constructor(val source: View) {
      */
     var minRefreshMs: Long = MIN_REFRESH_MS
 
-    /**
-     * 滚动中暂停采集（PRD §8.2 第 4 条 / AC-6）。
-     * fling 期间人眼看不出背景糊度的变化，停采集换来整条列表的帧预算。
-     */
-    private var suppressed = false
+    /** 滚动中：采集降频（不冻采）的开关，见 [setScrollSuppressing] */
+    private var degraded = false
 
+    /**
+     * 滚动期间**降频而不冻采**（PRD §8.2 第 4 条的实现修正）。
+     *
+     * 原本按 AC-6 的做法是 fling 期间完全停采，省下整条列表的帧预算。但 dock 悬浮玻璃
+     * 要的就是「内容从玻璃底下划过」这一眼：停采会让背景在整段滚动里定格、
+     * 手指停住时突然跳一帧，反而更像贴纸而不像玻璃。
+     * 一张 1/8 纹理（长边 ≤320px ≈ 3.7 万像素）连采带糊约 1~2ms，
+     * 于是滚动期间把间隔放宽到 [SCROLL_REFRESH_MS]（≈14fps）—— 观感连续，预算仍可控。
+     */
     fun setScrollSuppressing(suppress: Boolean) {
-        if (suppressed == suppress) return
-        suppressed = suppress
-        // 停住的那一刻补采一次，否则背景会停在滚动开始前的样子
+        if (degraded == suppress) return
+        degraded = suppress
+        // 停住的那一刻补采一次，把背景对齐到最终位置
         if (!suppress) invalidate()
     }
+
+    /** 按当前是否滚动中的节流间隔，请求一次重采（滚动回调与玻璃面绘制都走这里） */
+    fun requestRefresh() {
+        if (scheduled) return
+        if (SystemClock.uptimeMillis() - lastRefreshAt < refreshInterval) return
+        schedule()
+    }
+
+    private val refreshInterval: Long
+        get() = if (degraded) minOf(SCROLL_REFRESH_MS, minRefreshMs) else minRefreshMs
 
     val textureReady: Boolean get() = tex != null && texW > 0 && texH > 0
 
@@ -195,13 +216,6 @@ class GlassCoordinator private constructor(val source: View) {
         }
     }
 
-    /** 玻璃面绘制时请求重采。节流集中在这里，所以同屏多面玻璃只触发一次采集 */
-    fun requestRefreshFromDraw() {
-        if (scheduled || suppressed) return
-        if (SystemClock.uptimeMillis() - lastRefreshAt < minRefreshMs) return
-        schedule()
-    }
-
     private fun schedule() {
         if (scheduled) return
         scheduled = true
@@ -213,7 +227,6 @@ class GlassCoordinator private constructor(val source: View) {
 
     /** 采集：把 source 子树按 1/8 画进小位图 → CPU 模糊 → 回写 */
     fun refreshNow() {
-        if (suppressed) return
         lastRefreshAt = SystemClock.uptimeMillis()
         val sw = source.width
         val sh = source.height
