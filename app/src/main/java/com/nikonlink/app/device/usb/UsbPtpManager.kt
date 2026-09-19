@@ -53,8 +53,23 @@ class UsbPtpManager @Inject constructor(
         private const val DETACH_GRACE_MS = 3000L
         private const val GRACE_POLL_MS = 400L
 
-        /** 监看帧专用短超时：一帧卡顿只损失 2.5s，而非拖满 5s 后连续失败停监看 */
+        /** 监看帧专用短超时。v2.2 起作为**下限**，实际上限见 [LV_FRAME_TIMEOUT_MAX_MS] */
         private const val LV_FRAME_TIMEOUT_MS = 2500
+
+        /**
+         * 自适应帧超时上限：弱光慢快门时机身出帧间隔等于曝光时间，
+         * 固定 2.5s 会把正常出帧算成错误并累计到「自停监看」（掉线体感的来源）。
+         */
+        private const val LV_FRAME_TIMEOUT_MAX_MS = 8000
+
+        /** 监看失败时的链路探活超时（要短，不能拖慢帧循环） */
+        private const val LINK_PROBE_TIMEOUT_MS = 1200
+
+        /** 保活连败到几轮才允许拆会话（旧值 2 会误杀忙碌中的相机） */
+        private const val KEEPALIVE_FAILURE_LIMIT = 3
+
+        /** 拆会话前的确认探测超时 */
+        private const val KEEPALIVE_CONFIRM_TIMEOUT_MS = 8000
 
         /** bulk IN 单次读取窗口。容器可跨多次读取到达，由事务层负责重组/流式消费 */
         private const val READ_CHUNK_SIZE = 64 * 1024
@@ -196,15 +211,15 @@ class UsbPtpManager @Inject constructor(
         Timber.tag(TAG).d("No Nikon camera found on USB bus (notify=$notifyWhenAbsent)")
         if (!notifyWhenAbsent) return
         // 用户主动连接 USB 但总线上没有相机：给出明确终态，否则 UI 会停在「正在建立 USB 通道...」
-        // v2.2（T-U2）：区分「总线全空」与「有设备但没有尼康」——前者在小米系基本是
-        // OTG 开关没开（且约 10 分钟无操作会自动关），旧文案让用户白白拔插十几次。
+        // v2.2（T-U2）：区分「总线全空」与「有设备但没有尼康」——前者在小米/vivo/OPPO
+        // 系基本是 OTG 开关没开（且约 10 分钟无操作会自动关），旧文案让用户白白拔插十几次。
+        val otgHint = if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_OTG_HINT) &&
+            deviceList.isEmpty()
+        ) com.nikonlink.app.shared.device.RomDetector.otgHint() else null
         _usbErrorMessage.value = when {
-            connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_OTG_HINT) &&
-                deviceList.isEmpty() && com.nikonlink.app.shared.device.RomDetector.isXiaomi ->
-                "未检测到 USB 相机，且 USB 总线上没有任何设备：小米/红米需先在「设置 → 更多连接 → OTG 连接」打开 OTG（约 10 分钟无操作会自动关闭），再重新插拔数据线"
+            otgHint != null -> "未检测到 USB 相机，且 USB 总线上没有任何设备。$otgHint"
 
-            connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_OTG_HINT) &&
-                deviceList.isEmpty() ->
+            deviceList.isEmpty() ->
                 "未检测到 USB 相机，且 USB 总线上没有任何设备：请确认使用的是数据线（非仅充电线）、手机已开启 OTG/外接供电，并点亮相机屏幕"
 
             else ->
@@ -899,22 +914,85 @@ class UsbPtpManager @Inject constructor(
     }
 
     /**
-     * 监看帧快速路径：短超时（卡一帧只损失 2.5s）+ 不重试（旧帧无重取价值，
-     * 重试只会加大端到端延迟；帧循环自己的连续错误计数负责断链判定）。
+     * 监看取帧失败分类。
+     *
+     * **为什么要分**：旧实现只返回 `null`，于是「相机此刻没有新帧」（弱光慢快门、AF
+     * 搜索、刚拍完在写卡 —— 机身答得很快，只是没数据）与「USB 事务失败/链路异常」
+     * 被上层当成同一件事，累计 5 次就自停监看，用户看到的就是「画面过一会儿掉一下，
+     * 点重连又能连」。分类后上层可以对前者节流、对后者才判死。
+     */
+    enum class LvFrameFailure { NONE, NO_FRAME, BUSY, TRANSACTION }
+
+    @Volatile
+    var lastFrameFailure: LvFrameFailure = LvFrameFailure.NONE
+        private set
+
+    /** 最近一次成功取帧的往返耗时，用于自适应帧超时。 */
+    @Volatile
+    var lastFrameLatencyMs: Long = 0L
+        private set
+
+    /**
+     * 自适应帧超时。固定 2.5s 在弱光下必然误判：Z 系机身在慢速快门时**两帧之间的间隔
+     * 就等于曝光时间**（1/2s 曝光 → 帧往返 >2.5s 是正常现象），旧版把它算成错误。
+     * 现在按上一次成功耗时的 2.5 倍放宽，上限 [LV_FRAME_TIMEOUT_MAX_MS]。
+     */
+    private fun adaptiveFrameTimeoutMs(): Int =
+        maxOf(LV_FRAME_TIMEOUT_MS, (lastFrameLatencyMs * 2.5f).toInt())
+            .coerceAtMost(LV_FRAME_TIMEOUT_MAX_MS)
+
+    /**
+     * 监看帧快速路径：自适应超时 + 不重试（旧帧无重取价值，重试只会加大端到端延迟；
+     * 失败判定交给上层的分类计数与就地重启）。
      */
     suspend fun getLiveViewImage(): ByteArray? {
-        val data = sendCommandWithData(
-            PtpConstants.OP_NIKON_GET_LIVE_VIEW_IMAGE,
-            timeoutMs = LV_FRAME_TIMEOUT_MS,
+        val budget = adaptiveFrameTimeoutMs()
+        val startedAt = System.currentTimeMillis()
+        val outcome = transact(
+            operationCode = PtpConstants.OP_NIKON_GET_LIVE_VIEW_IMAGE,
+            params = emptyList(),
+            timeoutMs = budget,
             allowRetry = false
         )
-        if (data == null || data.isEmpty()) {
-            eventLogger.event("lv_fail", "empty" to (data != null))
-        } else if (!lvFrameOkLogged) {
-            lvFrameOkLogged = true
-            eventLogger.event("lv_frame", "bytes" to data.size)
+        val data = outcome.data
+        if (data != null && data.isNotEmpty()) {
+            lastFrameLatencyMs = System.currentTimeMillis() - startedAt
+            lastFrameFailure = LvFrameFailure.NONE
+            if (!lvFrameOkLogged) {
+                lvFrameOkLogged = true
+                eventLogger.event("lv_frame", "bytes" to data.size, "ms" to lastFrameLatencyMs)
+            }
+            return data
         }
-        return data
+        val response = outcome.response
+        lastFrameFailure = when {
+            response == null -> LvFrameFailure.TRANSACTION
+            response.responseCode == PtpConstants.RESPONSE_DEVICE_BUSY -> LvFrameFailure.BUSY
+            response.isOk -> LvFrameFailure.NO_FRAME
+            else -> LvFrameFailure.BUSY
+        }
+        eventLogger.event(
+            "lv_fail",
+            "kind" to lastFrameFailure.name,
+            "code" to (response?.responseCode ?: -1),
+            "budget" to budget,
+            "empty" to (data != null)
+        )
+        return null
+    }
+
+    /**
+     * 轻量探活（DeviceReady，短超时、不重试）。监看连续失败时上层先用它确认链路是否
+     * 还在，避免把「相机没出帧」误判成「断线」。DeviceBusy 也算活着——相机在忙而已。
+     */
+    suspend fun probeLinkAlive(): Boolean {
+        val response = transact(
+            operationCode = PtpConstants.OP_NIKON_DEVICE_READY,
+            params = emptyList(),
+            timeoutMs = LINK_PROBE_TIMEOUT_MS,
+            allowRetry = false
+        ).response ?: return false
+        return response.isOk || response.responseCode == PtpConstants.RESPONSE_DEVICE_BUSY
     }
 
     /**
@@ -1093,9 +1171,20 @@ class UsbPtpManager @Inject constructor(
                         consecutiveFailures = 0
                     } else {
                         consecutiveFailures++
-                        if (consecutiveFailures >= 2) {
+                        if (consecutiveFailures >= KEEPALIVE_FAILURE_LIMIT) {
+                            // 判死前先做一次「清 stall + 长超时」确认。旧版失败 2 次（约 10s）
+                            // 就直接 ERROR，而 ERROR 会走 openConnection → disconnect(silent)，
+                            // 把整条 USB 会话拆掉重连 —— 监看途中的相机忙碌（写卡/AF 搜索/
+                            // 慢速快门让命令通道排队）就足以撞上这条，用户看到的就是
+                            // 「画面过一会儿掉一下」。多一次确认，代价 3s，收益是免掉误杀。
+                            if (!confirmLinkDead()) {
+                                Timber.tag(TAG).w("keepAlive 连败 %d 次，但确认探测通过，不清会话", consecutiveFailures)
+                                consecutiveFailures = 0
+                                continue
+                            }
                             _usbErrorMessage.value =
                                 "USB 链路超时断开：相机未响应保活，正在尝试自动重连…"
+                            eventLogger.event("usb_keepalive_dead", "fails" to consecutiveFailures)
                             _usbState.value = UsbConnectionState.ERROR
                             scheduleReconnect()
                             break
@@ -1104,9 +1193,10 @@ class UsbPtpManager @Inject constructor(
                 } catch (e: Exception) {
                     Timber.tag(TAG).w(e, "USB keep-alive failed")
                     consecutiveFailures++
-                    if (consecutiveFailures >= 2) {
+                    if (consecutiveFailures >= KEEPALIVE_FAILURE_LIMIT && confirmLinkDead()) {
                         _usbErrorMessage.value =
                             "USB 链路超时断开：相机未响应保活，正在尝试自动重连…"
+                        eventLogger.event("usb_keepalive_dead", "fails" to consecutiveFailures)
                         _usbState.value = UsbConnectionState.ERROR
                         scheduleReconnect()
                         break
@@ -1114,6 +1204,22 @@ class UsbPtpManager @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * 拆会话前的最后一道确认：清一次两端点 stall，再用长超时发一轮 DeviceReady。
+     * 返回 true 才算链路真的死了。
+     */
+    private suspend fun confirmLinkDead(): Boolean {
+        clearHaltBothEndpoints()
+        delay(200)
+        val response = transact(
+            operationCode = PtpConstants.OP_NIKON_DEVICE_READY,
+            params = emptyList(),
+            timeoutMs = KEEPALIVE_CONFIRM_TIMEOUT_MS,
+            allowRetry = true
+        ).response ?: return true
+        return !(response.isOk || response.responseCode == PtpConstants.RESPONSE_DEVICE_BUSY)
     }
 
     /**
