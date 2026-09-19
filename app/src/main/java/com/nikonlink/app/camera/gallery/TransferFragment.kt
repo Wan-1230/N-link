@@ -12,6 +12,7 @@ import android.view.ViewGroup
 import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
+import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.content.ContextCompat
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
@@ -105,12 +106,16 @@ class TransferFragment : Fragment(), GlassInsetAware {
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        // 多选悬浮操作坞：真玻璃，backdrop = 身后的照片网格。
+        // 多选悬浮操作坞 + 分段标签行：真玻璃，backdrop = 身后的照片网格。
         // 这是本 App 里"背后有可透之物"最典型的一处（PRD §5.1），
         // 所以它拿实时模糊；设备页那种纯白底上的卡片刻意不给。
-        glassBackdrop = GlassCoordinator.attach(binding.gridPhotos)
+        // 纹理源用 MainActivity 的内容列而不是本网格：dock 就在标签行正下方，
+        // 两面玻璃各采一张会糊出两个瞬间，接缝一眼就看出来了。
+        glassBackdrop = (activity as? MainActivity)?.dockBackdrop
         dockInsetGrid = DockInset(binding.gridPhotos)
         dockInsetTabs = DockInset(binding.albumTabRow)
+        // 标签行的高度要到首次布局才量得准；量准之后补算一次内衬，否则最后一行少让一条
+        binding.albumTabRow.post { if (_binding != null) applyDockSpace() }
         restyleGlass()
         UiFlags.observe(this) { restyleGlass() }
         super.onViewCreated(view, savedInstanceState)
@@ -188,15 +193,15 @@ class TransferFragment : Fragment(), GlassInsetAware {
         // 滚动停止后统一补请求可见项。详见 PhotoGridAdapter.fastScrolling 的说明。
         binding.gridPhotos.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
-                // dock 自动隐藏：内容向上推进（往下浏览）时收起，往回看时回弹
-                (activity as? MainActivity)?.reportContentScroll(dy)
                 topBarFx?.onScroll(rv.computeVerticalScrollOffset())
+                // dock 悬浮玻璃：滚动时持续重采背景，照片才看得见从玻璃底下划过
+                glassBackdrop?.requestRefresh()
             }
 
             override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
                 val fast = newState != RecyclerView.SCROLL_STATE_IDLE
                 adapter.setFastScrolling(fast)
-                // PRD §8.2 第 4 条 / AC-6：fling 期间零采集，停住后补采一次
+                // PRD §8.2 第 4 条 / AC-6：滚动期间采集降频（不冻采），停住后补采一次对齐位置
                 glassBackdrop?.setScrollSuppressing(fast)
                 if (!fast) requestVisibleThumbnails()
             }
@@ -1141,9 +1146,27 @@ class TransferFragment : Fragment(), GlassInsetAware {
     private fun applyDockSpace() {
         if (_binding == null) return
         val space = (activity as? MainActivity)?.dockSpace() ?: 0
-        dockInsetGrid?.applyPadding(space)
+        // 玻璃态：网格放开到屏幕底，照片要从标签行 + dock 两层玻璃底下穿过去，
+        // 所以底部内衬把标签行那一条也算进去；经典外观维持 v2.2「网格止于标签行之上」。
+        bleedGridUnderChrome(space > 0)
+        dockInsetGrid?.applyPadding(if (space > 0) space + albumChromeH else 0)
         dockInsetTabs?.applyMargin(space)
         DepthLift.apply(binding.root, requireContext())
+    }
+
+    /** 分段标签行的占位高度（首次布局前 height=0，用 8+40+10dp 兜底） */
+    private val albumChromeH: Int
+        get() = binding.albumTabRow.height.takeIf { it > 0 } ?: dp(58)
+
+    private fun bleedGridUnderChrome(bleed: Boolean) {
+        val lp = binding.swipeRefresh.layoutParams as ConstraintLayout.LayoutParams
+        val anchoredToParent = lp.bottomToBottom == ConstraintLayout.LayoutParams.PARENT_ID
+        if (anchoredToParent == bleed) return
+        lp.bottomToBottom =
+            if (bleed) ConstraintLayout.LayoutParams.PARENT_ID else ConstraintLayout.LayoutParams.UNSET
+        lp.bottomToTop =
+            if (bleed) ConstraintLayout.LayoutParams.UNSET else R.id.albumTabRow
+        binding.swipeRefresh.layoutParams = lp
     }
 
     override fun onDockSpaceChanged(dockSpace: Int) = applyDockSpace()
