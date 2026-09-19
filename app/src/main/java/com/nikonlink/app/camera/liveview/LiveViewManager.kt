@@ -39,6 +39,21 @@ class LiveViewManager @Inject constructor(
         private const val FRAME_INTERVAL_MS = 66L  // ~15fps，预留保活通道余量防断联
         private const val MAX_CONSECUTIVE_ERRORS = 5
 
+        /**
+         * USB 通道的取帧容错阈值（v2.2）。USB 单帧失败要 2.5s 起（自适应后更久），
+         * 沿用 WiFi 的 5 次阈值等于把「相机正常忙碌」判成断线。
+         */
+        private const val USB_MAX_CONSECUTIVE_ERRORS = 10
+
+        /** 连续「相机没出帧/在忙」多少次后才尝试就地重启码流（约 12s 无画面） */
+        private const val USB_STALL_LIMIT = 40
+
+        /** 静默期节流间隔：太快会加重命令通道负担 */
+        private const val USB_STALL_DELAY_MS = 300L
+
+        /** 一轮监看最多允许几次就地重启（超过就是真故障，交还用户处理） */
+        private const val USB_LV_RESTART_LIMIT = 5
+
         /** RC-9：StartLiveView 成功后等待相机完成切换（gphoto2 实测 ~250ms）再验帧 */
         private const val LV_START_SETTLE_MS = 300L
 
@@ -52,6 +67,12 @@ class LiveViewManager @Inject constructor(
     private var scope: CoroutineScope? = null
     private var frameJob: Job? = null
     private var consecutiveErrors = 0
+
+    /** 连续「相机没出帧/在忙」计数（与错误分开：前者不是链路故障） */
+    private var stallCount = 0
+
+    /** 本轮监看已用掉的就地重启次数，startLiveView 时清零 */
+    private var restartCount = 0
 
     /**
      * 进行中的异步停止作业（0x9202 EndLiveView）。
@@ -201,6 +222,8 @@ class LiveViewManager @Inject constructor(
                 if (success) {
                     _liveViewState.value = LiveViewState.RUNNING
                     consecutiveErrors = 0
+                    stallCount = 0
+                    restartCount = 0
                     // USB 监看期间暂停 DeviceReady 保活：帧流量本身即保活，
                     // 保活命令只会与帧竞争命令串行通道、拉高帧延迟
                     if (usbPtpManager.isConnected()) usbPtpManager.setKeepAlivePaused(true)
@@ -479,6 +502,7 @@ class LiveViewManager @Inject constructor(
                         }
                         _latestFrame.tryEmit(frame)
                         consecutiveErrors = 0
+                        stallCount = 0
 
                         // FPS 计算
                         frameCount++
@@ -581,18 +605,108 @@ class LiveViewManager @Inject constructor(
             delay(100)
             return
         }
+
+        // ── v2.2：USB 通道的分级容错（修「监看过一会儿掉一下」）──────────────────
+        // 旧逻辑不分失败类型，累计 5 次即自停监看并要求用户重连；而 USB 上单次
+        // 取帧要 2.5s 才失败，5 次仅约 13s —— 弱光慢快门（机身出帧间隔＝曝光时间）、
+        // AF 搜索、拍完写卡这几类**完全正常**的忙碌就够了阈值，于是监看被自己掐掉。
+        if (usbPtpManager.isConnected()) {
+            when (usbPtpManager.lastFrameFailure) {
+                // 相机答上了、只是这一轮没有新帧（或在忙）：属正常静默，节流等待，
+                // 连续静默过久才就地重启码流 —— 全程不动会话，用户最多看到画面停一下。
+                UsbPtpManager.LvFrameFailure.NO_FRAME,
+                UsbPtpManager.LvFrameFailure.BUSY -> {
+                    stallCount++
+                    if (stallCount >= USB_STALL_LIMIT) {
+                        if (!restartStreamInPlace()) {
+                            return stopWithError("stall_unrecoverable")
+                        }
+                        stallCount = 0
+                    } else {
+                        delay(if (stallCount > 8) USB_STALL_DELAY_MS else 120L)
+                    }
+                    return
+                }
+                // 事务失败（含超时）：先探活确认链路，别急着拆会话
+                UsbPtpManager.LvFrameFailure.TRANSACTION -> {
+                    if (!usbPtpManager.probeLinkAlive()) {
+                        return stopWithError("usb_link_dead")
+                    }
+                    stallCount = 0
+                }
+                UsbPtpManager.LvFrameFailure.NONE -> Unit
+            }
+        }
+
         consecutiveErrors++
-        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-            Timber.tag(TAG).e("Too many consecutive frame errors, stopping Live View")
-            eventLogger.event("lv_stop", "reason" to "max_errors", "errors" to consecutiveErrors)
-            _liveViewState.value = LiveViewState.ERROR
-            _errorMessage.value = "实时取景长时间无画面，已自动停止，请重试"
-            // 帧循环自停路径不走 stopLiveView()，保活需在此恢复
-            usbPtpManager.setKeepAlivePaused(false)
-            frameJob?.cancel()
+        val limit = if (usbPtpManager.isConnected()) {
+            USB_MAX_CONSECUTIVE_ERRORS
+        } else {
+            MAX_CONSECUTIVE_ERRORS
+        }
+        if (consecutiveErrors >= limit) {
+            // 判死前最后一次自救：重启监看码流（不掉会话）
+            if (usbPtpManager.isConnected() && restartStreamInPlace()) {
+                consecutiveErrors = 0
+                return
+            }
+            stopWithError("max_errors")
         } else {
             delay(100)  // 短暂等待后重试
         }
+    }
+
+    /** 监看彻底收口：停在 ERROR 并恢复保活，文案按 `reason` 区分。 */
+    private fun stopWithError(reason: String) {
+        Timber.tag(TAG).e("Live view stopped: $reason (errors=$consecutiveErrors, stalls=$stallCount)")
+        eventLogger.event(
+            "lv_stop",
+            "reason" to reason,
+            "errors" to consecutiveErrors,
+            "stalls" to stallCount,
+            "restarts" to restartCount
+        )
+        _liveViewState.value = LiveViewState.ERROR
+        _errorMessage.value = if (reason == "usb_link_dead" || reason == "link_dead") {
+            "与相机的连接已断开，请返回重连后再开启监看"
+        } else {
+            "实时取景长时间无画面，已自动停止，请重试"
+        }
+        // 帧循环自停路径不走 stopLiveView()，保活需在此恢复
+        usbPtpManager.setKeepAlivePaused(false)
+        frameJob?.cancel()
+    }
+
+    /**
+     * 就地重启监看码流（EndLiveView → StartLiveView），**不动 PTP 会话**。
+     *
+     * 相机侧码流偶尔会停止推送而会话本身完好；旧实现只能靠用户点「重连」，
+     * 那会重建整条会话。这里先做一次轻量重启，成功则画面直接续上。
+     * 每轮监看最多 [USB_LV_RESTART_LIMIT] 次，避免对真故障无限自愈。
+     */
+    private suspend fun restartStreamInPlace(): Boolean {
+        if (restartCount >= USB_LV_RESTART_LIMIT) return false
+        restartCount++
+        val ended = runCatching {
+            onActiveChannel(
+                wifi = { ptpSession.sendCommand(PtpConstants.OP_NIKON_END_LIVE_VIEW).isOk },
+                usb = { usbPtpManager.sendCommand(PtpConstants.OP_NIKON_END_LIVE_VIEW)?.isOk == true }
+            )
+        }.getOrDefault(false)
+        delay(250)
+        val started = runCatching {
+            onActiveChannel(
+                wifi = { ptpSession.sendCommand(PtpConstants.OP_NIKON_START_LIVE_VIEW).isOk },
+                usb = { usbPtpManager.sendCommand(PtpConstants.OP_NIKON_START_LIVE_VIEW)?.isOk == true }
+            )
+        }.getOrDefault(false)
+        eventLogger.event(
+            "lv_restart",
+            "attempt" to restartCount, "end" to ended, "start" to started,
+            "stalls" to stallCount, "errors" to consecutiveErrors
+        )
+        if (started) delay(LV_START_SETTLE_MS)
+        return started
     }
 
     /** WiFi(PTP/IP) 通道是否已被判死；USB 通道不受此判定影响。 */
