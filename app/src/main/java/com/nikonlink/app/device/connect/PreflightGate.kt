@@ -25,15 +25,29 @@ import javax.inject.Singleton
  *
  * 每项检查给出：是否阻塞、人话说明、可直达的系统设置入口（拿不到入口时降级为纯文案）。
  * 预检**只读**，不改任何连接行为；阻塞项被拦下时会写进 [ConnFunnel] 的 PREFLIGHT 阶段。
+ *
+ * 逐 ROM 的差异（哪台机器有自启动开关、OTG 在哪个菜单、WLAN+ 叫什么名字）来自
+ * [CompatRules]，即 `assets/compat/rom_rules.json`；表里没有该项、或闸门
+ * [ConnFlags.COMPAT_RULES] 关闭时退回代码内的兜底文案，行为与 v2.2.0 一致。
  */
 @Singleton
 class PreflightGate @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val compatRules: CompatRules
 ) {
     companion object {
         const val CHANNEL_WIFI = "WIFI"
         const val CHANNEL_USB = "USB"
         const val CHANNEL_BLE = "BLE"
+
+        // 引导条目 id，与 rom_rules.json 里 tricks[].id 一一对应
+        private const val TRICK_AUTOSTART = "autostart"
+        private const val TRICK_BATTERY = "battery"
+        private const val TRICK_OTG = "otg"
+        private const val TRICK_WLAN_PLUS = "wlan_plus"
+
+        /** dontkillmyapp 口径 3 分以上才提醒；原生/近原生系统不该出现这行噪声 */
+        private const val NAG_MIN_KILL_RATING = 3
     }
 
     data class Item(
@@ -59,6 +73,7 @@ class PreflightGate @Inject constructor(
         if (channel == CHANNEL_USB) add(usbBusReadable())
         if (channel == CHANNEL_BLE) add(bluetoothPermission())
         add(batteryExemption())
+        autostartPolicy()?.let { add(it) }
         add(vpnNotice())
     }
 
@@ -129,26 +144,34 @@ class PreflightGate @Inject constructor(
         val avoid = runCatching {
             Settings.Global.getInt(context.contentResolver, "network_avoid_bad_wifi", 0) == 1
         }.getOrDefault(false)
+        val perRom = compatRules.hint(TRICK_WLAN_PLUS)
         return Item(
             reason = ConnFunnel.Reason.AVOID_BAD_WIFI,
-            label = if (avoid)
-                "系统开启了「避开不良网络/智能切换」，相机热点没有网络，可能被自动断开（${RomDetector.family}）"
-            else
-                "系统「避开不良网络」未开启",
+            label = if (!avoid) {
+                "系统「避开不良网络」未开启"
+            } else {
+                "系统开启了「避开不良网络/智能切换」，相机热点没有网络，可能被自动断开" +
+                    (perRom?.let { "｜$it" } ?: "（${RomDetector.family}）") +
+                    compatRules.staleSuffix(TRICK_WLAN_PLUS)
+            },
             ok = !avoid,
             blocking = false,
-            settingsIntent = intent(Settings.ACTION_WIFI_SETTINGS)
+            settingsIntent = compatRules.intent(TRICK_WLAN_PLUS)
+                ?: intent(Settings.ACTION_WIFI_SETTINGS)
         )
     }
 
     private fun usbBusReadable(): Item {
         val usbManager = context.getSystemService(Context.USB_SERVICE) as? android.hardware.usb.UsbManager
         val empty = usbManager?.deviceList.isNullOrEmpty()
-        val hint = RomDetector.otgHint()
+        // 「这台机器有没有 OTG 独立开关」决定空总线是硬阻断还是链路问题。
+        // 表里只有小米/vivo/OPPO 系写了 otg 条目，与 RomDetector.otgHint() 的覆盖面一致，
+        // 所以换成读表并不会让任何机型新挨一次阻断。
+        val hint = compatRules.hint(TRICK_OTG) ?: RomDetector.otgHint()
         val ok = !(empty && hint != null)   // 总线为空、且该机型有 OTG 独立开关 → 大概率是开关没开
         return Item(
             reason = ConnFunnel.Reason.OTG_DISABLED,
-            label = if (!ok) "USB 总线上没有任何设备：$hint" else "USB 总线可读",
+            label = if (!ok) "USB 总线上没有任何设备：$hint${compatRules.staleSuffix(TRICK_OTG)}" else "USB 总线可读",
             ok = ok,
             blocking = !ok,
             settingsIntent = appDetailsIntent()
@@ -180,10 +203,35 @@ class PreflightGate @Inject constructor(
         }.getOrDefault(true)
         return Item(
             reason = ConnFunnel.Reason.BATT_RESTRICTED,
-            label = if (ignored) "已豁免电池优化" else "App 仍在电池优化名单内，息屏/后台时连接易被系统打断",
+            label = if (ignored) "已豁免电池优化" else {
+                "App 仍在电池优化名单内，息屏/后台时连接易被系统打断" +
+                    compatRules.hint(TRICK_BATTERY)?.let { "｜$it" }.orEmpty() +
+                    compatRules.staleSuffix(TRICK_BATTERY)
+            },
             ok = ignored,
             blocking = false,
-            settingsIntent = intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            settingsIntent = compatRules.intent(TRICK_BATTERY)
+                ?: intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        )
+    }
+
+    /**
+     * 自启动 / 后台白名单提醒（PRD §6.1 的「ROM 自启动/后台策略」一项）。
+     *
+     * 这一项**读不到状态**：系统没有公开 API 告诉你「自启动是否已允许」，§6.5 向导里
+     * 要求的「已生效 ✓ 读回」在 OEM 设置页上根本做不到。所以它永远只是提醒
+     * （ok=false + blocking=false，面板上显示为 `!` 而不是 `✗`），
+     * 并且只在查杀确实严厉的 ROM 上出现 —— 原生系统不该多这一行。
+     */
+    private fun autostartPolicy(): Item? {
+        if (compatRules.killRating < NAG_MIN_KILL_RATING) return null
+        val text = compatRules.hint(TRICK_AUTOSTART) ?: return null
+        return Item(
+            reason = ConnFunnel.Reason.AUTOSTART_REMINDER,
+            label = text + compatRules.staleSuffix(TRICK_AUTOSTART),
+            ok = false,
+            blocking = false,
+            settingsIntent = compatRules.intent(TRICK_AUTOSTART)
         )
     }
 
