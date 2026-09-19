@@ -231,6 +231,20 @@ class ConnectionManager @Inject constructor(
             return
         }
 
+        // 同一台相机的连接循环还在跑时，这次点击不再另起一轮。
+        // 另起一轮的代价是真机日志里看到的：connector.connect() 会 cancel 掉仍在退避
+        // 等待的旧循环、把指数退避从 1s 清零，而机身唯一的 PTP/IP 客户端槽需要十几秒
+        // 才自己收干净 —— 越快点、越连不上（2026-09-19：30 秒内 4 轮互相 cancel）。
+        // 旧循环本身每 1~15s 就在重试，用户在机身上按了 OK 也会立刻被它接住。
+        if (connector.isActive && pairedDeviceAddress == endpoint.address &&
+            !ptpSession.isConnected()
+        ) {
+            _connectionHint.value = ConnectionHint("相机正在重试连接中，请稍候…")
+            Timber.tag(TAG).i("connect request ignored: loop already running for ${endpoint.display}")
+            eventLogger.event("connect_ignored", "host" to endpoint.host, "reason" to "loop_running")
+            return
+        }
+
         // v2.2（G11/G12）：先预检再连接 —— 权限/位置开关/OTG 这类硬阻断不该靠重试去碰运气
         val mode = if (endpoint.host == DEFAULT_FALLBACK_HOST) "AP?" else "host"
         funnel.begin("WIFI", mode)

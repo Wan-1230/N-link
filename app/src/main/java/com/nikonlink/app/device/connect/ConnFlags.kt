@@ -35,8 +35,25 @@ class ConnFlags @Inject constructor(
         /** STA：网段盲扫只做 TCP 连接，握手留给最终候选 */
         const val STA_TCP_ONLY = "conn22_sta_tcp_only"
 
+        /**
+         * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
+         *
+         * 尼康机身同时只接受一个 PTP/IP 客户端：我们自己发出的探测握手会占住这个槽，
+         * 并在探测结束后留下半开会话，把紧随其后的真实连接挡在门外。
+         * 关掉它回到 v2.1.1 的「探测即握手」行为。
+         */
+        const val PROBE_TCP_ONLY = "conn22_probe_tcp_only"
+
         /** 传输：批量传输期间心跳不再判死链路 */
         const val TRANSFER_HEARTBEAT = "conn22_transfer_heartbeat"
+
+        /**
+         * 传输：原图下载进行中让缩略图请求排队让路。
+         *
+         * PTP 命令通道是全局串行的（`PtpSessionManager.commandMutex`），4MB 原图分块
+         * 与网格缩略图请求互相插队，批量下载时单张吞吐被拖垮。
+         */
+        const val TRANSFER_THUMB_YIELD = "conn22_thumb_yield"
 
         /** 连接前先跑环境预检（权限 / 位置开关 / OTG / VPN），硬阻断不进入重试 */
         const val PREFLIGHT = "conn22_preflight"
@@ -59,7 +76,9 @@ class ConnFlags @Inject constructor(
             AP_SPECIFIER to true,
             ATTEMPT_BUDGET to true,
             STA_TCP_ONLY to true,
+            PROBE_TCP_ONLY to true,
             TRANSFER_HEARTBEAT to true,
+            TRANSFER_THUMB_YIELD to true,
             PREFLIGHT to true,
             USB_GRACE to true,
             USB_OTG_HINT to true,
