@@ -16,8 +16,16 @@ import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
+import com.nikonlink.app.MainActivity
+import com.nikonlink.app.shared.ui.glass.DepthLift
+import com.nikonlink.app.shared.ui.glass.DockInset
+import com.nikonlink.app.shared.ui.glass.GlassInsetAware
+import com.nikonlink.app.shared.ui.glass.GlassRegistry
+import com.nikonlink.app.shared.ui.glass.GlassTokens
+import com.nikonlink.app.shared.ui.glass.GlassTopBar
 import com.nikonlink.app.shared.ui.glass.NlGlass
 import com.nikonlink.app.shared.ui.glass.UiFlags
+import com.nikonlink.app.shared.ui.glass.applyGlass
 import com.nikonlink.app.BuildConfig
 import com.nikonlink.app.R
 import com.nikonlink.app.databinding.FragmentSettingsBinding
@@ -44,10 +52,16 @@ import javax.inject.Inject
  * 「夸克网盘下载」（与 GitHub 并列的国内直连下载入口，PRD 夸克网盘更新通道）。
  */
 @AndroidEntryPoint
-class SettingsFragment : Fragment() {
+class SettingsFragment : Fragment(), GlassInsetAware {
 
     private var _binding: FragmentSettingsBinding? = null
     private val binding get() = _binding!!
+
+    /** dock 悬浮进内容区后，设置列表底部要自己让出一条 */
+    private var dockInset: DockInset? = null
+
+    /** 顶栏玻璃随滚动浮现 */
+    private var topBarFx: GlassTopBar? = null
 
     @Inject
     lateinit var settings: AppSettings
@@ -104,6 +118,7 @@ class SettingsFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        setupDockFloat()
         restoreState()
         setupRows()
     }
@@ -239,16 +254,14 @@ class SettingsFragment : Fragment() {
                 if (checked) "已启用液态玻璃视觉" else "已回到经典外观（v2.2 视觉）",
                 android.widget.Toast.LENGTH_SHORT
             ).show()
-            // 四个 Tab 的 Fragment 是常驻的（MainActivity 用 hide/show 而非返回栈），
-            // 只靠重涂覆盖不到在 onViewCreated 里一次性上的材质，所以整页重建一次。
-            requireActivity().recreate()
+            // 不 recreate()：整页销毁重建会先闪一帧 windowBackground（纯白），
+            // 视觉上就是"闪屏"。各页通过 UiFlags.observe 注册自己的重涂回调，原地刷新。
         }
 
         // 降低透明度：保留层级（描边/圆角/阴影），但不透明、不模糊
         binding.switchReduceTransparency.setOnCheckedChangeListener { _, checked ->
             UiFlags.set(requireContext(), UiFlags.REDUCE_TRANSPARENCY, checked)
             eventLogger.event("setting", "key" to "glass_reduce_transparency", "value" to checked)
-            requireActivity().recreate()
         }
 
         // v2.2（PRD §6.1 / §7.3 / AC-7）：环境预检 + 连接漏斗，文本可选中便于复制给开发者
@@ -587,9 +600,48 @@ class SettingsFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        UiFlags.unobserve(this)
+        dockInset = null
+        topBarFx = null
         super.onDestroyView()
         _binding = null
     }
+
+    /** dock 悬浮时给列表底部让出一条，并把滚动方向报给 MainActivity 驱动自动隐藏 */
+    private fun setupDockFloat() {
+        binding.settingsScroll.clipToPadding = false
+        dockInset = DockInset(binding.settingsScroll)
+        applyDockSpace()
+        styleTopBar()
+        binding.settingsScroll.setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
+            (activity as? MainActivity)?.reportContentScroll(scrollY - oldScrollY)
+            topBarFx?.onScroll(scrollY)
+        }
+    }
+
+    /** 顶栏玻璃随滚动浮现；经典外观下顶栏无底 + 1px 分割线，逐值还原（AC-12） */
+    private fun styleTopBar() {
+        val title = binding.tvTitle
+        if (!UiFlags.glassEnabled(requireContext())) {
+            topBarFx = null
+            GlassRegistry.unregister(binding.topBar)
+            binding.topBar.background = null
+            binding.topDivider.visibility = View.VISIBLE
+            title.apply { alpha = 1f; translationY = 0f; scaleX = 1f; scaleY = 1f }
+            return
+        }
+        binding.topBar.applyGlass(register = false) { GlassTokens.topBar(it.context) }
+        topBarFx = GlassTopBar(binding.topBar, title, binding.topDivider)
+        topBarFx?.onScroll(binding.settingsScroll.scrollY)
+    }
+
+    private fun applyDockSpace() {
+        if (_binding == null) return
+        dockInset?.applyPadding((activity as? MainActivity)?.dockSpace() ?: 0)
+        DepthLift.apply(binding.root, requireContext())
+    }
+
+    override fun onDockSpaceChanged(dockSpace: Int) = applyDockSpace()
 
     companion object {
         /** 检查更新防抖窗口：1.5s 内重复点击只发 1 次请求（PRD S3 / AC-5） */

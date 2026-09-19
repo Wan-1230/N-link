@@ -1,11 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 主框架：内容区 + 极简底部 Tab 栏（图标+文字，顶部 1px 分割线） -->
+<!--
+  主框架：状态栏玻璃条 + 内容区 + 悬浮玻璃 dock。
+  不再用 fitsSystemWindows：改由 MainActivity 手动分发 insets，
+  这样玻璃才能既铺到状态栏底下、又能把 dock 压进内容区（PRD D2 / §7.2）。
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/background"
-    android:fitsSystemWindows="true"
     android:orientation="vertical">
+
+    <!-- 状态栏区域的玻璃底。高度由 insets 在代码里给；经典外观下退回不透明页面底色 -->
+    <View
+        android:id="@+id/statusGlass"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:background="@color/background" />
 
     <FrameLayout
         android:id="@+id/fragmentContainer"
