@@ -58,6 +58,12 @@ class ConnFlags @Inject constructor(
         /** 连接前先跑环境预检（权限 / 位置开关 / OTG / VPN），硬阻断不进入重试 */
         const val PREFLIGHT = "conn22_preflight"
 
+        /**
+         * 预检文案与系统入口改由 `assets/compat/rom_rules.json` 驱动（PRD §6.2）。
+         * 关掉后回到 `RomDetector` 里的代码内枚举，只剩一条小米文案。
+         */
+        const val COMPAT_RULES = "conn22_compat_rules"
+
         /** USB：detach 先进宽限窗，不立刻判死 */
         const val USB_GRACE = "conn22_usb_grace"
 

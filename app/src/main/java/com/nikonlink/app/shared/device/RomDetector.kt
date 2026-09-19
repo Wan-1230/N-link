@@ -53,11 +53,16 @@ object RomDetector {
             else -> Family.OTHER
         }
     }.getOrDefault(Family.OTHER)
-
-    /** 读系统属性；读不到（隐藏 API / 无特权）就返回空串。 */
-    private fun readSystemProperty(name: String): String = runCatching {
-        val cls = Class.forName("android.os.SystemProperties")
-        val method = cls.getMethod("get", String::class.java, String::class.java)
-        (method.invoke(null, name, "") as? String).orEmpty()
-    }.getOrDefault("")
 }
+
+/**
+ * 读系统属性（`android.os.SystemProperties` 的公开 `get(String,String)` 形态）。
+ *
+ * 与 [RomDetector] 共用一个读取口，避免「是不是小米」「是不是 ColorOS」两处各判一套。
+ * 反射失败 / 无特权 / 被 ROM 裁掉时返回空串，调用方据此当作「没这个旁证」。
+ */
+internal fun readSystemProperty(name: String): String = runCatching {
+    val cls = Class.forName("android.os.SystemProperties")
+    val method = cls.getMethod("get", String::class.java, String::class.java)
+    (method.invoke(null, name, "") as? String).orEmpty()
+}.getOrDefault("")

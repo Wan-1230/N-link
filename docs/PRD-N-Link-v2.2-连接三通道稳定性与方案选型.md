@@ -748,7 +748,7 @@ WMA 写凭据（若 V-3 通过）或 USB 侧完成注册（回退方案）；双
 | G6 全局尝试预算 | ✅ 已实现（二轮提交 `c31d695`） | `ConnectionStateMachine.RETRY_BUDGET=8`，超限停手并提示「忽略此网络后重连」；开关 `conn22_attempt_budget` |
 | G11 PreflightGate | ✅ 已实现 | `device/connect/PreflightGate.kt`：WLAN 开关 / 附近的设备 / 定位权限与总开关 / 电池豁免 / VPN / 「避开不良网络」/ OTG（小米·vivo·OPPO），含阻塞级别 + 直达设置入口；已在相机热点上时跳过硬阻断 |
 | G12 统一原因码与漏斗 | ✅ 已实现 | `ConnFunnel`：12 阶段 + 40 个原因码收口原三套文案；内存保留 12 次尝试；设置页「连接诊断」时间线可复制（AC-7）；状态行追加「停在：阶段 · 原因码」 |
-| G11 之 ROM/机身 asset JSON 与热更新 | ⏸ 仍推迟 | 现为代码内枚举 + `RomDetector.family`；`assets/compat/*.json` 与 `dontkillmyapp` 快照、`/v1/camera-rules` 式热更新留到 v2.2.1 |
+| G11 之 ROM/机身 asset JSON 与热更新 | ✅ ROM 侧已做（§十七） | `assets/compat/rom_rules.json` + `CompatRules`；`dontkillmyapp` 快照已折成 `killRating`。机身侧 `camera_rules.json` 与热更新仍推迟（原因见 §17.3） |
 
 **真机数据点（v2.2.0）**：Z50II + vivo —— AP 模式稳定（AC-1/AC-2 通过，且 v2.1.1 在该组合下本就能连，说明 AP 主干改造未引入回归）。USB 监看周期性掉线为 **v2.1.1 既有缺陷**（`LiveViewManager` 未被本次改动触及），根因与修复见 §5.3 补充与提交 `dd54385`：USB 单帧失败要 2.5s，旧逻辑不分「机身没新帧」与「链路断了」，5 次（≈13s）即自停监看；弱光慢快门 / AF 搜索 / 写卡期间的正常静默必然触发。小米 15 Pro + Z8 组合仍未测。
 
@@ -802,6 +802,51 @@ WMA 写凭据（若 V-3 通过）或 USB 侧完成注册（回退方案）；双
 开关：`conn22_thumb_yield`（关掉即回到缩略图与下载抢通道的旧行为）。
 
 **验收**：① 选 10 张批量下载，对比完成通知里的 MB/s 与 `download_start`/`download_done` 时间戳，单张耗时应与全屏页单张同量级（≤15% 差）；② 全屏页点下载后立刻退回网格、再按 Home 退后台，回来后该张应自行完成（网格角标 + 系统相册可见），无需再点；③ 批量结束后原本转圈的格子应补齐缩略图（验证 deferred 排空）；④ 下载过程中网格滚动不出现永久白格。
+
+---
+
+## 十七、v2.2.1 第一包：逐 ROM 兼容矩阵落为数据资产（§6.2 / 落地路线 10.1 第 7 条）
+
+> 这一条本来就是 v2.2.0 的 P0 清单里的第 7 项（「逐 ROM 引导第一版，asset JSON，先覆盖小米/HyperOS、华为、三星、OV、vivo」），
+> 当时只做到「代码内枚举 + 一条小米文案」就发了版，§十五 记为「仍推迟」。本包补完 ROM 侧。
+
+### 17.1 改了什么
+
+| 层 | 落点 | 内容 |
+|---|---|---|
+| 数据 | `assets/compat/rom_rules.json`（新增） | 6 条规则：小米/HyperOS、华为·荣耀、vivo·iQOO、OPPO·一加·realme、三星、原生兜底。每条 = 匹配条件 + 查杀强度 + 若干 `tricks`（自启动、电池策略、OTG、WLAN+/智能切换） |
+| 读取 | `device/connect/CompatRules.kt`（新增） | 一生一次懒加载；`manufacturer` / `brand` / 系统属性三种旁证取**或**，按顺序取第一条命中（兜底条写在最后）；`hint()` 给文案、`intent()` 给**校验过**的系统入口、`staleSuffix()` 给失效提醒 |
+| 消费 | `PreflightGate.kt` | ① 新增「自启动 / 后台白名单」提醒项（§6.1 表里那行 `AUTOSTART_BLOCKED`；它既然读不到状态也不该拦连接，原因码就叫 `autostart_reminder`）；② 电池优化 / 「避开不良网络」两条的文案改为**逐 ROM 路径**；③ OTG 提示优先读表、读不到退回 `RomDetector.otgHint()` |
+| 闸门 | `ConnFlags.COMPAT_RULES`（`conn22_compat_rules`，默认开） | 关掉 = 表完全不参与，回到 v2.2.0 的代码内枚举文案 |
+| 旁证 | `RomDetector` | `readSystemProperty` 从私有提到文件级 `internal`，表匹配与家族探测共用一个读取口 |
+
+三条不变式（写进代码注释与测试，不靠自觉）：
+
+1. **只影响文案与入口，不影响连接行为**。兼容表一旦能改重试路径，就变成了第二条隐形的连接状态机，而它是**可热改的数据**。
+2. `component` 只是候选入口：一律 `resolveActivity()` 通过才给出去。系统 OTA 改名 / 区域变体 / 精简 ROM → 自动退回纯文案，就是 §6.2.3 要求的「失效能单独降级」。
+3. 表读不到 / JSON 写坏 / 闸门关闭 → 返回空 → 用内置兜底。**一条规则写坏只丢那一条**，不让整张表陪着作废。
+
+覆盖面刻意与 `RomDetector.otgHint()` 严格一致（小米/vivo/OPPO 三家）：预检里「USB 总线为空」算不算硬阻断，判断依据正是「这台机器有没有 OTG 独立开关」这条提示 —— 表里多写一家，就多一批本该继续重试却被拦下的用户。`CompatRulesTest` 里钉死了这个集合。
+
+### 17.2 为什么 `killRating` 决定谁被提醒
+
+自启动/后台白名单这一项**读不到状态**：系统没有公开 API 告诉你「自启动是否已允许」（§6.5 向导设想的「已生效 ✓ 读回」在 OEM 设置页上根本做不到）。所以它永远只是提醒（`ok=false` + `blocking=false`，面板上是 `!` 而不是 `✗`），并且只在 `dontkillmyapp` 口径查杀强度 ≥3 的 ROM 上出现 —— 原生/Pixel 用户不该多出这一行噪声。
+
+### 17.3 本包**没做**的三件事（别当成已交付）
+
+| 项 | 为什么不做 |
+|---|---|
+| `camera_rules.json`（机身侧矩阵） | §6.2.1 设想的字段（`wmaWritable` / `partialObject64` / `lvVariant` / `hostRegSettleMs`）现在**一个都没有消费方**：机身差异治理要先有 V-3/V-9 的实机标定数据，且各自的消费点（G17 主机注册回验、G10 续传 64 位、G16 监看质量阶梯）还没做。先建表就是往仓库里放一份没人读的硬编码，还会诱导「改了表就以为生效」。留到 §10.2 的 `CameraProfile` 一起做 |
+| 兼容矩阵热更新（§6.2.4 / G21） | 需要：拉取源（raw URL）、缓存与版本协商、字段白名单与体积上限、失败静默。属 §10.4 的规模化条目，单独一包做 |
+| 「去设置」按钮 | `Item.settingsIntent` 现在是真的可跳转深链了（表里有组件且本机解析成功时），但预检面板与错误提示目前只印文字、没有落点。要在设置页「连接诊断」与设备页状态行各加一个按钮 —— 那是 UI 主干，按 v2.3 的并行进度排 |
+
+### 17.4 验收
+
+1. 小米/华为/vivo 任一真机 → 设置 → 连接诊断：`!` 行里出现**本机品牌的具体路径**（不是通用文案），且各条互不串行。
+2. 同一台机器 `adb shell run-as com.nikonlink.app sh -c '...'` 把 `conn22_compat_rules` 写 false → 面板回到 v2.2.0 的两行通用文案，`!` 自启动行消失。
+3. 把表里某个 `component` 改成不存在的包名 → 该项不崩、不显示成可跳转，只当纯文案（`resolveActivity` 拦下）。
+4. 非相机 USB 空总线场景（拔掉线再点连接）在小米/vivo/OPPO 上仍给 `OTG 连接` 指引；在 Pixel/三星上**不该**给（`otg` 覆盖面不变式）。
+5. `./gradlew :app:testDebugUnitTest --tests "*CompatRulesTest"` 6 项绿（含「读的是真资产」这一条：表与测试必须一起改）。
 
 ---
 
