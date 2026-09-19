@@ -21,6 +21,9 @@
     <!-- ===== 染色 tint ===== -->
     <color name="glass_tint_flat">#F2FFFFFF</color>
     <color name="glass_tint_content">#D9FFFFFF</color>
+    <!-- 悬浮控件专用：真正半透明，滑动时看得见底下的模糊内容在动。
+         85%（tint_content）贴在白页上等于不透明，玻璃就白做了。 -->
+    <color name="glass_tint_floating">#8FFFFFFF</color>
     <color name="glass_tint_moving">#EAFFFFFF</color>
     <color name="glass_tint_dark">#BF000000</color>
     <color name="glass_tint_scrim">#99000000</color>
@@ -28,17 +31,23 @@
     <color name="glass_tint_press">#14000000</color>
 
     <!-- ===== 四条边信息：外描边 / 内顶高光 / 内底反光 / 四角透镜亮线 ===== -->
-    <color name="glass_stroke_outer">#33000000</color>
+    <color name="glass_stroke_outer">#2B000000</color>
     <color name="glass_rim_top">#66FFFFFF</color>
-    <color name="glass_rim_bottom">#1A000000</color>
+    <!-- 26% → 8%：整圈 20% 黑的描边 + 1px 10% 黑底线，在通栏顶栏上就是两条黑线 -->
+    <color name="glass_rim_bottom">#14000000</color>
     <color name="glass_edge_lens">#4DFFFFFF</color>
+    <!-- 通栏（radius=0）贴屏幕边时唯一保留的那条发丝线，比 rim_bottom 更轻 -->
+    <color name="glass_hairline_fitted">#0F000000</color>
 
-    <!-- ===== 阴影（L3 用 elevation 走 GPU 路径，L1/L2 用描边近似） ===== -->
-    <color name="glass_shadow_key">#14000000</color>
-    <color name="glass_shadow_ambient">#0F000000</color>
+    <!-- ===== 阴影（L3 用 elevation 走 GPU 路径，L1/L2 用描边近似） =====
+         这两个值不是"最终阴影浓度"，而是**喂给 Android 投影管线的着色**：
+         系统还会按高度再乘一层衰减，所以默认那套（纯黑 × 系统 alpha）在浅底上发硬。
+         压低 alpha + 拉开 key/ambient 比例，才得到柔和的双层阴影。 -->
+    <color name="glass_shadow_key">#33000000</color>
+    <color name="glass_shadow_ambient">#1A000000</color>
     <color name="glass_shadow_floating">#1F000000</color>
-    <dimen name="glass_elevation_l3">10dp</dimen>
-    <dimen name="glass_elevation_l1">2dp</dimen>
+    <dimen name="glass_elevation_l3">8dp</dimen>
+    <dimen name="glass_elevation_l1">1.5dp</dimen>
     <dimen name="glass_stroke_w">1dp</dimen>
     <dimen name="glass_stroke_w_thin">0.5dp</dimen>
 

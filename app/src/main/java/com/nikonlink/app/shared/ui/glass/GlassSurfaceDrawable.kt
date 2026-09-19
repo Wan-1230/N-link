@@ -122,7 +122,18 @@ class GlassSurfaceDrawable(
     /** 纹理就绪后由协调器回调 */
     fun hostInvalidate() = invalidateSelf()
 
+    /**
+     * 采集期间自我屏蔽（由 [GlassCoordinator] 置位）。
+     *
+     * 内容列里也挂着玻璃面（相册页的分段胶囊、选择操作坞），而采集就是把这个子树整体
+     * 画进纹理 —— 不屏蔽的话纹理里会有"上一帧的自己"，每采一次再糊进去一层，
+     * 看久了像玻璃起雾（自反馈）。屏蔽后这块区域在纹理里画成父层底色，
+     * 也就是它真正遮住的那部分内容，取到的才是干净的背景。
+     */
+    @Volatile internal var suppressedDraw = false
+
     override fun draw(canvas: Canvas) {
+        if (suppressedDraw) return
         val host = hostRef.get() ?: return
         val w = bounds.width().toFloat()
         val h = bounds.height().toFloat()
@@ -206,21 +217,25 @@ class GlassSurfaceDrawable(
 
         canvas.restoreToCount(sc)
 
-        // ---- ⑤ 外描边 + 四角透镜亮线（折射假象的主要来源） ----
-        stroke.strokeWidth = m.strokeWidthPx.coerceAtLeast(onePx)
-        stroke.color = scaleAlpha(m.strokeColor, rimKeep)
-        canvas.drawPath(clipPath, stroke)
+        // ---- ⑤ 外描边 + 四角透镜亮线（折射假象的主要来源）----
+        // 通栏面（顶栏 / 状态栏条）跳过这一步：整圈描边贴到屏幕边上，
+        // 就是上下两条实打实的黑线，比玻璃本身还显眼（走查反馈第 3 条）。
+        if (!m.fullBleed) {
+            stroke.strokeWidth = m.strokeWidthPx.coerceAtLeast(onePx)
+            stroke.color = scaleAlpha(m.strokeColor, rimKeep)
+            canvas.drawPath(clipPath, stroke)
 
-        if (m.edgeLensColor != 0 && m.radiusPx > 6f) {
-            stroke.strokeWidth = onePx * 1.5f
-            stroke.color = scaleAlpha(m.edgeLensColor, rimKeep)
-            val reach = m.radiusPx * 1.6f
-            cornerPath.reset()
-            // 只在四角描、中段不描 —— 整圈加亮会变成"白塑料边"
-            corner(clipPath, canvas, 0f, 0f, reach)
-            corner(clipPath, canvas, w, 0f, reach)
-            corner(clipPath, canvas, 0f, h, reach)
-            corner(clipPath, canvas, w, h, reach)
+            if (m.edgeLensColor != 0 && m.radiusPx > 6f) {
+                stroke.strokeWidth = onePx * 1.5f
+                stroke.color = scaleAlpha(m.edgeLensColor, rimKeep)
+                val reach = m.radiusPx * 1.6f
+                cornerPath.reset()
+                // 只在四角描、中段不描 —— 整圈加亮会变成"白塑料边"
+                corner(clipPath, canvas, 0f, 0f, reach)
+                corner(clipPath, canvas, w, 0f, reach)
+                corner(clipPath, canvas, 0f, h, reach)
+                corner(clipPath, canvas, w, h, reach)
+            }
         }
     }
 
@@ -319,10 +334,12 @@ class GlassSurfaceDrawable(
         val base = m.tintColor
         var alpha = Color.alpha(base)
         var step = base
-        for (i in 0..3) {
+        // 6 档 × 7%：tint 现在起手只有 56%（要透得过去），留给自适应的行程更长，
+        // 不至于一遇暗底就整面退回不透明白板
+        for (i in 0..5) {
             val composite = compositeOnLuminance(step, luminance)
             if (contrastRatio(m.onColor, composite) >= AA_BODY) break
-            alpha = (alpha + (255 * 0.05f).toInt()).coerceAtMost(255)
+            alpha = (alpha + (255 * 0.07f).toInt()).coerceAtMost(255)
             step = Color.argb(alpha, Color.red(base), Color.green(base), Color.blue(base))
         }
         val ok = contrastRatio(m.onColor, compositeOnLuminance(step, luminance)) >= AA_BODY
@@ -445,7 +462,8 @@ fun View.applyGlass(
     provider: GlassMaterialProvider,
 ): View {
     val material = provider.get(this)
-    background = GlassSurfaceDrawable(WeakReference(this), material, coordinator)
+    val surface = GlassSurfaceDrawable(WeakReference(this), material, coordinator)
+    background = surface
     elevation = material.elevationPx
     if (material.elevationPx > 0f) {
         val radius = material.radiusPx
@@ -456,13 +474,29 @@ fun View.applyGlass(
                 }
             }
         }
+        applySoftShadow()
     }
     if (register) GlassRegistry.register(this, provider)
     coordinator?.let {
+        // 登记为宿主：纹理每次重采只回调这些面重绘。少了这一步，采到的新背景
+        // 没有任何人会被叫回来画 —— 玻璃就永远停在第一帧（或干脆不上糊）。
+        it.addHost(surface)
         it.reportBlurNeed(material.blurDp)
         it.invalidate()
     }
     return this
+}
+
+/**
+ * 把系统默认那套「纯黑 × 按高度衰减」的投影换成按 token 着色的柔和双层阴影。
+ *
+ * 默认阴影在高 elevation 的圆角面上会压出一圈硬黑边（走查第 1 条「阴影生硬」），
+ * 尤其 dock 现在真的浮在内容上，黑边叠在照片上更脏。spot / ambient 分开给 alpha，
+ * 才是"浮起来"而不是"压上去"。API 28+，本仓 minSdk 29 直接调。
+ */
+fun View.applySoftShadow() {
+    outlineSpotShadowColor = ContextCompat.getColor(context, R.color.glass_shadow_key)
+    outlineAmbientShadowColor = ContextCompat.getColor(context, R.color.glass_shadow_ambient)
 }
 
 /**
