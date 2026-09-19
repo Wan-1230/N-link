@@ -610,6 +610,28 @@ class TransferManager @Inject constructor(
         }
     }
 
+    /**
+     * 只读对象的前 [maxBytes] 字节，用于「只要 EXIF、不要图像数据」的场景（快门次数解析）。
+     *
+     * 走标准 PTP `GetPartialObject`(0x101B)：45MB 的 NEF 只需 1MB 就能覆盖 EXIF 与 MakerNote
+     * （真机实测 MakerNote 落在文件头 0.8~29KB 区间），既避开 WiFi 通道的整文件超时，
+     * 也避开把整个 RAW 塞进内存。
+     *
+     * 返回 null 表示这次拿不到（机身不支持、事务失败、断连），调用方应回退整文件下载。
+     */
+    suspend fun readObjectHead(file: CameraFile, maxBytes: Int): ByteArray? {
+        if (!hasActiveSession()) return null
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val transport = currentTransport()
+                if (!transport.isConnected) return@withContext null
+                transport.partialObject(file.handle, 0, maxBytes)
+            }.onFailure {
+                Timber.tag(TAG).d(it, "readObjectHead failed: %s", file.fileName)
+            }.getOrNull()
+        }
+    }
+
     /** 单通道下载实现：传输 → 保存 MediaStore → 记录去重 */
     private suspend fun downloadVia(
         transport: CameraTransport,

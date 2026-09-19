@@ -1,60 +1,101 @@
 package com.nikonlink.app.camera.params
 
 import java.io.File
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /**
- * 尼康快门次数本地解析器（PRD 2.4 / 设备页「快门次数」可行性验证的产物）。
+ * 尼康快门次数本地解析器。
  *
- * 可行性结论（调研 libgphoto2 ptp.h / digiCamControl）：
- * - 尼康**不提供**快门计数的 PTP 属性（0xD100 是厂商快门速度，0xD1AC 是佳能的计数）；
- * - 业界标准做法是从照片 EXIF 的 **MakerNotes 0x00A7 (ShutterCount)** 解析；
- * - 本地解析失败（旧机型加密 MakerNote / 结构变体）时回退 Digeeker 云端解析。
+ * 数据源唯一：照片 EXIF 的 MakerNote(`0x927C`) → 尼康 IFD → tag `0x00A7`。
+ * 尼康机身**不提供**任何快门计数的 PTP 设备属性（对照 libgphoto2 `camlibs/ptp2/ptp.h`：
+ * 佳能 `0xD1AC` / 奥林巴斯 `0xD059` / 富士 `0xD154` 都有，尼康没有），所以别去读属性。
+ * `0x00A7` 本身也不加密 —— 它反倒是尼康用来解密 ShotInfo/ColorBalance/LensData 的密钥。
  *
- * 解析路径（JPEG 为主，采样文件由查询链路挑选最小的 JPEG）：
- * 1. 定位 APP1 "Exif\0\0" 段 → TIFF 头（II/MM）；
- * 2. IFD0 → tag 0x927C MakerNote；
- * 3. MakerNote 头部两种形态：
- *    a. JPEG 常见 "Nikon\0" + 版本字节 + IFD（无内嵌 TIFF 头，字节序沿用主 TIFF 头）；
- *    b. NEF / 部分变体含内嵌 TIFF 头（"II*\0"/"MM\0*"），偏移以该头为基准；
- *    现实中两种形态的基准偏移存在流派差异，这里对 a 形态做双基准（0 / IFD 起点）
- *    启发式并校验取值合理性，两路都失败即返回 null（交由云端兜底）。
+ * MakerNote 的 IFD 位置在三种形态间不同，且**不能**由 `MakerNoteVersion`(`0x0001`) 推断
+ * （版本号字符串只用于选 ColorBalance/ShotInfo 子表，与 `0x00A7` 的位置无关）。这里按形态提示
+ * 排好候选 IFD 位置 × 字节序后逐个枚举，再用固件恒等式
+ * `0x00A5 ImageCount + 0x00A6 DeletedImageCount == 0x00A7 ShutterCount` 反选真正对齐的那一个 ——
+ * 比「数值落在合理区间」可靠得多。旧实现只试过 IFD@8/0、从未试现代 D/Z 的 **IFD@18**，
+ * 于是本地路径恒失败、把云端兜底顶成了主路径。
+ *
+ * 真机样张（Exiv2 test/data 下的尼康 NEF/JPEG）实测推翻的两条假设，别再走回头路：
+ * - `0x927C` 在 **Exif 子 IFD（`0x8769`）**，不在 IFD0 —— 只在 IFD0 找的话，所有真实照片一律失败；
+ * - MakerNote 的字节序与主 TIFF 头**可以相反**：D70 / D2Hs 的笔记是大端而机身主 TIFF 是小端，
+ *   Z 系列 NEF 则同为小端。所以两种字节序都得试、由恒等式裁决，不能假设「尼康一律小端」。
+ *
+ * 这几个 tag 都是 `count=1` 的 LONG/SHORT，值内联在 12 字节条目的 value 字段里，
+ * 所以偏移基准（相对 MakerNote 还是相对主 TIFF 头）对读取结果没有影响，只有 IFD 位置和字节序要紧。
  */
 object NikonShutterCountParser {
 
     private const val TAG_MAKER_NOTE = 0x927C
+    private const val TAG_EXIF_IFD = 0x8769
+
+    private const val TAG_MECHANICAL_SHUTTER_COUNT = 0x0037
+    private const val TAG_IMAGE_COUNT = 0x00A5
+    private const val TAG_DELETED_IMAGE_COUNT = 0x00A6
     private const val TAG_SHUTTER_COUNT = 0x00A7
 
-    /** 快门次数合理上限：1 ~ 5000 万（防误读其它 LONG 字段） */
+    /** 上限 5000 万足以挡掉误读到的其它 LONG 字段，以及 `0xFFFFF7FF` 这类「n/a」哨兵（有符号视角为负） */
     private const val MAX_PLAUSIBLE_COUNT = 50_000_000
 
-    /** 从 JPEG/NEF 文件解析快门次数；失败返回 null（不抛异常） */
-    fun parseFile(file: File): Int? = runCatching {
-        val bytes = file.readBytes()
+    /** MakerNote 紧贴文件开头，1MB 覆盖所有尼康机身；超出即视为样本截断，交由调用方做二次窗口读取 */
+    private const val MAX_SCAN_BYTES = 1_000_000
+
+    /**
+     * 一次成功解析的结果。
+     *
+     * @param shutterCount 主读数，含机械与电子快门的触发次数
+     * @param mechanicalCount 仅机械快门（`0x0037`），-1 = 机身未写
+     * @param layout 命中的形态标签，用于诊断
+     * @param verified 恒等式成立、读数可信；false = 仅数值合理，UI 需标注未校验
+     */
+    data class Reading(
+        val shutterCount: Int,
+        val mechanicalCount: Int = -1,
+        val imageCount: Int = -1,
+        val deletedImageCount: Int = -1,
+        val layout: String,
+        val verified: Boolean
+    )
+
+    /** 从文件解析。只读前 [MAX_SCAN_BYTES] 字节，避免把 45MB 的 NEF 整个塞进内存。 */
+    fun parseFile(file: File): Reading? = runCatching {
+        if (!file.isFile) return@runCatching null
+        val span = minOf(file.length(), MAX_SCAN_BYTES.toLong()).toInt()
+        if (span < 16) return@runCatching null
+        val bytes = ByteArray(span)
+        RandomAccessFile(file, "r").use { it.readFully(bytes) }
         parse(bytes)
     }.getOrNull()
 
-    fun parse(bytes: ByteArray): Int? {
+    /** 解析 JPEG / NEF(TIFF) 字节；失败返回 null，不抛异常 */
+    fun parse(bytes: ByteArray): Reading? {
         if (bytes.size < 16) return null
-        // NEF/TIFF：文件头即 II/MM；JPEG：先找 APP1 Exif 段
-        if (bytes[0] == 'I'.code.toByte() && bytes[1] == 'I'.code.toByte() ||
-            bytes[0] == 'M'.code.toByte() && bytes[1] == 'M'.code.toByte()
-        ) {
-            return parseTiffContainer(bytes, tiffStart = 0)
-        }
+        // NEF/TIFF 的文件头即 II/MM；JPEG 要先找 APP1 "Exif\0\0"
+        if (isTiffHeader(bytes, 0)) return parseTiffContainer(bytes, tiffStart = 0)
         val exifStart = locateExifApp1(bytes) ?: return null
         return parseTiffContainer(bytes, tiffStart = exifStart)
     }
 
+    // ---------- 容器与 IFD0 ----------
+
+    private fun isTiffHeader(bytes: ByteArray, at: Int): Boolean =
+        at + 2 <= bytes.size &&
+            ((bytes[at] == 'I'.code.toByte() && bytes[at + 1] == 'I'.code.toByte()) ||
+                (bytes[at] == 'M'.code.toByte() && bytes[at + 1] == 'M'.code.toByte()))
+
     /** 定位 APP1 Exif 段中 TIFF 头的起始位置（"Exif\0\0" 之后） */
     private fun locateExifApp1(bytes: ByteArray): Int? {
-        var i = 2
+        var i = if (bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte()) 2 else 0
         while (i + 4 < bytes.size) {
             if (bytes[i] != 0xFF.toByte()) return null
             val marker = bytes[i + 1].toInt() and 0xFF
-            if (marker == 0xFF) { i++; continue }           // 填充字节
-            if (marker == 0xD8) { i += 2; continue }        // SOI 已跳过，容错
-            if (marker == 0xDA) return null                 // SOS 之前没有 Exif
+            if (marker == 0xFF || marker == 0x01) { i++; continue }   // 填充字节
+            if (marker == 0xD8) { i += 2; continue }
+            if (marker == 0xD9 || marker == 0xDA) return null          // 走到 EOI/SOS 也没碰上 Exif
             val segLen = ((bytes[i + 2].toInt() and 0xFF) shl 8) or (bytes[i + 3].toInt() and 0xFF)
             if (marker == 0xE1) {
                 val head = i + 4
@@ -66,33 +107,37 @@ object NikonShutterCountParser {
                     return head + 6
                 }
             }
+            if (segLen < 2) return null
             i += 2 + segLen
         }
         return null
     }
 
-    /** 解析 TIFF 容器：IFD0 → MakerNote → 尼康 0x00A7 */
-    private fun parseTiffContainer(bytes: ByteArray, tiffStart: Int): Int? {
+    private fun parseTiffContainer(bytes: ByteArray, tiffStart: Int): Reading? {
         if (tiffStart + 8 > bytes.size) return null
-        val bigEndian = when {
-            bytes[tiffStart] == 'I'.code.toByte() && bytes[tiffStart + 1] == 'I'.code.toByte() -> false
-            bytes[tiffStart] == 'M'.code.toByte() && bytes[tiffStart + 1] == 'M'.code.toByte() -> true
-            else -> return null
-        }
-        val buffer = ByteBuffer.wrap(bytes).order(
-            if (bigEndian) java.nio.ByteOrder.BIG_ENDIAN else java.nio.ByteOrder.LITTLE_ENDIAN
-        )
+        val bigEndian = bytes[tiffStart] == 'M'.code.toByte()
+        val buffer = wrap(bytes, bigEndian)
         val ifd0Offset = buffer.getInt(tiffStart + 4)
-        val makerNote = readTagValueBytes(buffer, tiffStart, ifd0Offset, TAG_MAKER_NOTE)
-            ?: return null
-        return parseNikonMakerNote(makerNote, bigEndian)
+        if (ifd0Offset < 0) return null
+        // MakerNote 的规范位置是 **Exif 子 IFD（0x8769）**，不是 IFD0 —— 真机样张已证实。
+        // 旧实现只在 IFD0 找 0x927C，光这一条就足以在所有真实照片上失败。IFD0 仅作宽松兜底。
+        val maker = readTagLong(buffer, tiffStart, ifd0Offset, TAG_EXIF_IFD)?.let { sub ->
+            readTagBytes(buffer, tiffStart, sub, TAG_MAKER_NOTE)
+        } ?: readTagBytes(buffer, tiffStart, ifd0Offset, TAG_MAKER_NOTE)
+        return maker?.let { parseNikonMakerNote(it) }
     }
 
-    /**
-     * 在指定 IFD 中查找 tag 并返回其值字节（UNDEFINED/ASCII/LONG 等一律按原始字节返回）。
-     * [ifdOffset] 相对 [tiffStart]。
-     */
-    private fun readTagValueBytes(
+    private fun readTagLong(
+        buffer: ByteBuffer,
+        tiffStart: Int,
+        ifdOffset: Int,
+        tag: Int
+    ): Int? = readTagBytes(buffer, tiffStart, ifdOffset, tag)
+        ?.takeIf { it.size == 4 }
+        ?.let { wrap(it, buffer.order() == ByteOrder.BIG_ENDIAN).getInt(0) }
+
+    /** 在指定 IFD 中查 tag 并返回其原始值字节（≤4 字节取内联，否则按主 TIFF 头基准定位） */
+    private fun readTagBytes(
         buffer: ByteBuffer,
         tiffStart: Int,
         ifdOffset: Int,
@@ -106,99 +151,132 @@ object NikonShutterCountParser {
             val entry = ifdStart + 2 + i * 12
             if (entry + 12 > buffer.limit()) return null
             if ((buffer.getShort(entry).toInt() and 0xFFFF) != tag) continue
-            val type = buffer.getShort(entry + 2).toInt() and 0xFFFF
+            val unit = typeSize(buffer.getShort(entry + 2).toInt() and 0xFFFF)
             val count = buffer.getInt(entry + 4)
-            if (count <= 0 || count > 0x100000) return null
-            val typeSize = when (type) {
-                1, 2, 6, 7 -> 1   // BYTE / ASCII / SBYTE / UNDEFINED
-                3, 8 -> 2          // SHORT
-                4, 9, 11 -> 4      // LONG / SLONG / FLOAT
-                5, 10, 12 -> 8     // RATIONAL / SRATIONAL / DOUBLE
-                else -> return null
-            }
-            val size = count * typeSize
+            if (unit <= 0 || count <= 0 || count > MAX_IFD_ELEMENTS) return null
+            val size = count * unit
             return if (size <= 4) {
-                ByteArray(size).also { buffer.position(entry + 8); buffer.get(it, 0, size) }
+                ByteArray(size).also { copyAt(buffer, entry + 8, it) }
             } else {
-                // 偏移相对 TIFF 头起点
                 val valueOffset = tiffStart + buffer.getInt(entry + 8)
                 if (valueOffset < 0 || valueOffset + size > buffer.limit()) return null
-                ByteArray(size).also { buffer.position(valueOffset); buffer.get(it, 0, size) }
+                ByteArray(size).also { copyAt(buffer, valueOffset, it) }
             }
         }
         return null
     }
 
-    /** 解析尼康 MakerNote：先试内嵌 TIFF 头形态，再试 v0100 无头形态（双基准） */
-    private fun parseNikonMakerNote(maker: ByteArray, mainBigEndian: Boolean): Int? {
-        if (maker.size < 12) return null
-        val hasNikonHeader = maker[0] == 'N'.code.toByte() && maker[1] == 'i'.code.toByte() &&
+    // ---------- MakerNote：候选枚举 + 自校验 ----------
+
+    /** 逐个候选 IFD 读 tag 组，恒等式成立即采纳；否则保留第一个「数值合理」的候选作为未校验结果 */
+    private fun parseNikonMakerNote(maker: ByteArray): Reading? {
+        var best: Reading? = null
+        for (candidate in candidateIfds(maker)) {
+            val tags = readNikonIfd(maker, candidate.ifdStart, candidate.bigEndian) ?: continue
+            val shot = tags[TAG_SHUTTER_COUNT] ?: continue
+            if (!isPlausible(shot)) continue
+            val image = tags[TAG_IMAGE_COUNT]
+            val deleted = tags[TAG_DELETED_IMAGE_COUNT]
+            val reading = Reading(
+                shutterCount = shot,
+                mechanicalCount = tags[TAG_MECHANICAL_SHUTTER_COUNT]?.takeIf { isPlausible(it) } ?: -1,
+                imageCount = image ?: -1,
+                deletedImageCount = deleted ?: -1,
+                layout = candidate.layout,
+                verified = image != null && deleted != null &&
+                    image.toLong() + deleted.toLong() == shot.toLong()
+            )
+            if (reading.verified) return reading
+            if (best == null) best = reading
+        }
+        return best
+    }
+
+    /**
+     * 候选 IFD 起点，按命中概率降序。形态判据只决定顺序、不决定成员集合 ——
+     * 真正的裁决权在 [parseNikonMakerNote] 的恒等式校验上。
+     */
+    private fun candidateIfds(maker: ByteArray): List<CandidateIfd> {
+        val out = LinkedHashSet<CandidateIfd>()
+
+        // 内嵌 TIFF 头（II*\0 / MM\0*）：IFD = 头起点 + 头内记录的偏移，字节序由该头决定
+        for (p in 6..minOf(14, maker.size - 10)) {
+            if (!isTiffHeader(maker, p)) continue
+            val inner = wrap(maker, maker[p] == 'M'.code.toByte())
+            if (inner.getShort(p + 2).toInt() and 0xFFFF != 0x2A) continue
+            val offset = inner.getInt(p + 4)
+            if (offset in 0 until maker.size) {
+                out += CandidateIfd("inner@$p", p + offset, maker[p] == 'M'.code.toByte())
+            }
+        }
+        if (hasNikonSignature(maker)) {
+            // 形态 A：现代 D/Z（"Nikon\0" + 0x02 + 版本串），IFD 固定在 +18
+            if (maker.size > 6 && maker[6].toInt() == 0x02) addOrders(out, "v02xx", 18)
+            // 形态 B：E 系列（0x01），IFD 在 +8
+            if (maker.size > 6 && maker[6].toInt() == 0x01) addOrders(out, "v01xx", 8)
+            addOrders(out, "sig", 0)
+            addOrders(out, "sig", 8)
+        }
+        // 形态 C（D1、E99x、部分 Coolpix 无 "Nikon\0" 签名，D1 为大端）与机身变体兜底
+        addOrders(out, "flat", 0)
+        addOrders(out, "any", 18)
+        addOrders(out, "any", 8)
+        return out.toList()
+    }
+
+    private fun hasNikonSignature(maker: ByteArray): Boolean =
+        maker.size >= 6 && maker[0] == 'N'.code.toByte() && maker[1] == 'i'.code.toByte() &&
             maker[2] == 'k'.code.toByte() && maker[3] == 'o'.code.toByte() &&
             maker[4] == 'n'.code.toByte() && maker[5].toInt() == 0
-        if (!hasNikonHeader) return null
 
-        // 形态 b：内嵌 TIFF 头（II*\0 / MM\0*），偏移以该头为基准
-        for (p in 6 until minOf(16, maker.size - 8)) {
-            val isII = maker[p] == 'I'.code.toByte() && maker[p + 1] == 'I'.code.toByte()
-            val isMM = maker[p] == 'M'.code.toByte() && maker[p + 1] == 'M'.code.toByte()
-            if (!isII && !isMM) continue
-            val inner = ByteBuffer.wrap(maker).order(
-                if (isII) java.nio.ByteOrder.LITTLE_ENDIAN else java.nio.ByteOrder.BIG_ENDIAN
-            )
-            if (inner.getShort(p + 2).toInt() != 0x2A) continue
-            val ifdOffset = inner.getInt(p + 4)
-            // isII = 小端标识；readNikonTag 的形参是大端布尔，需取反
-            return readNikonTag(inner, ifdOffset, p, bigEndian = !isII)
-                ?.takeIf { isPlausible(it) }
-        }
+    private data class CandidateIfd(val layout: String, val ifdStart: Int, val bigEndian: Boolean)
 
-        // 形态 a（JPEG v0100）：无内嵌 TIFF 头，字节序沿用主 TIFF 头；双基准启发式
-        val outer = ByteBuffer.wrap(maker).order(
-            if (mainBigEndian) java.nio.ByteOrder.BIG_ENDIAN else java.nio.ByteOrder.LITTLE_ENDIAN
-        )
-        // 基准一：IFD 紧随 8 字节头（"Nikon\0"+版本），偏移相对 IFD 起点
-        readNikonTag(outer, ifdOffset = 0, base = 8, bigEndian = mainBigEndian)
-            ?.let { if (isPlausible(it)) return it }
-        // 基准二：偏移相对 MakerNote 起点（IFD 仍在 offset 8）
-        readNikonTag(outer, ifdOffset = 8, base = 0, bigEndian = mainBigEndian)
-            ?.let { if (isPlausible(it)) return it }
-        return null
+    /** 同一位置两种字节序都试（笔记的字节序与主 TIFF 头无关，见类注释），LE 先试 */
+    private fun addOrders(into: LinkedHashSet<CandidateIfd>, label: String, at: Int) {
+        into += CandidateIfd("$label/le", at, false)
+        into += CandidateIfd("$label/be", at, true)
     }
 
-    /** 在 MakerNote 的 IFD 中查 0x00A7；[base] = 该 IFD 内偏移量的基准位置 */
-    private fun readNikonTag(
-        buffer: ByteBuffer,
-        ifdOffset: Int,
-        base: Int,
-        bigEndian: Boolean
-    ): Int? {
-        val order0 = if (bigEndian) java.nio.ByteOrder.BIG_ENDIAN else java.nio.ByteOrder.LITTLE_ENDIAN
-        val buf = buffer.duplicate().order(order0)
-        val ifdStart = base + ifdOffset
-        if (ifdStart + 2 > buf.limit()) return null
-        val entryCount = buf.getShort(ifdStart).toInt() and 0xFFFF
+    /** 读 MakerNote 内某个 IFD 关注的 tag；结构不合法返回 null，以便继续试下一个候选 */
+    private fun readNikonIfd(maker: ByteArray, ifdStart: Int, bigEndian: Boolean): Map<Int, Int>? {
+        if (ifdStart < 0 || ifdStart + 2 > maker.size) return null
+        val buffer = wrap(maker, bigEndian)
+        val entryCount = buffer.getShort(ifdStart).toInt() and 0xFFFF
         if (entryCount <= 0 || entryCount > 512) return null
+        val out = HashMap<Int, Int>(4)
         for (i in 0 until entryCount) {
             val entry = ifdStart + 2 + i * 12
-            if (entry + 12 > buf.limit()) return null
-            if ((buf.getShort(entry).toInt() and 0xFFFF) != TAG_SHUTTER_COUNT) continue
-            val type = buf.getShort(entry + 2).toInt() and 0xFFFF
-            val count = buf.getInt(entry + 4)
-            if (type !in intArrayOf(4, 3, 9) || count < 1) return null
-            return when {
-                // 单值且 ≤4 字节 → 内联
-                count == 1 && type != 3 -> buf.getInt(entry + 8)
-                count == 1 && type == 3 -> (buf.getShort(entry + 8).toInt() and 0xFFFF)
-                else -> {
-                    val valueOffset = base + buf.getInt(entry + 8)
-                    if (valueOffset + 4 > buf.limit()) return null
-                    buf.getInt(valueOffset)
-                }
-            }
+            if (entry + 12 > maker.size) return null
+            val tag = buffer.getShort(entry).toInt() and 0xFFFF
+            if (tag != TAG_SHUTTER_COUNT && tag != TAG_MECHANICAL_SHUTTER_COUNT &&
+                tag != TAG_IMAGE_COUNT && tag != TAG_DELETED_IMAGE_COUNT
+            ) continue
+            val unit = typeSize(buffer.getShort(entry + 2).toInt() and 0xFFFF)
+            // 内联即够用；需要二次寻址的变体一律跳过，宁缺毋滥
+            if (unit <= 1 || unit > 4 || buffer.getInt(entry + 4) != 1) continue
+            out[tag] = if (unit == 2) (buffer.getShort(entry + 8).toInt() and 0xFFFF) else buffer.getInt(entry + 8)
         }
-        return null
+        return out.ifEmpty { null }
     }
 
-    private fun isPlausible(count: Int?): Boolean =
-        count != null && count in 1..MAX_PLAUSIBLE_COUNT
+    private fun isPlausible(count: Int): Boolean = count in 1..MAX_PLAUSIBLE_COUNT
+
+    private const val MAX_IFD_ELEMENTS = 0x100000
+
+    // ---------- 字节序小工具（一律绝对寻址，不移动 position） ----------
+
+    private fun wrap(bytes: ByteArray, bigEndian: Boolean): ByteBuffer =
+        ByteBuffer.wrap(bytes).order(if (bigEndian) ByteOrder.BIG_ENDIAN else ByteOrder.LITTLE_ENDIAN)
+
+    private fun typeSize(type: Int): Int = when (type) {
+        1, 2, 6, 7 -> 1   // BYTE / ASCII / SBYTE / UNDEFINED
+        3, 8 -> 2         // SHORT / SSHORT
+        4, 9, 11 -> 4     // LONG / SLONG / FLOAT
+        5, 10, 12 -> 8    // RATIONAL / SRATIONAL / DOUBLE
+        else -> -1
+    }
+
+    private fun copyAt(buffer: ByteBuffer, at: Int, into: ByteArray) {
+        for (i in into.indices) into[i] = buffer.get(at + i)
+    }
 }
