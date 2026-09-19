@@ -745,8 +745,12 @@ WMA 写凭据（若 V-3 通过）或 USB 侧完成注册（回退方案）；双
 | G10 >2GB 续传 | ✅ 安全化 | 偏移超出 32 位范围时退出续传改走整文件下载（修掉 `toInt()` 回绕写坏文件）。**真正的 `GetPartialObject64` 需按机身定标 → V-9** |
 | 回退闸门 | ✅ 已实现 | `ConnFlags` 总闸 + 设置页「v2.2 连接改进」开关（关闭即回 v2.1.1 行为）+ 单项 key |
 | G4 热点 `TetheringEventCallback` | ⛔ 本包受阻 | `android.net.TetheringManager` 不在 compileSdk 34/35 的**公开** stub 中（`android-36/android.jar` 才收录），AGP 8.7.3 不支持 compileSdk 36；不做隐藏 API 反射 hack。随 §10.4 targetSdk 36 一并做 |
-| G6 全局尝试预算 | ⏸ 推迟 | 需要真机成功率数据才能定阈值，盲改有「过早放弃」风险 → v2.2.1 |
-| G11 PreflightGate / ROM 矩阵、G12 统一漏斗 | ⏸ 推迟 | 本包只加了 `ap_gateway`/`ap_host_override`/`usb_grace_*` 等新事件；`assets/compat/*.json` 与码表收口放 v2.2.1（依赖 G12 先出基线） |
+| G6 全局尝试预算 | ✅ 已实现（二轮提交 `c31d695`） | `ConnectionStateMachine.RETRY_BUDGET=8`，超限停手并提示「忽略此网络后重连」；开关 `conn22_attempt_budget` |
+| G11 PreflightGate | ✅ 已实现 | `device/connect/PreflightGate.kt`：WLAN 开关 / 附近的设备 / 定位权限与总开关 / 电池豁免 / VPN / 「避开不良网络」/ OTG（小米·vivo·OPPO），含阻塞级别 + 直达设置入口；已在相机热点上时跳过硬阻断 |
+| G12 统一原因码与漏斗 | ✅ 已实现 | `ConnFunnel`：12 阶段 + 40 个原因码收口原三套文案；内存保留 12 次尝试；设置页「连接诊断」时间线可复制（AC-7）；状态行追加「停在：阶段 · 原因码」 |
+| G11 之 ROM/机身 asset JSON 与热更新 | ⏸ 仍推迟 | 现为代码内枚举 + `RomDetector.family`；`assets/compat/*.json` 与 `dontkillmyapp` 快照、`/v1/camera-rules` 式热更新留到 v2.2.1 |
+
+**真机数据点（v2.2.0）**：Z50II + vivo —— AP 模式稳定（AC-1/AC-2 通过，且 v2.1.1 在该组合下本就能连，说明 AP 主干改造未引入回归）。USB 监看周期性掉线为 **v2.1.1 既有缺陷**（`LiveViewManager` 未被本次改动触及），根因与修复见 §5.3 补充与提交 `dd54385`：USB 单帧失败要 2.5s，旧逻辑不分「机身没新帧」与「链路断了」，5 次（≈13s）即自停监看；弱光慢快门 / AF 搜索 / 写卡期间的正常静默必然触发。小米 15 Pro + Z8 组合仍未测。
 
 **验证包对应的验收项**：AC-1（换网段仍能连上）、AC-2（关蓝牙仍可连 AP）、AC-3（断开后马上再连）、AC-5（>60s 大文件不被心跳掐断）、AC-6（拔插一次自动恢复 + OTG 关闭时的提示文案）。
 
