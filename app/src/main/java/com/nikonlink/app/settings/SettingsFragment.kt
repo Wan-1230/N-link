@@ -60,6 +60,12 @@ class SettingsFragment : Fragment() {
     @Inject
     lateinit var connFlags: com.nikonlink.app.device.connect.ConnFlags
 
+    @Inject
+    lateinit var preflight: com.nikonlink.app.device.connect.PreflightGate
+
+    @Inject
+    lateinit var connFunnel: com.nikonlink.app.device.connect.ConnFunnel
+
     /** 检查更新防抖时间戳：1.5s 内重复点击忽略（PRD S3 / AC-5） */
     private var lastUpdateClickAt = 0L
 
@@ -218,6 +224,37 @@ class SettingsFragment : Fragment() {
                 else "已回退到 v2.1.1 连接行为（热点网络部分需重进 App 生效）",
                 android.widget.Toast.LENGTH_LONG
             ).show()
+        }
+
+        // v2.2（PRD §6.1 / §7.3 / AC-7）：环境预检 + 连接漏斗，文本可选中便于复制给开发者
+        binding.rowConnDiag.pressEffect()
+        binding.rowConnDiag.setOnClickListener {
+            val body = buildString {
+                appendLine("【环境检查】（✗ 会直接阻断连接，! 为提醒）")
+                preflight.checkAll(com.nikonlink.app.device.connect.PreflightGate.CHANNEL_WIFI)
+                    .forEach { item ->
+                        val mark = when {
+                            item.ok -> "✓"
+                            item.blocking -> "✗"
+                            else -> "!"
+                        }
+                        appendLine("$mark ${item.label}")
+                    }
+                appendLine()
+                appendLine("【最近连接尝试】（每台设备保留 12 次，仅存内存）")
+                appendLine(connFunnel.render())
+            }
+            val text = android.widget.TextView(requireContext()).apply {
+                this.text = body
+                setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12f)
+                setPadding(48, 24, 48, 24)
+                setTextIsSelectable(true)
+            }
+            MaterialAlertDialogBuilder(requireContext())
+                .setTitle("连接诊断")
+                .setView(android.widget.ScrollView(requireContext()).apply { addView(text) })
+                .setPositiveButton("关闭", null)
+                .show()
         }
 
         // 通用设置

@@ -29,11 +29,17 @@ class ConnFlags @Inject constructor(
         /** AP：requestNetwork 交给系统超时，并在释放后留最小间隔再重请求 */
         const val AP_SPECIFIER = "conn22_ap_specifier"
 
+        /** 全局：一轮连接的重试预算（防 AOSP 把反复失败的热点列入禁用） */
+        const val ATTEMPT_BUDGET = "conn22_attempt_budget"
+
         /** STA：网段盲扫只做 TCP 连接，握手留给最终候选 */
         const val STA_TCP_ONLY = "conn22_sta_tcp_only"
 
         /** 传输：批量传输期间心跳不再判死链路 */
         const val TRANSFER_HEARTBEAT = "conn22_transfer_heartbeat"
+
+        /** 连接前先跑环境预检（权限 / 位置开关 / OTG / VPN），硬阻断不进入重试 */
+        const val PREFLIGHT = "conn22_preflight"
 
         /** USB：detach 先进宽限窗，不立刻判死 */
         const val USB_GRACE = "conn22_usb_grace"
@@ -51,8 +57,10 @@ class ConnFlags @Inject constructor(
             AP_GATEWAY to true,
             AP_BLELESS to true,
             AP_SPECIFIER to true,
+            ATTEMPT_BUDGET to true,
             STA_TCP_ONLY to true,
             TRANSFER_HEARTBEAT to true,
+            PREFLIGHT to true,
             USB_GRACE to true,
             USB_OTG_HINT to true,
         )

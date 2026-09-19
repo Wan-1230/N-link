@@ -29,6 +29,17 @@ class ConnectionStateMachine @Inject constructor() {
         private const val INITIAL_RETRY_DELAY_MS = 1000L
         private const val MAX_RETRY_DELAY_MS = 30000L
         private const val RETRY_MULTIPLIER = 2
+
+        /**
+         * 一轮连接允许多少次自动重试（v2.2 / PRD §4.2、G6）。
+         *
+         * 旧策略「永不放弃」在相机热点上是反效果：AOSP 的 network selection 在多次
+         * 认证/关联失败后会把该 AP 逐步禁用（DISABLED_WRONG_PASSWORD /
+         * DISABLED_NO_INTERNET_ACCESS / PERMANENTLY_DISABLED，Android 10+ 应用侧读不到），
+         * 表现就是「前几次还能连，越试越连不上，去设置里忽略网络才好」。
+         * 超限后停下来把原因和处置办法交给用户，不再空转。
+         */
+        private const val RETRY_BUDGET = 8
         private const val HEARTBEAT_TIMEOUT_MS = 10000L
     }
 
@@ -253,10 +264,31 @@ class ConnectionStateMachine @Inject constructor() {
      * PRD 3.3: 指数退避重连调度
      * 初始 1s，倍增因子 2，上限 30s，永不放弃
      */
+    /** 重试预算是否生效（由 ConnectionManager 按 ConnFlags 设定，关则退回无限退避）。 */
+    @Volatile
+    var budgetEnabled: Boolean = true
+
+    /** 预算耗尽时回调（写漏斗 + 换文案），在独立线程上调用。 */
+    @Volatile
+    var onBudgetExhausted: ((Int) -> Unit)? = null
+
     private fun scheduleRetry() {
         retryJob?.cancel()
         val delay = currentRetryDelay
         _retryCount.value++
+
+        if (budgetEnabled && _retryCount.value > RETRY_BUDGET) {
+            Timber.tag(TAG).w("Retry budget exhausted after $RETRY_BUDGET attempts, stopping auto-retry")
+            onBudgetExhausted?.invoke(RETRY_BUDGET)
+            dispatch(
+                ConnectionEvent.ErrorOccurred(
+                    "自动重试已达上限（$RETRY_BUDGET 次）。继续重试会被系统拉黑这个热点，" +
+                        "请先在系统 WLAN 设置里「忽略」相机网络，再按指引重新连接",
+                    recoverable = false
+                )
+            )
+            return
+        }
 
         retryJob = scope?.launch {
             Timber.tag(TAG).d("Scheduling retry #${_retryCount.value} in ${delay}ms")
