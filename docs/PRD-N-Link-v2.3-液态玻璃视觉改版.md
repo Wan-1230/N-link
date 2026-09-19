@@ -680,6 +680,83 @@ fun View.applyGlass(m: GlassMaterial)   // 一个入口，内部按 tier 决定�
 
 ---
 
+## 十五、v2.3.0 第一包实施状态与对规范的修正
+
+> 分支 `feat-liquid-glass-ui-v2.3`，基线 `54ba902`(PRD)。构建 `:app:assembleDebug` 通过。
+> 本包范围 = **M0 的引擎与闸门 + M1 全量 + M3 的 dock/chips/操作坞 + M4 的监看 HUD**。
+> 落点：新增 `shared/ui/glass/`（5 个文件）+ `res/values/glass.xml` + `values-night/glass.xml` + `res/values/ids.xml`。
+
+### 15.1 实施中得到的四个事实修正（比规范更乐观的两处、更保守的两处）
+
+| # | 规范原设想 | 实际 | 影响 |
+|---|---|---|---|
+| **C1** | §9.1 需要 T1/T2/T3 三档，且 **T1（Android 10/11）要单独设计一套"没有模糊"的视觉** | **不需要分层**。背景模糊改为 CPU 在 1/8 降采样纹理上施算（`BoxBlur` 三趟可分离），Android 10 与 Android 16 是同一条代码路径。分层只在两处仍有意义：窗口级 blur-behind（API 31）、未来的 AGSL 折射（API 33） | **省掉整个 T1 视觉分支**，也去掉 `RenderEffect`/`BlurMaskFilter` 两条后端；AC-2 的三档走查简化为"窗口模糊有/无"两档 |
+| **C2** | §8.2 第 5 条：监看画面是 `SurfaceView`，需要 `PixelCopy` 异步抓取 | 取景画面实际是 **`ImageView`**（`fragment_liveview.xml:8 ivLiveView`），`source.draw(canvas)` 直接可采 | HUD 真模糊走通了与相册完全相同的路径，省掉 `PixelCopy` 的异步、时序、失败兜底三块工作（原估 M4 的主要风险 R4 消失） |
+| **C3** | §9.4：系统「高对比度文字」开启时**自动**开启降低透明度 | `AccessibilityManager.isHighTextContrastEnabled()` **不在 compileSdk 34/35 的公开 stub 里**（已 `javap` 核对 `android-35.jar`，该类只公开 `isEnabled` / `isTouchExplorationEnabled`）。与 v2.2 §G4 同一立场：**不做隐藏 API 反射** | 自动触发降级为「设置页手动开关」。AC-11 该项需相应改写 |
+| **C4** | §8.2 第 4 条：fling 期间零采集，靠 `OnScrollListener` 的 IDLE 结算 | ✅ **第二包已补齐**：复用相册页已有的快速滚动保护回调（`TransferFragment` 里 `adapter.setFastScrolling` 那处），加一行 `glassBackdrop?.setScrollSuppressing(fast)`，停住时补采一次。另给每个内容源单独的采集频率预算：监看 250ms、预览 120ms、相册 150ms 默认 | 关闭该偏离项，AC-6 的"列表帧预算不被玻璃吃掉"具备条件 |
+
+### 15.1b 第二包：折射终于按 §3.6 落地（而且不需要 API 33）
+
+`GlassLens.warp()` —— 圆角矩形 SDF + 二次衰减的边缘外推 + 中心微放大：
+
+- 成熟实现（AGSL `RuntimeShader` + displacement map）要 API 33，本仓 minSdk 29 用不了；
+  但我们**本来就为模糊持有一张 1/8 降采样纹理**，同一套数学直接在小纹理上跑即可。
+- 一块玻璃面的 footprint 只有约 135×21 ≈ 2800 像素，一次重算几十微秒；
+  结果按 `generation`（纹理换代计数）+ 区域缓存，**滚动时每帧只花一次位图 blit**，比 GPU 路径更省。
+- 顺带的好处：**Android 10 与 Android 16 是同一个折射效果**，不必为低版本另设计一套视觉。
+- 色散（RGB 三通道分别按不同半径取样）已实现但 `UiFlags.DISPERSION` **默认关**：
+  它是彩色，与 `colors.xml:39` 冲突，等 §14 Q1 定了再开。
+
+接入折射的面（`lens()` 只对"背后真有内容"的面生效）：相册多选操作坞、监看参数条与三个胶囊、
+预览页上下工具栏。dock 与 chip 是 L2/L3 但背后是页面底色，参数照常给、当前不产生活跃纹理。
+
+### 15.1c 第二包其余落点
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 预览页上下工具栏 | ✅ | `activity_preview.xml` 补 `previewTopBar`/`previewBottomBar` 两个 id；`vpPreview` 作纹理源，**换页时 `invalidate()`** 否则背景会停在上一张 |
+| 拍摄页照片/视频切换器 | ✅ | 「槽=L2玻璃、滑块=实体」（§4 分段控件规范）。这是 M2 组件合并之前的过渡做法 |
+| 材质热更新 | ✅ | `material` 改为带 setter 的属性，换材质时作废透镜与对比度缓存，避免开关后拿旧半径继续画 |
+| 通栏半径取 0 | ✅ | 贴屏幕边的通栏做圆角会像"漏涂"；预览页两面用 `radiusPx = 0`，层级感交给 tint + 模糊 + 内顶高光 |
+
+
+### 15.2 已落地清单
+
+| 项 | 状态 | 落点 |
+|---|---|---|
+| 材质 token（半径/模糊/tint/四边信息/阴影/配额常量） | ✅ | `values/glass.xml` + `values-night/glass.xml` **逐项成对**（顺手补掉 D3 的一半风险） |
+| 玻璃绘制器：tint + ①外描边 ②内顶高光 ③内底反光 ④四角透镜亮线 | ✅ | `GlassSurfaceDrawable`。绘制路径**零分配**（shader 在 `onBoundsChange` 重建） |
+| backdrop 采集器（1/8 缩放、长边 ≤320px、单实例、复用位图） | ✅ | `GlassCoordinator` + `BoxBlur`。一个内容源一张纹理，多面玻璃共用 |
+| 对比度自适应（WCAG AA 4.5:1，加浓 3 档后退回不透明白底） | ✅ | `GlassSurfaceDrawable.guardedTint`，复用采集时的 `avgLuminance`，结果带缓存 |
+| 回退闸门 | ✅ | `UiFlags`（`CLASSIC`/`REDUCE_TRANSPARENCY`/`BLUR`/`MOTION`），照抄 `ConnFlags` 的 prefs 与总闸形态 |
+| **M1：27 弹窗 + 3 sheet 真模糊** | ✅ | `NlGlass.dialog/sheet`；`GlassAlertDialogBuilder.create()` 挂钩，所以 `.show()` 与 `.create().show()` 两种写法都覆盖。玻璃关闭时显式回落 `NlDialog` 原主题 |
+| **dock 悬浮玻璃** | ✅ | `MainActivity.styleDock()`。**几何与材质一起切**：关闭时高度/内缩/分割线逐项还原（AC-12 要求逐像素相等） |
+| chips（相册筛选 + 设备页 STA 子模式） | ✅ | `renderChipBackground()`。选中态保持实体填充；从注册表摘除，避免开关重涂把实心盖回玻璃 |
+| 相册多选操作坞 | ✅ | 以 `gridPhotos` 为 backdrop 源 —— 本 App 里"背后有可透之物"最典型的一处 |
+| 监看 HUD（参数条 + 三个胶囊） | ✅ | 以 `ivLiveView` 为源。**圆形图标按钮刻意没做**：圆角矩形材质会把圆画成圆角方块 |
+| 设置页两个开关 | ✅ | 「液态玻璃视觉」「降低透明度」，`recreate()` 兜住常驻 Fragment 的一次性上材质 |
+
+### 15.3 仍未做（不要在走查时找）
+
+- **M2 结构合并**：顶栏 ×3、分段控件抽成一个组件（拍摄页现在只是"槽玻璃化"的过渡做法）、重复 item 布局。这是 §2.2 根因 5，做完才能"一处改全局生效"。
+- **顶栏滚动联动**（§4 顶栏项、§6.5）：需要每页的滚动偏移驱动 tint/模糊，依赖 M2 先抽出 `NlGlassTopBar`。
+- **传输期降级**（§8.4 第 2 条，`bulkDepth > 0` 时 HUD 退静态 tint）：要读 `PtpSessionManager` 的计数，属连接层文件，本包按"不碰用户未提交改动"的约定跳过。当前用监看页 250ms 采集预算兜住大部分开销。
+- **dock 未压进内容区**：内容容器仍在 dock 之上结束，所以 dock 拿不到活跃纹理、看不到真透景。要改必须给 4 个 Fragment 的滚动区各加底部内衬（且「经典外观」下要逐项还原），是布局架构改动。**刻意不做**：它背后本来就是页面底色，按 §1.2 三判据第一条，做了也看不出来。
+- **D2 真 edge-to-edge**：`themes.xml:26` 的 opt-out 原样保留。dock 没压进内容区因此不依赖它；targetSdk 36 前必须做（§9.6 的外部 deadline 未变）。
+- **M5 动效弹簧**（`SPRING_*` / 深度转场）、`values-night` 其余 token 补齐、大屏 `w600dp/w840dp`、连续曲率圆角、sheen/tilt、`EXIF` sheet 组件化、`NlFeedback` 收 40 处 Toast。
+- 设备页深色 hero 卡：**主动放弃**。纯白页底上把 `#000000` 反色卡改成半透明会变灰，违反 §1.2 三判据第一条。
+- **AC-4 的运行时配额断言**没做：当前靠"一个内容源一张纹理"的结构天然把采集次数压到 1 次/页，但 debug 构建没有硬断言。
+
+### 15.4 验收项状态
+
+**本包可验**：AC-1（材质一致性）、AC-3（弹窗/sheet 真模糊 + 27 处行为零变化）、AC-5（对比度自适应，需构造"预览页全白图"复验）、AC-6（fling 期零采集，第二包已具备）、AC-8（按压与拖选共存 —— 未改 `PressEffect`，冲突面为零）、AC-12（回退闸门：几何与材质双双逐项还原）。
+**尚不可签字**：AC-2（需三台不同 Android 版本真机）、AC-4（无运行时断言）、AC-7（传输期降级未做）、AC-9（功耗需真机 `batterystats`）、AC-10（Monkey/旋转压测）、AC-11（高对比度自动触发已按 C3 降级为手动，其余项需 TalkBack 实走）、AC-13（大屏）。
+
+> 里程碑对照：M0 ✅（除 D2）、M1 ✅、M3 ✅（除顶栏）、M4 大部分 ✅（监看 + 预览，圆形图标按钮除外）、M2 ❌、M5 ❌、M6 ⏳ 部分。
+
+
+---
+
 ## 附录 A：Token 速查表（可直接抄进 `res/values/glass.xml` + `values-night/glass.xml`）
 
 ```xml

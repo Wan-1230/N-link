@@ -63,6 +63,18 @@
         <item name="dialogCornerRadius">12dp</item>
     </style>
 
+    <!--
+      v2.3 液态玻璃弹窗（PRD §3.2 / §3.5）。由 NlGlass.dialog() 在玻璃开启时显式选用，
+      关闭时回落到上面的 NlDialog —— 弹窗外观必须逐值等于 v2.2（AC-12）。
+      面板底改成半透明染色，Android 12+ 的窗口级 blur-behind 才透得出来；
+      elevationOverlayEnabled=false 是因为 M3 的高度叠加会把半透明底染脏。
+    -->
+    <style name="NlDialog.Glass" parent="NlDialog">
+        <item name="colorSurface">@color/glass_dialog_surface</item>
+        <item name="dialogCornerRadius">16dp</item>
+        <item name="elevationOverlayEnabled">false</item>
+    </style>
+
     <!-- 黑白开关：滑块顺滑平移，背景渐变 -->
     <style name="Widget.NlSwitch" parent="Widget.Material3.CompoundButton.Switch">
         <item name="thumbTint">@color/switch_thumb</item>

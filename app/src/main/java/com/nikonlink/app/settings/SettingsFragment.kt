@@ -16,7 +16,8 @@ import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.nikonlink.app.shared.ui.glass.NlGlass
+import com.nikonlink.app.shared.ui.glass.UiFlags
 import com.nikonlink.app.BuildConfig
 import com.nikonlink.app.R
 import com.nikonlink.app.databinding.FragmentSettingsBinding
@@ -81,14 +82,14 @@ class SettingsFragment : Fragment() {
             requireContext().contentResolver.openOutputStream(uri)?.use { out ->
                 packed.inputStream().use { it.copyTo(out) }
             }
-            MaterialAlertDialogBuilder(requireContext())
+            NlGlass.dialog(requireContext())
                 .setTitle("导出成功")
                 .setMessage("日志已保存，可在查看详情或提交反馈时附上。")
                 .setPositiveButton("确定", null)
                 .show()
         }.onFailure { e ->
             Timber.w(e, "Export log failed")
-            MaterialAlertDialogBuilder(requireContext())
+            NlGlass.dialog(requireContext())
                 .setTitle("导出失败")
                 .setMessage("日志导出失败：${e.message}")
                 .setPositiveButton("确定", null)
@@ -112,6 +113,9 @@ class SettingsFragment : Fragment() {
         binding.switchWifi5G.isChecked = settings.preferWifi5GHz
         // v2.2 回退总闸：关闭后所有新连接逻辑回到 v2.1.1 行为
         binding.switchConn22.isChecked = connFlags.masterEnabled()
+        // v2.3 玻璃回退总闸 + 可访问性开关（PRD §9.4）
+        binding.switchGlass.isChecked = UiFlags.glassEnabled(requireContext())
+        binding.switchReduceTransparency.isChecked = UiFlags.reduceTransparency(requireContext())
         binding.switchMarkAutoDownload.isChecked = settings.markAutoDownload
         binding.switchShareKeepGps.isChecked = settings.shareKeepGps
         binding.tvQualityValue.text = settings.downloadQuality
@@ -226,6 +230,27 @@ class SettingsFragment : Fragment() {
             ).show()
         }
 
+        // v2.3 液态玻璃总闸。即时生效，不重启界面 —— 材质走覆盖层，回退不换代码。
+        binding.switchGlass.setOnCheckedChangeListener { _, checked ->
+            UiFlags.set(requireContext(), UiFlags.CLASSIC, !checked)
+            eventLogger.event("setting", "key" to "glass_enabled", "value" to checked)
+            android.widget.Toast.makeText(
+                requireContext(),
+                if (checked) "已启用液态玻璃视觉" else "已回到经典外观（v2.2 视觉）",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+            // 四个 Tab 的 Fragment 是常驻的（MainActivity 用 hide/show 而非返回栈），
+            // 只靠重涂覆盖不到在 onViewCreated 里一次性上的材质，所以整页重建一次。
+            requireActivity().recreate()
+        }
+
+        // 降低透明度：保留层级（描边/圆角/阴影），但不透明、不模糊
+        binding.switchReduceTransparency.setOnCheckedChangeListener { _, checked ->
+            UiFlags.set(requireContext(), UiFlags.REDUCE_TRANSPARENCY, checked)
+            eventLogger.event("setting", "key" to "glass_reduce_transparency", "value" to checked)
+            requireActivity().recreate()
+        }
+
         // v2.2（PRD §6.1 / §7.3 / AC-7）：环境预检 + 连接漏斗，文本可选中便于复制给开发者
         binding.rowConnDiag.pressEffect()
         binding.rowConnDiag.setOnClickListener {
@@ -250,7 +275,7 @@ class SettingsFragment : Fragment() {
                 setPadding(48, 24, 48, 24)
                 setTextIsSelectable(true)
             }
-            MaterialAlertDialogBuilder(requireContext())
+            NlGlass.dialog(requireContext())
                 .setTitle("连接诊断")
                 .setView(android.widget.ScrollView(requireContext()).apply { addView(text) })
                 .setPositiveButton("关闭", null)
@@ -261,7 +286,7 @@ class SettingsFragment : Fragment() {
         binding.rowTheme.pressEffect()
         binding.rowTheme.setOnClickListener {
             val options = arrayOf("跟随系统", "浅色", "深色")
-            MaterialAlertDialogBuilder(requireContext())
+            NlGlass.dialog(requireContext())
                 .setTitle("深浅色模式")
                 .setItems(options) { _, which ->
                     AppCompatDelegate.setDefaultNightMode(
@@ -278,7 +303,7 @@ class SettingsFragment : Fragment() {
 
         binding.rowClearCache.pressEffect()
         binding.rowClearCache.setOnClickListener {
-            MaterialAlertDialogBuilder(requireContext())
+            NlGlass.dialog(requireContext())
                 .setTitle("清除缓存")
                 .setMessage("将清除缩略图缓存与临时下载文件，不会影响已保存的照片。")
                 .setPositiveButton("清除") { _, _ ->
@@ -310,7 +335,7 @@ class SettingsFragment : Fragment() {
 
         binding.rowAbout.pressEffect()
         binding.rowAbout.setOnClickListener {
-            MaterialAlertDialogBuilder(requireContext()).setTitle("关于 N-Link")
+            NlGlass.dialog(requireContext()).setTitle("关于 N-Link")
                 .setMessage(
                     "当前版本 v${BuildConfig.VERSION_NAME}\n\n为尼康 Z 系列微单打造的第三方连接应用：" +
                         "永不断联的双通道连接、高速传输、遥控拍摄与实时监看。"
@@ -329,7 +354,7 @@ class SettingsFragment : Fragment() {
         // 帮助与反馈
         binding.rowTutorial.pressEffect()
         binding.rowTutorial.setOnClickListener {
-            MaterialAlertDialogBuilder(requireContext()).setTitle("使用教程")
+            NlGlass.dialog(requireContext()).setTitle("使用教程")
                 .setMessage(
                     "1. 在「设备」页连接相机（WiFi / USB）\n" +
                         "2. 在「相册」页浏览并下载照片\n" +
@@ -340,7 +365,7 @@ class SettingsFragment : Fragment() {
         }
         binding.rowFaq.pressEffect()
         binding.rowFaq.setOnClickListener {
-            MaterialAlertDialogBuilder(requireContext()).setTitle("常见问题")
+            NlGlass.dialog(requireContext()).setTitle("常见问题")
                 .setMessage(
                     "Q: 连接后相机无反应？\n" +
                         "A: 请确认相机 WiFi 模式为「连接至智能设备」，且手机与相机在同一网络。\n\n" +
@@ -367,7 +392,7 @@ class SettingsFragment : Fragment() {
      */
     private fun showFeedbackDialog() {
         val groupNumber = getString(R.string.feedback_qq_group_number)
-        MaterialAlertDialogBuilder(requireContext())
+        NlGlass.dialog(requireContext())
             .setTitle(R.string.feedback_qq_group_title)
             .setMessage(getString(R.string.feedback_qq_group_message, groupNumber))
             .setPositiveButton("加入 QQ 群") { _, _ -> joinQqGroup(groupNumber) }
@@ -411,7 +436,7 @@ class SettingsFragment : Fragment() {
 
     /** 未安装 QQ（或拉起失败）：明确告知 + 给出复制群号出口 */
     private fun showQqNotInstalledDialog(groupNumber: String) {
-        MaterialAlertDialogBuilder(requireContext())
+        NlGlass.dialog(requireContext())
             .setTitle(R.string.feedback_qq_not_installed)
             .setMessage(getString(R.string.feedback_qq_not_installed_message, groupNumber))
             .setPositiveButton(R.string.feedback_copy_group_number) { _, _ -> copyQqGroupNumber(groupNumber) }
@@ -517,7 +542,7 @@ class SettingsFragment : Fragment() {
 
     /** 检查失败后的兜底入口：引导用户自己去发布页看（PRD S5） */
     private fun showReleasePageDialog() {
-        MaterialAlertDialogBuilder(requireContext())
+        NlGlass.dialog(requireContext())
             .setTitle("检查更新")
             .setMessage("可前往 GitHub 发布页手动查看最新版本。")
             .setPositiveButton("前往发布页") { _, _ -> openUrl(UpdateChecker.RELEASES_PAGE_URL) }
@@ -542,7 +567,7 @@ class SettingsFragment : Fragment() {
     private fun singleChoice(title: String, options: Array<String>, current: String, onPick: (String) -> Unit) {
         val checkedIdx = options.indexOf(current).coerceAtLeast(0)
         var selection = checkedIdx
-        MaterialAlertDialogBuilder(requireContext())
+        NlGlass.dialog(requireContext())
             .setTitle(title)
             .setSingleChoiceItems(options, checkedIdx) { _, which -> selection = which }
             .setPositiveButton("确定") { _, _ -> onPick(options[selection]) }

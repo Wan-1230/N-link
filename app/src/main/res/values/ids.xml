@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 玻璃背景纹理协调器挂在内容源的 tag 上（GlassCoordinator） -->
+    <item name="glass_coordinator" type="id" />
+    <!-- 已登记面使用的材质提供者，供开关变更时重涂（GlassRegistry） -->
+    <item name="glass_provider" type="id" />
+</resources>

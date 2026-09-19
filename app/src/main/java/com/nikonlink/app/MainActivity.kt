@@ -28,6 +28,9 @@ import com.nikonlink.app.settings.SettingsFragment
 import com.nikonlink.app.camera.gallery.TransferFragment
 import com.nikonlink.app.device.service.ConnectionService
 import com.nikonlink.app.shared.common.AppEventLogger
+import com.nikonlink.app.shared.ui.glass.GlassTokens
+import com.nikonlink.app.shared.ui.glass.UiFlags
+import com.nikonlink.app.shared.ui.glass.applyGlass
 import com.nikonlink.app.shared.ui.pressEffect
 import com.nikonlink.app.shared.update.UpdateChecker
 import com.nikonlink.app.shared.update.UpdatePrompt
@@ -56,12 +59,18 @@ class MainActivity : AppCompatActivity() {
         /** 双击退出的时间窗：2 秒内再次按返回键才退出，超时重新计时 */
         private const val BACK_EXIT_INTERVAL_MS = 2_000L
 
+        /** v2.2 基线：dock 不悬浮时的高度，「经典外观」要逐值还原（AC-12） */
+        private const val DOCK_BASELINE_HEIGHT_DP = 60
+
         /** 启动自动检查更新：每进程只跑一次（旋转/重建 Activity 不重跑） */
         @Volatile
         private var autoCheckStarted = false
     }
 
     private lateinit var binding: ActivityMainBinding
+
+    /** 「经典外观 / 降低透明度」开关变更时重涂 dock */
+    private val glassRefresh: () -> Unit = { runOnUiThread { styleDock() } }
 
     @Inject
     lateinit var updateChecker: UpdateChecker
@@ -116,11 +125,54 @@ class MainActivity : AppCompatActivity() {
 
         setupFragments()
         setupBottomNav()
+        UiFlags.addOnChangeListener(glassRefresh)
+        styleDock()
         setupBackExit()
         handleOpenTab(intent)
         checkPermissionsAndStart()
         maybeAutoCheckUpdate()
     }
+
+    override fun onDestroy() {
+        UiFlags.removeOnChangeListener(glassRefresh)
+        super.onDestroy()
+    }
+
+    /**
+     * 底部导航 dock 的材质与几何（PRD §4）。
+     *
+     * 几何（悬浮内缩、高度、去掉 1px 分割线）和材质一起做，且关闭玻璃时**逐值还原**
+     * XML 里的 v2.2 基线 —— 回退闸门要求"关掉后逐像素等于 v2.2"，只还原 background
+     * 是不够的（AC-12）。
+     */
+    private fun styleDock() {
+        val glass = UiFlags.glassEnabled(this)
+        val bar = binding.bottomBar
+        val lp = bar.layoutParams as android.widget.LinearLayout.LayoutParams
+        if (glass) {
+            val insetH = resources.getDimensionPixelSize(R.dimen.glass_dock_inset_h)
+            lp.height = resources.getDimensionPixelSize(R.dimen.glass_dock_height)
+            lp.marginStart = insetH
+            lp.marginEnd = insetH
+            lp.bottomMargin = resources.getDimensionPixelSize(R.dimen.glass_dock_inset_bottom)
+            bar.layoutParams = lp
+            bar.applyGlass { GlassTokens.dock(it.context) }
+            // 分割线的分隔职责交给玻璃的四条边信息
+            binding.navDivider.visibility = View.GONE
+        } else {
+            lp.height = DOCK_BASELINE_HEIGHT_DP.dpToPx()
+            lp.marginStart = 0
+            lp.marginEnd = 0
+            lp.bottomMargin = 0
+            bar.layoutParams = lp
+            bar.background = null
+            bar.setBackgroundColor(ContextCompat.getColor(this, R.color.nav_background))
+            binding.navDivider.visibility = View.VISIBLE
+        }
+    }
+
+    private fun Int.dpToPx(): Int =
+        (this * resources.displayMetrics.density).toInt()
 
     /**
      * 双击返回退出：首次按返回键提示「再按一次退出」，2 秒内再次按下才真正退出，

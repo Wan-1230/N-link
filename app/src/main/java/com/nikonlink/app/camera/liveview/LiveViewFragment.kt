@@ -18,8 +18,15 @@ import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.bottomsheet.BottomSheetDialog
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.nikonlink.app.shared.ui.glass.GlassCoordinator
+import com.nikonlink.app.shared.ui.glass.GlassRegistry
+import com.nikonlink.app.shared.ui.glass.GlassTokens
+import com.nikonlink.app.shared.ui.glass.NlGlass
+import com.nikonlink.app.shared.ui.glass.UiFlags
+import com.nikonlink.app.shared.ui.glass.applyGlass
 import com.nikonlink.app.MainActivity
+import androidx.core.content.ContextCompat
+import com.nikonlink.app.R
 import com.nikonlink.app.databinding.DialogParamPickerBinding
 import com.nikonlink.app.databinding.FragmentLiveviewBinding
 import com.nikonlink.app.capture.ShootingState
@@ -86,6 +93,7 @@ class LiveViewFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         requireActivity().window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        applyGlassHud()
         setupControls()
         setupShutter()
         setupParams()
@@ -115,6 +123,42 @@ class LiveViewFragment : Fragment() {
     }
 
     // ---------------- 顶部与辅助控件 ----------------
+
+    /**
+     * 监看 HUD 玻璃化（PRD §5.2 —— 全 App 观感收益最高的一处）。
+     *
+     * 取景画面是 `ImageView`（不是 SurfaceView），所以能直接用 `source.draw()` 采到
+     * 降采样纹理，不需要 PixelCopy 那条异步路径 —— 这比 PRD §8.2 第 5 条设想得更简单。
+     *
+     * 只玻璃化**矩形**面（参数条与胶囊）：圆形图标按钮（`bg_lv_icon` / 全屏按钮）
+     * 用圆角矩形材质画出来会变成"圆角方块"，所以保持原样。
+     * 对焦框 `bg_focus_box` 是取景辅助、不是容器，同样不动（PRD 附录 B）。
+     */
+    private fun applyGlassHud() {
+        val ctx = requireContext()
+        val pills = listOf(binding.tvModeTag, binding.btnAfMode, binding.tvPerformance)
+        if (!UiFlags.glassEnabled(ctx)) {
+            // 回到 v2.2：参数条用原来的 60% 黑遮罩，胶囊用原 drawable
+            binding.paramsBar.setBackgroundColor(ContextCompat.getColor(ctx, R.color.liveview_scrim))
+            GlassRegistry.unregister(binding.paramsBar)
+            pills.forEach {
+                it.setBackgroundResource(R.drawable.bg_lv_pill)
+                it.elevation = 0f
+                GlassRegistry.unregister(it)
+            }
+            return
+        }
+        val coord = GlassCoordinator.attach(binding.ivLiveView)
+        // 监看已经在吃视频解码，纹理采集降到 ~4fps（PRD §8.4 的三重负载场景）
+        coord.minRefreshMs = 250L
+        val stripRadius = ctx.resources.getDimension(R.dimen.glass_radius_m)
+        binding.paramsBar.applyGlass(coord) {
+            GlassTokens.hud(it.context).copy(radiusPx = stripRadius)
+        }
+        pills.forEach { pill ->
+            pill.applyGlass(coord) { GlassTokens.hud(pill.context) }
+        }
+    }
 
     private fun setupControls() {
         binding.btnClose.pressEffect()
@@ -229,7 +273,7 @@ class LiveViewFragment : Fragment() {
     private fun showMeteringMenu() {
         val options = arrayOf("矩阵测光", "中央重点", "点测光", "高光重点")
         val codes = listOf(3, 2, 4, 0x8010)
-        MaterialAlertDialogBuilder(requireContext())
+        NlGlass.dialog(requireContext())
             .setTitle("测光模式")
             .setItems(options) { _, which ->
                 paramsViewModel.setMeteringMode(codes[which])
@@ -268,7 +312,7 @@ class LiveViewFragment : Fragment() {
         val current = paramsViewModel.exposureProgram.value
         val checkedIndex = modes.indexOfFirst { it.first == current.rawValue }
         val labels = modes.map { it.second }.toTypedArray()
-        MaterialAlertDialogBuilder(requireContext())
+        NlGlass.dialog(requireContext())
             .setTitle("拍摄模式（远程切换）")
             .setMessage("当前: ${current.currentValue.ifBlank { "--" }}")
             .setSingleChoiceItems(labels, checkedIndex) { dialog, which ->
@@ -483,7 +527,7 @@ class LiveViewFragment : Fragment() {
         onConfirm: (Int) -> Unit
     ) {
         if (displayValues.isEmpty() || displayValues.size != rawValues.size) return
-        val dialog = BottomSheetDialog(requireContext())
+        val dialog = NlGlass.sheet(requireContext())
         val pickerBinding = DialogParamPickerBinding.inflate(layoutInflater)
         dialog.setContentView(pickerBinding.root)
         pickerBinding.tvPickerTitle.text = title

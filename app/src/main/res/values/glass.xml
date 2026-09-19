@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  液态玻璃材质 token（PRD v2.3 §3、附录 A）
+  规范：每个颜色都必须有 values-night 对应值；染色一律中性（白/黑 + alpha），
+  彩色只允许从被透射的内容里来（colors.xml:39「状态色仅灰度」不受影响）。
+-->
+<resources>
+    <!-- ===== 半径 ===== -->
+    <dimen name="glass_radius_xxs">8dp</dimen>
+    <dimen name="glass_radius_s">12dp</dimen>
+    <dimen name="glass_radius_m">16dp</dimen>
+    <dimen name="glass_radius_l">20dp</dimen>
+    <dimen name="glass_radius_xl">28dp</dimen>
+
+    <!-- ===== 模糊半径（dp；实现层在 1/8 降采样的纹理上施算，故开销与密度无关） ===== -->
+    <item name="glass_blur_s" format="float" type="dimen">12</item>
+    <item name="glass_blur_m" format="float" type="dimen">24</item>
+    <item name="glass_blur_l" format="float" type="dimen">40</item>
+    <item name="glass_blur_xl" format="float" type="dimen">60</item>
+
+    <!-- ===== 染色 tint ===== -->
+    <color name="glass_tint_flat">#F2FFFFFF</color>
+    <color name="glass_tint_content">#D9FFFFFF</color>
+    <color name="glass_tint_moving">#EAFFFFFF</color>
+    <color name="glass_tint_dark">#BF000000</color>
+    <color name="glass_tint_scrim">#99000000</color>
+    <!-- 按压时叠加的中性提浓量（alpha 加数） -->
+    <color name="glass_tint_press">#14000000</color>
+
+    <!-- ===== 四条边信息：外描边 / 内顶高光 / 内底反光 / 四角透镜亮线 ===== -->
+    <color name="glass_stroke_outer">#33000000</color>
+    <color name="glass_rim_top">#66FFFFFF</color>
+    <color name="glass_rim_bottom">#1A000000</color>
+    <color name="glass_edge_lens">#4DFFFFFF</color>
+
+    <!-- ===== 阴影（L3 用 elevation 走 GPU 路径，L1/L2 用描边近似） ===== -->
+    <color name="glass_shadow_key">#14000000</color>
+    <color name="glass_shadow_ambient">#0F000000</color>
+    <color name="glass_shadow_floating">#1F000000</color>
+    <dimen name="glass_elevation_l3">10dp</dimen>
+    <dimen name="glass_elevation_l1">2dp</dimen>
+    <dimen name="glass_stroke_w">1dp</dimen>
+    <dimen name="glass_stroke_w_thin">0.5dp</dimen>
+
+    <!-- ===== dock 几何（悬浮：四周内缩，分割线职责交给 rim） ===== -->
+    <dimen name="glass_dock_height">62dp</dimen>
+    <dimen name="glass_dock_inset_h">12dp</dimen>
+    <dimen name="glass_dock_inset_bottom">10dp</dimen>
+
+    <!-- ===== 弹窗面板底（配合窗口级 blur-behind 使用） ===== -->
+    <color name="glass_dialog_surface">#F0FFFFFF</color>
+
+    <!-- ===== 运行时预算与配额（PRD §3.1、§8.2） ===== -->
+    <item name="glass_backdrop_downscale" format="float" type="dimen">0.125</item>
+    <integer name="glass_backdrop_max_long_edge">320</integer>
+    <integer name="glass_backdrop_debounce_ms">120</integer>
+    <integer name="glass_backdrop_scroll_idle_ms">90</integer>
+    <integer name="glass_max_blur_surfaces">3</integer>
+    <integer name="glass_max_coverage_pct">45</integer>
+</resources>
