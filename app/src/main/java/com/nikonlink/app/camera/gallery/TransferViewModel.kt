@@ -297,6 +297,22 @@ class TransferViewModel @Inject constructor(
     private val pendingHdThumbs = mutableSetOf<Int>()
 
     /**
+     * 批量原图传输期间攒下来的缩略图请求（PRD v2.2 G9）。
+     *
+     * PTP 命令通道全局串行，原图分块与缩略图是同一支队伍：下载期间继续发缩略图，
+     * 换来的只是「每张原图都慢一截」，而缩略图本来就是后台增强，晚几秒无感。
+     * 传输一停就整批补发（见 [drainDeferredThumbnails]）。
+     */
+    private val deferredThumbs = LinkedHashSet<Int>()
+    private val deferredHdThumbs = LinkedHashSet<Int>()
+
+    /**
+     * 缩略图已由**本地原图**生成过的 handle（下载完成时回填，长边 1024）。
+     * 这些格子再向相机要 0x90C4 是纯粹的倒退与带宽浪费，直接不再发。
+     */
+    private val localHdThumbs = mutableSetOf<Int>()
+
+    /**
      * 缩略图「内容更新」计数器：高清替换小图时 handle 集合并未变化，
      * Set 相等不会触发 StateFlow 发射，因此用递增计数通知 UI 重绘可见项。
      */
@@ -389,12 +405,29 @@ class TransferViewModel @Inject constructor(
                 }
             }
         }
-        // 高清缩略图升级：下载原图后本地重生成，网格局部重绑展示清晰版
+        // 高清缩略图升级：下载原图后本地已生成高清缩略图（内存 + 磁盘都已回填），
+        // 这里**只重绘、绝不再走 PTP**。旧实现转手调用 requestThumbnail(handle)，
+        // 而该 handle 此时已在 _thumbnails 里 → 落到 upgradeThumbnailToHd → 向相机
+        // 重取一次 0x90C4：每下载一张就白插队一次几百 KB 的传输，还会再 bump 一次
+        // 升级计数触发网格局部重绘 → 被 LruCache 驱逐的格子又发请求，形成自激循环。
+        // 这即是「网格批量下载时单张明显变慢」的主要放大器。
         viewModelScope.launch {
             transferManager.thumbnailUpgrades.collect { handle ->
                 pendingThumbs.remove(handle)
-                _thumbnails.value = _thumbnails.value - handle
-                requestThumbnail(handle)
+                pendingHdThumbs.remove(handle)
+                localHdThumbs.add(handle)
+                if (handle in _thumbnails.value) {
+                    _thumbUpgradeTick.value = _thumbUpgradeTick.value + 1
+                } else {
+                    _thumbnails.value = _thumbnails.value + handle
+                }
+            }
+        }
+        // 原图批量传输期间让路：传输结束后把攒下的缩略图请求一次性补发。
+        // 缓存能命中的项不受影响（让路只拦网络请求），网格不会因此变白。
+        viewModelScope.launch {
+            transferManager.transferState.collect { state ->
+                if (state !is TransferState.Downloading) drainDeferredThumbnails()
             }
         }
         // F2 + F1 批量收尾：下载状态变化时刷新已下载集合；
@@ -1002,6 +1035,12 @@ class TransferViewModel @Inject constructor(
                     var bitmap = thumbnailCache.fromMemory(handle)
                         ?: thumbnailCache.get(handle)
                     if (bitmap == null) {
+                        // 让路：原图批量传输期间不占用串行命令通道发缩略图，
+                        // 传输结束由 drainDeferredThumbnails 整批补发
+                        if (transferManager.isBulkTransferRunning()) {
+                            deferredThumbs.add(handle)
+                            return@withPermit
+                        }
                         // 第一段：小图秒出
                         bitmap = transferManager.fetchThumbnailFast(handle)
                             ?.let { thumbnailCache.putBytes(handle, it) }
@@ -1021,9 +1060,18 @@ class TransferViewModel @Inject constructor(
     /**
      * 后台把某张缩略图升级为高清预览（0x90C4）。
      * 失败静默——网格继续显示已到位的小图，不影响可用性。
+     *
+     * 两种情况直接跳过：① 本地已有由原图生成的 1024 高清缩略图，向相机重取一次
+     * 0x90C4 纯属倒退（它只有几百 KB 的机身预览，还占一条串行命令通道）；
+     * ② 原图批量传输在跑，让路到传输结束后补发。
      */
     private fun upgradeThumbnailToHd(handle: Int) {
-        if (handle < 0 || !pendingHdThumbs.add(handle)) return
+        if (handle < 0 || handle in localHdThumbs) return
+        if (transferManager.isBulkTransferRunning()) {
+            deferredHdThumbs.add(handle)
+            return
+        }
+        if (!pendingHdThumbs.add(handle)) return
         viewModelScope.launch {
             hdThumbSemaphore.withPermit {
                 try {
@@ -1038,6 +1086,20 @@ class TransferViewModel @Inject constructor(
                     pendingHdThumbs.remove(handle)
                 }
             }
+        }
+    }
+
+    /** 原图传输停了：把让路期间攒下的缩略图请求整批补发 */
+    private fun drainDeferredThumbnails() {
+        if (deferredThumbs.isNotEmpty()) {
+            val pending = deferredThumbs.toList()
+            deferredThumbs.clear()
+            pending.forEach { if (it !in _thumbnails.value) requestThumbnail(it) }
+        }
+        if (deferredHdThumbs.isNotEmpty()) {
+            val pending = deferredHdThumbs.toList()
+            deferredHdThumbs.clear()
+            pending.forEach { upgradeThumbnailToHd(it) }
         }
     }
 
@@ -1258,17 +1320,18 @@ class TransferViewModel @Inject constructor(
     }
 
     /**
-     * 下载单张照片
+     * 下载单张照片。
+     *
+     * 走 [TransferManager.enqueue] 而不是直接调 `downloadPhoto()`：入队后传输挂在
+     * 应用级 scope 上，页面销毁不会掐断它，进度/去重/断点也只有一套口径。
      */
     fun downloadPhoto(file: CameraFile) {
-        viewModelScope.launch {
-            val result = transferManager.downloadPhoto(file)
-            _message.value = when (result) {
-                is TransferResult.Success -> "已保存: ${file.fileName}"
-                is TransferResult.Failed -> "下载失败: ${result.reason}"
-                is TransferResult.Cancelled -> "已取消"
-            }
+        if (!transferManager.hasActiveSession()) {
+            _message.value = "相机未连接，无法下载"
+            return
         }
+        transferManager.enqueue(listOf(file))
+        _message.value = "已加入队列: ${file.fileName}"
     }
 
     /**

@@ -15,12 +15,18 @@ import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.exifinterface.media.ExifInterface
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 import com.google.android.material.bottomsheet.BottomSheetDialog
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.nikonlink.app.shared.ui.glass.GlassCoordinator
+import com.nikonlink.app.shared.ui.glass.GlassRegistry
+import com.nikonlink.app.shared.ui.glass.GlassTokens
+import com.nikonlink.app.shared.ui.glass.NlGlass
+import com.nikonlink.app.shared.ui.glass.UiFlags
+import com.nikonlink.app.shared.ui.glass.applyGlass
 import com.nikonlink.app.R
 import com.nikonlink.app.camera.data.PhotoMarkRepository
 import com.nikonlink.app.databinding.ActivityPreviewBinding
@@ -94,6 +100,9 @@ class PreviewActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityPreviewBinding
 
+    /** 上下工具栏的背景纹理源（= ViewPager2 里的照片），换页时要作废 */
+    private var previewGlass: GlassCoordinator? = null
+
     /** 整组照片（由 Intent 基本类型数组重建，format 用 classifyFormat 还原） */
     private lateinit var files: List<CameraFile>
 
@@ -120,6 +129,7 @@ class PreviewActivity : AppCompatActivity() {
         }
         currentPosition = intent.getIntExtra(EXTRA_POSITION, 0).coerceIn(0, files.size - 1)
         file = files[currentPosition]
+        applyGlassBars()
 
         updateTopBar()
         setupViewPager()
@@ -135,7 +145,7 @@ class PreviewActivity : AppCompatActivity() {
         binding.btnShare.setOnClickListener { showSharePanel() }
 
         binding.btnMore.setOnClickListener {
-            MaterialAlertDialogBuilder(this)
+            NlGlass.dialog(this)
                 .setTitle(file.fileName)
                 .setItems(arrayOf("下载原图", "查看拍摄信息")) { _, which ->
                     when (which) {
@@ -165,15 +175,19 @@ class PreviewActivity : AppCompatActivity() {
     /** 订阅当前文件的下载进度；切页 / onStart 都会重订阅，实现「退出再进入仍显示进度」 */
     private fun subscribeProgress() {
         progressJob?.cancel()
+        val handle = file.handle
         progressJob = lifecycleScope.launch {
-            transferManager.observeDownloadProgress(file.handle).collect { progress ->
-                renderDownloadProgress(progress)
+            transferManager.observeDownloadProgress(handle).collect { progress ->
+                // 下载改由应用级队列驱动后，进度/完成事件很可能在用户翻到别页之后才到，
+                // 因此底部栏只认「仍在显示的那一张」，路径则始终回填到它自己所在的页。
+                if (handle != file.handle) return@collect
+                renderDownloadProgress(progress, handle)
             }
         }
     }
 
     /** 按 DownloadProgress 渲染底部下载栏（订阅驱动，单一数据源） */
-    private fun renderDownloadProgress(progress: DownloadProgress) {
+    private fun renderDownloadProgress(progress: DownloadProgress, handle: Int) {
         when (progress) {
             is DownloadProgress.Downloading -> {
                 binding.progressDownload.visibility = View.VISIBLE
@@ -205,7 +219,8 @@ class PreviewActivity : AppCompatActivity() {
                 binding.iconDownload.scaleX = 1f
                 binding.iconDownload.scaleY = 1f
                 binding.tvDownloadLabel.text = "已完成"
-                downloadResults[currentPosition] = progress.localPath
+                val posOfHandle = files.indexOfFirst { it.handle == handle }
+                if (posOfHandle >= 0) downloadResults[posOfHandle] = progress.localPath
             }
 
             is DownloadProgress.Failed -> {
@@ -260,10 +275,39 @@ class PreviewActivity : AppCompatActivity() {
                 currentPosition = position
                 file = files[position]
                 updateTopBar()
+                // 换页 = 玻璃背后的整张图都变了，纹理必须作废重采
+                previewGlass?.invalidate()
                 refreshMarkState()   // 切页立即刷新标记态（不等待 mark 变化事件）
                 subscribeProgress()  // 切到新文件 → 重订阅其下载进度，进度条跟随切换
             }
         })
+    }
+
+    /**
+     * 预览页上下工具栏玻璃化（PRD §5.3）。
+     *
+     * 两面都是**贴边通栏**，所以半径取 0 —— 贴屏幕边的圆角看起来像漏涂。
+     * 层级感交给 tint + 模糊 + 内顶高光，这正是 iOS 半透明导航栏的做法。
+     * 背后是 ViewPager2 里的照片，所以能拿到真折射；白图顶上来时由
+     * [GlassSurfaceDrawable] 的对比度自适应兜底（PRD §9.3）。
+     */
+    private fun applyGlassBars() {
+        val bars = listOf(binding.previewTopBar, binding.previewBottomBar)
+        if (!UiFlags.glassEnabled(this)) {
+            previewGlass = null
+            bars.forEach {
+                it.setBackgroundColor(ContextCompat.getColor(this, R.color.liveview_scrim))
+                it.elevation = 0f
+                GlassRegistry.unregister(it)
+            }
+            return
+        }
+        val coord = GlassCoordinator.attach(binding.vpPreview).also { previewGlass = it }
+        // 翻页时背景整张换掉，采集要跟上；静止时不必高频
+        coord.minRefreshMs = 120L
+        bars.forEach { bar ->
+            bar.applyGlass(coord) { GlassTokens.hud(it.context).copy(radiusPx = 0f) }
+        }
     }
 
     private fun updateTopBar() {
@@ -400,7 +444,7 @@ class PreviewActivity : AppCompatActivity() {
     private fun showInfoSheet() {
         lifecycleScope.launch {
             val info = withContext(Dispatchers.IO) { collectInfo() }
-            val sheet = BottomSheetDialog(this@PreviewActivity)
+            val sheet = NlGlass.sheet(this@PreviewActivity)
             val container = android.widget.LinearLayout(this@PreviewActivity).apply {
                 orientation = android.widget.LinearLayout.VERTICAL
                 setPadding(dp(20), dp(16), dp(20), dp(20))
@@ -534,7 +578,7 @@ class PreviewActivity : AppCompatActivity() {
             )
             add("分享原图")
         }
-        MaterialAlertDialogBuilder(this)
+        NlGlass.dialog(this)
             .setTitle("分享")
             .setItems(options.toTypedArray()) { _, which ->
                 when (which) {
@@ -618,62 +662,26 @@ class PreviewActivity : AppCompatActivity() {
 
     // ---------- 下载（按当前页维护状态） ----------
 
+    /**
+     * 下载当前页原图 —— 交给 TransferManager 的应用级队列，不再绑在本页生命周期上。
+     *
+     * 旧实现在 `lifecycleScope` 里直接调 `downloadPhoto()`：退出预览 → 协程取消 →
+     * 传输被就地掐断，半截临时文件也没人续，只能重新进入这张、再点一次下载才保存成功。
+     * 入队后传输挂在 ConnectionService 的 scope 上，切页 / 退后台 / 关掉预览页都继续跑完，
+     * 按钮态与进度由 [TransferManager.observeDownloadProgress] 单一数据源驱动
+     * （见 [subscribeProgress] / [renderDownloadProgress]）。
+     */
     private fun download() {
         val pos = currentPosition
         if (downloadResults.containsKey(pos)) return // 已下载，避免重复
-        binding.progressDownload.visibility = View.VISIBLE
-        binding.tvDownloadLabel.text = "下载中"
-        lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                transferManager.downloadPhoto(
-                    file = file,
-                    onProgress = { received, total ->
-                        runOnUiThread {
-                            val totalKnown = total > 0 && total != 0xFFFFFFFFL
-                            binding.progressDownload.isIndeterminate = !totalKnown
-                            if (totalKnown) {
-                                binding.progressDownload.progress =
-                                    (received * 100 / total).toInt().coerceIn(0, 100)
-                                binding.tvDownloadLabel.text =
-                                    "下载中 ${binding.progressDownload.progress}%"
-                            } else {
-                                binding.progressDownload.progress = 0
-                                binding.tvDownloadLabel.text = "下载中"
-                            }
-                        }
-                    }
-                )
-            }
-            when (result) {
-                is TransferResult.Success -> {
-                    // 仅当仍停留在同一页时才更新底部栏（切走则交由 syncDownloadUi 还原）
-                    downloadResults[pos] = result.path
-                    if (pos == currentPosition) {
-                        binding.progressDownload.isIndeterminate = false
-                        binding.progressDownload.progress = 100
-                        binding.iconDownload.setImageResource(R.drawable.ic_check)
-                        binding.iconDownload.scaleX = 0.5f
-                        binding.iconDownload.scaleY = 0.5f
-                        binding.iconDownload.animate().scaleX(1f).scaleY(1f).setDuration(250).start()
-                        binding.tvDownloadLabel.text = "已完成"
-                    }
-                }
-
-                is TransferResult.Failed -> {
-                    if (pos == currentPosition) {
-                        binding.progressDownload.visibility = View.GONE
-                        binding.tvDownloadLabel.text = "重试"
-                        Timber.tag(TAG).w("Download failed: ${result.reason}")
-                    }
-                }
-
-                is TransferResult.Cancelled -> {
-                    if (pos == currentPosition) {
-                        binding.progressDownload.visibility = View.GONE
-                    }
-                }
-            }
+        if (!transferManager.hasActiveSession()) {
+            android.widget.Toast.makeText(this, "相机未连接，无法下载", android.widget.Toast.LENGTH_SHORT).show()
+            return
         }
+        binding.progressDownload.visibility = View.VISIBLE
+        binding.progressDownload.isIndeterminate = true
+        binding.tvDownloadLabel.text = "排队中"
+        transferManager.enqueue(listOf(file))
     }
 
     /** 兼容旧逻辑：下载状态（当前页），主要由 downloadResults 维护 */

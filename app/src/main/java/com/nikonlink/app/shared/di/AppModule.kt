@@ -148,7 +148,8 @@ object AppModule {
         thumbnailCache: ThumbnailCache,
         wifiManager: WifiManager,
         settings: AppSettings,
-        eventLogger: AppEventLogger
+        eventLogger: AppEventLogger,
+        connFlags: com.nikonlink.app.device.connect.ConnFlags
     ): TransferManager = TransferManager(
         context,
         ptpSessionManager,
@@ -157,7 +158,8 @@ object AppModule {
         thumbnailCache,
         wifiManager,
         settings,
-        eventLogger
+        eventLogger,
+        connFlags
     )
 
     @Provides
