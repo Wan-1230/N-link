@@ -39,6 +39,9 @@
                 android:layout_height="match_parent"
                 android:orientation="horizontal">
 
+                <!-- 默认写未选中的字色：选中态的黑底胶囊要等运行时量到标签宽度才能落位
+                     （见 RemoteFragment.layoutModeIndicator），首帧底还不在，
+                     这里若写 on_primary 就是白字白底。真实状态由 renderModeToggle 立刻覆盖。 -->
                 <TextView
                     android:id="@+id/btnModePhoto"
                     android:layout_width="wrap_content"
@@ -46,7 +49,7 @@
                     android:gravity="center"
                     android:paddingHorizontal="18dp"
                     android:text="照片"
-                    android:textColor="@color/on_primary"
+                    android:textColor="@color/text_primary"
                     android:textSize="13sp" />
 
                 <TextView
