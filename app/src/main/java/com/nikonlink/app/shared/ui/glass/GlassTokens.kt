@@ -320,7 +320,7 @@ object GlassTokens {
     ): GlassMaterial {
         val r = c.resources.getDimension(radiusRes)
         val glass = UiFlags.glassEnabled(c)
-        val blurOn = UiFlags.blurEnabled(c)
+        val blurOn = UiFlags.blurEnabled(c) && !GlassBudget.transferring
         val reduce = UiFlags.reduceTransparency(c)
         val blur = if (glass && blurOn && level != GlassLevel.L2_CONTROL) num(c, blurRes) else 0f
         return GlassMaterial(

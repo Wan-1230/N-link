@@ -235,7 +235,12 @@ class GlassCoordinator private constructor(val source: View) {
     private var shiftY = 0
 
     private val refreshInterval: Long
-        get() = if (degraded) minOf(SCROLL_REFRESH_MS, minRefreshMs) else minRefreshMs
+        get() {
+            // 传输期整屏让路：采集间隔翻倍（PRD §8.4 第 2 条 / AC-7）。
+            // 与 base() 里"CPU 侧模糊退成静态 tint"是同一个开关的两半。
+            val base = if (degraded) minOf(SCROLL_REFRESH_MS, minRefreshMs) else minRefreshMs
+            return if (GlassBudget.transferring) base * 2 else base
+        }
 
     val textureReady: Boolean get() = tex != null && texW > 0 && texH > 0
 
