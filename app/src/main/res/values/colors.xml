@@ -56,6 +56,8 @@
 
     <!-- 底部导航：背景与页面底色一致 -->
     <color name="nav_background">#FFFFFF</color>
+    <!-- 选中项背后的胶囊：玻璃 dock 上用轻微下沉的暗色，实体 dock 上同样成立 -->
+    <color name="nav_selected_bg">#14000000</color>
     <color name="nav_active_icon">#000000</color>
     <color name="nav_inactive_icon">#9E9E9E</color>
 </resources>
