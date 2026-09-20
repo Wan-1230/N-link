@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Tab1 设备首页：覆盖式顶栏 + 下拉刷新 + 设备卡/网格/详情折叠组。
-  根是 FrameLayout：滚动区满高，topChrome（标题行 + 分割线 + 连接模式三选行）压在它上面
-  （PRD §15.6-1）。玻璃态下内容才真能从标题底下滚过、顶栏那块玻璃才有东西可透；
-  经典外观下 clipToPadding 打开，内容在 padding 边就被裁掉 → 与 v2.2 逐像素相等。
-  滚动区的 paddingTop 由 DashboardFragment 按 topChrome 实测高度给（首次布局前量不准）。
+  根是 FrameLayout：滚动区满高，topChrome（标题行 + 分割线 + 连接模式三选行）作为**不透明**
+  覆盖层压在上面。顶栏玻璃已撤销（v2.3.1 §15.5h：背后是本页滚动区，采样慢一帧必然错位/闪烁，
+  而白页上透出白 = 零收益），所以两种外观下顶栏完全一致。
+  滚动区的 paddingTop 由 DashboardFragment 按 topChrome 实测高度给（首次布局前量不准），
+  clipToPadding=false → 内容滚到顶栏底下被遮住，与普通 Toolbar 行为相同。
 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
@@ -857,46 +858,38 @@
     </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
 
     <!-- 覆盖式顶栏：原先竖向排列的三件 chrome 整体搬到滚动区之上。
-         玻璃态下这一整块就是顶栏底片，标题行与模式行一起从全透明浮到不透明 -->
+         底色与几何来自 NlTopChrome / NlTopBar / NlTopDivider（三页共用，一处改全局生效）-->
     <LinearLayout
         android:id="@+id/topChrome"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical">
+        style="@style/NlTopChrome">
 
-    <!-- 顶部导航：标题 + 设置入口，底部 1px 分割线 -->
-    <LinearLayout
-        android:id="@+id/topBar"
-        android:layout_width="match_parent"
-        android:layout_height="56dp"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingHorizontal="@dimen/page_margin">
+        <!-- 顶部导航：标题 + 设置入口，底部 1px 分割线 -->
+        <LinearLayout
+            android:id="@+id/topBar"
+            style="@style/NlTopBar">
 
-        <TextView
-            android:id="@+id/tvTitle"
-            style="@style/NlText.Title"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="我的设备" />
+            <TextView
+                android:id="@+id/tvTitle"
+                style="@style/NlText.Title"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="我的设备" />
 
-        <ImageView
-            android:id="@+id/btnSettingsIcon"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="设置"
-            android:padding="12dp"
-            android:src="@drawable/ic_nav_settings"
-            app:tint="@color/text_primary" />
-    </LinearLayout>
+            <ImageView
+                android:id="@+id/btnSettingsIcon"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="设置"
+                android:padding="12dp"
+                android:src="@drawable/ic_nav_settings"
+                app:tint="@color/text_primary" />
+        </LinearLayout>
 
-    <View
-        android:id="@+id/topDivider"
-        android:layout_width="match_parent"
-        android:layout_height="@dimen/divider_height"
-        android:background="@color/divider" />
+        <View
+            android:id="@+id/topDivider"
+            style="@style/NlTopDivider" />
 
     <!-- 顶部连接模式选择：药丸滑动 Tab -->
     <LinearLayout

@@ -35,7 +35,11 @@
     <!-- 排版基类：NlText.* 子样式通过点号隐含继承本样式，不可删除 -->
     <style name="NlText" parent="TextAppearance.Material3.BodyMedium" />
 
-    <!-- 主按钮：黑底白字填充，8px 圆角 -->
+    <!-- 主按钮：黑底白字填充，8px 圆角。
+         elevation 2dp + 按 token 着色的软投影（PRD §15.6-4 遗留的按钮立体感）：
+         之前所有按钮都是 0dp 全平，卡片有 1.5dp、悬浮件有 8dp，按钮反而浮在纸面上，
+         三级层级读不出来。`stateListAnimator @null` **保留** —— 按压反馈归 PressEffect
+         统一管（0.95 缩放），不能让 Material 的抬升动画来抢（PRD §2.3 D1）。 -->
     <style name="NlButton.Primary" parent="Widget.Material3.Button">
         <item name="android:textColor">@color/on_primary</item>
         <item name="backgroundTint">@color/primary</item>
@@ -45,9 +49,13 @@
         <item name="android:insetTop">0dp</item>
         <item name="android:insetBottom">0dp</item>
         <item name="android:stateListAnimator">@null</item>
+        <item name="android:elevation">2dp</item>
+        <item name="android:outlineSpotShadowColor">@color/glass_shadow_key</item>
+        <item name="android:outlineAmbientShadowColor">@color/glass_shadow_ambient</item>
     </style>
 
-    <!-- 次要按钮：极细灰描边 -->
+    <!-- 次要按钮：极细灰描边。刻意**不加** elevation ——
+         填充=浮起、描边=贴平，这层差别就是主次行动点的区分手段 -->
     <style name="NlButton.Outline" parent="Widget.Material3.Button.OutlinedButton">
         <item name="android:textColor">@color/text_primary</item>
         <item name="strokeColor">@color/outline</item>
@@ -69,6 +77,33 @@
         <item name="android:textColor">@color/on_dark_card</item>
         <item name="strokeColor">@color/on_dark_card_variant</item>
         <item name="strokeWidth">1dp</item>
+    </style>
+
+    <!-- ===== 顶栏统一几何（M2 的可行部分）=====
+         三页顶栏抽成 style 而不是 <include> 组件：三个顶栏的**操作区各不相同**
+         （设置页只有标题、设备页一个设置键、相册页三个键），做通用 slot 得把按钮改成代码
+         动态塞进容器，那比现在的重复更贵。M2 真正要的是"一处改全局生效"，
+         几何/配色收进 style 就够了。 -->
+    <style name="NlTopChrome">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:orientation">vertical</item>
+        <!-- 覆盖在滚动区之上，必须自己带底；否则内容会从标题行与模式行之间透出来 -->
+        <item name="android:background">@color/background</item>
+    </style>
+
+    <style name="NlTopBar">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">56dp</item>
+        <item name="android:gravity">center_vertical</item>
+        <item name="android:orientation">horizontal</item>
+        <item name="android:paddingHorizontal">@dimen/page_margin</item>
+    </style>
+
+    <style name="NlTopDivider">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">@dimen/divider_height</item>
+        <item name="android:background">@color/divider</item>
     </style>
 
     <!-- 内容卡片：1px 极细灰边框，无阴影，12px 圆角 -->
