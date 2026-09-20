@@ -23,6 +23,7 @@ import com.nikonlink.app.device.usb.UsbConnectionState
 import com.nikonlink.app.device.usb.UsbPtpManager
 import com.nikonlink.app.shared.common.AppSettings
 import com.nikonlink.app.shared.data.PhotoMarkEntity
+import com.nikonlink.app.shared.ui.glass.GlassBudget
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
@@ -425,8 +426,13 @@ class TransferViewModel @Inject constructor(
         }
         // 原图批量传输期间让路：传输结束后把攒下的缩略图请求一次性补发。
         // 缓存能命中的项不受影响（让路只拦网络请求），网格不会因此变白。
+        //
+        // 同一处顺带把玻璃的负载也交出去（PRD §8.4 第 2 条 / AC-7）：传输是这套 UI 最挤的
+        // 时候，采集与 CPU 模糊都在跟 PTP 抢同一份 CPU 与内存带宽。放在这里而不是去读
+        // PtpSessionManager 的计数，是因为 UI 层本来就有"正在传输"的权威信号。
         viewModelScope.launch {
             transferManager.transferState.collect { state ->
+                GlassBudget.transferring = state is TransferState.Downloading
                 if (state !is TransferState.Downloading) drainDeferredThumbnails()
             }
         }
