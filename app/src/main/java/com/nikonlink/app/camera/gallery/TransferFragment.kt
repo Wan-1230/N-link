@@ -32,6 +32,7 @@ import com.nikonlink.app.shared.ui.glass.GlassTopBar
 import com.nikonlink.app.shared.ui.glass.NlGlass
 import com.nikonlink.app.shared.ui.glass.UiFlags
 import com.nikonlink.app.shared.ui.glass.applyGlass
+import com.nikonlink.app.shared.ui.glass.growForLargeFont
 import com.nikonlink.app.shared.ui.glass.renderChipBackground
 import com.nikonlink.app.MainActivity
 import com.nikonlink.app.R
@@ -113,6 +114,8 @@ class TransferFragment : Fragment(), GlassInsetAware {
         glassBackdrop = (activity as? MainActivity)?.dockBackdrop
         dockInsetGrid = DockInset(binding.gridPhotos)
         dockInsetTabs = DockInset(binding.albumTabRow)
+        // §7.3：大字档下先加高胶囊，再让 DockInset 按长高后的标签行算内衬
+        binding.albumTabPill.growForLargeFont()
         // 标签行的高度要到首次布局才量得准；量准之后补算一次内衬，否则最后一行少让一条
         binding.albumTabRow.post { if (_binding != null) applyDockSpace() }
         restyleGlass()

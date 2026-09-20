@@ -301,6 +301,16 @@ object GlassTokens {
         TypedValue.COMPLEX_UNIT_DIP, v, c.resources.displayMetrics,
     )
 
+    /**
+     * 大字档（PRD §7.3）：`fontScale ≥ 1.3` 时固定高度的胶囊必裁字 —— 13sp 在 2.0 档下是
+     * 26sp，32dp 的盒子装不下。低于该档一律走原路径，绝大多数用户不受影响。
+     */
+    fun largeFont(c: Context): Boolean =
+        c.resources.configuration.fontScale >= LARGE_FONT_SCALE
+
+    /** 大字档下胶囊容器需要的额外高度倍数（文字本身按 fontScale 长，盒子跟着让一点） */
+    const val LARGE_FONT_SCALE = 1.3f
+
     /** 从 dimens 里读的"无量纲数值"token（写成 format=float 的 item） */
     internal fun num(c: Context, id: Int): Float {
         val tv = TypedValue()

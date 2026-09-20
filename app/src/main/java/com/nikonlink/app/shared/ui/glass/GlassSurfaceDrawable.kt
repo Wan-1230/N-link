@@ -446,6 +446,27 @@ interface GlassInsetAware {
 }
 
 /**
+ * 大字档（PRD §7.3）下给胶囊**容器**按比例加高。
+ *
+ * `fontScale ≥ 1.3` 时 13sp 的标签能长到 17sp 以上，而分段控件这类胶囊容器是固定高度的
+ * （34 / 40 / 44dp），文字必被上下裁。这里只加高容器：里面的滑块与标签都是
+ * `match_parent` / `wrap_content`，会跟着长，不需要同步改别的尺寸。
+ * 低于 1.3 档时**一个像素都不动** —— 绝大多数用户走原路径。
+ *
+ * 叶子胶囊（单个 chip / 按钮）不用这个：它们已经改成 `wrap_content + minHeight`，
+ * 自己会长。
+ */
+fun View.growForLargeFont(factor: Float = 1.35f) {
+    if (!GlassTokens.largeFont(context)) return
+    val lp = layoutParams ?: return
+    val want = (lp.height * factor).toInt()
+    if (lp.height > 0 && lp.height != want) {
+        lp.height = want
+        layoutParams = lp
+    }
+}
+
+/**
  * 一个入口把一个面变成玻璃：不重排布局、不换 class，
  * 只换 background + outline/elevation —— 回退闸门因此能做到"逐像素等于 v2.2"。
  *
