@@ -1,7 +1,7 @@
 # PRD：N-Link v2.4 快门次数查询重构
 
 > 版本：v2.4（基线 versionCode 21 / versionName 2.2.0 @ `b4cf780`）· 分支：`feat-glass-polish-v2.3.1`，实现提交 `20ec81c` `a295f00`
-> 状态：**L0-L4 + UI 全部实现完毕，待真机测试**（§十 是 12 条清单；唯一未闭合项是需要用户自拍的黄金夹具，见 §六）
+> 状态：**L0-L4 + UI 全部实现完毕**；仍开放两项：黄金夹具（§六 记了下一次该从哪继续）与 §十 第 10-12 条（同意门、机械口径）尚未真机验证，**因此暂不合入 master**
 > 原则：已跑通的功能不改动，改动面压到最小，每项独立可回滚
 > 结论来源：exiftool（Nikon.pm / MakerNotes.pm）、Exiv2（nikonmn_int.cpp / makernote_int.cpp）、libgphoto2（camlibs/ptp2/ptp.h、config.c、library.c、ptp.c）、exif-py、python-shutter-counter、LibRaw 逐行比对，非二手博客
 
@@ -175,6 +175,15 @@ L4 云端降级   → 修 R8：仅在 L2/L3 明确失败时启用，且 UI 明�
 
 → 所以黄金夹具只能由用户自己拍。**好消息是夹具不需要整张原片**：真机实测 MakerNote 全部落在文件头 30KB 以内，提交约 64KB 的**前缀切片**即可作为字节级回归夹具，仓库不会因此变大。
 
+还有一条**没走完就该走的路**，下次接手直接从这里开始：别再按标题搜（会捞到 Panasonic），要用 Commons 按 EXIF 自动归类的那个分类树
+—— `Category:Images taken with Nikon D750`（API：`generator=category&gcmtitle=Category:Images taken with Nikon D750&prop=imageinfo&iiprop=url|size|extmetadata`，
+从 `extmetadata` 里读 `LicenseShortName` 挑 PD/CC0，再 `curl -r 0-65535` 只取前 64KB）。本次这台机器的出口代理对该域名 TLS 不稳定
+（同一查询第一次成功、之后连续 `SEC_E_WRONG_PRINCIPAL` / connection reset），所以这条路**未被证伪、只是没跑完**。
+
+**当前测试的可信度边界，说清楚**：17 + 6 例合成测试已经把**真机验证过的结构**钉死了（子 IFD 定位、IFD@18、双字节序、恒等式、E-series 与无签名形态），
+所以偏移被改错会立刻红。它们缺的只是「我们自己之外的第一方字节」——即用户机身实拍样张那一层的外部一致性，
+而那正是 §十 第 3 条（与 exiftool / 售后口径对数）存在的理由。
+
 ### 待做
 
 1. **L0 采样用例**：卡上同时存在「小但旧」与「大但新」两张时，必须选后者。
@@ -215,7 +224,12 @@ L4 云端降级   → 修 R8：仅在 L2/L3 明确失败时启用，且 UI 明�
 1. **`0xFFFFF7FF`「n/a」哨兵**的确切语义与出现机型 —— 来源为社区实现，exiftool 标签页未直接记载，需真机样本确认。
 2. ~~形态 A 无内嵌 `II*\0` 时的字节序~~ —— **已答**：真机样张一律带 +10 处的内嵌头；且笔记字节序可与主 TIFF 头相反，故不做任何「尼康一律小端」假设。
 3. **真机黄金夹具**：需要用户自己拍的一张 NEF + 一张 JPEG 进 `src/test/resources`（开源仓库的样张要么剥了 MakerNote、要么授权链不明）。
-4. 快门次数是否要**跨会话缓存**（同一 handle 不重复下载）——建议缓存并带「数据来自 X 分钟前的第 N 张」溯源，但需确认用户是否接受非实时读数。
+4. **跨会话缓存：决定不做**（v2.4 定稿）。理由三条：① 键选错就是硬伤 —— 机身序列号才是唯一可靠的键，
+   用 model 或 handle 做键会在「换机身 / 换卡」时把**另一台机器的快门数**显示成这台的历史值，
+   这类错比"读数旧一点"严重得多；② 收益本就很小 —— 一次查询只是一趟 1MB 头部局读，秒级返回，
+   而 `shutterQueryState != NONE` 已经保证同一连接内不重复查；③ 一旦持久化就必须回答
+   「显示 X 分钟前的读数」这个口径问题，等于把一个功能变成两个。
+   → 保持每次连接现读。若日后真要做，前提是 `CameraInfo` 先把 serialNumber 存下来并按它键控。
 5. ~~分支基点~~ —— 已切 `feat-shutter-count-v2.4`（基线 `b4cf780`，即 v2.3 玻璃分支收尾后的 HEAD），实现提交 `20ec81c`。合并目标 master，由用户真机测试通过后执行。
 
 ---
