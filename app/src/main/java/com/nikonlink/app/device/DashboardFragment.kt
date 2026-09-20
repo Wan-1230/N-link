@@ -300,19 +300,28 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     if (shutterRowVisible) View.VISIBLE else View.GONE
                 binding.tvShutterCount.text = when (info.shutterQueryState) {
                     ShutterCountState.QUERYING -> getString(R.string.shutter_count_querying)
-                    ShutterCountState.SUCCESS -> getString(
-                        R.string.shutter_count_value, info.shutterCount
-                    ) + when {
-                        info.shutterCountSource == ShutterCountSource.CLOUD ->
-                            getString(R.string.shutter_count_source_cloud)
-                        info.shutterVerified ->
-                            getString(R.string.shutter_count_source_local)
-                        else -> getString(R.string.shutter_count_source_local_unverified)
+                    ShutterCountState.SUCCESS -> buildString {
+                        append(getString(R.string.shutter_count_value, info.shutterCount))
+                        append(
+                            if (info.shutterCountSource == ShutterCountSource.CLOUD) {
+                                getString(R.string.shutter_count_source_cloud)
+                            } else if (info.shutterVerified) {
+                                getString(R.string.shutter_count_source_local)
+                            } else {
+                                getString(R.string.shutter_count_source_local_unverified)
+                            }
+                        )
+                        // Z8/Z9 等机身的 0x00A7 含电子快门触发，与售后口径不一致时把仅机械值一并给出
+                        if (info.shutterMechanicalCount in 0 until info.shutterCount) {
+                            append(getString(R.string.shutter_count_mechanical, info.shutterMechanicalCount))
+                        }
                     }
                     ShutterCountState.FAILED -> getString(
                         when (info.shutterFailReason) {
                             ShutterFailReason.NO_MEDIA -> R.string.shutter_count_failed_no_media
                             ShutterFailReason.PARSE_FAILED -> R.string.shutter_count_failed_parse
+                            ShutterFailReason.CONSENT_REQUIRED ->
+                                R.string.shutter_count_failed_consent
                             else -> R.string.shutter_count_failed_read
                         }
                     )
@@ -320,7 +329,12 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 }
                 binding.tvShutterCount.isClickable = shutterRowVisible
                 binding.tvShutterCount.setOnClickListener {
-                    paramsViewModel.retryShutterCountQuery()
+                    // 「本机解不出」是唯一值得点开的分支——它要问一次云端授权，不是简单重试
+                    if (info.shutterFailReason == ShutterFailReason.CONSENT_REQUIRED) {
+                        askShutterCloudConsent()
+                    } else {
+                        paramsViewModel.retryShutterCountQuery()
+                    }
                 }
 
                 binding.rowFirmware.visibility =
@@ -583,6 +597,22 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             else -> viewModel.statusMessage.value
         }
         binding.tvStatusMessage.text = text.ifBlank { "未连接" }
+    }
+
+    /**
+     * 云端解析授权（PRD v2.4 §L4）：本机解析读不出时的唯一退路要把相机原片交给第三方
+     * EXIF 接口，原片含机身序列号 / 镜头信息 / GPS，所以必须问一次、说清楚上传什么。
+     * 同意后持久生效，不再打扰。
+     */
+    private fun askShutterCloudConsent() {
+        NlGlass.dialog(requireContext())
+            .setTitle(R.string.shutter_cloud_consent_title)
+            .setMessage(R.string.shutter_cloud_consent_message)
+            .setNegativeButton(R.string.shutter_cloud_consent_reject, null)
+            .setPositiveButton(R.string.shutter_cloud_consent_accept) { _, _ ->
+                paramsViewModel.grantShutterCloudConsentAndRetry()
+            }
+            .show()
     }
 
     private fun setupInteractions() {

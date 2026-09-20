@@ -152,6 +152,11 @@ class CameraParamsViewModel @Inject constructor(
         paramManager.retryShutterCountQuery()
     }
 
+    /** 用户授权「样张交给云端 EXIF 接口解析」后重跑（授权持久，只问一次） */
+    fun grantShutterCloudConsentAndRetry() {
+        paramManager.grantShutterCloudConsentAndRetry()
+    }
+
     fun toggleLock() {
         paramManager.toggleLock()
     }

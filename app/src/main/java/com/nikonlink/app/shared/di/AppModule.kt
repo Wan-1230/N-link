@@ -129,13 +129,15 @@ object AppModule {
         ptpSessionManager: PtpSessionManager,
         usbPtpManager: UsbPtpManager,
         transferManager: TransferManager,
-        digeekerShutterCountClient: DigeekerShutterCountClient
+        digeekerShutterCountClient: DigeekerShutterCountClient,
+        settings: AppSettings
     ): CameraParameterManager = CameraParameterManager(
         context,
         ptpSessionManager,
         usbPtpManager,
         transferManager,
-        digeekerShutterCountClient
+        digeekerShutterCountClient,
+        settings
     )
 
     @Provides
