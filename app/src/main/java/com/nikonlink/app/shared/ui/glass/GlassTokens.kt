@@ -54,12 +54,6 @@ data class GlassMaterial(
     val magnify: Float = 1f,
     /** 色散强度（相对位移比例）。默认 0：见 PRD §3.7 与 Q1 的灰阶冲突 */
     val dispersion: Float = 0f,
-    /**
-     * 通栏面（贴屏幕边、radius=0）：不描整圈外描边，只留一条发丝线。
-     * 圆角矩形的整圈描边放到通栏上，就是上下两条 20% 黑的横线 —— 走查里那
-     * 「滑动时标题框上下两条黑线」正是它，它把分隔职责抢走了，反而盖过内容。
-     */
-    val fullBleed: Boolean = false,
 ) {
     /** 不透明实底（降低透明度 / 经典外观） */
     val opaqueTint: Int
@@ -120,32 +114,30 @@ object DepthLift {
 }
 
 /**
- * 顶栏随滚动浮现（PRD §4 顶栏项 / §6.5 滚动联动）。
+ * 顶栏标题随滚动让位。
  *
- * 诚实说明一件事：这三页的顶栏**不是覆盖式** —— 设备页顶栏下面还压着连接模式三选行、
- * 相册页还压着筛选 chip 行，所以列表内容不会真的从标题底下穿过。这里做的是 iOS
- * 实际给用户的两件事：
- *   ① 玻璃底片随滚动从全透明浮到不透明（只淡底片，标题与图标不受影响 —— 不能用
- *      `View.alpha`，那会把子 View 一起淡掉）；
- *   ② 标题轻微上移 + 缩到 0.92，读作"给内容让位"，但不消失，避免丢失定位感。
- * 真正的"内容穿过标题栏"要把页面根换成 FrameLayout + 覆盖式顶栏，属结构改造，未做。
+ * v2.3.1 起**顶栏不再有玻璃底片**：它背后是"自己页面的滚动区"，模糊采样跟着滚动总差
+ * 一帧（走查反馈：错位、闪烁、切页残留）。现在顶栏是一块干净的统一底色，
+ * 这里只剩标题自身的轻微上移 + 缩到 0.955 —— 保留它是因为"标题给内容让一点位"
+ * 这个手感已经验过，与材质无关。
+ *
+ * 动作用追帧平滑而不是一帧一赋值：fling 时进度会在几帧内被拽完整条，读作抖动。
  */
 class GlassTopBar(
-    private val bar: View,
+    private val host: View,
     private val title: View?,
-    private val divider: View?,
 ) {
 
     /** 已应用的进度；-1 = 还没应用过（首帧不该播动画） */
     private var progress = -1f
     private var target = -1f
-    private val risePx = RISE_DP * bar.resources.displayMetrics.density
+    private val risePx = RISE_DP * host.resources.displayMetrics.density
 
     /** 追帧循环里只允许排一个 runnable，否则滚动中每帧各排一个，队列会自己长起来 */
     private var chasing = false
     private val chaser = object : Runnable {
         override fun run() {
-            if (!bar.isAttachedToWindow) {
+            if (!host.isAttachedToWindow) {
                 chasing = false
                 settle(target.coerceAtLeast(0f))
                 return
@@ -157,53 +149,54 @@ class GlassTopBar(
                 return
             }
             settle(progress + d * SMOOTH)
-            bar.postOnAnimation(this)
+            host.postOnAnimation(this)
         }
     }
 
-    fun onScroll(offsetPx: Int, collapsePx: Int = DEFAULT_COLLAPSE_DP.toInt()) {
-        val glass = UiFlags.glassEnabled(bar.context)
-        divider?.visibility = if (glass) View.GONE else View.VISIBLE
-        if (!glass) {
-            glide(0f)
-            return
-        }
-        val span = (collapsePx * bar.resources.displayMetrics.density).coerceAtLeast(1f)
+    fun onScroll(offsetPx: Int) {
+        val span = (COLLAPSE_DP * host.resources.displayMetrics.density).coerceAtLeast(1f)
         val t = (offsetPx.toFloat() / span).coerceIn(0f, 1f)
-        // smoothstep：两端慢、中间快。线性映射下刚开始滚的几像素就会跳一大截，
-        // 停到边界时又会突然补满 —— 读作"抖"。
+        // smoothstep：两端慢、中间快。线性映射下刚开始滚的几像素就会跳一大截
         glide(t * t * (3f - 2f * t))
     }
 
     private fun glide(to: Float) {
         if (to == target) return
         target = to
-        if (progress < 0f || !UiFlags.motionEnabled(bar.context)) {
+        if (progress < 0f || !UiFlags.motionEnabled(host.context)) {
             settle(to)   // 首帧与「减少动效」下直接落位，不追帧
             return
         }
         if (chasing) return
         chasing = true
-        bar.postOnAnimation(chaser)
+        host.postOnAnimation(chaser)
     }
 
     private fun settle(t: Float) {
         if (t == progress) return
         progress = t
-        (bar.background as? GlassSurfaceDrawable)?.plateAlpha = t
         title?.apply {
             alpha = 1f - 0.08f * t
             translationY = -risePx * t
-            // 0.955 而不是 0.92：标题是定位锚，缩得太狠读作"被压下去"，
-            // 配合 4dp 上移只留一点"给内容让位"的意思
+            // 标题是定位锚，缩得太狠读作"被压下去"；只留一点让位的意思
             scaleX = 1f - 0.045f * t
             scaleY = 1f - 0.045f * t
         }
     }
 
+    /** 退回静态：切页/换主题时避免带着上一次的缩放态 */
+    fun reset() {
+        progress = -1f
+        target = -1f
+        chasing = false
+        host.removeCallbacks(chaser)
+        settle(0f)
+        progress = -1f
+    }
+
     companion object {
-        /** 滚过多远顶栏玻璃完全浮现 */
-        private const val DEFAULT_COLLAPSE_DP = 72f
+        /** 滚过多远标题完全让位 */
+        private const val COLLAPSE_DP = 72f
 
         /** 标题上移距离 */
         private const val RISE_DP = 4f
@@ -259,37 +252,28 @@ object GlassMotion {
     }
 }
 /**
- * 覆盖式顶栏（PRD §15.6 的第 1 条，v2.3.1 落地）。
+ * 覆盖式顶栏的"让位"计算（PRD §15.6-1）。
  *
- * 页面根从"竖向 LinearLayout：顶栏 → 分割线 → 滚动区"换成
- * "FrameLayout：滚动区满高 + `topChrome` 压在上面"之后，滚动区要让出顶栏那一条高度：
+ * 页面根是 `FrameLayout`：滚动区满高，`topChrome`（标题行 + 分割线 + 设备页的模式行）
+ * 作为覆盖层压在上面，这里负责把滚动区顶部让出 chrome 的实际高度。
  *
- *  - **玻璃态**：`clipToPadding=false` —— 内容真的从标题底下滚过。于是顶栏那块玻璃第一次
- *    有东西可透：之前它淡入的是一块永远不变的白底，模糊半径写着 24dp 却什么也没糊。
- *  - **经典外观**：`clipToPadding=true` —— 内容在 padding 边就被裁掉，加上 topChrome
- *    本身不带底，观感与 v2.2 逐像素相等（AC-12）。
- *
- * chrome 的高度要等首次布局才量得准（此时 `height=0`），量不到就 post 一次再试。
+ * 顶栏**不再有玻璃底片**（v2.3.1 走查后取消 —— 它背后就是本页的滚动区，采样永远慢一帧，
+ * 表现为错位、闪烁、切页残留），所以两种外观下滚动区都是 `clipToPadding=false`：
+ * 内容滚到不透明顶栏底下被遮住，与 Android 普通 Toolbar 的行为一致。
+ * chrome 高度要等首次布局才量得准（此时 `height=0`），量不到就 post 一次再试。
  */
 object GlassChrome {
 
-    /**
-     * 让 `scroll` 让出 `chrome` 的高度，并告诉调用方这块滚动区该不该裁 padding。
-     *
-     * `clipToPadding` 由调用方自己设 —— `View` 上只有 setter、没有 getter，
-     * 通过基类引用写不进这个属性（Kotlin 的合成属性要求读写成对）。
-     */
-    fun apply(chrome: View, scroll: View): Boolean {
-        val glass = UiFlags.glassEnabled(scroll.context)
+    fun apply(chrome: View, scroll: View) {
         val h = chrome.height
         if (h <= 0) {
             chrome.post { if (chrome.height > 0 && scroll.isAttachedToWindow) apply(chrome, scroll) }
-            return glass
+            return
         }
         if (scroll.paddingTop != h) {
             scroll.updatePadding(top = h)
             // 转圈位置是相对 SwipeRefreshLayout 顶边的（默认 20/64dp），滚动区铺到屏幕顶之后
-            // 不抬高就会被覆盖式顶栏压住
+            // 不抬高就会被顶栏压住
             val d = scroll.resources.displayMetrics.density
             (scroll.parent as? androidx.swiperefreshlayout.widget.SwipeRefreshLayout)
                 ?.setProgressViewOffset(
@@ -298,7 +282,6 @@ object GlassChrome {
                     h + (SPINNER_END_DP * d).toInt(),
                 )
         }
-        return glass
     }
 
     /** 默认转圈起点/终点（dp），相对滚动容器顶边 */
@@ -422,24 +405,6 @@ object GlassTokens {
         },
         5f, 1.04f,
     )
-
-    /**
-     * 页面顶栏：贴边通栏 → 半径 0（贴屏幕边的圆角像漏涂），
-     * 分隔职责由内底反光 + 外描边承担，所以 XML 里那条 1px divider 在玻璃态下让位。
-     * 底片初始 plateAlpha=0，随滚动浮现（见 [GlassTopBar]）。
-     */
-    fun topBar(c: Context): GlassMaterial = base(
-        c, GlassLevel.L3_FLOATING, R.dimen.glass_radius_s, R.dimen.glass_blur_m,
-        R.color.glass_tint_content, R.color.text_primary,
-    ).copy(radiusPx = 0f, elevationPx = 0f, fullBleed = true)
-
-    /** 状态栏那一条。当前只做 tint + 底部反光（radius 0，通栏）；
-     * 等各页顶栏改成覆盖式、内容能滚到状态栏底下之后，这里才会出现真透景。
-     */
-    fun statusStrip(c: Context): GlassMaterial = base(
-        c, GlassLevel.L2_CONTROL, R.dimen.glass_radius_s, R.dimen.glass_blur_m,
-        R.color.glass_tint_flat, R.color.text_primary,
-    ).copy(radiusPx = 0f, blurDp = 0f, fullBleed = true, rimBottomColor = 0)
 
     /** 行内小控件玻璃（chip / 分段槽）。L2 不吃实时模糊，只吃 tint + rim */
     fun chip(c: Context): GlassMaterial = base(

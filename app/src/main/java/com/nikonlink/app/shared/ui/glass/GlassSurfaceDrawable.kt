@@ -171,13 +171,6 @@ class GlassSurfaceDrawable(
         val sc = canvas.save()
         canvas.clipPath(clipPath)
 
-        // 底片完全淡出时连 clip 与模糊 blit 一起省掉（顶栏静止态就是这条路）
-        val pa = plateAlpha.coerceIn(0f, 1f)
-        if (pa < 0.004f) {
-            canvas.restoreToCount(sc)
-            return
-        }
-
         // ---- ① 背景模糊 + 边缘折射 ----
         var backdropUsed = false
         val coord = coordinator
@@ -192,23 +185,20 @@ class GlassSurfaceDrawable(
         // ---- ② 染色 tint（含对比度自适应） ----
         fill.shader = null
         fill.style = Paint.Style.FILL
-        val tint = guardedTint(host, m, if (backdropUsed) coord?.avgLuminance ?: -1f else -1f)
-        fill.color = if (pa == 1f) tint else Color.argb(
-            (Color.alpha(tint) * pa).toInt(), Color.red(tint), Color.green(tint), Color.blue(tint),
-        )
+        fill.color = guardedTint(host, m, if (backdropUsed) coord?.avgLuminance ?: -1f else -1f)
         canvas.drawRect(boundsRect, fill)
 
         // 按下：提浓，"玻璃变厚了"
         if (press > 0f && m.pressAlphaDelta > 0) {
             fill.color = Color.argb(
-                ((m.pressAlphaDelta * press) * pa).toInt().coerceIn(0, 255),
+                (m.pressAlphaDelta * press).toInt().coerceIn(0, 255),
                 Color.red(m.tintColor), Color.green(m.tintColor), Color.blue(m.tintColor),
             )
             canvas.drawRect(boundsRect, fill)
         }
 
         // ---- ③ 内顶高光：顶端 1dp 量级的渐变，按下时被削弱（"光被打散"） ----
-        val rimKeep = (1f - (1f - m.rimPressKeep) * press).coerceIn(0f, 1f) * pa
+        val rimKeep = (1f - (1f - m.rimPressKeep) * press).coerceIn(0f, 1f)
         rimShader?.let { shader ->
             if (rimKeep > 0.02f) {
                 fill.shader = shader
@@ -226,24 +216,20 @@ class GlassSurfaceDrawable(
         canvas.restoreToCount(sc)
 
         // ---- ⑤ 外描边 + 四角透镜亮线（折射假象的主要来源）----
-        // 通栏面（顶栏 / 状态栏条）跳过这一步：整圈描边贴到屏幕边上，
-        // 就是上下两条实打实的黑线，比玻璃本身还显眼（走查反馈第 3 条）。
-        if (!m.fullBleed) {
-            stroke.strokeWidth = m.strokeWidthPx.coerceAtLeast(onePx)
-            stroke.color = scaleAlpha(m.strokeColor, rimKeep)
-            canvas.drawPath(clipPath, stroke)
+        stroke.strokeWidth = m.strokeWidthPx.coerceAtLeast(onePx)
+        stroke.color = scaleAlpha(m.strokeColor, rimKeep)
+        canvas.drawPath(clipPath, stroke)
 
-            if (m.edgeLensColor != 0 && m.radiusPx > 6f) {
-                stroke.strokeWidth = onePx * 1.5f
-                stroke.color = scaleAlpha(m.edgeLensColor, rimKeep)
-                val reach = m.radiusPx * 1.6f
-                cornerPath.reset()
-                // 只在四角描、中段不描 —— 整圈加亮会变成"白塑料边"
-                corner(clipPath, canvas, 0f, 0f, reach)
-                corner(clipPath, canvas, w, 0f, reach)
-                corner(clipPath, canvas, 0f, h, reach)
-                corner(clipPath, canvas, w, h, reach)
-            }
+        if (m.edgeLensColor != 0 && m.radiusPx > 6f) {
+            stroke.strokeWidth = onePx * 1.5f
+            stroke.color = scaleAlpha(m.edgeLensColor, rimKeep)
+            val reach = m.radiusPx * 1.6f
+            cornerPath.reset()
+            // 只在四角描、中段不描 —— 整圈加亮会变成"白塑料边"
+            corner(clipPath, canvas, 0f, 0f, reach)
+            corner(clipPath, canvas, w, 0f, reach)
+            corner(clipPath, canvas, 0f, h, reach)
+            corner(clipPath, canvas, w, h, reach)
         }
     }
 
@@ -255,20 +241,6 @@ class GlassSurfaceDrawable(
         canvas.drawPath(outline, stroke)
         canvas.restoreToCount(sc)
     }
-
-    /**
-     * 玻璃底片的整体不透明度（0..1），只影响**材质本身**，不影响子 View。
-     *
-     * 顶栏要"内容滚进来才浮现"，但不能用 `View.alpha` —— 那会连标题和图标一起淡掉。
-     * 用 `Drawable.setAlpha` 也不行：绘制时每次都重设 `paint.color`，会把它覆盖掉。
-     */
-    @Volatile var plateAlpha: Float = 1f
-        set(value) {
-            val v = value.coerceIn(0f, 1f)
-            if (field == v) return
-            field = v
-            invalidateSelf()
-        }
 
     private fun modulate(color: Int, factor: Float): Int = Color.argb(
         (Color.alpha(color) * factor.coerceIn(0f, 1f)).toInt(),

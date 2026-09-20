@@ -1110,19 +1110,13 @@ class TransferFragment : Fragment(), GlassInsetAware {
         applyDockSpace()
     }
 
-    /** 顶栏玻璃随滚动浮现（本页顶栏下面就是 chip 行，所以没有 1px 分割线要处理） */
+    /** 顶栏：干净的统一底色，两种外观一致（玻璃底片已整条撤掉，见 §15.5h） */
     private fun styleTopBar() {
         val bar = binding.topBar
-        val title = binding.tvTitle
-        if (!UiFlags.glassEnabled(requireContext())) {
-            topBarFx = null
-            GlassRegistry.unregister(bar)
-            bar.background = null
-            title.apply { alpha = 1f; translationY = 0f; scaleX = 1f; scaleY = 1f }
-            return
-        }
-        bar.applyGlass(register = false) { GlassTokens.topBar(it.context) }
-        topBarFx = GlassTopBar(bar, title, null)
+        GlassRegistry.unregister(bar)
+        bar.elevation = 0f
+        bar.setBackgroundColor(ContextCompat.getColor(requireContext(), R.color.background))
+        topBarFx = GlassTopBar(bar, binding.tvTitle)
         topBarFx?.onScroll(binding.gridPhotos.computeVerticalScrollOffset())
     }
 
