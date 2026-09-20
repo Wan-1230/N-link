@@ -6,7 +6,9 @@ import android.graphics.Color
 import android.graphics.Rect
 import android.os.SystemClock
 import android.view.View
+import com.nikonlink.app.BuildConfig
 import com.nikonlink.app.R
+import timber.log.Timber
 import java.lang.ref.WeakReference
 import kotlin.math.max
 import kotlin.math.min
@@ -131,7 +133,30 @@ class GlassCoordinator private constructor(val source: View) {
         hosts.removeAll { it.get() == null }
         if (hosts.none { it.get() === surface }) hosts.add(WeakReference(surface))
         if (hosts.size > 64) hosts.removeAt(0)
+        assertBlurQuota()
     }
+
+    /**
+     * AC-4：真模糊面的运行时配额检查（PRD §8.2）。
+     *
+     * 之前这条只写在文档里、靠"一个内容源一张纹理"的结构兜着，debug 构建没有任何硬检查。
+     * 现在超了就在 logcat 里叫一声（**不 crash** —— 测试包崩在用户手里比超预算更糟）。
+     * 计数口径是"真的在采背景"的面，L2 控件与只淡底片的不算。
+     */
+    private fun assertBlurQuota() {
+        if (!BuildConfig.DEBUG || quotaWarned) return
+        val cap = source.resources.getInteger(R.integer.glass_max_blur_surfaces)
+        val n = hosts.count { it.get()?.sampling == true }
+        if (n > cap) {
+            quotaWarned = true
+            Timber.e(
+                "AC-4 玻璃配额超限：%s 上 %d 面真模糊（上限 %d）；每多一面多一次透镜重算，滚动帧预算按 §8.2 分配",
+                source.javaClass.simpleName, n, cap,
+            )
+        }
+    }
+
+    private var quotaWarned = false
 
     private val downscale = GlassTokens.num(source.context, R.dimen.glass_backdrop_downscale)
         .coerceIn(0.05f, 0.25f)

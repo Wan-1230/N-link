@@ -19,6 +19,7 @@ import androidx.lifecycle.lifecycleScope
 import com.nikonlink.app.MainActivity
 import com.nikonlink.app.shared.ui.glass.DepthLift
 import com.nikonlink.app.shared.ui.glass.DockInset
+import com.nikonlink.app.shared.ui.glass.GlassChrome
 import com.nikonlink.app.shared.ui.glass.GlassInsetAware
 import com.nikonlink.app.shared.ui.glass.GlassRegistry
 import com.nikonlink.app.shared.ui.glass.GlassTokens
@@ -609,7 +610,6 @@ class SettingsFragment : Fragment(), GlassInsetAware {
 
     /** dock 悬浮时给列表底部让出一条，并在滚动时驱动 dock 背景重采（内容才看得见从玻璃底下划过） */
     private fun setupDockFloat() {
-        binding.settingsScroll.clipToPadding = false
         dockInset = DockInset(binding.settingsScroll)
         applyDockSpace()
         styleTopBar()
@@ -619,25 +619,37 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         }
     }
 
-    /** 顶栏玻璃随滚动浮现；经典外观下顶栏无底 + 1px 分割线，逐值还原（AC-12） */
+    /**
+     * 顶栏玻璃随滚动浮现。覆盖式布局下这块底片拿到的是内容列纹理 —— 设置项真的会从
+     * 标题底下滚过，24dp 模糊于是有了对象（以前没给 coordinator，它只是块半透明白）。
+     * 经典外观下顶栏无底 + 1px 分割线，逐值还原（AC-12）。
+     */
     private fun styleTopBar() {
         val title = binding.tvTitle
+        val chrome = binding.topChrome
         if (!UiFlags.glassEnabled(requireContext())) {
             topBarFx = null
-            GlassRegistry.unregister(binding.topBar)
-            binding.topBar.background = null
+            GlassRegistry.unregister(chrome)
+            chrome.background = null
+            chrome.elevation = 0f
             binding.topDivider.visibility = View.VISIBLE
             title.apply { alpha = 1f; translationY = 0f; scaleX = 1f; scaleY = 1f }
             return
         }
-        binding.topBar.applyGlass(register = false) { GlassTokens.topBar(it.context) }
-        topBarFx = GlassTopBar(binding.topBar, title, binding.topDivider)
+        chrome.applyGlass(
+            coordinator = (activity as? MainActivity)?.dockBackdrop,
+            register = false,
+        ) { GlassTokens.topBar(it.context) }
+        topBarFx = GlassTopBar(chrome, title, binding.topDivider)
         topBarFx?.onScroll(binding.settingsScroll.scrollY)
     }
 
     private fun applyDockSpace() {
         if (_binding == null) return
         dockInset?.applyPadding((activity as? MainActivity)?.dockSpace() ?: 0)
+        // 玻璃态：设置项从标题底下滚过（clipToPadding 关）；经典外观：在 padding 边裁掉
+        binding.settingsScroll.clipToPadding =
+            !GlassChrome.apply(binding.topChrome, binding.settingsScroll)
         DepthLift.apply(binding.root, requireContext())
     }
 

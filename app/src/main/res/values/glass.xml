@@ -64,6 +64,10 @@
     <integer name="glass_backdrop_max_long_edge">320</integer>
     <integer name="glass_backdrop_debounce_ms">120</integer>
     <integer name="glass_backdrop_scroll_idle_ms">90</integer>
-    <integer name="glass_max_blur_surfaces">3</integer>
+    <!-- 同屏真模糊面上限（AC-4 运行时检查）。v2.3 初稿写的 3 是" dock + 一块顶栏 + 一个
+         操作坞"的算式；v2.3.1 把相册页的分段胶囊也提成悬浮玻璃，主界面稳定态就是
+         dock + 顶栏底片 + 胶囊 = 3，多选态再多一面操作坞 → 放到 4。
+         再往上加要先想清楚 §8.2 的帧预算，别拿这个数当免费额度。 -->
+    <integer name="glass_max_blur_surfaces">4</integer>
     <integer name="glass_max_coverage_pct">45</integer>
 </resources>
