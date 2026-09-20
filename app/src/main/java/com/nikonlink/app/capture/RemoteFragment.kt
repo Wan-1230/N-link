@@ -103,6 +103,8 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         dockInset = DockInset(binding.root)
         applyDockSpace()
         styleModeSlot()
+        renderModeToggle(animated = false)
+        watchModePillGeometry()
         UiFlags.observe(this) {
             styleModeSlot()
             applyDockSpace()
@@ -194,6 +196,7 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         paramsViewModel.stopModeWatch()
         liveViewViewModel.stopLiveView()
         recordTimerJob?.cancel()
+        modePillLayoutListener = null
         _binding = null
     }
 
@@ -815,16 +818,16 @@ class RemoteFragment : Fragment(), GlassInsetAware {
      * 把滑块归到当前选中标签上：宽度取标签宽、位移取标签左边（两者同在一个
      * 带 padding 的 FrameLayout 里，起点一致，不用再补内缩）。
      *
-     * 标签是 wrap_content，首帧宽度还是 0 —— 这时 post 一次再归位，且不做动画，
-     * 避免进页面时滑块从左边飞一下。
+     * 量不到宽度直接返回、不再 post 重试：MainActivity 四 Fragment 常驻、本页
+     * 初始是 hidden，GONE 的视图不参与布局，post 出去的那几帧宽度仍然是 0，
+     * 空转不说还会在视图销毁后打到已回收的 binding 上。落位改由
+     * [watchModePillGeometry] 的布局回调驱动。
      */
     private fun layoutModeIndicator(animated: Boolean) {
+        if (_binding == null) return
         val sel = if (videoMode) binding.btnModeVideo else binding.btnModePhoto
         val ind = binding.modeIndicator
-        if (sel.width == 0) {
-            sel.post { layoutModeIndicator(false) }
-            return
-        }
+        if (sel.width == 0) return
         val lp = ind.layoutParams
         if (lp.width != sel.width) {
             lp.width = sel.width
@@ -833,15 +836,41 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         GlassMotion.slidePill(ind, sel.x, animated)
     }
 
-    private fun setVideoMode(video: Boolean, animated: Boolean = true) {
-        videoMode = video
+    /** 切换器的视觉状态：滑块落位 + 两个标签的字色（选中=黑底白字） */
+    private fun renderModeToggle(animated: Boolean) {
         layoutModeIndicator(animated)
         binding.btnModePhoto.setTextColor(
-            resources.getColor(if (!video) R.color.on_primary else R.color.text_primary, null)
+            resources.getColor(if (!videoMode) R.color.on_primary else R.color.text_primary, null)
         )
         binding.btnModeVideo.setTextColor(
-            resources.getColor(if (video) R.color.on_primary else R.color.text_primary, null)
+            resources.getColor(if (videoMode) R.color.on_primary else R.color.text_primary, null)
         )
+    }
+
+    /**
+     * 监听切换器槽位的布局，在首次量到标签宽度时把滑块落位。
+     *
+     * 标签是 wrap_content、滑块宽度只能运行时量，而量不出来就是「照片」白字压白底
+     * （深色档下黑字压黑底），进页面时左上角那个选项看不见（2026-09-21 反馈）。
+     * 放在布局回调里而不是 post：本页初始 hidden，只有真正 show() 的那一帧才量得到，
+     * post 会晚一帧 → 选中胶囊缺席第一帧。回调里改 LayoutParams 会多跑一次布局
+     * （AOSP 只打一条 info 日志），宽度写死在同一帧，观感上才是"进来就选好照片"。
+     * 常驻不摘：字号档位变化、配置变更重布时按当前标签重新对齐。
+     */
+    private fun watchModePillGeometry() {
+        modePillLayoutListener?.let { binding.modeToggleSlot.removeOnLayoutChangeListener(it) }
+        val listener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            layoutModeIndicator(false)
+        }
+        modePillLayoutListener = listener
+        binding.modeToggleSlot.addOnLayoutChangeListener(listener)
+    }
+
+    private var modePillLayoutListener: View.OnLayoutChangeListener? = null
+
+    private fun setVideoMode(video: Boolean, animated: Boolean = true) {
+        videoMode = video
+        renderModeToggle(animated)
         if (video) {
             binding.ivShutterIcon.setImageResource(R.drawable.ic_record_dot)
             binding.ivShutterIcon.setColorFilter(resources.getColor(R.color.white, null))
