@@ -211,12 +211,28 @@ class GlassCoordinator private constructor(val source: View) {
         if (!suppress) invalidate()
     }
 
-    /** 按当前是否滚动中的节流间隔，请求一次重采（滚动回调与玻璃面绘制都走这里） */
-    fun requestRefresh() {
+    /** 按当前是否滚动中的节流间隔，请求一次重采（滚动回调与玻璃面绘制都走这里）。
+     *
+     *  [dy] = 这一帧内容又滚过了多少像素。累计进 [shiftY] 后即使这次被节流挡掉，
+     *  采样窗口也不会丢位移 —— 位移是**每帧免费**的，重采只负责纠正漂移。
+     */
+    fun requestRefresh(dy: Int = 0) {
+        if (dy != 0) shiftY += dy
         if (scheduled) return
         if (SystemClock.uptimeMillis() - lastRefreshAt < refreshInterval) return
         schedule()
     }
+
+    /**
+     * 上次采集之后内容又滚过的距离（源视图坐标系，px）。
+     *
+     * 这是"采样区域不跟随滚动"的正解。纹理每 150ms 才重采一次，而底片的 alpha 和内容
+     * 都在 60fps 动 —— 背景于是像一格一格的幻灯片，读起来就是错位 + 闪烁（设备页顶栏
+     * 走查反馈第 1 条）。列表滚动是**刚体平移**：内容滚过 dy 像素，某块玻璃底下该有的
+     * 背景就是纹理里往下 dy 的位置，直接平移采样窗口即可，零额外采集。
+     * 每次重采归零，残余漂移（换行、插入、下拉刷新位移）由下一次采集纠正 —— 自愈。
+     */
+    private var shiftY = 0
 
     private val refreshInterval: Long
         get() = if (degraded) minOf(SCROLL_REFRESH_MS, minRefreshMs) else minRefreshMs
@@ -235,6 +251,9 @@ class GlassCoordinator private constructor(val source: View) {
     /** 强制作废并在下一帧重采（切 Tab、材质开关变更、尺寸变化） */
     fun invalidate() {
         lastRefreshAt = 0L
+        // 旧纹理要作废，累计的滚动位移也就没有意义了 —— 不清零会把采样窗口错位的
+        // 上一帧内容当成本帧背景
+        shiftY = 0
         schedule()
     }
 
@@ -307,6 +326,8 @@ class GlassCoordinator private constructor(val source: View) {
         BoxBlur.blur(pixels, tw, th, radius)
         bmp.setPixels(pixels, 0, tw, 0, 0, tw, th)
         generation++
+        // 这张纹理对应的就是"此刻的内容位置"，累计位移到此作废
+        shiftY = 0
 
         measureLuminance(pixels)
         // 只重绘登记过的面，不整树 invalidate
@@ -339,12 +360,18 @@ class GlassCoordinator private constructor(val source: View) {
         val sx = texW.toFloat() / sw
         val sy = texH.toFloat() / sh
         val left = (hostLoc[0] - srcLoc[0]) * sx
-        val top = (hostLoc[1] - srcLoc[1]) * sy
+        val h = host.height * sy
+        // 见 [shiftY]：内容滚过 dy，背景就要从纹理里更靠下 dy 的位置取。
+        // 保持窗口高度做钳制，所以**贴底的 dock 自动不动**（它的窗口本来就已经抵到
+        // texH —— 新内容是从视口底下进来的，那张纹理里根本还没有它），
+        // 而贴顶的顶栏会跟着滚 —— 它要的内容就在视口里，早就采到了。
+        val top = ((hostLoc[1] - srcLoc[1] + shiftY) * sy)
+            .coerceIn(0f, (texH - h).coerceAtLeast(0f))
         out.set(
             left.toInt().coerceIn(0, texW - 1),
             top.toInt().coerceIn(0, texH - 1),
             (left + host.width * sx).toInt().coerceIn(1, texW),
-            (top + host.height * sy).toInt().coerceIn(1, texH),
+            (top + h).toInt().coerceIn(1, texH),
         )
         return out.width() > 0 && out.height() > 0
     }
@@ -379,7 +406,12 @@ class GlassCoordinator private constructor(val source: View) {
             }
             i += 8
         }
-        avgLuminance = if (n == 0) -1f else (sum / n).toFloat()
+        avgLuminance = if (n == 0) -1f else (sum / n).toFloat().let { raw ->
+            // 指数平滑：整屏平均亮度会随内容滚动大幅摆动，直接喂给 tint 自适应就是
+            // 每 150ms 换一次档 —— 玻璃"呼吸/闪"的观感来自这里。平滑后同一块玻璃的
+            // 底色在一段滚动里保持稳定（配合 guardedTint 的档位粘滞）。
+            if (avgLuminance < 0f) raw else 0.75f * avgLuminance + 0.25f * raw
+        }
     }
 }
 
