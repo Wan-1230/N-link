@@ -122,6 +122,10 @@ class GlassSurfaceDrawable(
     /** 纹理就绪后由协调器回调 */
     fun hostInvalidate() = invalidateSelf()
 
+    /** 这一面是否**真的**在采背景 —— AC-4 配额的计数口径：有源 + 材质生效 + 开了模糊 */
+    internal val sampling: Boolean
+        get() = coordinator != null && material.glass && material.blurDp > 0f
+
     /**
      * 采集期间自我屏蔽（由 [GlassCoordinator] 置位）。
      *

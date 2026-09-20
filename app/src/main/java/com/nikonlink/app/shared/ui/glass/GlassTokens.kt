@@ -7,6 +7,7 @@ import android.util.TypedValue
 import android.view.View
 import android.view.animation.PathInterpolator
 import androidx.core.content.ContextCompat
+import androidx.core.view.updatePadding
 import com.nikonlink.app.R
 
 /**
@@ -257,6 +258,54 @@ object GlassMotion {
         }
     }
 }
+/**
+ * 覆盖式顶栏（PRD §15.6 的第 1 条，v2.3.1 落地）。
+ *
+ * 页面根从"竖向 LinearLayout：顶栏 → 分割线 → 滚动区"换成
+ * "FrameLayout：滚动区满高 + `topChrome` 压在上面"之后，滚动区要让出顶栏那一条高度：
+ *
+ *  - **玻璃态**：`clipToPadding=false` —— 内容真的从标题底下滚过。于是顶栏那块玻璃第一次
+ *    有东西可透：之前它淡入的是一块永远不变的白底，模糊半径写着 24dp 却什么也没糊。
+ *  - **经典外观**：`clipToPadding=true` —— 内容在 padding 边就被裁掉，加上 topChrome
+ *    本身不带底，观感与 v2.2 逐像素相等（AC-12）。
+ *
+ * chrome 的高度要等首次布局才量得准（此时 `height=0`），量不到就 post 一次再试。
+ */
+object GlassChrome {
+
+    /**
+     * 让 `scroll` 让出 `chrome` 的高度，并告诉调用方这块滚动区该不该裁 padding。
+     *
+     * `clipToPadding` 由调用方自己设 —— `View` 上只有 setter、没有 getter，
+     * 通过基类引用写不进这个属性（Kotlin 的合成属性要求读写成对）。
+     */
+    fun apply(chrome: View, scroll: View): Boolean {
+        val glass = UiFlags.glassEnabled(scroll.context)
+        val h = chrome.height
+        if (h <= 0) {
+            chrome.post { if (chrome.height > 0 && scroll.isAttachedToWindow) apply(chrome, scroll) }
+            return glass
+        }
+        if (scroll.paddingTop != h) {
+            scroll.updatePadding(top = h)
+            // 转圈位置是相对 SwipeRefreshLayout 顶边的（默认 20/64dp），滚动区铺到屏幕顶之后
+            // 不抬高就会被覆盖式顶栏压住
+            val d = scroll.resources.displayMetrics.density
+            (scroll.parent as? androidx.swiperefreshlayout.widget.SwipeRefreshLayout)
+                ?.setProgressViewOffset(
+                    false,
+                    h + (SPINNER_START_DP * d).toInt(),
+                    h + (SPINNER_END_DP * d).toInt(),
+                )
+        }
+        return glass
+    }
+
+    /** 默认转圈起点/终点（dp），相对滚动容器顶边 */
+    private const val SPINNER_START_DP = 20f
+    private const val SPINNER_END_DP = 64f
+}
+
 /**
  * Token 解析（值见 `res/values/glass.xml` 与 `values-night/glass.xml`）。
  *

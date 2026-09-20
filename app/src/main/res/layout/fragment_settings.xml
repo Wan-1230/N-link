@@ -1,32 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Tab4 设置与更多：分组列表式布局 -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!--
+  Tab4 设置与更多：分组列表式布局。
+  根是 FrameLayout 而不是竖向 LinearLayout：滚动区满高、顶栏压在它上面（覆盖式顶栏，
+  PRD §15.6-1）。玻璃态下设置项才真的从标题底下滚过、顶栏那块玻璃才有东西可透。
+  滚动区的 paddingTop 由 SettingsFragment 按 topChrome 实测高度给（首次布局前量不准）。
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/background"
-    android:orientation="vertical">
-
-    <LinearLayout
-        android:id="@+id/topBar"
-        android:layout_width="match_parent"
-        android:layout_height="56dp"
-        android:gravity="center_vertical"
-        android:paddingHorizontal="@dimen/page_margin">
-
-        <TextView
-            android:id="@+id/tvTitle"
-            style="@style/NlText.Title"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="设置" />
-    </LinearLayout>
-
-    <View
-        android:id="@+id/topDivider"
-        android:layout_width="match_parent"
-        android:layout_height="@dimen/divider_height"
-        android:background="@color/divider" />
+    android:background="@color/background">
 
     <ScrollView
         android:id="@+id/settingsScroll"
@@ -895,4 +878,34 @@
             </LinearLayout>
         </LinearLayout>
     </ScrollView>
-</LinearLayout>
+
+    <!-- 覆盖式顶栏：压在滚动区之上。玻璃态下整块是底片（随滚动从全透明浮到不透明），
+         经典外观下它没有自己的底，且滚动内容在 padding 边就被裁掉 → 与 v2.2 逐像素相等 -->
+    <LinearLayout
+        android:id="@+id/topChrome"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:id="@+id/topBar"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:gravity="center_vertical"
+            android:paddingHorizontal="@dimen/page_margin">
+
+            <TextView
+                android:id="@+id/tvTitle"
+                style="@style/NlText.Title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="设置" />
+        </LinearLayout>
+
+        <View
+            android:id="@+id/topDivider"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/divider_height"
+            android:background="@color/divider" />
+    </LinearLayout>
+</FrameLayout>

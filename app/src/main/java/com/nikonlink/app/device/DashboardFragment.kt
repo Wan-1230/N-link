@@ -23,6 +23,7 @@ import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
 import com.nikonlink.app.shared.ui.glass.DepthLift
 import com.nikonlink.app.shared.ui.glass.DockInset
+import com.nikonlink.app.shared.ui.glass.GlassChrome
 import com.nikonlink.app.shared.ui.glass.GlassInsetAware
 import com.nikonlink.app.shared.ui.glass.GlassMotion
 import com.nikonlink.app.shared.ui.glass.GlassRegistry
@@ -1045,7 +1046,6 @@ class DashboardFragment : Fragment(), GlassInsetAware {
      * clipToPadding=false 是"内容能滚到玻璃底下"的前提，也是看得见真透景的原因。
      */
     private fun setupDockFloat() {
-        binding.scrollContent.clipToPadding = false
         dockInset = DockInset(binding.scrollContent)
         applyDockSpace()
         styleTopBar()
@@ -1055,25 +1055,40 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         }
     }
 
-    /** 顶栏玻璃随滚动浮现（PRD §4 顶栏项）。经典外观下顶栏没有自己的底，逐值还原。 */
+    /**
+     * 顶栏底片挂在**整块 `topChrome`**（标题行 + 分割线 + 连接模式三选行）上：覆盖式布局
+     * 下这三件一起浮在滚动的内容之上，所以共用一张底片、淡入淡出同步 —— 分开做会在中间
+     * 露出一条会移动的缝（模式行和标题行之间那条分割线尤其难看）。
+     *
+     * 底片现在拿到的是 MainActivity 那张内容列纹理：以前 `applyGlass` 没给 coordinator，
+     * 材质里写的 24dp 模糊其实从没生效过，它只是块会淡入的半透明白。
+     */
     private fun styleTopBar() {
         val title = binding.tvTitle
+        val chrome = binding.topChrome
         if (!UiFlags.glassEnabled(requireContext())) {
             topBarFx = null
-            GlassRegistry.unregister(binding.topBar)
-            binding.topBar.background = null
+            GlassRegistry.unregister(chrome)
+            chrome.background = null
+            chrome.elevation = 0f
             binding.topDivider.visibility = View.VISIBLE
             title.apply { alpha = 1f; translationY = 0f; scaleX = 1f; scaleY = 1f }
             return
         }
-        binding.topBar.applyGlass(register = false) { GlassTokens.topBar(it.context) }
-        topBarFx = GlassTopBar(binding.topBar, title, binding.topDivider)
+        chrome.applyGlass(
+            coordinator = (activity as? MainActivity)?.dockBackdrop,
+            register = false,
+        ) { GlassTokens.topBar(it.context) }
+        topBarFx = GlassTopBar(chrome, title, binding.topDivider)
         topBarFx?.onScroll(binding.scrollContent.scrollY)
     }
 
+    /** 玻璃态：内容从顶栏底下滚过（clipToPadding 关）；经典外观：在 padding 边裁掉（开） */
     private fun applyDockSpace() {
         if (_binding == null) return
         dockInset?.applyPadding((activity as? MainActivity)?.dockSpace() ?: 0)
+        binding.scrollContent.clipToPadding =
+            !GlassChrome.apply(binding.topChrome, binding.scrollContent)
         DepthLift.apply(binding.root, requireContext())
     }
 

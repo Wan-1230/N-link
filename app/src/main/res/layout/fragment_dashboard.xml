@@ -1,109 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Tab1 设备首页：设备核心卡片 + 快捷功能网格 + 相机详情折叠组 -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!--
+  Tab1 设备首页：覆盖式顶栏 + 下拉刷新 + 设备卡/网格/详情折叠组。
+  根是 FrameLayout：滚动区满高，topChrome（标题行 + 分割线 + 连接模式三选行）压在它上面
+  （PRD §15.6-1）。玻璃态下内容才真能从标题底下滚过、顶栏那块玻璃才有东西可透；
+  经典外观下 clipToPadding 打开，内容在 padding 边就被裁掉 → 与 v2.2 逐像素相等。
+  滚动区的 paddingTop 由 DashboardFragment 按 topChrome 实测高度给（首次布局前量不准）。
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/background"
-    android:orientation="vertical">
-
-    <!-- 顶部导航：标题 + 设置入口，底部 1px 分割线 -->
-    <LinearLayout
-        android:id="@+id/topBar"
-        android:layout_width="match_parent"
-        android:layout_height="56dp"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingHorizontal="@dimen/page_margin">
-
-        <TextView
-            android:id="@+id/tvTitle"
-            style="@style/NlText.Title"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="我的设备" />
-
-        <ImageView
-            android:id="@+id/btnSettingsIcon"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="设置"
-            android:padding="8dp"
-            android:src="@drawable/ic_nav_settings"
-            app:tint="@color/text_primary" />
-    </LinearLayout>
-
-    <View
-        android:id="@+id/topDivider"
-        android:layout_width="match_parent"
-        android:layout_height="@dimen/divider_height"
-        android:background="@color/divider" />
-
-    <!-- 顶部连接模式选择：药丸滑动 Tab -->
-    <LinearLayout
-        android:id="@+id/modeTabSection"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:paddingHorizontal="@dimen/page_margin"
-        android:paddingTop="14dp"
-        android:paddingBottom="10dp">
-
-        <FrameLayout
-            android:id="@+id/modeTabContainer"
-            android:layout_width="match_parent"
-            android:layout_height="44dp"
-            android:background="@drawable/bg_chip"
-            android:padding="3dp">
-
-            <View
-                android:id="@+id/modeTabIndicator"
-                android:layout_width="112dp"
-                android:layout_height="match_parent"
-                android:layout_gravity="start|center_vertical"
-                android:background="@drawable/bg_chip_selected" />
-
-            <LinearLayout
-                android:id="@+id/modeTabs"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:id="@+id/tabWifiAp"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1"
-                    android:gravity="center"
-                    android:text="WiFi AP 连接"
-                    android:textColor="@color/on_primary"
-                    android:textSize="12sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/tabWifiSta"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1"
-                    android:gravity="center"
-                    android:text="WiFi STA 连接"
-                    android:textColor="@color/text_primary"
-                    android:textSize="12sp" />
-
-                <TextView
-                    android:id="@+id/tabUsb"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="1"
-                    android:gravity="center"
-                    android:text="USB 有线连接"
-                    android:textColor="@color/text_primary"
-                    android:textSize="12sp" />
-            </LinearLayout>
-        </FrameLayout>
-    </LinearLayout>
+    android:background="@color/background">
 
     <!-- 下拉刷新连接状态 -->
     <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
@@ -948,4 +855,111 @@
             </LinearLayout>
         </ScrollView>
     </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
-</LinearLayout>
+
+    <!-- 覆盖式顶栏：原先竖向排列的三件 chrome 整体搬到滚动区之上。
+         玻璃态下这一整块就是顶栏底片，标题行与模式行一起从全透明浮到不透明 -->
+    <LinearLayout
+        android:id="@+id/topChrome"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+    <!-- 顶部导航：标题 + 设置入口，底部 1px 分割线 -->
+    <LinearLayout
+        android:id="@+id/topBar"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="@dimen/page_margin">
+
+        <TextView
+            android:id="@+id/tvTitle"
+            style="@style/NlText.Title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="我的设备" />
+
+        <ImageView
+            android:id="@+id/btnSettingsIcon"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="设置"
+            android:padding="8dp"
+            android:src="@drawable/ic_nav_settings"
+            app:tint="@color/text_primary" />
+    </LinearLayout>
+
+    <View
+        android:id="@+id/topDivider"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/divider_height"
+        android:background="@color/divider" />
+
+    <!-- 顶部连接模式选择：药丸滑动 Tab -->
+    <LinearLayout
+        android:id="@+id/modeTabSection"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingHorizontal="@dimen/page_margin"
+        android:paddingTop="14dp"
+        android:paddingBottom="10dp">
+
+        <FrameLayout
+            android:id="@+id/modeTabContainer"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:background="@drawable/bg_chip"
+            android:padding="3dp">
+
+            <View
+                android:id="@+id/modeTabIndicator"
+                android:layout_width="112dp"
+                android:layout_height="match_parent"
+                android:layout_gravity="start|center_vertical"
+                android:background="@drawable/bg_chip_selected" />
+
+            <LinearLayout
+                android:id="@+id/modeTabs"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/tabWifiAp"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="WiFi AP 连接"
+                    android:textColor="@color/on_primary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tabWifiSta"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="WiFi STA 连接"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/tabUsb"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:text="USB 有线连接"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </FrameLayout>
+    </LinearLayout>
+    </LinearLayout>
+</FrameLayout>
