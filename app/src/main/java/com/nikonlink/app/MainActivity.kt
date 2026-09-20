@@ -50,7 +50,8 @@ import javax.inject.Inject
 /**
  * 主 Activity — 黑白极简四 Tab 框架
  * Tab1 设备 / Tab2 相册 / Tab3 拍摄 / Tab4 设置
- * 转场规范：Tab 切换淡入淡出 + 10px 位移，0.25s ease-out
+ * 转场规范：Tab 切换**同步换页、不做淡出**（`commitNow`）—— 旧页留在屏幕上的一小段
+ * 会被读成"点了没反应"，见 §15.5h
  */
 @AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
@@ -70,10 +71,10 @@ class MainActivity : AppCompatActivity() {
         private const val DOCK_BASELINE_HEIGHT_DP = 60
 
         /**
-         * 切页后补采纹理的时机。Tab 转场是 250ms 淡入淡出（`R.anim.tab_enter/exit`），
-         * 在它结束后再采一次才拿得到"只有新页面"的画面。
+         * 切页后补采 dock 纹理的时机。换页现在是同步的（`commitNow`），但目标页的
+         * RecyclerView/网格要等下一次布局才有内容，所以过一帧再补采一次对齐。
          */
-        private const val TAB_TRANSITION_REFRESH_MS = 320L
+        private const val DOCK_RECAPTURE_MS = 160L
 
         /** 启动自动检查更新：每进程只跑一次（旋转/重建 Activity 不重跑） */
         @Volatile
@@ -215,12 +216,10 @@ class MainActivity : AppCompatActivity() {
         val statusLp = binding.statusGlass.layoutParams
         statusLp.height = statusInset
         binding.statusGlass.layoutParams = statusLp
-        if (glass) {
-            binding.statusGlass.applyGlass { GlassTokens.statusStrip(it.context) }
-        } else {
-            GlassRegistry.unregister(binding.statusGlass)
-            binding.statusGlass.setBackgroundColor(ContextCompat.getColor(this, R.color.background))
-        }
+        // 状态栏区：干净统一底色，两种外观都一样。它背后没有内容（内容区从它下面开始），
+        // 做玻璃只会得到一块会随主题/切页抖动的半透明白 —— v2.3.1 走查后取消
+        GlassRegistry.unregister(binding.statusGlass)
+        binding.statusGlass.setBackgroundColor(ContextCompat.getColor(this, R.color.background))
 
         if (glass) {
             barLp.height = dockH
@@ -339,15 +338,20 @@ class MainActivity : AppCompatActivity() {
         dockBackdrop?.invalidate()
         // 再补一次：上面那次采到的是淡入淡出的中间态，过渡结束后要对齐到新页面
         binding.root.removeCallbacks(recaptureDockBackdrop)
-        binding.root.postDelayed(recaptureDockBackdrop, TAB_TRANSITION_REFRESH_MS)
+        binding.root.postDelayed(recaptureDockBackdrop, DOCK_RECAPTURE_MS)
     }
 
-    /** 选中态：实心图标 + 加粗文字；未选中：线性图标 + 常规字重 */
+    /** 选中态：胶囊底 + 实心图标 + 加粗文字；未选中：线性图标 + 常规字重、无底 */
     private fun applyTabStyle(active: Int) {
         val activeColor = ContextCompat.getColor(this, R.color.nav_active_icon)
         val inactiveColor = ContextCompat.getColor(this, R.color.nav_inactive_icon)
         for (i in tabViews.indices) {
             val selected = i == active
+            // 只靠"实心图标 + 加粗"区分选中，在悬浮玻璃上层级感不够（看起来像四个都能按
+            // 但不知道当前在哪个）；补一枚胶囊底，位置一眼可读，按压时它跟着一起缩放
+            tabViews[i].setBackgroundResource(
+                if (selected) R.drawable.bg_nav_selected else 0,
+            )
             tabIcons[i].setImageResource(if (selected) iconsFilled[i] else iconsLine[i])
             tabIcons[i].setColorFilter(if (selected) activeColor else inactiveColor)
             tabLabels[i].setTextColor(if (selected) activeColor else inactiveColor)
@@ -357,12 +361,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun switchFragment(target: Fragment) {
         if (target == activeFragment) return
-        supportFragmentManager.beginTransaction().apply {
-            // Tab 切换：淡入淡出 + 10px 轻微位移，0.25s ease-out
-            setCustomAnimations(R.anim.tab_enter, R.anim.tab_exit)
-            hide(activeFragment)
-            show(target)
-        }.commit()
+        // Tab 切换立即换页：不再给旧页 250ms 淡出。旧页在屏幕上多留那一小段就是走查里
+        // "点了没反应 / 切换有延迟"的直接来源；覆盖式内容区下淡入还会透出白底，更像闪。
+        // commitNow 而不是 commit：这一帧就把 hide/show 执行掉，不等下一帧。
+        supportFragmentManager.beginTransaction()
+            .hide(activeFragment)
+            .show(target)
+            .commitNow()
         activeFragment = target
     }
 

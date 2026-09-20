@@ -27,11 +27,9 @@ import com.nikonlink.app.shared.ui.glass.GlassChrome
 import com.nikonlink.app.shared.ui.glass.GlassInsetAware
 import com.nikonlink.app.shared.ui.glass.GlassMotion
 import com.nikonlink.app.shared.ui.glass.GlassRegistry
-import com.nikonlink.app.shared.ui.glass.GlassTokens
 import com.nikonlink.app.shared.ui.glass.GlassTopBar
 import com.nikonlink.app.shared.ui.glass.NlGlass
 import com.nikonlink.app.shared.ui.glass.UiFlags
-import com.nikonlink.app.shared.ui.glass.applyGlass
 import com.nikonlink.app.shared.ui.glass.renderChipBackground
 import com.nikonlink.app.MainActivity
 import com.nikonlink.app.R
@@ -1057,39 +1055,30 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     }
 
     /**
-     * 顶栏底片挂在**整块 `topChrome`**（标题行 + 分割线 + 连接模式三选行）上：覆盖式布局
-     * 下这三件一起浮在滚动的内容之上，所以共用一张底片、淡入淡出同步 —— 分开做会在中间
-     * 露出一条会移动的缝（模式行和标题行之间那条分割线尤其难看）。
+     * 顶栏：干净的统一底色，两种外观一致。
      *
-     * 底片现在拿到的是 MainActivity 那张内容列纹理：以前 `applyGlass` 没给 coordinator，
-     * 材质里写的 24dp 模糊其实从没生效过，它只是块会淡入的半透明白。
+     * 这里原来是一块随滚动浮现的玻璃底片，但它背后就是本页的滚动区 —— 采样慢一帧带来的
+     * 错位、闪烁、切页残留全部来自它，收益（白底上透出白页）又是零，所以整块去掉：
+     * 顶栏恢复不透明底 + 1px 分割线，滚动内容滚到它底下被遮住（普通 Toolbar 的行为）。
+     * 保留的只有标题自身的轻微让位（与材质无关的手感）。
      */
     private fun styleTopBar() {
-        val title = binding.tvTitle
         val chrome = binding.topChrome
-        if (!UiFlags.glassEnabled(requireContext())) {
-            topBarFx = null
-            GlassRegistry.unregister(chrome)
-            chrome.background = null
-            chrome.elevation = 0f
-            binding.topDivider.visibility = View.VISIBLE
-            title.apply { alpha = 1f; translationY = 0f; scaleX = 1f; scaleY = 1f }
-            return
-        }
-        chrome.applyGlass(
-            coordinator = (activity as? MainActivity)?.dockBackdrop,
-            register = false,
-        ) { GlassTokens.topBar(it.context) }
-        topBarFx = GlassTopBar(chrome, title, binding.topDivider)
+        GlassRegistry.unregister(chrome)
+        chrome.background = null
+        chrome.elevation = 0f
+        chrome.setBackgroundColor(ContextCompat.getColor(requireContext(), R.color.background))
+        binding.topDivider.visibility = View.VISIBLE
+        topBarFx = GlassTopBar(chrome, binding.tvTitle)
         topBarFx?.onScroll(binding.scrollContent.scrollY)
     }
 
-    /** 玻璃态：内容从顶栏底下滚过（clipToPadding 关）；经典外观：在 padding 边裁掉（开） */
+    /** 顶栏是覆盖层，滚动区要让出它的高度（玻璃/经典都一样） */
     private fun applyDockSpace() {
         if (_binding == null) return
         dockInset?.applyPadding((activity as? MainActivity)?.dockSpace() ?: 0)
-        binding.scrollContent.clipToPadding =
-            !GlassChrome.apply(binding.topChrome, binding.scrollContent)
+        binding.scrollContent.clipToPadding = false
+        GlassChrome.apply(binding.topChrome, binding.scrollContent)
         DepthLift.apply(binding.root, requireContext())
     }
 

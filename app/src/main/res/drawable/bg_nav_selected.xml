@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 导航 dock 选中项的胶囊底。四周内缩，让它读作"包住图标+标签的一枚标记"，
+     而不是把整个 1/4 栏位刷成一块。半透明中性色：悬浮玻璃 dock 与经典实体 dock 都成立。 -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:insetLeft="6dp"
+    android:insetTop="8dp"
+    android:insetRight="6dp"
+    android:insetBottom="8dp">
+    <shape android:shape="rectangle">
+        <solid android:color="@color/nav_selected_bg" />
+        <corners android:radius="18dp" />
+    </shape>
+</inset>
