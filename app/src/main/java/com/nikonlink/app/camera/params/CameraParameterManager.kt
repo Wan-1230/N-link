@@ -8,6 +8,7 @@ import com.nikonlink.app.device.usb.UsbPtpManager
 import com.nikonlink.app.camera.gallery.CameraFile
 import com.nikonlink.app.camera.gallery.CameraFileFormat
 import com.nikonlink.app.camera.gallery.TransferManager
+import com.nikonlink.app.shared.common.AppSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -43,7 +44,8 @@ class CameraParameterManager @Inject constructor(
     private val ptpSession: PtpSessionManager,
     private val usbPtpManager: UsbPtpManager,
     private val transferManager: TransferManager,
-    private val digeekerClient: DigeekerShutterCountClient
+    private val digeekerClient: DigeekerShutterCountClient,
+    private val settings: AppSettings
 ) {
     companion object {
         private const val TAG = "CameraParams"
@@ -463,7 +465,17 @@ class CameraParameterManager @Inject constructor(
         }
 
         // 最后一级兜底：把整张样张交给云端解析。本机解析已覆盖全部现代机型，
-        // 这里只服务「旧机身笔记结构变体 / 小 JPEG 把 MakerNote 裁掉了」这类少数情况。
+        // 这里只服务「旧机身笔记结构变体 / 小 JPEG 把 MakerNote 裁掉了」这类少数情况 ——
+        // 而相机原片带机身序列号、镜头信息与 GPS，未获用户同意前既不下载也不上传。
+        if (!settings.shutterCloudConsent) {
+            keptFile?.delete()
+            Timber.tag(TAG).i("Cloud fallback withheld: no user consent")
+            markShutterQueryFailed(
+                if (bytesObtained) ShutterFailReason.CONSENT_REQUIRED
+                else ShutterFailReason.READ_FAILED
+            )
+            return
+        }
         val lastResort = keptFile ?: downloadForCloudFallback(samples.first())
         if (lastResort != null) {
             bytesObtained = true
@@ -478,6 +490,7 @@ class CameraParameterManager @Inject constructor(
                     shutterCount = count,
                     shutterCountSource = ShutterCountSource.CLOUD,
                     shutterVerified = false,
+                    shutterMechanicalCount = -1,  // 云端只给一个数，别把上一轮的本机机械值混着显示
                     shutterQueryState = ShutterCountState.SUCCESS,
                     shutterFailReason = ShutterFailReason.NONE
                 )
@@ -535,6 +548,7 @@ class CameraParameterManager @Inject constructor(
             shutterCount = r.shutterCount,
             shutterCountSource = ShutterCountSource.LOCAL,
             shutterVerified = r.verified,
+            shutterMechanicalCount = r.mechanicalCount,
             shutterQueryState = ShutterCountState.SUCCESS,
             shutterFailReason = ShutterFailReason.NONE
         )
@@ -547,6 +561,12 @@ class CameraParameterManager @Inject constructor(
     fun retryShutterCountQuery() {
         partialReadUnsupported = false
         ensureShutterCountQuery(force = true)
+    }
+
+    /** 用户同意「把样张交给云端 EXIF 接口解析」后重跑一轮。授权是持久的，只问一次 */
+    fun grantShutterCloudConsentAndRetry() {
+        settings.shutterCloudConsent = true
+        retryShutterCountQuery()
     }
 
     /** 局读不可用是通道级属性，一次会话内记住，避免每个样本都白等一次失败往返 */
@@ -1600,6 +1620,11 @@ data class CameraInfo(
     val shutterVerified: Boolean = false,
     /** 查询失败的具体原因，供 UI 给出可行动的提示 */
     val shutterFailReason: ShutterFailReason = ShutterFailReason.NONE,
+    /**
+     * 仅机械快门触发次数（MakerNote `0x0037`），-1 = 机身未写。
+     * Z8/Z9 等机身的 [shutterCount] 含电子快门触发，与售后口径不一致，两个值不等时才需要展示。
+     */
+    val shutterMechanicalCount: Int = -1,
     val storageFreeMb: Long = -1,
     val storageTotalMb: Long = -1,
     val storageDescription: String = "",
@@ -1634,7 +1659,10 @@ enum class ShutterFailReason {
     NONE,
     NO_MEDIA,
     READ_FAILED,
-    PARSE_FAILED
+    PARSE_FAILED,
+
+    /** 本机解不出、但云端能试，而用户尚未授权上传原片（见 AppSettings.shutterCloudConsent） */
+    CONSENT_REQUIRED
 }
 
 /** 读数来源：本机解析全程离线；云端解析会把原片交给第三方，UI 必须区分展示 */

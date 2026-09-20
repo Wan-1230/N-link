@@ -49,4 +49,12 @@
     <string name="shutter_count_failed_no_media">存储卡内没有照片，无法读取快门次数</string>
     <string name="shutter_count_failed_read">读取失败，点击重试</string>
     <string name="shutter_count_failed_parse">照片内未找到快门计数，点击重试</string>
+    <string name="shutter_count_failed_consent">本机无法解析 · 点击可授权云端解析</string>
+    <string name="shutter_count_mechanical"> · 机械 %1$d</string>
+
+    <!-- 云端解析授权：相机原片含机身序列号 / 镜头信息 / GPS，必须说清楚上传什么、给谁、问一次 -->
+    <string name="shutter_cloud_consent_title">用云端解析快门次数？</string>
+    <string name="shutter_cloud_consent_message">本机解析没能读出计数。可以把一张样张的原始文件交给第三方 EXIF 接口（digeeker.com）解析。\n\n原片里包含机身序列号、镜头信息，以及拍摄位置（若相机开启了 GPS）。只上传一张最新样张；授权只做一次，之后不再询问。</string>
+    <string name="shutter_cloud_consent_accept">同意并解析</string>
+    <string name="shutter_cloud_consent_reject">不用了</string>
 </resources>
