@@ -1110,13 +1110,12 @@ class TransferFragment : Fragment(), GlassInsetAware {
         applyDockSpace()
     }
 
-    /** 顶栏：干净的统一底色，两种外观一致（玻璃底片已整条撤掉，见 §15.5h） */
+    /**
+     * 顶栏：干净统一底色（几何来自 `NlTopBar/NlTopDivider` style，玻璃底片已整条撤掉），
+     * 这里只挂标题让位。
+     */
     private fun styleTopBar() {
-        val bar = binding.topBar
-        GlassRegistry.unregister(bar)
-        bar.elevation = 0f
-        bar.setBackgroundColor(ContextCompat.getColor(requireContext(), R.color.background))
-        topBarFx = GlassTopBar(bar, binding.tvTitle)
+        topBarFx = GlassTopBar(binding.topBar, binding.tvTitle)
         topBarFx?.onScroll(binding.gridPhotos.computeVerticalScrollOffset())
     }
 

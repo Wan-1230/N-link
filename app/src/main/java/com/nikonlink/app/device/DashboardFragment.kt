@@ -26,7 +26,6 @@ import com.nikonlink.app.shared.ui.glass.DockInset
 import com.nikonlink.app.shared.ui.glass.GlassChrome
 import com.nikonlink.app.shared.ui.glass.GlassInsetAware
 import com.nikonlink.app.shared.ui.glass.GlassMotion
-import com.nikonlink.app.shared.ui.glass.GlassRegistry
 import com.nikonlink.app.shared.ui.glass.GlassTopBar
 import com.nikonlink.app.shared.ui.glass.NlGlass
 import com.nikonlink.app.shared.ui.glass.UiFlags
@@ -1055,21 +1054,14 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     }
 
     /**
-     * 顶栏：干净的统一底色，两种外观一致。
+     * 顶栏：干净统一底色，两种外观一致 —— 几何与底色都在 `NlTopChrome/NlTopBar/NlTopDivider`
+     * style 里，这里只挂标题让位。
      *
-     * 这里原来是一块随滚动浮现的玻璃底片，但它背后就是本页的滚动区 —— 采样慢一帧带来的
-     * 错位、闪烁、切页残留全部来自它，收益（白底上透出白页）又是零，所以整块去掉：
-     * 顶栏恢复不透明底 + 1px 分割线，滚动内容滚到它底下被遮住（普通 Toolbar 的行为）。
-     * 保留的只有标题自身的轻微让位（与材质无关的手感）。
+     * 原来这块是随滚动浮现的玻璃底片，但它背后就是本页的滚动区：采样慢一帧带来的错位、
+     * 闪烁、切页残留全部来自它，收益（白底上透出白页）又是零，所以整条撤掉。
      */
     private fun styleTopBar() {
-        val chrome = binding.topChrome
-        GlassRegistry.unregister(chrome)
-        chrome.background = null
-        chrome.elevation = 0f
-        chrome.setBackgroundColor(ContextCompat.getColor(requireContext(), R.color.background))
-        binding.topDivider.visibility = View.VISIBLE
-        topBarFx = GlassTopBar(chrome, binding.tvTitle)
+        topBarFx = GlassTopBar(binding.topChrome, binding.tvTitle)
         topBarFx?.onScroll(binding.scrollContent.scrollY)
     }
 

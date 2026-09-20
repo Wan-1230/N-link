@@ -21,7 +21,6 @@ import com.nikonlink.app.shared.ui.glass.DepthLift
 import com.nikonlink.app.shared.ui.glass.DockInset
 import com.nikonlink.app.shared.ui.glass.GlassChrome
 import com.nikonlink.app.shared.ui.glass.GlassInsetAware
-import com.nikonlink.app.shared.ui.glass.GlassRegistry
 import com.nikonlink.app.shared.ui.glass.GlassTopBar
 import com.nikonlink.app.shared.ui.glass.NlGlass
 import com.nikonlink.app.shared.ui.glass.UiFlags
@@ -619,17 +618,12 @@ class SettingsFragment : Fragment(), GlassInsetAware {
     }
 
     /**
-     * 顶栏：干净的统一底色（两种外观一致）。玻璃底片整块撤掉 —— 它背后就是本页滚动区，
-     * 采样慢一帧会错位/闪烁/切页残留，而在白底上透出的是白。只保留标题的轻微让位。
+     * 顶栏：干净统一底色 —— 几何与底色都在 `NlTopChrome/NlTopBar/NlTopDivider` style 里，
+     * 这里只挂标题让位。玻璃底片整块撤掉：它背后就是本页滚动区，采样慢一帧会错位/闪烁/
+     * 切页残留，而在白底上透出的是白。
      */
     private fun styleTopBar() {
-        val chrome = binding.topChrome
-        GlassRegistry.unregister(chrome)
-        chrome.background = null
-        chrome.elevation = 0f
-        chrome.setBackgroundColor(ContextCompat.getColor(requireContext(), R.color.background))
-        binding.topDivider.visibility = View.VISIBLE
-        topBarFx = GlassTopBar(chrome, binding.tvTitle)
+        topBarFx = GlassTopBar(binding.topChrome, binding.tvTitle)
         topBarFx?.onScroll(binding.settingsScroll.scrollY)
     }
 
