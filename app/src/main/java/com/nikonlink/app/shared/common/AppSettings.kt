@@ -125,6 +125,16 @@ class AppSettings @Inject constructor(
         set(value) = prefs.edit().putInt("bulb_duration_seconds", value).apply()
 
     /**
+     * 快门次数「云端解析」授权（PRD v2.4 §L4，默认关）。
+     *
+     * 本机解析失败时的唯一退路是把样张原片交给第三方 EXIF 接口 —— 而相机原片里带着
+     * 机身序列号、镜头信息与 GPS。默认不上传，用户明确同意后才允许，且只同意一次。
+     */
+    var shutterCloudConsent: Boolean
+        get() = prefs.getBoolean("shutter_cloud_consent", false)
+        set(value) = prefs.edit().putBoolean("shutter_cloud_consent", value).apply()
+
+    /**
      * 画面模式（连接策略，v1.0.2 用户提议的两档化）。
      * 联动为默认；遥控模式 = 0x90C2(1) 机身控制模式，B 门等远程操作的推荐模式。
      */
