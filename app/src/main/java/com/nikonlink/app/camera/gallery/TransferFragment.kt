@@ -194,8 +194,9 @@ class TransferFragment : Fragment(), GlassInsetAware {
         binding.gridPhotos.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
                 topBarFx?.onScroll(rv.computeVerticalScrollOffset())
-                // dock 悬浮玻璃：滚动时持续重采背景，照片才看得见从玻璃底下划过
-                glassBackdrop?.requestRefresh()
+                // dock 悬浮玻璃：把滚动增量交给采集器（采样窗口每帧免费平移），
+                // 并持续重采，照片才看得见从玻璃底下划过
+                glassBackdrop?.requestRefresh(dy)
             }
 
             override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
@@ -459,6 +460,8 @@ class TransferFragment : Fragment(), GlassInsetAware {
         if (!hidden && _binding != null) {
             renderAlbumTabs(viewModel.activeAlbum.value)
         }
+        // 离开本页时复位采集态：fling 中途切走会把"滚动中"的降频档一直带到别的页面
+        if (hidden) glassBackdrop?.setScrollSuppressing(false)
     }
 
     private fun setupPullRefresh() {

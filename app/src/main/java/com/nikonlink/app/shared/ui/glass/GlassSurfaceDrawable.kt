@@ -46,6 +46,7 @@ class GlassSurfaceDrawable(
             _material = value
             lensGen = -1L
             guardKey = Long.MIN_VALUE
+            guardAlpha = -1
         }
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -67,6 +68,9 @@ class GlassSurfaceDrawable(
 
     private var guardKey = Long.MIN_VALUE
     private var guardTint = 0
+
+    /** 上一次选中的 tint alpha；粘滞判定用它，避免档位随亮度微摆来回跳 */
+    private var guardAlpha = -1
 
     // 透镜结果缓存：只在纹理换代或区域尺寸/位置变化时重算，滚动中每帧只花一次位图 blit
     private var lensSrc = IntArray(0)
@@ -328,14 +332,28 @@ class GlassSurfaceDrawable(
 
     /**
      * 对比度自适应（PRD §9.3）：文字压在自己身上够不够黑由纹理亮度决定，不靠手调 alpha。
-     * 不达标先加浓 tint（最多 3 档），仍不达标就把这一面退回不透明白底 —— 即现设计规范。
+     * 不达标先加浓 tint（最多 6 档），仍不达标就把这一面退回不透明白底 —— 即现设计规范。
+     *
+     * **档位是粘滞的**：已选的档只要还达标（留 0.3 容差）就不重算。逐次重算时整屏平均亮度
+     * 会随内容滚动上下摆动，tint 就在 56%↔70%↔56% 之间来回跳 —— 设备页顶栏那个"玻璃在呼吸/
+     * 闪"的观感主要来自这里，而不是采样本身（走查反馈第 1 条）。
      */
     private fun guardedTint(host: View, m: GlassMaterial, luminance: Float): Int {
         if (m.onColor == 0 || luminance < 0f) return m.tintColor
+        val base = m.tintColor
         val key = (luminance * 1000).toLong() * 131 + m.tintColor
         if (key == guardKey) return guardTint
 
-        val base = m.tintColor
+        // 粘滞检查：沿用上一档，除非它已经不达标
+        val held = guardAlpha
+        if (held > Color.alpha(base)) {
+            val step = Color.argb(held, Color.red(base), Color.green(base), Color.blue(base))
+            if (contrastRatio(m.onColor, compositeOnLuminance(step, luminance)) >= AA_BODY - HYST) {
+                guardTint = step
+                guardKey = key
+                return step
+            }
+        }
         var alpha = Color.alpha(base)
         var step = base
         // 6 档 × 7%：tint 现在起手只有 56%（要透得过去），留给自适应的行程更长，
@@ -348,6 +366,7 @@ class GlassSurfaceDrawable(
         }
         val ok = contrastRatio(m.onColor, compositeOnLuminance(step, luminance)) >= AA_BODY
         guardTint = if (ok) step else m.opaqueTint
+        guardAlpha = Color.alpha(guardTint)
         guardKey = key
         return guardTint
     }
@@ -383,6 +402,9 @@ class GlassSurfaceDrawable(
     companion object {
         /** WCAG AA 正文门槛 */
         private const val AA_BODY = 4.5
+
+        /** 粘滞容差：已选档位只要还差得远才换档（见 [guardedTint]） */
+        private const val HYST = 0.3
     }
 }
 

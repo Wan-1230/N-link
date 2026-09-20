@@ -69,6 +69,12 @@ class MainActivity : AppCompatActivity() {
         /** v2.2 基线：dock 不悬浮时的高度，「经典外观」要逐值还原（AC-12） */
         private const val DOCK_BASELINE_HEIGHT_DP = 60
 
+        /**
+         * 切页后补采纹理的时机。Tab 转场是 250ms 淡入淡出（`R.anim.tab_enter/exit`），
+         * 在它结束后再采一次才拿得到"只有新页面"的画面。
+         */
+        private const val TAB_TRANSITION_REFRESH_MS = 320L
+
         /** 启动自动检查更新：每进程只跑一次（旋转/重建 Activity 不重跑） */
         @Volatile
         private var autoCheckStarted = false
@@ -93,6 +99,15 @@ class MainActivity : AppCompatActivity() {
 
     /** dock 盖在内容的哪一条上头 = 页面滚动容器要垫的底部内衬；经典外观下为 0 */
     private var dockFootprint = 0
+
+    /**
+     * 切页过渡结束后补采一次 dock 纹理。
+     *
+     * 只在 `switchToTab` 当时采一次不够：那一刻正处在 250ms 淡入淡出中间，画进纹理的是
+     * "上一页在淡出 + 下一页在淡入"的叠加态，而动画结束后没有任何人再请求重采 →
+     * dock 就一直挂着上一页的模糊（走查反馈第 2 条）。
+     */
+    private val recaptureDockBackdrop = Runnable { dockBackdrop?.invalidate() }
 
     private val dashboardFragment = DashboardFragment()
     private val transferFragment = TransferFragment()
@@ -153,6 +168,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        binding.root.removeCallbacks(recaptureDockBackdrop)
         UiFlags.unobserve(this)
         super.onDestroy()
     }
@@ -321,6 +337,9 @@ class MainActivity : AppCompatActivity() {
         applyTabStyle(index)
         // 切页时 dock 底下的内容整体换掉，玻璃纹理要作废重采
         dockBackdrop?.invalidate()
+        // 再补一次：上面那次采到的是淡入淡出的中间态，过渡结束后要对齐到新页面
+        binding.root.removeCallbacks(recaptureDockBackdrop)
+        binding.root.postDelayed(recaptureDockBackdrop, TAB_TRANSITION_REFRESH_MS)
     }
 
     /** 选中态：实心图标 + 加粗文字；未选中：线性图标 + 常规字重 */
