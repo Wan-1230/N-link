@@ -886,20 +886,14 @@
         </LinearLayout>
     </ScrollView>
 
-    <!-- 覆盖式顶栏：压在滚动区之上。玻璃态下整块是底片（随滚动从全透明浮到不透明），
-         经典外观下它没有自己的底，且滚动内容在 padding 边就被裁掉 → 与 v2.2 逐像素相等 -->
+    <!-- 覆盖式顶栏：压在滚动区之上。几何与底色来自 NlTopChrome / NlTopBar / NlTopDivider -->
     <LinearLayout
         android:id="@+id/topChrome"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical">
+        style="@style/NlTopChrome">
 
         <LinearLayout
             android:id="@+id/topBar"
-            android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:gravity="center_vertical"
-            android:paddingHorizontal="@dimen/page_margin">
+            style="@style/NlTopBar">
 
             <TextView
                 android:id="@+id/tvTitle"
@@ -911,8 +905,6 @@
 
         <View
             android:id="@+id/topDivider"
-            android:layout_width="match_parent"
-            android:layout_height="@dimen/divider_height"
-            android:background="@color/divider" />
+            style="@style/NlTopDivider" />
     </LinearLayout>
 </FrameLayout>
