@@ -55,6 +55,9 @@
     <dimen name="glass_dock_height">62dp</dimen>
     <dimen name="glass_dock_inset_h">12dp</dimen>
     <dimen name="glass_dock_inset_bottom">10dp</dimen>
+    <!-- PRD §7.1：≥600dp（medium/expanded）时 dock 收到此宽度并居中。
+         大屏最常见的玻璃失败模式就是把手机那条横栏拉成 12 英寸。 -->
+    <dimen name="glass_dock_max_width">480dp</dimen>
 
     <!-- ===== 弹窗面板底（配合窗口级 blur-behind 使用） ===== -->
     <color name="glass_dialog_surface">#F0FFFFFF</color>

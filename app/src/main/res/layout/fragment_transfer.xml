@@ -29,22 +29,22 @@
         <!-- 模块 4.2：「跳过已下载」开关（仅已标记栏可见），置于刷新键左侧 -->
         <ImageView
             android:id="@+id/btnSkipDownloaded"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="跳过已下载"
-            android:padding="8dp"
+            android:padding="12dp"
             android:src="@drawable/ic_skip_downloaded"
             android:visibility="gone"
             app:tint="@color/text_primary" />
 
         <ImageView
             android:id="@+id/btnRefresh"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="刷新"
-            android:padding="8dp"
+            android:padding="12dp"
             android:src="@drawable/ic_refresh"
             app:tint="@color/text_primary" />
 

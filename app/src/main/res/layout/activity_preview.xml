@@ -27,11 +27,11 @@
 
         <ImageView
             android:id="@+id/btnBack"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="返回"
-            android:padding="8dp"
+            android:padding="12dp"
             android:src="@drawable/ic_back"
             app:tint="@color/white" />
 
@@ -58,11 +58,11 @@
 
         <ImageView
             android:id="@+id/btnMore"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="更多"
-            android:padding="8dp"
+            android:padding="12dp"
             android:src="@drawable/ic_more"
             app:tint="@color/white" />
     </LinearLayout>

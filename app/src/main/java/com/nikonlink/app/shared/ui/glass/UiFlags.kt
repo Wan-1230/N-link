@@ -86,14 +86,60 @@ object UiFlags {
     fun glassEnabled(c: Context): Boolean = !get(c, CLASSIC)
 
     /**
-     * 降低透明度。
+     * 降低透明度 = 用户开关 **或** 系统「高对比度文字」。
      *
-     * PRD §9.4 原本要求「系统高对比度文字开启时自动等效开启」，但
-     * `AccessibilityManager.isHighTextContrastEnabled()` **不在 compileSdk 34/35 的公开
-     * stub 里**（已用 javap 核对 android-35.jar，只有 isEnabled / isTouchExplorationEnabled）。
-     * 与 v2.2 §G4 的立场一致：不做隐藏 API 反射 hack。改为用户开关 + 设置页里给一句指引。
+     * PRD §9.4 的自动触发（原 C3 偏离）现在能做了，而且不用反射：
+     * `AccessibilityManager.isHighTextContrastEnabled()` 确实不在公开 stub 里，
+     * 但它背后的设置项是公开的 —— `Settings.Secure` 的
+     * `accessibility_high_text_contrast_enabled`，普通应用可读、无需权限。
+     * 读一次不贵，但不能进绘制路径，所以走缓存 + [watchSystemHighContrast] 失效。
      */
-    fun reduceTransparency(c: Context): Boolean = get(c, REDUCE_TRANSPARENCY)
+    fun reduceTransparency(c: Context): Boolean =
+        get(c, REDUCE_TRANSPARENCY) || systemHighContrast(c)
+
+    /** 系统高对比度文字设置项（API 34 起有公开常量，同名串在更早版本也能读到） */
+    private const val HIGH_CONTRAST_KEY = "accessibility_high_text_contrast_enabled"
+
+    /** -1 = 未读；0/1 = 缓存值。绘制路径只读这个字段，不再打 Settings */
+    @Volatile private var highContrastCache = -1
+    private var highContrastObserver: android.database.ContentObserver? = null
+
+    fun systemHighContrast(c: Context): Boolean {
+        if (highContrastCache < 0) {
+            highContrastCache = try {
+                if (android.provider.Settings.Secure.getInt(
+                        c.applicationContext.contentResolver, HIGH_CONTRAST_KEY, 0
+                    ) == 1
+                ) 1 else 0
+            } catch (e: Exception) {
+                0   // ROM 没有这个设置项 = 未开启，不是错误
+            }
+        }
+        return highContrastCache == 1
+    }
+
+    /**
+     * 监听系统高对比度开关：变了就作废缓存并广播重涂。
+     * 在 MainActivity.onCreate 调一次即可（用 applicationContext，重复调用安全）。
+     */
+    fun watchSystemHighContrast(c: Context) {
+        if (highContrastObserver != null) return
+        val app = c.applicationContext
+        val o = object : android.database.ContentObserver(
+            android.os.Handler(android.os.Looper.getMainLooper())
+        ) {
+            override fun onChange(selfChanging: Boolean) {
+                highContrastCache = -1
+                notifyChanged()
+            }
+        }
+        runCatching {
+            app.contentResolver.registerContentObserver(
+                android.provider.Settings.Secure.getUriFor(HIGH_CONTRAST_KEY), false, o,
+            )
+        }.onSuccess { highContrastObserver = o }
+        highContrastCache = -1   // 注册后重读一次，别用注册前的旧值
+    }
 
     /**
      * 背景模糊总开关。
