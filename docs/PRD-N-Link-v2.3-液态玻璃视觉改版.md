@@ -412,7 +412,14 @@ fragment_liveview.xml:222,248,274,300,326  5 × #99FFFFFF 硬编码
 | expanded | ≥840dp | **左侧竖向玻璃导航栏**（r28，宽 260dp） | 单行 | 2–3 列 | 4 |
 
 - **禁止把手机 dock 拉成 12 英寸的横条** —— 大屏最大的玻璃失败模式。max-width 480dp 是硬要求。
+  **已落地（§15.5i）**：`glass_dock_max_width=480dp` + `screenWidthDp ≥ 600` 时 dock 收宽并 `bottom|center_horizontal`
+  居中；compact 下仍是 `match_parent`，手机上几何逐像素不变。切换「经典外观」时宽度与 gravity 一并复位，
+  不会留下"大屏的 480dp 黑条"。
 - expanded 下顶栏玻璃可让位给通高侧栏，但**同一屏仍只允许 1 个主悬浮玻璃**。
+  **侧栏（≥840dp 竖排导航）未做**：那是第四个布局 + 一套新的 dock 几何，在没有任何真机/模拟器可验的
+  情况下开这块，性价比远低于它引入的风险（见 §15.5g 的验证记录）。
+- 配额列随之更新：顶栏玻璃撤销后（§15.5h），主界面稳定态实际只有 **2** 面真模糊
+  （dock + 相册胶囊），多选态 3。`glass_max_blur_surfaces` 仍写 4（上限，不是目标值）。
 
 ### 7.2 系统栏 / 刘海 / 手势（与 D2 绑定）
 - 先做真 edge-to-edge：`WindowInsetsCompat` + `setOnApplyWindowInsetsListener` 统一分发；dock 底部 = `max(margins.bottom, 8dp) + 8dp`；顶栏加 `insets.top`。
@@ -425,7 +432,10 @@ fragment_liveview.xml:222,248,274,300,326  5 × #99FFFFFF 硬编码
 - `densityDpi` 变化（放大显示/接外屏）需作废纹理并重算 rim 像素宽度：`strokePx = max(1, round(dp × density))`，**避免 0.5dp 描边在 mdpi 上变成 0px 直接消失**。
 
 ### 7.4 触控目标与可达性
-- **现值违规项**：顶栏 40dp 无边框图标按钮（`?attr/selectableItemBackgroundBorderless`）低于 48dp。玻璃化时**统一 48dp 可视或 48dp 透明 hit-slop**。
+- **现值违规项**：顶栏 40dp 无边框图标按钮（`?attr/selectableItemBackgroundBorderless`）低于 48dp。
+  **已修（§15.5i）**：5 处（设备页设置入口、相册页刷新/跳过已下载、预览页返回/更多）
+  40dp → **48dp 命中框**，内衬 8dp → 12dp，**字形视觉尺寸一像素没变**（24dp glyph 不变），
+  只是可点区域补足。标题是 `0dp + weight=1` 且有 `maxLines=1 + ellipsize`，加宽 16dp 不会挤破 320dp 窄屏。
 - dock 悬浮后单元高度 60dp 足够，但**底部内缩会让"贴底"操作变远** → dock 需可被用户移到顶部？（不做，列 Q5）；至少：dock 单元 hit-slop 上下各外扩 8dp。
 - 单手操作：dock 保持底部；主 CTA（快门/记录）在监看页仍贴拇指弧区，玻璃不改变几何位置。
 
@@ -700,7 +710,7 @@ fun View.applyGlass(m: GlassMaterial)   // 一个入口，内部按 tier 决定�
 |---|---|---|---|
 | **C1** | §9.1 需要 T1/T2/T3 三档，且 **T1（Android 10/11）要单独设计一套"没有模糊"的视觉** | **不需要分层**。背景模糊改为 CPU 在 1/8 降采样纹理上施算（`BoxBlur` 三趟可分离），Android 10 与 Android 16 是同一条代码路径。分层只在两处仍有意义：窗口级 blur-behind（API 31）、未来的 AGSL 折射（API 33） | **省掉整个 T1 视觉分支**，也去掉 `RenderEffect`/`BlurMaskFilter` 两条后端；AC-2 的三档走查简化为"窗口模糊有/无"两档 |
 | **C2** | §8.2 第 5 条：监看画面是 `SurfaceView`，需要 `PixelCopy` 异步抓取 | 取景画面实际是 **`ImageView`**（`fragment_liveview.xml:8 ivLiveView`），`source.draw(canvas)` 直接可采 | HUD 真模糊走通了与相册完全相同的路径，省掉 `PixelCopy` 的异步、时序、失败兜底三块工作（原估 M4 的主要风险 R4 消失） |
-| **C3** | §9.4：系统「高对比度文字」开启时**自动**开启降低透明度 | `AccessibilityManager.isHighTextContrastEnabled()` **不在 compileSdk 34/35 的公开 stub 里**（已 `javap` 核对 `android-35.jar`，该类只公开 `isEnabled` / `isTouchExplorationEnabled`）。与 v2.2 §G4 同一立场：**不做隐藏 API 反射** | 自动触发降级为「设置页手动开关」。AC-11 该项需相应改写 |
+| **C3** | §9.4：系统「高对比度文字」开启时**自动**开启降低透明度 | ~~`AccessibilityManager.isHighTextContrastEnabled()` 不在公开 stub 里（javap 核对过 android-35.jar），只能反射~~ → **已闭环**（§15.5i）：那个设置项本身是公开的，`Settings.Secure` 的 `accessibility_high_text_contrast_enabled`，普通应用可读、无需权限、不用反射 | `UiFlags.reduceTransparency() = 用户开关 || 系统高对比度`，值走缓存 + `ContentObserver` 失效后原地重涂。AC-11 的"自动开降低透明度"恢复为可签项 |
 | **C4** | §8.2 第 4 条：fling 期间零采集，靠 `OnScrollListener` 的 IDLE 结算 | ✅ **第二包已补齐**：复用相册页已有的快速滚动保护回调（`TransferFragment` 里 `adapter.setFastScrolling` 那处），加一行 `glassBackdrop?.setScrollSuppressing(fast)`，停住时补采一次。另给每个内容源单独的采集频率预算：监看 250ms、预览 120ms、相册 150ms 默认 | 关闭该偏离项，AC-6 的"列表帧预算不被玻璃吃掉"具备条件 |
 
 ### 15.1b 第二包：折射终于按 §3.6 落地（而且不需要 API 33）
@@ -771,9 +781,9 @@ fun View.applyGlass(m: GlassMaterial)   // 一个入口，内部按 tier 决定�
 
 **可验**：AC-1（材质一致性：全部走 `GlassTokens` 工厂，无手拼参数）、AC-3（弹窗/sheet 真模糊 + 27 处行为零变化）、AC-5（对比度自适应，需构造"预览页全白图"复验）、AC-6（滚动期采集降频不冻采 —— v2.3.1 改了口径，见 §15.5d B3）、AC-8（按压与拖选共存 —— 未改 `PressEffect`，冲突面为零）、AC-12（回退闸门：几何 + 材质 + `clipToPadding` 三样都逐项还原）。
 **AC-4（配额）**：debug 构建现在有硬检查 —— `GlassCoordinator.assertBlurQuota()` 在登记面时数"真在采背景"的面，超 `glass_max_blur_surfaces` 就在 logcat 报一条（不 crash，测试包崩在用户手里比超预算更糟）。配额从 3 放到 4：v2.3.1 把相册页分段胶囊提成悬浮玻璃之后，主界面稳定态就占 3（dock + 顶栏底片 + 胶囊），多选态再加一面操作坞。
-**尚不可签字**：AC-2（需三台不同 Android 版本真机）、AC-7（传输期降级未做）、AC-9（功耗需真机 `batterystats`）、AC-10（Monkey/旋转压测）、AC-11（高对比度自动触发已按 C3 降级为手动，其余项需 TalkBack 实走）、AC-13（大屏）。
+**尚不可签字**：AC-2（需三台不同 Android 版本真机）、AC-7（传输期降级未做，卡在用户未提交的连接层文件）、AC-9（功耗需真机 `batterystats`）、AC-10（Monkey/旋转压测）、AC-11（**高对比度自动触发已闭环**、**触控目标已补足 48dp**；剩 TalkBack 实走与 `fontScale 1.3/2.0` 无裁切需真机）、AC-13（**dock 480dp 收宽已做**；≥840dp 侧栏与 2–3 列未做）。
 
-> 里程碑对照：M0 ✅（除 D2 全局）、M1 ✅、M2 ⏳ 一半（顶栏三件套 + 分段控件已归一，`<include>` 组件与 item 布局未做）、M3 ✅、M4 大部分 ✅（监看 + 预览，圆形图标按钮除外）、M5 ❌、M6 ⏳ 部分（三开关 ✅、配额断言 ✅、大屏 ❌、三档真机走查 ⏳）。
+> 里程碑对照：M0 ✅（除 D2 全局）、M1 ✅、M2 ⏳ 一半（顶栏三件套 + 分段控件已归一，`<include>` 组件与 item 布局未做；注：顶栏玻璃已于 §15.5h 撤销，"归一"现在指的是干净统一的一行标题 + 分割线）、M3 ✅、M4 大部分 ✅（监看 + 预览，圆形图标按钮除外）、M5 ❌、M6 ⏳（三开关 ✅、配额断言 ✅、高对比度自动触发 ✅、48dp 触点 ✅、大屏 dock 收宽 ✅；≥840dp 侧栏 ❌、fontScale 换行 ❌、三档真机走查 ⏳）。
 
 
 ---
@@ -917,16 +927,34 @@ dock 选中胶囊在**经典外观下也是新的**（阴影/尺寸/圆角/胶�
 
 
 
+### 15.5i 第十一包：把不依赖视觉判断的 PRD 条目清掉（a11y + 大屏 + 触点）
+
+顶栏玻璃撤掉之后，剩下的 PRD 项里有一批**不需要肉眼看效果**就能定对错的 —— 在"本机跑不了模拟器、
+只能等用户真机"的窗口期，先把这些关掉，把只能靠眼睛的项留给真机（分工而非拖延）：
+
+| 项 | 做法 | 为什么可以盲改 |
+|---|---|---|
+| **C3 → AC-11 自动高对比** | `UiFlags.reduceTransparency() = 用户开关 \|\| 系统高对比度`。走 `Settings.Secure` 的公开设置项 `accessibility_high_text_contrast_enabled`（无需权限、**不反射**），值缓存 + `ContentObserver` 失效后 `notifyChanged()` 原地重涂 | 是行为契约不是观感：开了系统高对比度 → tint 不透明、模糊关。判定只读一个布尔 |
+| **§7.4 → AC-11 触点** | 5 处顶栏无边框图标按钮 40dp→48dp 命中框，内衬 8→12dp（glyph 仍 24dp，视觉零变化） | 尺寸是 XML 常量，可静态核对；宽出 16dp 由 `weight=1 + maxLines=1 + ellipsize` 的标题吸收 |
+| **§7.1 → AC-13 dock 收宽** | 新 `glass_dock_max_width=480dp`；`screenWidthDp ≥ 600` 时 dock 取 `min(屏宽-2×内缩, 480dp)` 并 `bottom\|center_horizontal`；compact 保持 `match_parent` | 断点是配置量，可算不靠看。经典外观下宽度与 gravity 一并复位，避免"480dp 黑条留在通栏 dock 上"这类跨态残留 |
+| **§15.6-1 相册页覆盖式顶栏** | **撤销该条**（不是延后）：顶栏既然不再是玻璃，覆盖式与竖向排列的观感完全相同（内容都被不透明顶栏遮住），继续做只换来一次高风险布局改造 | 这条曾经是"为了让顶栏玻璃能透到内容"才需要的结构前提；前提被 §15.5h 抽掉了，条目自然作废 |
+| **配额口径** | 顶栏退出采样后主界面稳定态真模糊面 3→2，多选态 3；`glass_max_blur_surfaces` 保持 4 当上限而非目标 | 数量由 `assertBlurQuota()` 在 debug 下实测，不靠估算 |
+
+**明确没做的**：`fontScale ≥ 1.3` 下 L2 胶囊从"固定高+单行"换成"垂直内衬+可换行"（§7.3）。
+它确实是个真实的裁字风险，但改完必须用 1.3/2.0 两档字缩放各看一遍才知道对不对，
+而这正是本机验不了的那一类 → 宁可留着当已知项，也不要盲改后当成已交付。
+≥840dp 竖排侧栏同理（要新增一整套布局）。
+
+
 ### 15.6 反馈里**没做完**的事（别当成已交付）
 
 1. ~~三页顶栏的滚动渐隐~~ → 顶栏玻璃已在 §15.5h **整条撤销**（收益零、代价真），改回干净统一底色。
-   ~~**内容真从标题底下滚过**~~ → **设备页与设置页已做成覆盖式**（§15.5f：`FrameLayout` 根 +
-   `topChrome` 压在满高滚动区之上，玻璃态 `clipToPadding=false`）。
-   **相册页仍缺**：它顶部是 5 件 chrome（标题行 / 分割线 / 筛选 chip 行 / 下载统计 / 进度条）
-   且其中两件按状态显隐，覆盖式要算的是动态高度而不是一块固定板 —— 做法同构，
-   但必须真机盯住下载态才知道高度对不对，所以留到有验证窗口再动。
-   顺带更正一处旧结论：这一节从前写着"设置页 ScrollView 直接跟在头部后面，已经是覆盖式效果"，
-   **那是错的** —— 设置页与设备页一样是竖向排列，内容压根不经过标题底下；两页都已改对。
+   ~~**内容真从标题底下滚过**~~ → 设备页与设置页做成过覆盖式（§15.5f），但顶栏去玻璃后
+   （§15.5h）覆盖式与竖向排列观感相同，**该条作废**：相册页不再需要跟进改造（§15.5i）。
+   两页保留 FrameLayout + `topChrome` 结构（已验过无回归），不再往第三页推。
+   顺带更正两处旧结论：① 这一节从前写着"设置页 ScrollView 直接跟在头部后面，已经是覆盖式效果"，
+   **那是错的** —— 它与设备页一样是竖向排列；② §15.5b/§15.5f 里"顶栏玻璃随滚动浮现"的描述
+   均已失效，现行行为是"顶栏恒定不透明、只有标题轻微让位"。
 2. **监看页 chrome 渐隐未做**：预览页单击切 chrome 没有冲突（§15.5c 已做）；监看页**单击=对焦**
    （`setupTouchAndScale` + `viewFocusIndicator`），拿同一个手势做渐隐会和对焦抢语义。
    要做得换触发条件（双指缩放中 / 录像开始后自动收起），方案未定所以没写。

@@ -70,11 +70,12 @@ class MainActivity : AppCompatActivity() {
         /** v2.2 基线：dock 不悬浮时的高度，「经典外观」要逐值还原（AC-12） */
         private const val DOCK_BASELINE_HEIGHT_DP = 60
 
-        /**
-         * 切页后补采 dock 纹理的时机。换页现在是同步的（`commitNow`），但目标页的
-         * RecyclerView/网格要等下一次布局才有内容，所以过一帧再补采一次对齐。
-         */
+        /** 切页后补采 dock 纹理的时机。换页现在是同步的（`commitNow`），但目标页的
+         * RecyclerView/网格要等下一次布局才有内容，所以过一帧再补采一次对齐。 */
         private const val DOCK_RECAPTURE_MS = 160L
+
+        /** PRD §7.1 的 medium 断点：≥600dp 时 dock 收宽居中，不再拉成通栏 */
+        private const val WIDTH_MEDIUM_DP = 600
 
         /** 启动自动检查更新：每进程只跑一次（旋转/重建 Activity 不重跑） */
         @Volatile
@@ -159,6 +160,9 @@ class MainActivity : AppCompatActivity() {
 
         setupFragments()
         setupBottomNav()
+        // 系统「高对比度文字」开着时，玻璃自动等效于「降低透明度」（不透明底 + 无模糊）。
+        // 见 UiFlags.reduceTransparency —— 走公开的 Settings.Secure，不做反射
+        UiFlags.watchSystemHighContrast(this)
         applyDock()
         applyWindowInsets()
         UiFlags.observe(this) { applyDock() }
@@ -226,6 +230,19 @@ class MainActivity : AppCompatActivity() {
             barLp.marginStart = side
             barLp.marginEnd = side
             barLp.bottomMargin = bottom
+            // PRD §7.1：≥600dp（平板 / 折叠屏展开 / 分屏大屏）必须把 dock 收成 480dp 居中，
+            // 大屏最典型的玻璃失败模式就是"把手机那条横栏拉成 12 英寸"。
+            // compact 下保持 match_parent，与手机上已验过的几何逐像素相同。
+            val wide = resources.configuration.screenWidthDp >= WIDTH_MEDIUM_DP
+            barLp.width = if (wide) {
+                minOf(
+                    resources.displayMetrics.widthPixels - 2 * side,
+                    resources.getDimensionPixelSize(R.dimen.glass_dock_max_width),
+                )
+            } else {
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+            }
+            barLp.gravity = android.view.Gravity.BOTTOM or android.view.Gravity.CENTER_HORIZONTAL
             bar.layoutParams = barLp
             // 内容通到底：dock 盖在内容之上而不是挤在内容之下 → 看得见内容从底下划过
             binding.contentColumn.updatePadding(bottom = 0)
@@ -236,6 +253,8 @@ class MainActivity : AppCompatActivity() {
             bar.applyGlass(dockBackdrop) { GlassTokens.dock(it.context) }
         } else {
             barLp.height = DOCK_BASELINE_HEIGHT_DP.dpToPx()
+            barLp.width = android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+            barLp.gravity = android.view.Gravity.BOTTOM
             barLp.marginStart = 0
             barLp.marginEnd = 0
             barLp.bottomMargin = navInset
