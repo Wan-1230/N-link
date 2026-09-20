@@ -1,0 +1,14 @@
+# 统一行尾：入库一律 LF，检出也一律 LF。
+#
+# 此前仓库没有 .gitattributes，行尾完全依赖各台机器自己的 core.autocrlf（本机为 true）。
+# 后果有两个：一是 git status 会冒出一批内容零差异、只差行尾的「已修改」文件；
+# 二是 gradlew 这类 shell 脚本在检出时被换成 CRLF，到 Unix/CI 侧直接不可执行。
+# 下面显式钉死策略后，仓库行为不再随成员本地配置漂移。
+*                   text=auto eol=lf
+
+# Windows 批处理必须保留 CRLF：cmd.exe 对纯 LF 的 .bat 解析不稳定（gradlew.bat 属这类）
+*.bat               text eol=crlf
+
+# 明确按二进制处理，不走行尾嗅探
+*.jar               binary
+*.png               binary
