@@ -303,7 +303,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleOpenTab(intent: Intent?) {
         val tab = intent?.getIntExtra(EXTRA_OPEN_TAB, -1) ?: return
-        if (tab in 0..3) switchToTab(tab)
+        if (tab in 0..3) switchToTab(tab, immediate = false)
     }
 
     private fun setupFragments() {
@@ -328,9 +328,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** 供 Fragment 快捷入口跳转 Tab */
-    fun switchToTab(index: Int) {
+    fun switchToTab(index: Int, immediate: Boolean = true) {
         if (index != currentTab) {
-            switchFragment(tabFragments[index])
+            switchFragment(tabFragments[index], immediate)
             currentTab = index
         }
         applyTabStyle(index)
@@ -359,15 +359,18 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun switchFragment(target: Fragment) {
+    private fun switchFragment(target: Fragment, synchronous: Boolean) {
         if (target == activeFragment) return
         // Tab 切换立即换页：不再给旧页 250ms 淡出。旧页在屏幕上多留那一小段就是走查里
         // "点了没反应 / 切换有延迟"的直接来源；覆盖式内容区下淡入还会透出白底，更像闪。
-        // commitNow 而不是 commit：这一帧就把 hide/show 执行掉，不等下一帧。
-        supportFragmentManager.beginTransaction()
+        //
+        // `synchronous` 只给用户点击的切换用（commitNow：这一帧就执行掉，不等下一帧）。
+        // 冷启动深链走异步 commit —— 那时四个 Fragment 都还没测量，同步执行等于把它们的
+        // 创建全塞进首帧，是白白多出来的启动开销。
+        val tx = supportFragmentManager.beginTransaction()
             .hide(activeFragment)
             .show(target)
-            .commitNow()
+        if (synchronous) tx.commitNow() else tx.commit()
         activeFragment = target
     }
 
