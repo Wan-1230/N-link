@@ -613,9 +613,10 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         dockInset = DockInset(binding.settingsScroll)
         applyDockSpace()
         styleTopBar()
-        binding.settingsScroll.setOnScrollChangeListener { _, _, scrollY, _, _ ->
+        binding.settingsScroll.setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
             topBarFx?.onScroll(scrollY)
-            (activity as? MainActivity)?.dockBackdrop?.requestRefresh()
+            // 滚动增量交给采集器，顶栏的采样窗口跟着平移（否则背景是 150ms 一格的幻灯片）
+            (activity as? MainActivity)?.dockBackdrop?.requestRefresh(scrollY - oldScrollY)
         }
     }
 

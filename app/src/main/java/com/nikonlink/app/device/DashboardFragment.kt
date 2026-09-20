@@ -1049,9 +1049,10 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         dockInset = DockInset(binding.scrollContent)
         applyDockSpace()
         styleTopBar()
-        binding.scrollContent.setOnScrollChangeListener { _, _, scrollY, _, _ ->
+        binding.scrollContent.setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
             topBarFx?.onScroll(scrollY)
-            (activity as? MainActivity)?.dockBackdrop?.requestRefresh()
+            // 把这一帧的滚动增量交给采集器：采样窗口跟着平移，顶栏玻璃才真的跟随滚动
+            (activity as? MainActivity)?.dockBackdrop?.requestRefresh(scrollY - oldScrollY)
         }
     }
 
