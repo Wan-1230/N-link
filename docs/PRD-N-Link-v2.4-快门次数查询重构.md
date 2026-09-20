@@ -1,7 +1,7 @@
 # PRD：N-Link v2.4 快门次数查询重构
 
-> 版本：v2.4（基线 versionCode 21 / versionName 2.2.0 @ `b4cf780`）· 分支：`feat-shutter-count-v2.4`，实现提交 `20ec81c`
-> 状态：**L0-L3 + UI 已实现，待真机测试**（§五 记实现期偏离，§十 是测试清单）
+> 版本：v2.4（基线 versionCode 21 / versionName 2.2.0 @ `b4cf780`）· 分支：`feat-glass-polish-v2.3.1`，实现提交 `20ec81c` `a295f00`
+> 状态：**L0-L4 + UI 全部实现完毕，待真机测试**（§十 是 12 条清单；唯一未闭合项是需要用户自拍的黄金夹具，见 §六）
 > 原则：已跑通的功能不改动，改动面压到最小，每项独立可回滚
 > 结论来源：exiftool（Nikon.pm / MakerNotes.pm）、Exiv2（nikonmn_int.cpp / makernote_int.cpp）、libgphoto2（camlibs/ptp2/ptp.h、config.c、library.c、ptp.c）、exif-py、python-shutter-counter、LibRaw 逐行比对，非二手博客
 
@@ -138,17 +138,20 @@ L4 云端降级   → 修 R8：仅在 L2/L3 明确失败时启用，且 UI 明�
 
 1. **前缀预算取 1MB 而非 128KB，且不做 §L1 的第二步精确窗口**。真机实测 MakerNote 最长 29KB、最远落在 `@1744`，1MB 富余足够；为覆盖一个尚未观测到的越界情形引入第二次 PTP 事务，收益低于复杂度。
 2. **§L1 的 `OperationsSupported` 能力协商不做**，改为会话内 `partialReadUnsupported` 标志：局读首次失败即记住，后续样本直接走整文件下载。`parseDeviceInfo` 是监看/相册/参数共享的路径，为省一次往返去改它不值 —— 效果等价、风险归零。
-3. **§L4 云端「需用户同意」的门未做**，云端仍在（顺序：全部样样本机失败 → 整文件下载 → 再本机一次 → 云端）。加同意门要动 Settings 的开关 UI，与本功能无关，留作后续；UI 已明确标注「（云端解析）」，用户能看出原片交给了第三方。
+3. ~~§L4 云端「需用户同意」的门未做~~ —— **已做**（`a295f00`）：默认只走本机；本机解不出时报 `CONSENT_REQUIRED`，
+   点该行弹框说明「上传一张最新样张、给 digeeker.com、原片含序列号与可能的 GPS、授权一次持久生效」，
+   同意才继续。未授权路径连整文件下载都不做，并删除留档样本 —— 不让用户原片停在 cache 里。
+   同时 `0x0037` 仅机械读数不再被丢弃，两个值不等时并排显示为「N 次（本机解析） · 机械 M」。
 
 | 文件 | 改动 | 状态 |
 |---|---|---|
 | `camera/params/NikonShutterCountParser.kt` | 跟随 `0x8769` 子 IFD；三形态 (IFD 位置 × 字节序) 枚举 + 恒等式裁决；备用 tag；`parseFile` 只读前 1MB；返回 `Reading(shutterCount/mechanicalCount/layout/verified)` | 已完成 |
-| `camera/params/CameraParameterManager.kt` | `ShutterSamplePicker`（L0）+ 瀑布编排 + `ShutterFailReason` + `ShutterCountSource` 枚举化（文案不再硬编在 manager）+ 局读降级标志 + 失败样本留档 | 已完成 |
+| `camera/params/CameraParameterManager.kt` | `ShutterSamplePicker`（L0）+ 瀑布编排 + `ShutterFailReason` + `ShutterCountSource` 枚举化 + 局读降级标志 + 失败样本留档 + 云端同意门 | 已完成 |
 | `camera/gallery/TransferManager.kt` | 新增公开 `readObjectHead(file, maxBytes)`，内部复用既有 private `partialObject`。**队列状态机零改动** | 已完成 |
-| `device/DashboardFragment.kt` + `res/values/strings.xml` | 显示来源 / 未校验 / 三类失败原因；快门文案首次进 strings.xml（此前一条都没有） | 已完成 |
+| `shared/common/AppSettings.kt` | `shutterCloudConsent`（默认 false），与 `shareKeepGps` 同一套隐私默认 | 已完成 |
+| `device/DashboardFragment.kt` + `res/values/strings.xml` | 显示来源 / 未校验 / 四类失败原因 / 机械口径；授权弹框走 `NlGlass.dialog`；快门文案全部进 strings.xml | 已完成 |
 | 测试 | 解析器 17 例（夹具按真机结构重建）+ 样张挑选 6 例 | 已完成 |
-| 真机黄金夹具 | 需用户自拍的 NEF + JPEG 进 `src/test/resources` | **待提供** |
-| `DigeekerShutterCountClient.kt` | 未改动（同意门见上） | 后续 |
+| 真机黄金夹具 | **需用户自拍的 NEF + JPEG** 进 `app/src/test/resources/`，见 §九.3 | **待提供** |
 
 ---
 
@@ -168,7 +171,9 @@ L4 云端降级   → 修 R8：仅在 L2/L3 明确失败时启用，且 UI 明�
 
 合成夹具（`NikonShutterCountParserTest`，17 例）已按上述实测结构重建：MakerNote 挂进 Exif 子 IFD、形态 A/B/C 各自的位置、LE 容器 + BE 笔记、`0x0037`、恒等式成立/不成立、哨兵与不合理值、IFD0 宽松兜底、SHORT 型条目。旧夹具「按实现手的形状捏」的问题（R9）由此堵住。
 
-**真机 fixture 进仓的阻碍**：exiftool 自家的 `t/images/Nikon*.jpg|nef` 全被剥掉了 MakerNote（四张均无 `0x927C`，公开再分发协议原因），Exiv2 的文件虽然带、但作者与授权链不明，不宜塞进产品仓库。**建议改用用户自己拍的一张 NEF + 一张 JPEG 当黄金夹具** —— 零授权风险，且正好是最需要支持的两台机身。
+**真机 fixture 进仓的阻碍**（已替这个坑做过排除，**别再走弯路**）：exiftool 自家 `t/images/Nikon*.jpg|nef` 四张**全部被剥掉 MakerNote**（无 `0x927C`，公开再分发的协议原因）；Wikimedia Commons 按「Nikon D750」搜到的样本里，取样的两张一张 EXIF 被剥、另一张机身其实是 `Panasonic DMC-G6` —— **标题写 Nikon 不代表机身是 Nikon**。目前唯一带真机 MakerNote 且可下载的就是 Exiv2 `test/data`，但它作者与授权链不明，只适合做**本地一次性验证**（本节表格就是这么来的），不宜塞进产品仓库。
+
+→ 所以黄金夹具只能由用户自己拍。**好消息是夹具不需要整张原片**：真机实测 MakerNote 全部落在文件头 30KB 以内，提交约 64KB 的**前缀切片**即可作为字节级回归夹具，仓库不会因此变大。
 
 ### 待做
 
@@ -229,7 +234,10 @@ L4 云端降级   → 修 R8：仅在 L2/L3 明确失败时启用，且 UI 明�
 | 6 | 清空存储卡后查 | 文案「存储卡内没有照片，无法读取快门次数」，**不是**「查询失败」了事 |
 | 7 | 拍摄中途/链路断开时查 | 「读取失败，点击重试」；日志 `READ_FAILED` |
 | 8 | 老机身（D70/D200/Coolpix/E995 一类） | 出数并 `verified=true`，或明确 `PARSE_FAILED`；**不应**出现「未校验」却数字离谱 |
-| 9 | 断网状态 | 只走本机；不应有任何对 `api.digeeker.com` 的请求（`adb shell dumpsys netstats` 或抓包确认）。若确实触发了云端，UI 应显示「（云端解析）」 |
+| 9 | **默认不上传**（`a295f00` 起） | 全新安装后无论本机是否解得出，都不该有对 `api.digeeker.com` 的请求（抓包或 `dumpsys netstats` 确认） |
+| 10 | 本机解不出的机身（老机型最易命中） | 该行显示「本机无法解析 · 点击可授权云端解析」，日志 `CONSENT_REQUIRED`；**点下去先弹授权框**，说清上传一张、给谁、含序列号/GPS；点「不用了」不应发生任何上传 |
+| 11 | 同意之后 | 走云端并显示「（云端解析）」；此后**不再弹框**（授权持久），且 `cache/n-link_shutter/` 里不应残留样张 |
+| 12 | Z8/Z9 等电子快门机身 | 若 `0x0037` 与 `0x00A7` 不等，应显示「N 次（本机解析） · 机械 M」；两者相等时**不该**重复出现「机械」字样 |
 
 **要留档给我的一手资料**：任何一条不通过的用例，除了 logcat，请把 `cache/n-link_shutter/` 下的留档样本一并拉出来（`adb pull`），那是离线定位的唯一线索。
-另外请**自拍一张 NEF + 一张 JPEG** 放进 `app/src/test/resources/`，作为黄金夹具 —— 开源仓库的样张要么被剥了 MakerNote（exiftool 那四张全无 `0x927C`），要么授权链不明（Exiv2），只有你自己拍的能干净地进仓。
+另外请**自拍一张 NEF + 一张 JPEG**、各截前 ~64KB 作为黄金夹具放进 `app/src/test/resources/`（切片即可，不需要整张原片；真机实测 MakerNote 都在文件头 30KB 以内）。开源图库这条路我已经替你把过关：exiftool 的样张被剥了 MakerNote，Commons 按机型搜到的还可能名不副实（见 §六）。
