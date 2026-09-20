@@ -1,9 +1,9 @@
 package com.nikonlink.app.device
 
+import com.nikonlink.app.shared.ui.NlFeedback
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
-import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import android.graphics.Typeface
 import android.os.Bundle
@@ -121,7 +121,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             action?.invoke()
         } else {
             val msg = "缺少「定位 / 附近设备」权限：Android 12 起系统要求该权限才允许搜索 WiFi 相机"
-            Toast.makeText(requireContext(), msg, Toast.LENGTH_LONG).show()
+            NlFeedback.show(requireContext(), msg, long = true)
             renderStatusLine()
             Timber.tag("Dashboard").w("STA permissions denied: " + granted.filterValues { !it }.keys)
         }

@@ -122,7 +122,7 @@ fragment_liveview.xml:222,248,274,300,326  5 × #99FFFFFF 硬编码
 | D3 | **日夜 token 不成对** | day **39** / night **37**（缺 `switch_track_off`、`switch_thumb_off`） | 玻璃 token 数量是现在的好几倍，缺一个夜间值 = 夜间白底玻璃直接翻车。必须先建"成对强制"机制 |
 | D4 | **硬编码 hex 逃逸** | `item_photo_grid.xml:46 #33000000`、`:96 #AA000000`、`:117 #CC000000`；`activity_support.xml:66 #666666`；监看 5×`#99FFFFFF`(`fragment_liveview.xml:222/248/274/300/326`) | 这些正是"本该是玻璃面"的地方。不收敛就无法统一调参 |
 | D5 | **dimens 形同虚设** | 仅 7 个 token，但布局硬编码：`paddingHorizontal 18dp` ×21、`layout_marginStart 8dp` ×15、`18dp` ×14、`10dp` ×11；设置行高 `52dp` 在 `fragment_settings.xml` 一个文件里重复 **18 次** | 玻璃有"内衬随圆角变化"的同心规则（§3.5），间距不收敛 → 圆角一改就穿帮 |
-| D6 | **无任何共享反馈组件** | **40 处 `Toast.makeText`**（RemoteFragment 14 / LiveViewFragment 10 / PreviewActivity 5 / SupportActivity 4 / TransferFragment 3 / SettingsFragment 2 / MainActivity 1 / DashboardFragment 1）；`Snackbar` 全仓 0 | 悬浮反馈是玻璃语言最显眼的一类；先用 `NlFeedback` 单入口封住，材质才能一处改全局生效 |
+| D6 | **无任何共享反馈组件** | ~~40 处 `Toast.makeText`~~ → **已收口**（§15.5k）：实测 42 处，全部改走 `NlFeedback.show(ctx, msg[, long])` 单入口，仓内 `Toast.makeText` 只剩 `NlFeedback` 内部那一处；`Snackbar` 仍 0 | 悬浮反馈是玻璃语言最显眼的一类；边界封住之后，将来换玻璃内联条只改一个文件 |
 | D7 | **导航无 NavHost** | `res/navigation/` 不存在，`navigation-*` 依赖已声明但零使用；`MainActivity.kt:158-164` 四 Fragment `add()` 后 `hide()/show()` 常驻 | 页面转场只能走 `windowAnimationStyle` + Fragment `hide/show`。想做 iOS 式深度转场，得先在 `hide/show` 上做手工动画（§6.4），别指望 Navigation 组件 |
 
 ---
@@ -292,7 +292,7 @@ fragment_liveview.xml:222,248,274,300,326  5 × #99FFFFFF 硬编码
 | **重复 item 布局** | `item_recent_device.xml` ≡ `item_wifi_candidate.xml`（近乎逐行重复） | 合并为 `item_action_row.xml`，玻璃 token 一处定义 | L2 | 8dp | none | P2 |
 | **空/加载/错误态** | `fragment_transfer.xml:164 layoutEmpty` + `:179 tvMessage`；`fragment_dashboard.xml:449 progressConnecting`、`:462 tvStatusMessage`(160dp 单行 ellipsize) | 空态用 `Filled`；进度指示器在玻璃上必须 ≥3:1；诊断类长文本（`DashboardFragment.renderWifiCandidates` 里 6 行的 ARP/mDNS 信息）**不得放玻璃面** | L2 | — | none | P2 |
 | **`NlPicker` 滚轮** | `styles.xml:84-88`，`NumberPicker` 160dp | 玻璃槽 + 选中行高亮条 | L2 | 12dp | none | P2 |
-| **Toast ×40** | 见 D6 | `NlFeedback` 单入口封装（内部仍 Toast，或 12+ 走玻璃 Snackbar）。**不逐个替换**，只封边界 | L3 | pill | m | P2 |
+| **Toast ×42** | 见 D6 | **已做（§15.5k）**：`NlFeedback` 单入口封装，内部仍是系统 Toast。顺带把同文案 1.6s 去重收进这里（TransferFragment 原本自己记 `lastToastMsg`，现已删） | L3 | pill | m | P2 |
 | **`bg_shutter_ring` `#FFC400`** | 全 App 唯一彩色 | **不动、不玻璃化**；补非色彩状态冗余 | — | — | — | P3 |
 | **设置页/打赏页** | `fragment_settings.xml`(775ln)、`activity_support.xml`(139ln，仓库唯一位图 QR) | **不做玻璃**；仅 `52dp` 行高等硬编码收进 dimens | L2 | 12dp | none | P3 |
 
@@ -679,7 +679,7 @@ fun View.applyGlass(m: GlassMaterial)   // 一个入口，内部按 tier 决定�
 | R8 | **玻璃化把"状态可辨性"吃掉**（选中/连接态靠深浅，玻璃一糊就没了） | 中/高 | 选中态**必须实体填充**（§3.3 `glass_tint_solid_sel`）；文字/形状冗余优先于色彩与材质 |
 | R9 | **视觉改版掩盖功能回归** | 中/高 | AC-12 强制「功能零改动」+ 逐面截图 diff + `git diff --stat` 佐证未碰连接层 |
 | R10 | 边缘色散破灰阶规范引发反复拉扯 | 低/中 | 默认关闭，列 Q1，不进入 P0/P1 |
-| R11 | 40 处 Toast 逐个替换造成大面积 diff | 中/低 | §10.5：只封 `NlFeedback` 边界，不逐个改，列 P2 |
+| R11 | 40 处 Toast 逐个替换造成大面积 diff | 已兑现（中/低）：42 处一次性改完，diff 净 **−81 行**（三行式 `Toast.makeText(...).show()` 折成一行的 `NlFeedback.show(...)`），编译 + 单测通过 | 底座仍是系统 Toast，未动窗口层级/焦点/无障碍语义；风险集中在"扫描器错切参数"，用按引号与括号嵌套扫描而非正则解决，并逐处目视核对过 |
 | R12 | 改版蔓延（顺手重排 948 行 `fragment_dashboard.xml`） | 中/高 | §1.2 非目标 + 附录 B「明确不动」；本期只允许换 background / 加 include |
 
 ---
@@ -772,8 +772,8 @@ fun View.applyGlass(m: GlassMaterial)   // 一个入口，内部按 tier 决定�
 - **D2 真 edge-to-edge（全局）**：`themes.xml:26` 的 opt-out 只在 MainActivity 逐窗解除，
   其余 Activity 仍走旧路；targetSdk 36 前必须做完（§9.6 的外部 deadline 未变）。
 - **M5 动效弹簧**（`SPRING_*` 全面接入、深度转场）、**M6 大屏** `w600dp/w840dp`、
-  `values-night` 其余 token 补齐、连续曲率圆角、sheen/tilt、`EXIF` sheet 组件化、
-  `NlFeedback` 收 40 处 Toast。
+  `values-night` 其余 token 补齐、连续曲率圆角、sheen/tilt、`EXIF` sheet 组件化。
+  ~~`NlFeedback` 收 40 处 Toast~~ → **已做**（§15.5k，实测 42 处）。
 - 设备页深色 hero 卡：**主动放弃**。纯白页底上把 `#000000` 反色卡改成半透明会变灰，
   违反 §1.2 三判据第一条。圆形图标按钮同理不做玻璃（圆角矩形材质会把圆画成圆角方块）。
 
@@ -956,6 +956,25 @@ dock 选中胶囊在**经典外观下也是新的**（阴影/尺寸/圆角/胶�
 | **J4 相册页顶栏补 explicit 底色** | 它的顶栏没有 `topChrome` 包裹，直接在 XML 上写 `@color/background` | 覆盖式那两页由 `NlTopChrome` 统一带底；相册页是非覆盖式，一行属性解决，不再靠代码画 |
 
 **AC-12 口径再补一处**：按钮从 0dp 变 2dp 阴影，**经典外观下也是新的**（与前轮的 CTA、dock 选中胶囊同类）。"经典外观 == v2.2 逐像素相等"现在只对**玻璃材质层**成立（关掉总闸即回到实体表面 + 无采样），几何/阴影类的这四处是明确的设计更新。
+
+### 15.5k 第十三包：D6 收口 —— 42 处 Toast 归到 NlFeedback 单入口
+
+技术债 D6 是 §2.2 里唯一"纯结构、不看效果也能定对错"的一条，所以放在没有真机的窗口期做。
+（实测 **42** 处，不是当初记的 40：RemoteFragment 14 / LiveViewFragment 10 / PreviewActivity 6 /
+SupportActivity 4 / TransferFragment 3 / SettingsFragment 3 / MainActivity 1 / DashboardFragment 1。）
+
+- **边界**：`shared/ui/NlFeedback.kt` → `show(context, text, long = false)`。底座仍是系统 Toast，
+  自定义悬浮条要动窗口层级、焦点与无障碍语义，那是 §4「反馈层」另一件事，不夹在这一步里。
+- **顺手补两件各页本来没有的行为**：① 同文案 1.6s 去重（Android 的 Toast 是排队的，
+  批量失败回调成串回来时视觉上就是"消息雨"）；② 时长只留一个布尔，不再各处拍脑袋 `LENGTH_*`。
+  TransferFragment 原本自己记 `lastToastMsg` 做去重 —— 删掉，策略只留一处。
+- **传进去的是 applicationContext**：Toast 会持有 context，从 Fragment 传 `requireContext()`
+  等于给系统队列留一个 Activity 长引用。
+- **改法**：按引号/括号嵌套扫描切参数，不用正则 —— 消息里全是逗号、括号和 `${...}` 模板，
+  第一版用正则就把 `.show()` 的字符数算错、留下 6 处 `NlFeedback.show(...).show()`。
+  回滚重来后逐处目视核对（多行拼接、`if/else` 表达式、嵌套模板三类都覆盖到了）。
+- **净 −81 行**：三行式 `Toast.makeText(ctx, msg, LENGTH).show()` 折成一行；
+  7 处 `import android.widget.Toast` 变死引用已删。编译 + 单测通过。
 
 ### 15.6 反馈里**没做完**的事（别当成已交付）
 

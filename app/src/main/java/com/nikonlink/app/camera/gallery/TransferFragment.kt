@@ -1,5 +1,6 @@
 package com.nikonlink.app.camera.gallery
 
+import com.nikonlink.app.shared.ui.NlFeedback
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
@@ -11,7 +12,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.PopupMenu
 import android.widget.TextView
-import android.widget.Toast
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.content.ContextCompat
 import androidx.activity.result.contract.ActivityResultContracts
@@ -69,7 +69,6 @@ class TransferFragment : Fragment(), GlassInsetAware {
     private val chipViews = mutableMapOf<PhotoFilter, TextView>()
     private var chipNotDownloaded: TextView? = null
     private var multiSelectMode = false
-    private var lastToastMsg: String? = null
 
     /** 模块 4.4：长按滑动多选控制器（未激活时事件完全透传） */
     private var dragSelect: DragSelectController? = null
@@ -813,11 +812,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
                             viewModel.photoList.value.isNotEmpty()
                         ) {
                             viewModel.setOnlyNotDownloaded(false)
-                            Toast.makeText(
-                                requireContext(),
-                                "已全部下载，已显示全部照片",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                            NlFeedback.show(requireContext(), "已全部下载，已显示全部照片")
                             return@collect
                         }
                         binding.tvMessage.text = when (viewModel.activeAlbum.value) {
@@ -950,11 +945,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
             viewModel.shareExportDone.collect { result ->
                 shareUris(result.uris, "分享照片")
                 if (result.failed.isNotEmpty()) {
-                    Toast.makeText(
-                        requireContext(),
-                        "${result.failed.size} 个文件生成副本失败",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    NlFeedback.show(requireContext(), "${result.failed.size} 个文件生成副本失败")
                 }
             }
         }
@@ -974,13 +965,11 @@ class TransferFragment : Fragment(), GlassInsetAware {
             }
         }
 
-        // 全链路优化: 下载成功/失败/通道切换均用 Toast 反馈，不再静默
+        // 全链路优化: 下载成功/失败/通道切换均给出反馈，不再静默。
+        // 同文案去重交给 NlFeedback（1.6s 窗口），这里不再自己记上一条
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.managerMessage.collect { msg ->
-                if (msg.isNotBlank() && msg != lastToastMsg) {
-                    lastToastMsg = msg
-                    Toast.makeText(requireContext(), msg, Toast.LENGTH_SHORT).show()
-                }
+                if (msg.isNotBlank()) NlFeedback.show(requireContext(), msg)
             }
         }
 
