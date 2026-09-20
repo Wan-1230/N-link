@@ -1,5 +1,6 @@
 package com.nikonlink.app.settings
 
+import com.nikonlink.app.shared.ui.NlFeedback
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -10,7 +11,6 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.content.ContextCompat
@@ -235,23 +235,15 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         binding.switchConn22.setOnCheckedChangeListener { _, checked ->
             connFlags.setMasterEnabled(checked)
             eventLogger.event("setting", "key" to "conn22_enabled", "value" to checked)
-            android.widget.Toast.makeText(
-                requireContext(),
-                if (checked) "已启用 v2.2 连接改进"
-                else "已回退到 v2.1.1 连接行为（热点网络部分需重进 App 生效）",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
+            NlFeedback.show(requireContext(), if (checked) "已启用 v2.2 连接改进"
+                else "已回退到 v2.1.1 连接行为（热点网络部分需重进 App 生效）", long = true)
         }
 
         // v2.3 液态玻璃总闸。即时生效，不重启界面 —— 材质走覆盖层，回退不换代码。
         binding.switchGlass.setOnCheckedChangeListener { _, checked ->
             UiFlags.set(requireContext(), UiFlags.CLASSIC, !checked)
             eventLogger.event("setting", "key" to "glass_enabled", "value" to checked)
-            android.widget.Toast.makeText(
-                requireContext(),
-                if (checked) "已启用液态玻璃视觉" else "已回到经典外观（v2.2 视觉）",
-                android.widget.Toast.LENGTH_SHORT
-            ).show()
+            NlFeedback.show(requireContext(), if (checked) "已启用液态玻璃视觉" else "已回到经典外观（v2.2 视觉）")
             // 不 recreate()：整页销毁重建会先闪一帧 windowBackground（纯白），
             // 视觉上就是"闪屏"。各页通过 UiFlags.observe 注册自己的重涂回调，原地刷新。
         }
@@ -572,7 +564,7 @@ class SettingsFragment : Fragment(), GlassInsetAware {
     private fun resolveColor(resId: Int): Int = ContextCompat.getColor(requireContext(), resId)
 
     private fun toast(text: String) {
-        Toast.makeText(requireContext(), text, Toast.LENGTH_SHORT).show()
+        NlFeedback.show(requireContext(), text)
     }
 
     private fun singleChoice(title: String, options: Array<String>, current: String, onPick: (String) -> Unit) {

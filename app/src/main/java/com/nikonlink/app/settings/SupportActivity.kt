@@ -1,5 +1,6 @@
 package com.nikonlink.app.settings
 
+import com.nikonlink.app.shared.ui.NlFeedback
 import android.app.Dialog
 import android.content.ContentValues
 import android.content.Intent
@@ -11,7 +12,6 @@ import android.provider.MediaStore
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.ImageView
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import com.nikonlink.app.R
@@ -57,7 +57,7 @@ class SupportActivity : AppCompatActivity() {
             runCatching {
                 startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_URL)))
             }.onFailure {
-                Toast.makeText(this, "未找到可打开网页的应用", Toast.LENGTH_SHORT).show()
+                NlFeedback.show(this, "未找到可打开网页的应用")
             }
         }
     }
@@ -123,10 +123,10 @@ class SupportActivity : AppCompatActivity() {
                 values.put(MediaStore.Images.Media.IS_PENDING, 0)
                 resolver.update(uri, values, null, null)
             }.onSuccess {
-                Toast.makeText(this@SupportActivity, "已保存到相册 Pictures/N-Link", Toast.LENGTH_SHORT).show()
+                NlFeedback.show(this@SupportActivity, "已保存到相册 Pictures/N-Link")
             }.onFailure { e ->
                 Timber.w(e, "Save QR failed")
-                Toast.makeText(this@SupportActivity, "保存失败：${e.message}", Toast.LENGTH_SHORT).show()
+                NlFeedback.show(this@SupportActivity, "保存失败：${e.message}")
             }
         }
     }
@@ -149,7 +149,7 @@ class SupportActivity : AppCompatActivity() {
                 startActivity(Intent.createChooser(intent, "分享收款码"))
             }.onFailure { e ->
                 Timber.w(e, "Share QR failed")
-                Toast.makeText(this@SupportActivity, "没有可用的分享应用", Toast.LENGTH_SHORT).show()
+                NlFeedback.show(this@SupportActivity, "没有可用的分享应用")
             }
         }
     }

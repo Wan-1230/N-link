@@ -1,5 +1,6 @@
 package com.nikonlink.app.camera.liveview
 
+import com.nikonlink.app.shared.ui.NlFeedback
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -13,7 +14,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.PopupMenu
-import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
@@ -186,11 +186,7 @@ class LiveViewFragment : Fragment() {
             val enabled = !settings.histogramEnabled
             settings.histogramEnabled = enabled
             applyHistogramToggle(enabled)
-            Toast.makeText(
-                requireContext(),
-                if (enabled) "已开启亮度直方图" else "已关闭亮度直方图",
-                Toast.LENGTH_SHORT
-            ).show()
+            NlFeedback.show(requireContext(), if (enabled) "已开启亮度直方图" else "已关闭亮度直方图")
         }
         applyHistogramToggle(settings.histogramEnabled)
 
@@ -298,16 +294,12 @@ class LiveViewFragment : Fragment() {
         if (modeSwitching) return
         // v1.3.0 需求 4：本机已被验证为「不支持远程切换」→ 直接给结论
         if (paramsViewModel.modeSwitchUnsupported.value) {
-            Toast.makeText(
-                requireContext(),
-                "该机型不支持从 App 切换拍摄模式（相机接受指令但不改变模式），请用机身拨盘",
-                Toast.LENGTH_LONG
-            ).show()
+            NlFeedback.show(requireContext(), "该机型不支持从 App 切换拍摄模式（相机接受指令但不改变模式），请用机身拨盘", long = true)
             return
         }
         val modes = paramsViewModel.exposureProgramModes
         if (modes.isEmpty()) {
-            Toast.makeText(requireContext(), "暂无可切换的拍摄模式", Toast.LENGTH_SHORT).show()
+            NlFeedback.show(requireContext(), "暂无可切换的拍摄模式")
             return
         }
         val current = paramsViewModel.exposureProgram.value
@@ -334,17 +326,13 @@ class LiveViewFragment : Fragment() {
         modeSwitching = true
         updateModeEntryState()
         // 下发中先给一个轻量 loading 提示，避免「点了没反应」的错觉
-        Toast.makeText(requireContext(), "正在切换拍摄模式…", Toast.LENGTH_SHORT).show()
+        NlFeedback.show(requireContext(), "正在切换拍摄模式…")
         viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val ok = paramsViewModel.setExposureProgramResult(target)
                 if (!ok) {
                     if (_binding == null) return@launch
-                    Toast.makeText(
-                        requireContext(),
-                        "相机拒绝切换（参数可能已锁定或模式只读），请用机身拨盘调整",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    NlFeedback.show(requireContext(), "相机拒绝切换（参数可能已锁定或模式只读），请用机身拨盘调整", long = true)
                     return@launch
                 }
                 // v1.3.0 需求 4：主动回读设备确认（替代依赖 exposureProgram 状态流——
@@ -353,24 +341,16 @@ class LiveViewFragment : Fragment() {
                 if (_binding == null) return@launch
                 when {
                     actual == target ->
-                        Toast.makeText(requireContext(), "已切换到 $label", Toast.LENGTH_SHORT).show()
+                        NlFeedback.show(requireContext(), "已切换到 $label")
 
                     actual != null -> {
                         paramsViewModel.markModeSwitchUnsupported()
-                        Toast.makeText(
-                            requireContext(),
-                            "相机接受了指令但模式未改变（当前："
+                        NlFeedback.show(requireContext(), "相机接受了指令但模式未改变（当前："
                                 + paramsViewModel.describeExposureProgram(actual)
-                                + "）。该机型不支持从 App 切换拍摄模式，请用机身拨盘调整",
-                            Toast.LENGTH_LONG
-                        ).show()
+                                + "）。该机型不支持从 App 切换拍摄模式，请用机身拨盘调整", long = true)
                     }
 
-                    else -> Toast.makeText(
-                        requireContext(),
-                        "无法读取相机当前模式，请确认连接后重试",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    else -> NlFeedback.show(requireContext(), "无法读取相机当前模式，请确认连接后重试", long = true)
                 }
             } finally {
                 modeSwitching = false
@@ -488,7 +468,7 @@ class LiveViewFragment : Fragment() {
 
         binding.cellEv.pressEffect()
         binding.cellEv.setOnClickListener {
-            Toast.makeText(requireContext(), "EV 请通过相机机内拨盘调整", Toast.LENGTH_SHORT).show()
+            NlFeedback.show(requireContext(), "EV 请通过相机机内拨盘调整")
         }
     }
 
@@ -675,7 +655,7 @@ class LiveViewFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.errorMessage.collect { message ->
                 if (!message.isNullOrBlank()) {
-                    Toast.makeText(requireContext(), message, Toast.LENGTH_SHORT).show()
+                    NlFeedback.show(requireContext(), message)
                 }
             }
         }

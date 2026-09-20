@@ -1,5 +1,6 @@
 package com.nikonlink.app.capture
 
+import com.nikonlink.app.shared.ui.NlFeedback
 import android.annotation.SuppressLint
 import android.graphics.BitmapFactory
 import android.graphics.Outline
@@ -14,7 +15,6 @@ import android.view.ViewOutlineProvider
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.TextView
-import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
@@ -149,12 +149,8 @@ class RemoteFragment : Fragment(), GlassInsetAware {
                 renderDisplayModeChip()
                 if (changed) {
                     viewModel.setCameraDisplayMode(remote)
-                    Toast.makeText(
-                        requireContext(),
-                        if (remote) "正在进入遥控模式：相机屏将熄灭并显示「已连接到智能设备」"
-                        else "正在恢复联动模式：相机屏将重新显示画面",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    NlFeedback.show(requireContext(), if (remote) "正在进入遥控模式：相机屏将熄灭并显示「已连接到智能设备」"
+                        else "正在恢复联动模式：相机屏将重新显示画面", long = true)
                 }
                 true
             }
@@ -233,11 +229,7 @@ class RemoteFragment : Fragment(), GlassInsetAware {
             val enabled = !settings.histogramEnabled
             settings.histogramEnabled = enabled
             applyHistogramToggle(enabled)
-            Toast.makeText(
-                requireContext(),
-                if (enabled) "已开启亮度直方图" else "已关闭亮度直方图",
-                Toast.LENGTH_SHORT
-            ).show()
+            NlFeedback.show(requireContext(), if (enabled) "已开启亮度直方图" else "已关闭亮度直方图")
         }
         applyHistogramToggle(settings.histogramEnabled)
 
@@ -370,12 +362,8 @@ class RemoteFragment : Fragment(), GlassInsetAware {
                             viewLifecycleOwner.lifecycleScope.launch {
                                 val ok = paramsViewModel.setShutterBulb()
                                 if (_binding != null) {
-                                    Toast.makeText(
-                                        requireContext(),
-                                        if (ok) "已切到 B 门档，可在「更多动作」开始曝光"
-                                        else "切换 B 门被拒：请将相机拨盘切到 M 档且快门可调",
-                                        Toast.LENGTH_LONG
-                                    ).show()
+                                    NlFeedback.show(requireContext(), if (ok) "已切到 B 门档，可在「更多动作」开始曝光"
+                                        else "切换 B 门被拒：请将相机拨盘切到 M 档且快门可调", long = true)
                                 }
                             }
                         } else {
@@ -418,23 +406,19 @@ class RemoteFragment : Fragment(), GlassInsetAware {
     private fun showModePicker() {
         // 边界：未连接 / 切换进行中直接拦截（入口已置灰，这里再兜一层）
         if (!isCameraPtpConnected()) {
-            Toast.makeText(requireContext(), "相机未连接，无法切换拍摄模式", Toast.LENGTH_SHORT).show()
+            NlFeedback.show(requireContext(), "相机未连接，无法切换拍摄模式")
             return
         }
         if (modeSwitching) return
         // v1.3.0 需求 4：本机已被现场验证为「不支持远程切换」→ 直接给结论，
         // 不再让用户反复点选却毫无反馈
         if (paramsViewModel.modeSwitchUnsupported.value) {
-            Toast.makeText(
-                requireContext(),
-                "该机型不支持从 App 切换拍摄模式（相机接受指令但不改变模式），请用机身拨盘",
-                Toast.LENGTH_LONG
-            ).show()
+            NlFeedback.show(requireContext(), "该机型不支持从 App 切换拍摄模式（相机接受指令但不改变模式），请用机身拨盘", long = true)
             return
         }
         val modes = paramsViewModel.exposureProgramModes
         if (modes.isEmpty()) {
-            Toast.makeText(requireContext(), "暂无可切换的拍摄模式", Toast.LENGTH_SHORT).show()
+            NlFeedback.show(requireContext(), "暂无可切换的拍摄模式")
             return
         }
         val current = paramsViewModel.exposureProgram.value
@@ -460,17 +444,13 @@ class RemoteFragment : Fragment(), GlassInsetAware {
     private fun applyExposureProgram(target: Int, label: String) {
         modeSwitching = true
         updateModeCellState()
-        Toast.makeText(requireContext(), "正在切换拍摄模式…", Toast.LENGTH_SHORT).show()
+        NlFeedback.show(requireContext(), "正在切换拍摄模式…")
         viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val ok = paramsViewModel.setExposureProgramResult(target)
                 if (!ok) {
                     if (_binding == null) return@launch
-                    Toast.makeText(
-                        requireContext(),
-                        "相机拒绝切换（参数可能已锁定或模式只读），请用机身拨盘调整",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    NlFeedback.show(requireContext(), "相机拒绝切换（参数可能已锁定或模式只读），请用机身拨盘调整", long = true)
                     return@launch
                 }
                 // v1.3.0 需求 4：不再用状态流判定，改为**主动回读设备**确认。
@@ -480,25 +460,17 @@ class RemoteFragment : Fragment(), GlassInsetAware {
                 if (_binding == null) return@launch
                 when {
                     actual == target ->
-                        Toast.makeText(requireContext(), "已切换到 $label", Toast.LENGTH_SHORT).show()
+                        NlFeedback.show(requireContext(), "已切换到 $label")
 
                     actual != null -> {
                         // 相机接受了指令但模式没变 → 判定本机不支持，后续点击直接给结论
                         paramsViewModel.markModeSwitchUnsupported()
-                        Toast.makeText(
-                            requireContext(),
-                            "相机接受了指令但模式未改变（当前："
+                        NlFeedback.show(requireContext(), "相机接受了指令但模式未改变（当前："
                                 + paramsViewModel.describeExposureProgram(actual)
-                                + "）。该机型不支持从 App 切换拍摄模式，请用机身拨盘调整",
-                            Toast.LENGTH_LONG
-                        ).show()
+                                + "）。该机型不支持从 App 切换拍摄模式，请用机身拨盘调整", long = true)
                     }
 
-                    else -> Toast.makeText(
-                        requireContext(),
-                        "无法读取相机当前模式，请确认连接后重试",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    else -> NlFeedback.show(requireContext(), "无法读取相机当前模式，请确认连接后重试", long = true)
                 }
             } finally {
                 modeSwitching = false
@@ -600,7 +572,7 @@ class RemoteFragment : Fragment(), GlassInsetAware {
                     viewLifecycleOwner.lifecycleScope.launch {
                         val result = applyInput(text)
                         if (_binding == null) return@launch
-                        Toast.makeText(requireContext(), result.message, Toast.LENGTH_SHORT).show()
+                        NlFeedback.show(requireContext(), result.message)
                         if (result.ok) {
                             // 成功后把滚轮定位到实际生效档位，避免面板与相机口径不一致
                             val idx = resolvePickerIndex(rawValues, currentParamRaw(param.name))
@@ -787,12 +759,8 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         if (mode == settings.remoteActionMode) return
         settings.remoteActionMode = mode
         renderActionModeLabel()
-        Toast.makeText(
-            requireContext(),
-            if (mode == AppSettings.ACTION_BULB) "已切换为「B 门长曝光」"
-            else "已切换为「间隔拍摄」",
-            Toast.LENGTH_SHORT
-        ).show()
+        NlFeedback.show(requireContext(), if (mode == AppSettings.ACTION_BULB) "已切换为「B 门长曝光」"
+            else "已切换为「间隔拍摄」")
     }
 
     private fun onShutterPressed() {
@@ -938,7 +906,7 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.shootingMessage.collect { msg ->
                 if (!msg.isNullOrBlank()) {
-                    Toast.makeText(requireContext(), msg, Toast.LENGTH_LONG).show()
+                    NlFeedback.show(requireContext(), msg, long = true)
                     viewModel.consumeMessage()
                 }
             }
