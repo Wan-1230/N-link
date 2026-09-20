@@ -766,9 +766,10 @@ fun View.applyGlass(m: GlassMaterial)   // 一个入口，内部按 tier 决定�
 - **相册页覆盖式顶栏未做**：它顶部是 5 件 chrome 叠着（标题行 / 分割线 / 筛选 chip 行 /
   下载统计 / 进度条），其中两件按状态显隐，覆盖式要跟着算的是动态高度而不是一块固定板。
   做法与设备页同构，但得在真机盯住下载态才知道高度对不对 → 等有验证窗口再动，不盲改。
-- **传输期降级**（§8.4 第 2 条，`bulkDepth > 0` 时 HUD 退静态 tint）：要读
-  `PtpSessionManager` 的计数，属用户未提交的连接层文件，按"不碰未提交改动"的约定跳过。
-  当前用监看页 250ms 采集预算兜住大部分开销。
+- ~~**传输期降级**（§8.4 第 2 条）~~ → **已做（§15.5l）**：不读 `PtpSessionManager` 的计数
+  （那是用户正在改的连接层文件），改用 UI 层本来就有、而且权威的 `TransferState.Downloading`，
+  经 `GlassBudget.transferring` 驱动「CPU 侧模糊退成静态 tint + 采集间隔翻倍」。
+  与 `PhotoGridAdapter` 传输期让路缩略图请求同构：不跨层、不碰未提交改动。
 - **D2 真 edge-to-edge（全局）**：`themes.xml:26` 的 opt-out 只在 MainActivity 逐窗解除，
   其余 Activity 仍走旧路；targetSdk 36 前必须做完（§9.6 的外部 deadline 未变）。
 - **M5 动效弹簧**（`SPRING_*` 全面接入、深度转场）、**M6 大屏** `w600dp/w840dp`、
@@ -781,9 +782,9 @@ fun View.applyGlass(m: GlassMaterial)   // 一个入口，内部按 tier 决定�
 
 **可验**：AC-1（材质一致性：全部走 `GlassTokens` 工厂，无手拼参数）、AC-3（弹窗/sheet 真模糊 + 27 处行为零变化）、AC-5（对比度自适应，需构造"预览页全白图"复验）、AC-6（滚动期采集降频不冻采 —— v2.3.1 改了口径，见 §15.5d B3）、AC-8（按压与拖选共存 —— 未改 `PressEffect`，冲突面为零）、AC-12（回退闸门：几何 + 材质 + `clipToPadding` 三样都逐项还原）。
 **AC-4（配额）**：debug 构建现在有硬检查 —— `GlassCoordinator.assertBlurQuota()` 在登记面时数"真在采背景"的面，超 `glass_max_blur_surfaces` 就在 logcat 报一条（不 crash，测试包崩在用户手里比超预算更糟）。配额从 3 放到 4：v2.3.1 把相册页分段胶囊提成悬浮玻璃之后，主界面稳定态就占 3（dock + 顶栏底片 + 胶囊），多选态再加一面操作坞。
-**尚不可签字**：AC-2（需三台不同 Android 版本真机）、AC-7（传输期降级未做，卡在用户未提交的连接层文件）、AC-9（功耗需真机 `batterystats`）、AC-10（Monkey/旋转压测）、AC-11（**高对比度自动触发已闭环**、**触控目标已补足 48dp**；剩 TalkBack 实走与 `fontScale 1.3/2.0` 无裁切需真机）、AC-13（**dock 480dp 收宽已做**；≥840dp 侧栏与 2–3 列未做）。
+**尚不可签字**：AC-2（需三台不同 Android 版本真机）、AC-7（**传输期降级已做** §15.5l；采集翻倍与退静态的实际收益仍需真机 `batterystats` 复核）、AC-9（功耗需真机 `batterystats`）、AC-10（Monkey/旋转压测）、AC-11（**高对比度自动触发已闭环**、**触控目标已补足 48dp**；剩 TalkBack 实走与 `fontScale 1.3/2.0` 无裁切需真机）、AC-13（**dock 480dp 收宽已做**；≥840dp 侧栏与 2–3 列未做）。
 
-> 里程碑对照：M0 ✅（除 D2 全局）、M1 ✅、M2 ⏳ 一半（顶栏三件套 + 分段控件已归一，`<include>` 组件与 item 布局未做；注：顶栏玻璃已于 §15.5h 撤销，"归一"现在指的是干净统一的一行标题 + 分割线）、M3 ✅、M4 大部分 ✅（监看 + 预览，圆形图标按钮除外）、M5 ❌、M6 ⏳（三开关 ✅、配额断言 ✅、高对比度自动触发 ✅、48dp 触点 ✅、大屏 dock 收宽 ✅；≥840dp 侧栏 ❌、fontScale 换行 ❌、三档真机走查 ⏳）。
+> 里程碑对照：M0 ✅（除 D2 全局）、M1 ✅、M2 ⏳ 一半（顶栏三件套 + 分段控件已归一，`<include>` 组件与 item 布局未做；注：顶栏玻璃已于 §15.5h 撤销，"归一"现在指的是干净统一的一行标题 + 分割线）、M3 ✅、M4 大部分 ✅（监看 + 预览，圆形图标按钮除外）、M5 ❌、M4 大部分 ✅（监看 + 预览，圆形图标按钮除外）、M5 ❌、M6 ⏳（三开关 ✅、配额断言 ✅、高对比度自动触发 ✅、48dp 触点 ✅、大屏 dock 收宽 ✅、传输期降级 ✅；≥840dp 侧栏 ❌、fontScale 换行 ❌、三档真机走查 ⏳）。
 
 
 ---
@@ -975,6 +976,25 @@ SupportActivity 4 / TransferFragment 3 / SettingsFragment 3 / MainActivity 1 / D
   回滚重来后逐处目视核对（多行拼接、`if/else` 表达式、嵌套模板三类都覆盖到了）。
 - **净 −81 行**：三行式 `Toast.makeText(ctx, msg, LENGTH).show()` 折成一行；
   7 处 `import android.widget.Toast` 变死引用已删。编译 + 单测通过。
+
+### 15.5l 第十三包续：AC-7 传输期降级（不碰连接层）
+
+`bulkDepth > 0` 这个条件原先写在 §8.4 里，但要读它就得进
+`PtpSessionManager`（用户正在改的文件）。换成 UI 层已有的权威信号：
+`TransferState.Downloading` → `GlassBudget.transferring`。两处消费它：
+
+1. **`GlassTokens.base()`**：`transferring` 为真时 `blurDp` 直接给 0 —— 悬浮面退成
+   静态 tint。折射依赖模糊（`lens()` 见 `blurDp<=0` 就原样返回），所以自动一起关；
+   配额断言的计数口径（`sampling = 有源 && blurDp>0`）也随之下降，不会误报。
+2. **`GlassCoordinator.refreshInterval`**：间隔翻倍（监看页 250→500ms，其余 150→300ms）。
+
+**只降 CPU 侧**：窗口级 blur-behind 走系统 GPU，不在这份预算里抢资源，所以传输中弹窗
+照样是糊的 —— 那是纯收益，没必要跟着收。翻转时走 `UiFlags.notifyChanged()` 复用
+原地重涂（重建 Activity 会闪白底，见 §15.5 F6）。
+
+信号挂在 `TransferViewModel` 里**已有**的那个 `transferState` 收集器上（缩略图让路那处），
+不新开流、不改 `TransferManager`。`Paused`/`Completed` 不算忙：暂停没有在途数据，
+完成是瞬时态、下一个文件会立刻重新置位。
 
 ### 15.6 反馈里**没做完**的事（别当成已交付）
 
