@@ -1,5 +1,6 @@
 package com.nikonlink.app
 
+import com.nikonlink.app.shared.ui.NlFeedback
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -12,7 +13,6 @@ import android.provider.Settings
 import android.view.View
 import android.widget.ImageView
 import android.widget.TextView
-import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.DrawableRes
@@ -305,7 +305,7 @@ class MainActivity : AppCompatActivity() {
                 val now = System.currentTimeMillis()
                 if (now - lastBackPressedAt > BACK_EXIT_INTERVAL_MS) {
                     lastBackPressedAt = now
-                    Toast.makeText(this@MainActivity, "再按一次退出", Toast.LENGTH_SHORT).show()
+                    NlFeedback.show(this@MainActivity, "再按一次退出")
                     return
                 }
                 lastBackPressedAt = 0L

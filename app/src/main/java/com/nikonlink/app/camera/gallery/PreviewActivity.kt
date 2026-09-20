@@ -1,5 +1,6 @@
 package com.nikonlink.app.camera.gallery
 
+import com.nikonlink.app.shared.ui.NlFeedback
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -543,9 +544,7 @@ class PreviewActivity : AppCompatActivity() {
                     clipboard.setPrimaryClip(
                         ClipData.newPlainText("N-Link 拍摄信息", info.text)
                     )
-                    android.widget.Toast.makeText(
-                        this@PreviewActivity, "已复制拍摄信息", android.widget.Toast.LENGTH_SHORT
-                    ).show()
+                    NlFeedback.show(this@PreviewActivity, "已复制拍摄信息")
                     sheet.dismiss()
                 }
             }
@@ -645,10 +644,7 @@ class PreviewActivity : AppCompatActivity() {
             .setItems(options.toTypedArray()) { _, which ->
                 when (which) {
                     0 -> if (copySupported) sharePreviewCopy() else {
-                        android.widget.Toast.makeText(
-                            this, "RAW/视频副本依赖预览通道，请先下载原图后分享",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
+                        NlFeedback.show(this, "RAW/视频副本依赖预览通道，请先下载原图后分享")
                     }
 
                     else -> shareOriginal()
@@ -669,10 +665,7 @@ class PreviewActivity : AppCompatActivity() {
             binding.progressDownload.isIndeterminate = false
             val uri = result.uris.firstOrNull()
             if (uri == null) {
-                android.widget.Toast.makeText(
-                    this@PreviewActivity, "副本生成失败：${result.failed.firstOrNull() ?: "未知原因"}",
-                    android.widget.Toast.LENGTH_SHORT
-                ).show()
+                NlFeedback.show(this@PreviewActivity, "副本生成失败：${result.failed.firstOrNull() ?: "未知原因"}")
                 return@launch
             }
             shareUris(listOf(uri), "分享预览副本")
@@ -692,10 +685,7 @@ class PreviewActivity : AppCompatActivity() {
             binding.progressDownload.visibility = View.GONE
             binding.progressDownload.isIndeterminate = false
             if (uri == null) {
-                android.widget.Toast.makeText(
-                    this@PreviewActivity, "相机未连接或下载失败，无法分享原图",
-                    android.widget.Toast.LENGTH_SHORT
-                ).show()
+                NlFeedback.show(this@PreviewActivity, "相机未连接或下载失败，无法分享原图")
                 return@launch
             }
             shareUris(listOf(uri), "分享原图")
@@ -718,7 +708,7 @@ class PreviewActivity : AppCompatActivity() {
         runCatching {
             startActivity(Intent.createChooser(intent, title))
         }.onFailure {
-            android.widget.Toast.makeText(this, "没有可用的分享应用", android.widget.Toast.LENGTH_SHORT).show()
+            NlFeedback.show(this, "没有可用的分享应用")
         }
     }
 
@@ -737,7 +727,7 @@ class PreviewActivity : AppCompatActivity() {
         val pos = currentPosition
         if (downloadResults.containsKey(pos)) return // 已下载，避免重复
         if (!transferManager.hasActiveSession()) {
-            android.widget.Toast.makeText(this, "相机未连接，无法下载", android.widget.Toast.LENGTH_SHORT).show()
+            NlFeedback.show(this, "相机未连接，无法下载")
             return
         }
         binding.progressDownload.visibility = View.VISIBLE
