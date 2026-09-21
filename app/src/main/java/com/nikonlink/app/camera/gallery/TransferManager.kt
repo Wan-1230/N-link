@@ -37,6 +37,7 @@ import com.nikonlink.app.shared.data.NLinkDatabaseEntryPoint
 import com.nikonlink.app.shared.data.TransferHistoryDao
 import com.nikonlink.app.shared.data.TransferRecord
 import com.nikonlink.app.shared.data.findTransferredHandlesBatch
+import com.nikonlink.app.shared.metrics.BaselineMetrics
 import dagger.hilt.android.EntryPointAccessors
 import java.io.File
 import java.io.FileOutputStream
@@ -69,7 +70,8 @@ class TransferManager @Inject constructor(
     private val wifiManager: WifiManager,
     private val settings: AppSettings,
     private val eventLogger: AppEventLogger,
-    private val connFlags: ConnFlags
+    private val connFlags: ConnFlags,
+    private val baselineMetrics: BaselineMetrics
 ) {
     companion object {
         private const val TAG = "TransferMgr"
@@ -649,6 +651,16 @@ class TransferManager @Inject constructor(
             "size" to file.size,
             "channel" to channelName(transport)
         )
+        val startMs = System.currentTimeMillis()
+        // 口径：单个对象从「发出 GetObject」到「落终态」的耗时与结果（文档 §2）
+        fun recordTransfer(outcome: String) = baselineMetrics.recordTransfer(
+            BaselineMetrics.TransferSample(
+                channel = channelName(transport),
+                bytes = file.size,
+                elapsedMs = System.currentTimeMillis() - startMs,
+                outcome = outcome
+            )
+        )
         return try {
             if (tempFile.length() > file.size) {
                 tempFile.delete()
@@ -663,6 +675,7 @@ class TransferManager @Inject constructor(
 
             if (!completed) {
                 Timber.tag(TAG).w("Incomplete transfer: ${tempFile.length()}/${file.size} via ${channelName(transport)}")
+                recordTransfer("incomplete")
                 eventLogger.event("download_fail", "handle" to file.handle, "reason" to "incomplete")
                 return TransferResult.Failed(
                     "传输中断（${tempFile.length()}/${file.size}），请检查连接后重试"
@@ -685,6 +698,7 @@ class TransferManager @Inject constructor(
                 transferRepository.recordTransfer(file.handle, file.fileName, file.size, savedPath)
                 _transferState.value = TransferState.Completed(file)
                 resetTransferSpeed()
+                recordTransfer("ok")
                 var msg = "已保存: ${file.fileName}"
                 eventLogger.event(
                     "download_done",
@@ -701,12 +715,14 @@ class TransferManager @Inject constructor(
                 postMessage(msg)
                 TransferResult.Success(savedPath)
             } else {
+                recordTransfer("storage")
                 TransferResult.Failed("保存失败：存储空间不足或无写入权限")
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Download failed: ${file.fileName}")
+            recordTransfer("error:${e.javaClass.simpleName}")
             eventLogger.event("download_fail", "handle" to file.handle, "reason" to (e.message ?: "unknown"))
             TransferResult.Failed(e.message ?: "未知错误")
         }

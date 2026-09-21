@@ -2,6 +2,7 @@ package com.nikonlink.app.device.connect
 
 import com.nikonlink.app.shared.common.AppEventLogger
 import com.nikonlink.app.shared.device.RomDetector
+import com.nikonlink.app.shared.metrics.BaselineMetrics
 import android.os.Build
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,11 +22,16 @@ import javax.inject.Singleton
  */
 @Singleton
 class ConnFunnel @Inject constructor(
-    private val eventLogger: AppEventLogger
+    private val eventLogger: AppEventLogger,
+    private val baselineMetrics: BaselineMetrics
 ) {
     companion object {
         private const val HISTORY_LIMIT = 12
 
+        /** FR-01 口径里要单独给百分位的四个阶段（文档 §1）；其余阶段只进总耗时。 */
+        private val MEASURED_STAGES = setOf(
+            Stage.DISCOVER, Stage.TCP, Stage.HANDSHAKE, Stage.FIRST_COMMAND
+        )
     }
 
     @Volatile
@@ -191,6 +197,28 @@ class ConnFunnel @Inject constructor(
             "ms" to attempt.durationMs,
             "reason" to outcome.code
         )
+        baselineMetrics.recordConn(
+            BaselineMetrics.ConnSample(
+                channel = attempt.channel,
+                outcome = outcome.code,
+                totalMs = attempt.durationMs,
+                stageMs = stageGaps(attempt)
+            )
+        )
+    }
+
+    /** 相邻阶段的时间差即该阶段自身耗时；INTENT 之后第一段是预检+发起的合计。 */
+    internal fun stageGaps(attempt: Attempt): Map<String, Long> {
+        val gaps = LinkedHashMap<String, Long>()
+        for (i in 1 until attempt.steps.size) {
+            val stage = attempt.steps[i].stage
+            if (stage in MEASURED_STAGES) {
+                val gap = attempt.steps[i].atMs - attempt.steps[i - 1].atMs
+                // 同一阶段可能被重访（重试、顶号），保留最后一次，避免把等待摊进耗时里
+                gaps[stage.name] = gap
+            }
+        }
+        return gaps
     }
 
     /** 进行中的尝试属于哪个通道（无进行中的尝试时 null）。 */
