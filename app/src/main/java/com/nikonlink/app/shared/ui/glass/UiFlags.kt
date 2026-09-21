@@ -37,6 +37,15 @@ object UiFlags {
      */
     const val DISPERSION = "ui_dispersion"
 
+    /**
+     * v2.5 FR-03：相册分页期间逐页发射「累积 + 已排序」的前缀，让首屏不必等全量。
+     *
+     * 关掉 = 回到 v2.3.1 的行为（holdPages：全量拉完才显示一次）。
+     * 放在这里是因为 PRD v2.5 §五 把「UI/行为类」闸门统一登记在 UiFlags；
+     * 它和玻璃材质无关，只是同一套 prefs 回退机制。
+     */
+    const val ALBUM_INCR = "v25_album_incr"
+
     private val DEFAULTS = mapOf(
         CLASSIC to false,
         REDUCE_TRANSPARENCY to false,
@@ -44,6 +53,7 @@ object UiFlags {
         MOTION to true,
         LENS to true,
         DISPERSION to false,
+        ALBUM_INCR to true,
     )
 
     /**
@@ -152,6 +162,9 @@ object UiFlags {
         glassEnabled(c) && get(c, BLUR) && !reduceTransparency(c) && !isPowerSave(c)
 
     fun motionEnabled(c: Context): Boolean = glassEnabled(c) && get(c, MOTION)
+
+    /** 相册增量分页开关（与玻璃无关，见 [ALBUM_INCR]） */
+    fun albumIncrementalEnabled(c: Context): Boolean = get(c, ALBUM_INCR)
 
     /** 折射只在"真的采了背景"的面才有意义 */
     fun lensEnabled(c: Context): Boolean = blurEnabled(c) && get(c, LENS)
