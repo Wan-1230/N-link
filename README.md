@@ -87,7 +87,7 @@ N-Link 是一款面向尼康 Z 系列微单（Z50II / Z6III / Z8 / Z9 / Zf 等�
 | 渠道 | 说明 |
 |------|------|
 | **GitHub Releases** | [最新 Release](https://github.com/Wan-1230/N-link/releases/latest) 下载 APK（国内访问不稳定时用下方夸克网盘） |
-| **夸克网盘** | [公开永久链接（免提取码）](https://pan.quark.cn/s/d060f7f350e8)，目录 `/N-Link/releases/` 恒为最新版（历史版本归档于 `/N-Link/_archive-releases/`）。**v2.3.1 待同步**：该目录当前仍为 v2.3.0，本版请先用下方 GitHub 或百度网盘 |
+| **夸克网盘** | [公开永久链接（免提取码）](https://pan.quark.cn/s/d060f7f350e8)，目录 `/N-Link/releases/` 恒为最新版（历史版本归档于 `/N-Link/_archive-releases/`） |
 | **百度网盘** | [本版分享链接](https://pan.baidu.com/s/1if5qoCaQRjzBlCThs_sfsQ?pwd=trub)（提取码内嵌于链接，点击自动填充），目录 `/N-Link/releases/` 恒为最新版 |
 | **应用内检查更新** | 启动时自动检查（只提示正式版），GitHub 不可达时自动回退到夸克网盘缓存链接 |
 
