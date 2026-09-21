@@ -386,11 +386,11 @@ class WifiDirectConnector @Inject constructor(
                 // 那个结论我们已经从超时本身拿到了。
                 val ackSilent = ptpSession.lastEventAckTimedOut
                 val unreachable = !ackSilent && !probeReachable(network, endpoint)
-                lastErr = when {
-                    ackSilent -> "event_ack_timeout"
-                    unreachable -> "camera_unreachable"
-                    else -> "ptp_handshake_failed"
-                }
+                lastErr = StaFailureClass.classify(
+                    initFailReason = ptpSession.lastInitFailReason.value,
+                    ackSilent = ackSilent,
+                    reachable = !unreachable
+                )
                 onRetry?.invoke()
                 Timber.tag(TAG).w("WiFi connect attempt $attempt failed (${endpoint.display}), backing off")
 
@@ -626,9 +626,18 @@ class WifiDirectConnector @Inject constructor(
         val initFailReason = ptpSession.lastInitFailReason.value
         return when (reason) {
             "no_wifi_network" -> "手机未连接 WiFi：请先连上相机所在的同一个 WiFi / 热点后重试"
+            // FR-07：机身只有一个 PTP/IP 客户端槽位。这类失败用户自己就能解决，
+            // 必须和「相机在忙/在休眠」分开说 —— 后者关不掉，前者关一下对方就行。
+            StaFailureClass.BUSY_OTHER_CLIENT ->
+                "相机的连接位已被占用：机身同一时刻只允许一个 PTP/IP 客户端。" +
+                    "请在其它设备上断开相机（手机上的 SnapBridge、另一台手机上的 N-Link 都算），" +
+                    "再让相机停在「连接至智能设备」画面重试。N-Link 没法替你把对方踢下线。"
+            StaFailureClass.ACK_SILENT ->
+                "相机接受了连接，但对事件通道一言不发（多半还在休眠或正忙）。" +
+                    "请按一下快门/电源键唤醒相机，让屏幕停在等待连接的画面后重试"
             "camera_unreachable" ->
                 "未找到相机（${endpoint.host}）。请确认相机已开启 WiFi、且手机与相机在同一网络"
-            "ptp_handshake_failed" -> when {
+            "ptp_handshake_failed", StaFailureClass.DENIED -> when {
                 // InitFail 且 failReason==1（connection_in_use / 主机未认可）→ 引导做主机注册
                 initFailReason == PtpConstants.INIT_FAIL_CONNECTION_IN_USE ->
                     "相机未认可本机。请在相机上完成主机注册后重试"

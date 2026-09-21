@@ -632,9 +632,26 @@ class ConnectionManager @Inject constructor(
                 if (reason != null) {
                     eventLogger.event("sta_hostreg_hint", "reason" to reason)
                     _staRegisterNeeded.value = true
+                    revokeStaleHostClaim(reason)
                 }
             }
         }
+    }
+
+    /**
+     * FR-06：机身刚刚明确拒绝过本机，「已注册」就必须从「声称」退回「未确认」。
+     *
+     * 旧实现只在 ConfirmHost 回过 OK 时写一次永久布尔，之后无论被拒多少次都继续显示
+     * 「已完成主机注册」—— 于是注册按钮既骗人，也让"STA 首连成功率"这件事无法解释。
+     * 闸门关掉即回到那次性的旧行为（逐位等价）。
+     */
+    private fun revokeStaleHostClaim(reason: Int) {
+        if (!connFlags.isEnabled(ConnFlags.HOSTREG_VERIFY)) return
+        if (!_staHostRegistered.value) return
+        _staHostRegistered.value = false
+        prefs.edit().putBoolean(PREFS_STA_HOST_REGISTERED, false).apply()
+        eventLogger.event("sta_hostreg_revoked", "reason" to reason)
+        Timber.tag(TAG).i("STA 主机注册标记已撤销：相机回 InitFail(0x%x)", reason)
     }
 
     /**
@@ -776,6 +793,10 @@ class ConnectionManager @Inject constructor(
         reason.contains("no_wifi_network") -> ConnFunnel.Reason.NO_WIFI_NETWORK
         reason.contains("camera_unreachable") -> ConnFunnel.Reason.TCP_TIMEOUT
         reason.contains("event_ack_timeout") -> ConnFunnel.Reason.EVENT_ACK_TIMEOUT
+        // 争抢型必须先判：它是"相机把连接位给了别人"，不是"握手失败"，指引完全不同
+        reason.contains("ptp_busy_other_client") -> ConnFunnel.Reason.PTP_BUSY_OTHER_CLIENT
+        // "denied" 要在下面的 ptp_handshake 之前判，否则被它的 contains 抢先吃掉
+        reason.contains("ptp_handshake_denied") -> ConnFunnel.Reason.PTP_INIT_REJECTED
         reason.contains("ptp_handshake") -> ConnFunnel.Reason.PTP_HANDSHAKE_FAILED
         reason.contains("invalid_endpoint") -> ConnFunnel.Reason.NOT_ON_CAMERA_AP
         reason.contains("not_started") -> ConnFunnel.Reason.AP_NOT_FOUND
