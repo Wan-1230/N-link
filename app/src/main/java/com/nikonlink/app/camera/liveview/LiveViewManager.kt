@@ -5,6 +5,7 @@ import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.usb.UsbPtpManager
 import com.nikonlink.app.shared.common.AppEventLogger
+import com.nikonlink.app.shared.metrics.BaselineMetrics
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import timber.log.Timber
@@ -32,11 +33,14 @@ import javax.inject.Singleton
 class LiveViewManager @Inject constructor(
     private val ptpSession: PtpSessionManager,
     private val usbPtpManager: UsbPtpManager,
-    private val eventLogger: AppEventLogger
+    private val eventLogger: AppEventLogger,
+    private val baselineMetrics: BaselineMetrics
 ) {
     companion object {
         private const val TAG = "LiveViewMgr"
-        private const val FRAME_INTERVAL_MS = 66L  // ~15fps，预留保活通道余量防断联
+
+        /** ~15fps，预留保活通道余量防断联；也是 FR-01 掉帧率的判定阈值（同源，勿在此处改数值）。 */
+        private const val FRAME_INTERVAL_MS = BaselineMetrics.LV_TARGET_INTERVAL_MS
         private const val MAX_CONSECUTIVE_ERRORS = 5
 
         /**
@@ -391,6 +395,7 @@ class LiveViewManager @Inject constructor(
     fun stopLiveView() {
         frameJob?.cancel()
         frameJob = null
+        baselineMetrics.lvSessionEnded()
         _errorMessage.value = null
         // 无论此前走哪条通道，恢复 USB 保活（无 USB 连接时该调用无副作用）
         usbPtpManager.setKeepAlivePaused(false)
@@ -480,6 +485,7 @@ class LiveViewManager @Inject constructor(
         frameJob?.cancel()
         frameCount = 0
         lastFpsTime = System.currentTimeMillis()
+        baselineMetrics.lvSessionStarted()
 
         frameJob = scope?.launch(Dispatchers.IO) {
             while (isActive && _liveViewState.value == LiveViewState.RUNNING) {
@@ -500,7 +506,7 @@ class LiveViewManager @Inject constructor(
                         if (framePixelWidth == 0 || framePixelHeight == 0) {
                             updateFrameSize(imageData)
                         }
-                        _latestFrame.tryEmit(frame)
+                        if (_latestFrame.tryEmit(frame)) baselineMetrics.lvFrameDelivered()
                         consecutiveErrors = 0
                         stallCount = 0
 
@@ -528,6 +534,7 @@ class LiveViewManager @Inject constructor(
 
                 // 帧间隔控制（避免过度请求）
                 val elapsed = System.currentTimeMillis() - frameStart
+                baselineMetrics.lvRound(elapsed)
                 if (elapsed < FRAME_INTERVAL_MS) {
                     delay(FRAME_INTERVAL_MS - elapsed)
                 }
@@ -586,6 +593,7 @@ class LiveViewManager @Inject constructor(
      *   保持原有「抖动自愈」能力，不会因一两次超时就掐断监看。
      */
     private suspend fun handleFrameFailure(cause: Throwable?) {
+        baselineMetrics.lvFrameFailed()
         if (isWifiLinkDead()) {
             Timber.tag(TAG).w("Link already dead, stop live view immediately")
             eventLogger.event(
@@ -597,6 +605,7 @@ class LiveViewManager @Inject constructor(
             _liveViewState.value = LiveViewState.ERROR
             _errorMessage.value = "与相机的连接已断开，请返回重连后再开启监看"
             frameJob?.cancel()
+            baselineMetrics.lvSessionEnded()
             return
         }
         // 宽限期内（拍照等已知会暂停出帧的场景）错误不累计，但仍节流重试；
@@ -659,6 +668,7 @@ class LiveViewManager @Inject constructor(
     /** 监看彻底收口：停在 ERROR 并恢复保活，文案按 `reason` 区分。 */
     private fun stopWithError(reason: String) {
         Timber.tag(TAG).e("Live view stopped: $reason (errors=$consecutiveErrors, stalls=$stallCount)")
+        baselineMetrics.lvSessionEnded()
         eventLogger.event(
             "lv_stop",
             "reason" to reason,

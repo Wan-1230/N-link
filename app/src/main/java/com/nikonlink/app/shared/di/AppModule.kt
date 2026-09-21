@@ -151,7 +151,8 @@ object AppModule {
         wifiManager: WifiManager,
         settings: AppSettings,
         eventLogger: AppEventLogger,
-        connFlags: com.nikonlink.app.device.connect.ConnFlags
+        connFlags: com.nikonlink.app.device.connect.ConnFlags,
+        baselineMetrics: com.nikonlink.app.shared.metrics.BaselineMetrics
     ): TransferManager = TransferManager(
         context,
         ptpSessionManager,
@@ -161,7 +162,8 @@ object AppModule {
         wifiManager,
         settings,
         eventLogger,
-        connFlags
+        connFlags,
+        baselineMetrics
     )
 
     @Provides
@@ -169,8 +171,9 @@ object AppModule {
     fun provideLiveViewManager(
         ptpSessionManager: PtpSessionManager,
         usbPtpManager: UsbPtpManager,
-        eventLogger: AppEventLogger
-    ): LiveViewManager = LiveViewManager(ptpSessionManager, usbPtpManager, eventLogger)
+        eventLogger: AppEventLogger,
+        baselineMetrics: com.nikonlink.app.shared.metrics.BaselineMetrics
+    ): LiveViewManager = LiveViewManager(ptpSessionManager, usbPtpManager, eventLogger, baselineMetrics)
 
     @Provides
     @Singleton
