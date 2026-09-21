@@ -1,0 +1,21 @@
+# 真机快门次数夹具清单（PRD v2.4 §六）
+#
+# 用途：合成测试钉的是「结构对不对」，这里钉的是「你自己机身的字节能不能读出正确的数」。
+# 两者不可互相替代 —— R0（MakerNote 在 Exif 子 IFD 而非 IFD0）就是靠真实字节才暴露的。
+#
+# 用法：
+#   1. 从相机拉一张原片（NEF 或 JPEG 均可，不要经过任何软件导出，否则 MakerNote 会被改写）：
+#        adb pull /sdcard/DCIM/100NXTRA/DSC_0001.NEF
+#   2. 只截前 64KB 放进本目录 —— 真机实测 MakerNote 全在文件头 30KB 内，切片足够且仓库不膨胀：
+#        python -c "open('z50ii_dsc0001.bin','wb').write(open('DSC_0001.NEF','rb').read(65536))"
+#   3. 用 exiftool 独立取一次期望值（别用我们自己的解析器当基准）：
+#        exiftool -ShutterCount DSC_0001.NEF
+#      顺手核一次口径：exiftool -MechanicalShutterCount 若存在且与上式不等，
+#      说明这台机身含电子快门触发，备注里写清楚用的是哪个数
+#   4. 在下面按「文件名,期望读数,备注」追加一行。
+#
+# 清单为空（只有注释）时，NikonRealFixtureTest 整组跳过，不会误报通过。
+#
+# 例：
+# z50ii_dsc0001.bin,3619,Z50II USB 直出 NEF
+

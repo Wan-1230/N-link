@@ -1,7 +1,8 @@
 # PRD：N-Link v2.4 快门次数查询重构
 
 > 版本：v2.4（基线 versionCode 21 / versionName 2.2.0 @ `b4cf780`）· 分支：`feat-glass-polish-v2.3.1`，实现提交 `20ec81c` `a295f00`
-> 状态：**L0-L4 + UI 全部实现完毕**；仍开放两项：黄金夹具（§六 记了下一次该从哪继续）与 §十 第 10-12 条（同意门、机械口径）尚未真机验证，**因此暂不合入 master**
+> 状态：**L0-L4 + UI 全部实现完毕，真机字节回归 harness 已就位**；仍开放两项：往 `nikon_fixtures/` 丢一张自拍切片（零代码改动），
+> 以及 §十 第 10-12 条（同意门、机械口径）尚未真机验证 —— **因此暂不合入 master**
 > 原则：已跑通的功能不改动，改动面压到最小，每项独立可回滚
 > 结论来源：exiftool（Nikon.pm / MakerNotes.pm）、Exiv2（nikonmn_int.cpp / makernote_int.cpp）、libgphoto2（camlibs/ptp2/ptp.h、config.c、library.c、ptp.c）、exif-py、python-shutter-counter、LibRaw 逐行比对，非二手博客
 
@@ -175,10 +176,14 @@ L4 云端降级   → 修 R8：仅在 L2/L3 明确失败时启用，且 UI 明�
 
 → 所以黄金夹具只能由用户自己拍。**好消息是夹具不需要整张原片**：真机实测 MakerNote 全部落在文件头 30KB 以内，提交约 64KB 的**前缀切片**即可作为字节级回归夹具，仓库不会因此变大。
 
-还有一条**没走完就该走的路**，下次接手直接从这里开始：别再按标题搜（会捞到 Panasonic），要用 Commons 按 EXIF 自动归类的那个分类树
-—— `Category:Images taken with Nikon D750`（API：`generator=category&gcmtitle=Category:Images taken with Nikon D750&prop=imageinfo&iiprop=url|size|extmetadata`，
-从 `extmetadata` 里读 `LicenseShortName` 挑 PD/CC0，再 `curl -r 0-65535` 只取前 64KB）。本次这台机器的出口代理对该域名 TLS 不稳定
-（同一查询第一次成功、之后连续 `SEC_E_WRONG_PRINCIPAL` / connection reset），所以这条路**未被证伪、只是没跑完**。
+**自由图库这条路已走到底并放弃，别再重试**：Commons 上按 EXIF 归类的 `Category:Taken with Nikon <型号>` 分类**存在但取不到任何文件**
+（`generator=category` 对分类本身与按镜头细分的子分类都返回 0 个 jpeg，许可分布统计同样为 0）；按标题搜更糟 —— 捞到的样本里
+有一张机身其实是 `Panasonic DMC-G6`，**标题写 Nikon 不代表机身是 Nikon**。
+
+→ 于是夹具改成「**丢一个文件就生效，不需要再改代码**」：入口 `app/src/test/resources/nikon_fixtures/manifest.txt`
+（顶部写明 adb pull → 截前 64KB → `exiftool -ShutterCount` 取期望 → 加一行），执行者 `NikonRealFixtureTest`。
+**这个 harness 本身是被验证过的**：临时放入真机 `NikonD2Hs.jpg` 时读出 2 且 `tests=1 skipped=0`，把期望改成 999 立刻红 ——
+不是那种静默永不执行的空壳；清单为空时整组跳过、报告显示 `skipped=1`，与「通过」严格区分。
 
 **当前测试的可信度边界，说清楚**：17 + 6 例合成测试已经把**真机验证过的结构**钉死了（子 IFD 定位、IFD@18、双字节序、恒等式、E-series 与无签名形态），
 所以偏移被改错会立刻红。它们缺的只是「我们自己之外的第一方字节」——即用户机身实拍样张那一层的外部一致性，
