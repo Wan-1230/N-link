@@ -1,8 +1,9 @@
 # PRD：N-Link v2.4 快门次数查询重构
 
 > 版本：v2.4（基线 versionCode 21 / versionName 2.2.0 @ `b4cf780`）· 分支：`feat-glass-polish-v2.3.1`，实现提交 `20ec81c` `a295f00`
-> 状态：**L0-L4 + UI 全部实现完毕，真机字节回归 harness 已就位**；仍开放两项：往 `nikon_fixtures/` 丢一张自拍切片（零代码改动），
-> 以及 §十 第 10-12 条（同意门、机械口径）尚未真机验证 —— **因此暂不合入 master**
+> 状态：**已归档** —— L0-L4 + UI 全部实现完毕，代码随 **v2.3.1（versionCode 23）** 发布，本文件的「暂不合入 master」判断已过期
+> 仍开放两项（已转入 v2.5 规划，见 `docs/PRD-N-Link-v2.5-差距收敛与可信性基建.md` §FR-08b）：往 `nikon_fixtures/` 丢一张自拍切片（零代码改动），
+> 以及 §十 第 10-12 条（同意门、机械口径）尚未真机验证
 > 原则：已跑通的功能不改动，改动面压到最小，每项独立可回滚
 > 结论来源：exiftool（Nikon.pm / MakerNotes.pm）、Exiv2（nikonmn_int.cpp / makernote_int.cpp）、libgphoto2（camlibs/ptp2/ptp.h、config.c、library.c、ptp.c）、exif-py、python-shutter-counter、LibRaw 逐行比对，非二手博客
 
