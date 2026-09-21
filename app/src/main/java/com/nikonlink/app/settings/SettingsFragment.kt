@@ -79,6 +79,9 @@ class SettingsFragment : Fragment(), GlassInsetAware {
     @Inject
     lateinit var connFunnel: com.nikonlink.app.device.connect.ConnFunnel
 
+    @Inject
+    lateinit var baselineMetrics: com.nikonlink.app.shared.metrics.BaselineMetrics
+
     /** 检查更新防抖时间戳：1.5s 内重复点击忽略（PRD S3 / AC-5） */
     private var lastUpdateClickAt = 0L
 
@@ -92,11 +95,12 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         runCatching {
             val packed = eventLogger.packLogsForExport() ?: return@registerForActivityResult
             requireContext().contentResolver.openOutputStream(uri)?.use { out ->
+                out.write(baselineMetrics.render().toByteArray())
                 packed.inputStream().use { it.copyTo(out) }
             }
             NlGlass.dialog(requireContext())
                 .setTitle("导出成功")
-                .setMessage("日志已保存，可在查看详情或提交反馈时附上。")
+                .setMessage("日志与指标基线已保存，可在查看详情或提交反馈时附上。")
                 .setPositiveButton("确定", null)
                 .show()
         }.onFailure { e ->
