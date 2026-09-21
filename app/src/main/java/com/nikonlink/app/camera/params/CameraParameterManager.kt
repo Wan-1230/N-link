@@ -437,7 +437,14 @@ class CameraParameterManager @Inject constructor(
         }
     }
 
-    /** 逐个样本试「局读 → 本机解析」，第一个拿到的读数即采纳；全部失败才按原因报错 */
+    /**
+     * 三阶段瀑布：① 逐样张只读文件头（便宜、离线、1MB 封顶）；② 一次都没读到才整文件下载
+     * **一张**、仍只做本机解析；③ 仍解不出才走云端，且必须用户授权。
+     *
+     * ①读到了字却解不出时**跳过②**：1MB 已是真机 MakerNote 长度的十倍余量，整文件不会多解出什么，
+     * 拿用户流量换一个大概率的失败不划算。相比旧的「首次局读失败就永久降级」，这里最多多花一次
+     * 探测，但不会因一次抖动就把后续每个样本都推上 45MB 整文件下载。
+     */
     private suspend fun runShutterCountQuery() {
         val samples = ShutterSamplePicker.candidates(transferManager.fetchPhotoList())
         if (samples.isEmpty()) {
@@ -445,46 +452,50 @@ class CameraParameterManager @Inject constructor(
             markShutterQueryFailed(ShutterFailReason.NO_MEDIA)
             return
         }
-
-        var bytesObtained = false
-        var keptFile: File? = null
         // 每轮开头清一次：上一轮的留档样本既不该被本轮误用，也不该累积
         shutterCacheDir().listFiles()?.forEach { it.delete() }
+        val first = samples.first()
+
+        var headReadWorked = false
         for (sample in samples) {
-            when (val outcome = readShutterSample(sample)) {
-                is ShutterSampleOutcome.Parsed -> {
-                    publishShutterCount(outcome.reading, sample)
-                    return
-                }
-                is ShutterSampleOutcome.Unparsed -> {
-                    bytesObtained = true
-                    keptFile = outcome.keptFile ?: keptFile
-                }
-                ShutterSampleOutcome.NoBytes -> Unit
+            val head = transferManager.readObjectHead(sample, EXIF_HEAD_BYTES) ?: continue
+            headReadWorked = true
+            NikonShutterCountParser.parse(head)?.let {
+                publishShutterCount(it, sample)
+                return
             }
         }
 
-        // 最后一级兜底：把整张样张交给云端解析。本机解析已覆盖全部现代机型，
-        // 这里只服务「旧机身笔记结构变体 / 小 JPEG 把 MakerNote 裁掉了」这类少数情况 ——
-        // 而相机原片带机身序列号、镜头信息与 GPS，未获用户同意前既不下载也不上传。
-        if (!settings.shutterCloudConsent) {
-            keptFile?.delete()
-            Timber.tag(TAG).i("Cloud fallback withheld: no user consent")
-            markShutterQueryFailed(
-                if (bytesObtained) ShutterFailReason.CONSENT_REQUIRED
-                else ShutterFailReason.READ_FAILED
-            )
-            return
-        }
-        val lastResort = keptFile ?: downloadForCloudFallback(samples.first())
-        if (lastResort != null) {
-            bytesObtained = true
-            NikonShutterCountParser.parseFile(lastResort)?.let {
-                publishShutterCount(it, samples.first())
-                lastResort.delete()
+        // 阶段二：一次都没局读到（机身不支持 0x101B / 通道抖动）才整文件下载一张，仍只做本机解析
+        var sampleFile: File? = null
+        if (!headReadWorked) {
+            sampleFile = downloadSample(first) ?: run {
+                markShutterQueryFailed(ShutterFailReason.READ_FAILED)
                 return
             }
-            val count = digeekerClient.queryShutterCount(lastResort)
+            NikonShutterCountParser.parseFile(sampleFile)?.let {
+                publishShutterCount(it, first)
+                sampleFile.delete()
+                return
+            }
+        }
+
+        // 阶段三：相机原片带机身序列号、镜头信息与可能的 GPS，未授权一律不上传
+        if (!settings.shutterCloudConsent) {
+            sampleFile?.delete()
+            Timber.tag(TAG).i("Cloud fallback withheld: no user consent")
+            markShutterQueryFailed(ShutterFailReason.CONSENT_REQUIRED)
+            return
+        }
+        val forCloud = sampleFile ?: downloadSample(first)
+        if (forCloud != null) {
+            NikonShutterCountParser.parseFile(forCloud)?.let {
+                publishShutterCount(it, first)
+                forCloud.delete()
+                return
+            }
+            val count = digeekerClient.queryShutterCount(forCloud)
+            forCloud.delete()
             if (count != null && count >= 0) {
                 _cameraInfo.value = _cameraInfo.value.copy(
                     shutterCount = count,
@@ -495,53 +506,24 @@ class CameraParameterManager @Inject constructor(
                     shutterFailReason = ShutterFailReason.NONE
                 )
                 Timber.tag(TAG).i("Shutter count resolved via digeeker: %d", count)
-                lastResort.delete()
                 return
             }
         }
 
-        Timber.tag(TAG).w(
-            "Shutter count unresolved after %d samples (bytesObtained=%s)",
-            samples.size, bytesObtained
-        )
-        markShutterQueryFailed(
-            if (bytesObtained) ShutterFailReason.PARSE_FAILED else ShutterFailReason.READ_FAILED
-        )
+        Timber.tag(TAG).w("Shutter count unresolved after %d samples", samples.size)
+        markShutterQueryFailed(ShutterFailReason.PARSE_FAILED)
     }
 
-    /** 云端兜底用的整文件导出；失败返回 null */
-    private suspend fun downloadForCloudFallback(sample: CameraFile): File? {
-        val target = File(shutterCacheDir(), "cloud_${sample.handle}.${sample.fileName.substringAfterLast('.', "dat")}")
+    /** 整文件导出一张样张到 App 私有缓存（阶段二与云端兜底共用）；失败返回 null */
+    private suspend fun downloadSample(sample: CameraFile): File? {
+        val target = File(
+            shutterCacheDir(),
+            "sample_${sample.handle}.${sample.fileName.substringAfterLast('.', "dat")}"
+        )
         return if (transferManager.downloadPhotoToCache(sample, target)) target else null
     }
 
     private fun shutterCacheDir(): File = File(context.cacheDir, "n-link_shutter").apply { mkdirs() }
-
-    /** 单个样本：优先局读，退回整文件下载。三种结局见 [ShutterSampleOutcome] */
-    private suspend fun readShutterSample(sample: CameraFile): ShutterSampleOutcome {
-        if (!partialReadUnsupported) {
-            val head = transferManager.readObjectHead(sample, EXIF_HEAD_BYTES)
-            if (head != null) {
-                return NikonShutterCountParser.parse(head)?.let { ShutterSampleOutcome.Parsed(it) }
-                    ?: ShutterSampleOutcome.Unparsed(null)
-            }
-            partialReadUnsupported = true
-            Timber.tag(TAG).i("GetPartialObject unavailable, falling back to full download")
-        }
-
-        val target = File(shutterCacheDir(), "sample_${sample.handle}.${sample.fileName.substringAfterLast('.', "dat")}")
-        if (!transferManager.downloadPhotoToCache(sample, target)) return ShutterSampleOutcome.NoBytes
-        return NikonShutterCountParser.parseFile(target)?.let {
-            target.delete()
-            ShutterSampleOutcome.Parsed(it)
-        } ?: ShutterSampleOutcome.Unparsed(target) // 解不出时留档，供云端兜底与离线定位
-    }
-
-    private sealed interface ShutterSampleOutcome {
-        data class Parsed(val reading: NikonShutterCountParser.Reading) : ShutterSampleOutcome
-        data class Unparsed(val keptFile: File?) : ShutterSampleOutcome
-        object NoBytes : ShutterSampleOutcome
-    }
 
     private fun publishShutterCount(r: NikonShutterCountParser.Reading, sample: CameraFile) {
         _cameraInfo.value = _cameraInfo.value.copy(
@@ -559,7 +541,6 @@ class CameraParameterManager @Inject constructor(
     }
 
     fun retryShutterCountQuery() {
-        partialReadUnsupported = false
         ensureShutterCountQuery(force = true)
     }
 
@@ -568,9 +549,6 @@ class CameraParameterManager @Inject constructor(
         settings.shutterCloudConsent = true
         retryShutterCountQuery()
     }
-
-    /** 局读不可用是通道级属性，一次会话内记住，避免每个样本都白等一次失败往返 */
-    private var partialReadUnsupported = false
 
     private fun markShutterQueryFailed(reason: ShutterFailReason) {
         _cameraInfo.value = _cameraInfo.value.copy(
