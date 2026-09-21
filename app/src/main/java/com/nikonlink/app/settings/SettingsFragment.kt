@@ -34,7 +34,9 @@ import com.nikonlink.app.shared.update.UpdateChecker
 import com.nikonlink.app.shared.update.UpdatePrompt
 import com.nikonlink.app.shared.update.UpdateResult
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
 import javax.inject.Inject
@@ -340,15 +342,31 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         binding.rowBaiduUpdate.pressEffect()
         binding.rowBaiduUpdate.setOnClickListener { openBaiduDownload() }
 
+        // PRD v2.5 FR-11：影像馆（IMAGE SPACE）中国版 2026-10-15 终止，给一段不夸大的承接说明
+        binding.rowImageSpace.pressEffect()
+        binding.rowImageSpace.setOnClickListener {
+            NlGlass.dialog(requireContext())
+                .setTitle(R.string.image_space_title)
+                .setMessage(R.string.image_space_note)
+                .setPositiveButton("知道了", null)
+                .show()
+        }
+
         binding.rowAbout.pressEffect()
         binding.rowAbout.setOnClickListener {
-            NlGlass.dialog(requireContext()).setTitle("关于 N-Link")
-                .setMessage(
-                    "当前版本 v${BuildConfig.VERSION_NAME}\n\n为尼康 Z 系列微单打造的第三方连接应用：" +
-                        "永不断联的双通道连接、高速传输、遥控拍摄与实时监看。"
-                )
+            val header = "为尼康 Z 系列微单打造的第三方连接应用：" +
+                "永不断联的双通道连接、高速传输、遥控拍摄与实时监看。\n\n"
+            val dialog = NlGlass.dialog(requireContext())
+                .setTitle("关于 N-Link")
+                .setMessage(header + "正在读取本机安装包…")
                 .setPositiveButton("确定", null)
-                .show()
+                .create()
+            dialog.show()
+            // 哈希要扫完整个 APK（约 4MB），不能压在点击线程上，所以先出框、算完再补
+            viewLifecycleOwner.lifecycleScope.launch {
+                val text = header + withContext(Dispatchers.Default) { packageSelfCheckText() }
+                runCatching { if (dialog.isShowing) dialog.setMessage(text) }
+            }
         }
 
         // F7：打赏支持页（开源免费声明 + 自愿打赏，打赏不附带任何权益）
@@ -384,6 +402,24 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         }
         binding.rowFeedback.pressEffect()
         binding.rowFeedback.setOnClickListener { showFeedbackDialog() }
+    }
+
+    /**
+     * FR-08a：让用户能自证「我装的是哪一版、和网盘里那个是不是同一个包」。
+     * 调用方负责放到 IO/Default 线程上（要扫完整个 APK）。
+     */
+    private fun packageSelfCheckText(): String {
+        val ctx = requireContext()
+        val apk = java.io.File(ctx.applicationInfo.sourceDir)
+        val info = runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0) }.getOrNull()
+        return com.nikonlink.app.shared.metrics.PackageSelfCheck.describe(
+            versionName = BuildConfig.VERSION_NAME,
+            versionCode = BuildConfig.VERSION_CODE,
+            debuggable = BuildConfig.DEBUG,
+            apkBytes = if (apk.isFile) apk.length() else 0L,
+            apkDigest = com.nikonlink.app.shared.metrics.PackageSelfCheck.sha256(apk),
+            installedAtMillis = info?.lastUpdateTime ?: 0L
+        )
     }
 
     /**
