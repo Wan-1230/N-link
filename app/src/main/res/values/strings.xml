@@ -51,6 +51,10 @@
     <string name="shutter_count_failed_parse">照片内未找到快门计数，点击重试</string>
     <string name="shutter_count_failed_consent">本机无法解析 · 点击可授权云端解析</string>
     <string name="shutter_count_mechanical"> · 机械 %1$d</string>
+    <string name="shutter_count_spread">（样张读数不一致：%1$d–%2$d）</string>
+    <!-- PRD v2.5 FR-11：影像馆停服承接说明（只说做得到的与做不到的，不承诺导入尼康侧存档） -->
+    <string name="image_space_title">相机照片不经云端的去处</string>
+    <string name="image_space_note">尼康 IMAGE SPACE（影像馆）中国版将于 2026-10-15 终止服务，接替的 Imaging Cloud 只覆盖 Z6III / Z5II / Zf / Z50II 四台机身。\n\n不在名单里、或不想再经云端的话：\n· 传输页按日期全选或勾选，原片（NEF / JPEG / MOV）直接下到手机；\n· 打开「跳过已下载」，重复刷新不会把同一批再下一遍；\n· 要异地备份，再把这些文件传到你自己的网盘。\n\n做不到的部分说清楚：已经上传到影像馆的历史照片存在尼康那边，N-Link 无法导入，那部分只能由尼康自己导出。</string>
 
     <!-- 云端解析授权：相机原片含机身序列号 / 镜头信息 / GPS，必须说清楚上传什么、给谁、问一次 -->
     <string name="shutter_cloud_consent_title">用云端解析快门次数？</string>

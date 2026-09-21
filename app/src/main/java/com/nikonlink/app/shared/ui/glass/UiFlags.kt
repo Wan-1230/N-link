@@ -46,6 +46,14 @@ object UiFlags {
      */
     const val ALBUM_INCR = "v25_album_incr"
 
+    /**
+     * v2.5 FR-10：快门次数读出来后，再拿最新几张样张**互验**一次（最多 3 张）。
+     *
+     * 关掉 = 回到 v2.3.1 行为：命中第一张能解开的样张就返回，"解对了"与
+     * "碰巧读到个数"在 UI 上完全同一个样子。
+     */
+    const val SHUTTER_XCHECK = "v25_shutter_crosscheck"
+
     private val DEFAULTS = mapOf(
         CLASSIC to false,
         REDUCE_TRANSPARENCY to false,
@@ -54,6 +62,7 @@ object UiFlags {
         LENS to true,
         DISPERSION to false,
         ALBUM_INCR to true,
+        SHUTTER_XCHECK to true,
     )
 
     /**
@@ -165,6 +174,9 @@ object UiFlags {
 
     /** 相册增量分页开关（与玻璃无关，见 [ALBUM_INCR]） */
     fun albumIncrementalEnabled(c: Context): Boolean = get(c, ALBUM_INCR)
+
+    /** 快门次数多样本互验开关（与玻璃无关，见 [SHUTTER_XCHECK]） */
+    fun shutterCrossCheckEnabled(c: Context): Boolean = get(c, SHUTTER_XCHECK)
 
     /** 折射只在"真的采了背景"的面才有意义 */
     fun lensEnabled(c: Context): Boolean = blurEnabled(c) && get(c, LENS)
