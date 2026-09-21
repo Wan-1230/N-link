@@ -36,6 +36,15 @@ class ConnFlags @Inject constructor(
         const val STA_TCP_ONLY = "conn22_sta_tcp_only"
 
         /**
+         * v2.5 FR-02：STA 侧网络动作一律带显式超时。
+         *
+         * 关掉 = 回到 v2.3.1 的行为：非配对模式下 event 通道 `soTimeout = 0`、
+         * `requestNetwork` 不给系统超时。相机接了 TCP 却不回 InitEventAck 时，
+         * 整条连接会永久挂在阻塞 read 上（阻塞读不是挂起点，generation 校验轮不到执行）。
+         */
+        const val STA_TIMEOUTS = "v25_sta_timeouts"
+
+        /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
          *
          * 尼康机身同时只接受一个 PTP/IP 客户端：我们自己发出的探测握手会占住这个槽，
@@ -82,6 +91,7 @@ class ConnFlags @Inject constructor(
             AP_SPECIFIER to true,
             ATTEMPT_BUDGET to true,
             STA_TCP_ONLY to true,
+            STA_TIMEOUTS to true,
             PROBE_TCP_ONLY to true,
             TRANSFER_HEARTBEAT to true,
             TRANSFER_THUMB_YIELD to true,

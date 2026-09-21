@@ -5,6 +5,8 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import com.nikonlink.app.device.connect.ConnFlags
+import com.nikonlink.app.device.connect.StaTimeoutPolicy
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -43,7 +45,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class StaNetworkRequester @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val connFlags: ConnFlags
 ) {
     companion object {
         private const val TAG = "StaNetReq"
@@ -126,7 +129,17 @@ class StaNetworkRequester @Inject constructor(
 
         var registered = false
         try {
-            connectivityManager.requestNetwork(request, cb)
+            // FR-02：与 AP 侧同一手法（`requestNetwork(request, callback, timeout)`）——
+            // 让系统侧也有一个截止点，别只靠我们自己的轮询兜底。
+            val systemDeadline = StaTimeoutPolicy.systemRequestDeadline(
+                gateOn = connFlags.isEnabled(ConnFlags.STA_TIMEOUTS),
+                timeoutMs = timeoutMs
+            )
+            if (systemDeadline != null) {
+                connectivityManager.requestNetwork(request, cb, systemDeadline)
+            } else {
+                connectivityManager.requestNetwork(request, cb)
+            }
             registered = true
         } catch (e: Exception) {
             // FIX-3：注册失败必须保证 cb 不会被"半个注册"地留在系统里。

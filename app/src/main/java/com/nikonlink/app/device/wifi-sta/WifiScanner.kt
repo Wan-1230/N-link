@@ -9,6 +9,7 @@ import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import com.nikonlink.app.device.connect.ConnFlags
+import com.nikonlink.app.device.connect.StaTimeoutPolicy
 import com.nikonlink.app.device.ptp.PtpIpProbe
 import com.nikonlink.app.device.wifi.WifiEndpoint
 import java.io.ByteArrayOutputStream
@@ -736,6 +737,7 @@ class WifiScanner @Inject constructor(
         diag: Diag
     ) {
         // 给 ARP 表一点学习时间（相机刚入网时表里可能还没有它）
+        val deadline = System.currentTimeMillis() + timeoutMs
         delay(1500)
         val hosts = readArpHosts()
         diag.arpReadable.set(hosts != null)
@@ -747,6 +749,9 @@ class WifiScanner @Inject constructor(
                 async(Dispatchers.IO) {
                     semaphore.acquire()
                     try {
+                        if (StaTimeoutPolicy.arpRemainingMs(deadline, System.currentTimeMillis()) <= 0L) {
+                            return@async
+                        }
                         if (results.any { it.ipAddress == host }) return@async
                         probed.incrementAndGet()
                         // v2.2（PRD §5.2 T-S3）：两段式筛选 —— 先用「只连 TCP、不发握手」快筛

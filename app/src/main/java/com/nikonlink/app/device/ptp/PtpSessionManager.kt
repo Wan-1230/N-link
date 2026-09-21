@@ -11,6 +11,7 @@ import java.io.IOException
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -106,6 +107,11 @@ class PtpSessionManager @Inject constructor(
     private val _lastInitFailReason = MutableStateFlow<Int?>(null)
     val lastInitFailReason: StateFlow<Int?> = _lastInitFailReason.asStateFlow()
 
+    /** 本次连接是否卡在「相机不回 InitEventAck」上（FR-02：让上层能给出区分性的原因码）。 */
+    @Volatile
+    var lastEventAckTimedOut = false
+        private set
+
     fun start(scope: CoroutineScope) {
         this.scope = scope
     }
@@ -186,6 +192,7 @@ class PtpSessionManager @Inject constructor(
         if (isConnected()) return@withContext true
         try {
             closeSession()
+            lastEventAckTimedOut = false
             _sessionState.value = PtpSessionState.CONNECTING
             Timber.tag(TAG).i("Connecting to $host:$port")
 
@@ -255,8 +262,15 @@ class PtpSessionManager @Inject constructor(
                 keepAlive = true
                 receiveBufferSize = 4 * 1024 * 1024
             }.apply {
-                // 配对模式下相机可能等待用户按 OK，超时后由上层重试
-                soTimeout = if (pairingMode) readTimeout else 0
+                // 配对模式下相机可能等待用户按 OK，超时后由上层重试。
+                // v2.5 FR-02：非配对模式原来在这里给 0（无限阻塞）—— 相机接了 TCP 却不回
+                // InitEventAck 时整条连接永久挂死，而阻塞 read 不是挂起点，
+                // 调用方的 generation 校验根本没有轮到的机会。
+                soTimeout = com.nikonlink.app.device.connect.StaTimeoutPolicy.eventSoTimeout(
+                    pairingMode = pairingMode,
+                    gateOn = connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.STA_TIMEOUTS),
+                    readTimeoutMs = readTimeout
+                )
             }
             eventInput = eventSocket!!.getInputStream()
             eventOutput = eventSocket!!.getOutputStream()
@@ -266,7 +280,17 @@ class PtpSessionManager @Inject constructor(
             eventOutput!!.flush()
 
             // 等待事件通道初始化确认
-            val eventResponse = PtpPacket.fromStream(eventInput!!)
+            val eventResponse = try {
+                PtpPacket.fromStream(eventInput!!)
+            } catch (e: SocketTimeoutException) {
+                // 相机接了 TCP、却对 InitEventRequest 一言不发 —— 与「相机拒绝握手」是两回事，
+                // 给上层一个能区分的原因码，否则用户只能看到笼统的「PTP 握手失败」。
+                lastEventAckTimedOut = true
+                Timber.tag(TAG).e(e, "phase=event timed out after %dms (no InitEventAck)", readTimeout)
+                eventLogger.event("connect", "phase" to "event", "ok" to false, "code" to "event_ack_timeout")
+                _sessionState.value = PtpSessionState.DISCONNECTED
+                return@withContext false
+            }
             if (eventResponse !is InitEventAckPacket) {
                 Timber.tag(TAG).e("phase=event FAILED unexpected event init response: $eventResponse")
                 eventLogger.event("connect", "phase" to "event", "ok" to false)
