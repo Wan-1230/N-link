@@ -24,6 +24,7 @@ import com.nikonlink.app.device.usb.UsbPtpManager
 import com.nikonlink.app.shared.common.AppSettings
 import com.nikonlink.app.shared.data.PhotoMarkEntity
 import com.nikonlink.app.shared.ui.glass.GlassBudget
+import com.nikonlink.app.shared.ui.glass.UiFlags
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
@@ -79,6 +80,14 @@ class TransferViewModel @Inject constructor(
          * 超时后保留旧列表、复位加载态并给出可操作提示（下拉重试）。
          */
         private const val LOAD_HARD_DEADLINE_MS = 60_000L
+
+        /**
+         * 增量分页发射的最小间隔（FR-03）。
+         *
+         * 每页都排一次累积列表的话，千张卡库要排 50 多次，纯属白烧 CPU；
+         * 250ms 一次在人眼上仍是"逐步长出来"，而首屏第一下几乎立刻就到。
+         */
+        private const val PROGRESSIVE_EMIT_MIN_MS = 250L
     }
 
     private val _photoList = MutableStateFlow<List<CameraFile>>(emptyList())
@@ -575,6 +584,9 @@ class TransferViewModel @Inject constructor(
      *               复位之后一次性写入列表：旧版刷新途中会把「handle 原始序」的中间分页
      *               直接推给网格（与刷新前的倒序展示几乎完全逆序），视口被 DiffUtil
      *               锚点拖到底部、排序完成后再弹回顶部。手动刷新与首连自动加载均启用。
+     *               **v2.5 FR-03 起**：`v25_album_incr` 打开时这条退让不再必要 —— 途中发射的是
+     *               「累积 + 按当前排序排好」的前缀（[AlbumPageAccumulator]），顺序与最终列表
+     *               同构，只往尾部补；闸门关掉即回到上面这段老行为（含首屏等全量的代价）。
      */
     private fun loadPhotos(
         force: Boolean = false,
@@ -604,9 +616,27 @@ class TransferViewModel @Inject constructor(
                 // 3. 部分失败保留已读到的文件并提示缺口，不再静默吞掉。
                 var fetch: TransferManager.PhotoListFetch? = null
                 for (attempt in 0 until 2) {
+                    // FR-03：holdPages 当年是"干脆一页都不发射"，代价是首屏得等全量拉完。
+                    // 现在改成发射「累积 + 已排序」的前缀：顺序与最终列表同构，后到的页只往尾部补，
+                    // 不会再出现 v1.0.2 那种「中间页与倒序展示几乎完全逆序、视口被拖到底再弹回」。
+                    // 用旧列表起积，是为了刷新时第一帧也不会把满屏缩成 18 张。
+                    val progressive = UiFlags.albumIncrementalEnabled(context)
+                    val accumulator = AlbumPageAccumulator().apply { addAll(_photoList.value) }
+                    var lastEmitAt = 0L
                     fetch = withTimeoutOrNull(LOAD_HARD_DEADLINE_MS) {
                         transferManager.fetchPhotoListDetailed(
-                            onPage = if (holdPages) null else ({ page -> _photoList.value = page })
+                            onPage = when {
+                                progressive -> ({ page: List<CameraFile> ->
+                                    accumulator.addAll(page)
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastEmitAt >= PROGRESSIVE_EMIT_MIN_MS) {
+                                        lastEmitAt = now
+                                        _photoList.value = accumulator.snapshot(_sort.value)
+                                    }
+                                })
+                                holdPages -> null
+                                else -> ({ page: List<CameraFile> -> _photoList.value = page })
+                            }
                         )
                     } ?: run {
                         if (!silent) _message.value = "相册加载超时，请检查连接后下拉重试"
