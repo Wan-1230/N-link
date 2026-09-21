@@ -452,18 +452,18 @@ class CameraParameterManager @Inject constructor(
             markShutterQueryFailed(ShutterFailReason.NO_MEDIA)
             return
         }
-        // 每轮开头清一次：上一轮的留档样本既不该被本轮误用，也不该累积
-        shutterCacheDir().listFiles()?.forEach { it.delete() }
         val first = samples.first()
 
         var headReadWorked = false
         for (sample in samples) {
             val head = transferManager.readObjectHead(sample, EXIF_HEAD_BYTES) ?: continue
             headReadWorked = true
-            NikonShutterCountParser.parse(head)?.let {
-                publishShutterCount(it, sample)
+            val reading = NikonShutterCountParser.parse(head)
+            if (reading != null) {
+                publishShutterCount(reading, sample)
                 return
             }
+            retainHeadEvidence(head, sample)
         }
 
         // 阶段二：一次都没局读到（机身不支持 0x101B / 通道抖动）才整文件下载一张，仍只做本机解析
@@ -473,8 +473,9 @@ class CameraParameterManager @Inject constructor(
                 markShutterQueryFailed(ShutterFailReason.READ_FAILED)
                 return
             }
-            NikonShutterCountParser.parseFile(sampleFile)?.let {
-                publishShutterCount(it, first)
+            val reading = NikonShutterCountParser.parseFile(sampleFile)
+            if (reading != null) {
+                publishShutterCount(reading, first)
                 sampleFile.delete()
                 return
             }
@@ -482,21 +483,22 @@ class CameraParameterManager @Inject constructor(
 
         // 阶段三：相机原片带机身序列号、镜头信息与可能的 GPS，未授权一律不上传
         if (!settings.shutterCloudConsent) {
-            sampleFile?.delete()
+            sampleFile?.let { retainFileEvidence(it, first, "no-consent") }
             Timber.tag(TAG).i("Cloud fallback withheld: no user consent")
             markShutterQueryFailed(ShutterFailReason.CONSENT_REQUIRED)
             return
         }
         val forCloud = sampleFile ?: downloadSample(first)
         if (forCloud != null) {
-            NikonShutterCountParser.parseFile(forCloud)?.let {
-                publishShutterCount(it, first)
+            val reading = NikonShutterCountParser.parseFile(forCloud)
+            if (reading != null) {
+                publishShutterCount(reading, first)
                 forCloud.delete()
                 return
             }
             val count = digeekerClient.queryShutterCount(forCloud)
-            forCloud.delete()
             if (count != null && count >= 0) {
+                forCloud.delete()
                 _cameraInfo.value = _cameraInfo.value.copy(
                     shutterCount = count,
                     shutterCountSource = ShutterCountSource.CLOUD,
@@ -508,11 +510,59 @@ class CameraParameterManager @Inject constructor(
                 Timber.tag(TAG).i("Shutter count resolved via digeeker: %d", count)
                 return
             }
+            retainFileEvidence(forCloud, first, "cloud-failed")
         }
 
         Timber.tag(TAG).w("Shutter count unresolved after %d samples", samples.size)
         markShutterQueryFailed(ShutterFailReason.PARSE_FAILED)
     }
+
+    /**
+     * v2.5 FR-08b：失败时**留住证据**。
+     *
+     * v2.4 §十 教用户「拉一份样张回来」，而当时的实现把样张在返回前全删了 —— 文案与代码互相矛盾，
+     * 解析类 bug 因此永远拿不到可复现的字节。现在：失败出口留最新一份（含 1MB 头部切片），
+     * 成功即清空，目录里始终最多 1 个文件；位置在 App 私有目录，对外不可读、清缓存即消失。
+     */
+    private fun retainFileEvidence(sample: File, from: CameraFile, stage: String) {
+        val keep = evidenceFile(from, stage)
+        runCatching {
+            trimShutterEvidence(keep)
+            if (sample != keep) sample.renameTo(keep)
+        }.onFailure { Timber.tag(TAG).w(it, "Could not keep shutter sample") }
+        logKeptEvidence(keep)
+    }
+
+    private fun retainHeadEvidence(head: ByteArray, from: CameraFile) {
+        val keep = evidenceFile(from, "head")
+        runCatching {
+            trimShutterEvidence(keep)
+            keep.writeBytes(head)
+        }.onFailure { Timber.tag(TAG).w(it, "Could not keep shutter head slice") }
+        logKeptEvidence(keep)
+    }
+
+    private fun evidenceFile(from: CameraFile, stage: String) =
+        File(shutterCacheDir(), "failed_${stage}_${sanitizeForFileName(from.fileName)}")
+
+    /** 留档最多一份：[keep] 为 null 表示全清（成功或换机时）。 */
+    private fun trimShutterEvidence(keep: File? = null) {
+        val keepPath = keep?.absolutePath
+        shutterCacheDir().listFiles()?.forEach { if (it.absolutePath != keepPath) it.delete() }
+    }
+
+    private fun logKeptEvidence(kept: File) {
+        if (kept.exists()) {
+            Timber.tag(TAG).w(
+                "Shutter sample kept for diagnosis: %s (%d bytes)",
+                kept.absolutePath, kept.length()
+            )
+        }
+    }
+
+    /** 机身文件名可能带空格与奇怪字符，留档名只留 adb pull 友好的字符。 */
+    private fun sanitizeForFileName(raw: String): String =
+        raw.replace(Regex("[^A-Za-z0-9._-]"), "_").take(48)
 
     /** 整文件导出一张样张到 App 私有缓存（阶段二与云端兜底共用）；失败返回 null */
     private suspend fun downloadSample(sample: CameraFile): File? {
@@ -526,6 +576,8 @@ class CameraParameterManager @Inject constructor(
     private fun shutterCacheDir(): File = File(context.cacheDir, "n-link_shutter").apply { mkdirs() }
 
     private fun publishShutterCount(r: NikonShutterCountParser.Reading, sample: CameraFile) {
+        // 读对了就不留别人的原片在私存里：成功出口把上一轮的留档一并清掉
+        trimShutterEvidence()
         _cameraInfo.value = _cameraInfo.value.copy(
             shutterCount = r.shutterCount,
             shutterCountSource = ShutterCountSource.LOCAL,
