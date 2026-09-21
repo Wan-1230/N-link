@@ -9,6 +9,7 @@ import com.nikonlink.app.camera.gallery.CameraFile
 import com.nikonlink.app.camera.gallery.CameraFileFormat
 import com.nikonlink.app.camera.gallery.TransferManager
 import com.nikonlink.app.shared.common.AppSettings
+import com.nikonlink.app.shared.ui.glass.UiFlags
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -455,15 +456,29 @@ class CameraParameterManager @Inject constructor(
         val first = samples.first()
 
         var headReadWorked = false
+        // FR-10：闸门开时不"命中第一张就收"，而是把最新几张都解一遍再互验
+        val crossCheck = UiFlags.shutterCrossCheckEnabled(context)
+        val readings = mutableListOf<NikonShutterCountParser.Reading>()
+        var lastReadingSample: CameraFile? = null
         for (sample in samples) {
+            if (crossCheck && readings.size >= ShutterCrossCheck.MAX_SAMPLES) break
             val head = transferManager.readObjectHead(sample, EXIF_HEAD_BYTES) ?: continue
             headReadWorked = true
             val reading = NikonShutterCountParser.parse(head)
-            if (reading != null) {
+            if (reading == null) {
+                retainHeadEvidence(head, sample)
+                continue
+            }
+            if (!crossCheck) {
                 publishShutterCount(reading, sample)
                 return
             }
-            retainHeadEvidence(head, sample)
+            readings += reading
+            lastReadingSample = sample
+        }
+        if (readings.isNotEmpty()) {
+            publishCrossCheckedShutterCount(readings, lastReadingSample ?: first)
+            return
         }
 
         // 阶段二：一次都没局读到（机身不支持 0x101B / 通道抖动）才整文件下载一张，仍只做本机解析
@@ -503,6 +518,7 @@ class CameraParameterManager @Inject constructor(
                     shutterCount = count,
                     shutterCountSource = ShutterCountSource.CLOUD,
                     shutterVerified = false,
+                    shutterCountRange = null,
                     shutterMechanicalCount = -1,  // 云端只给一个数，别把上一轮的本机机械值混着显示
                     shutterQueryState = ShutterCountState.SUCCESS,
                     shutterFailReason = ShutterFailReason.NONE
@@ -582,6 +598,7 @@ class CameraParameterManager @Inject constructor(
             shutterCount = r.shutterCount,
             shutterCountSource = ShutterCountSource.LOCAL,
             shutterVerified = r.verified,
+            shutterCountRange = null,
             shutterMechanicalCount = r.mechanicalCount,
             shutterQueryState = ShutterCountState.SUCCESS,
             shutterFailReason = ShutterFailReason.NONE
@@ -589,6 +606,30 @@ class CameraParameterManager @Inject constructor(
         Timber.tag(TAG).i(
             "Shutter count %d from %s (layout=%s verified=%s mechanical=%d)",
             r.shutterCount, sample.fileName, r.layout, r.verified, r.mechanicalCount
+        )
+    }
+
+    /** FR-10：几张样张都解出来了，再决定报单值还是报区间。 */
+    private fun publishCrossCheckedShutterCount(
+        readings: List<NikonShutterCountParser.Reading>,
+        sample: CameraFile
+    ) {
+        val verdict = ShutterCrossCheck.decide(readings) ?: return
+        val source = readings.maxByOrNull { it.shutterCount } ?: return
+        trimShutterEvidence()
+        _cameraInfo.value = _cameraInfo.value.copy(
+            shutterCount = verdict.count,
+            shutterCountSource = ShutterCountSource.LOCAL,
+            shutterVerified = verdict.verified,
+            shutterCountRange = verdict.range,
+            shutterMechanicalCount = verdict.mechanical,
+            shutterQueryState = ShutterCountState.SUCCESS,
+            shutterFailReason = ShutterFailReason.NONE
+        )
+        Timber.tag(TAG).i(
+            "Shutter count %d from %d samples (range=%s verified=%s mechanical=%d layout=%s file=%s)",
+            verdict.count, verdict.sampleCount, verdict.range, verdict.verified,
+            verdict.mechanical, source.layout, sample.fileName
         )
     }
 
@@ -1650,6 +1691,12 @@ data class CameraInfo(
     val shutterVerified: Boolean = false,
     /** 查询失败的具体原因，供 UI 给出可行动的提示 */
     val shutterFailReason: ShutterFailReason = ShutterFailReason.NONE,
+    /**
+     * 多样本互验不一致时的读数区间（FR-10）；null = 各样张一致，[shutterCount] 就是单值。
+     *
+     * 不相等意味着至少有一张解错了 —— 快门计数不会倒退。此时 UI 报区间而不是挑一个数装精确。
+     */
+    val shutterCountRange: IntRange? = null,
     /**
      * 仅机械快门触发次数（MakerNote `0x0037`），-1 = 机身未写。
      * Z8/Z9 等机身的 [shutterCount] 含电子快门触发，与售后口径不一致，两个值不等时才需要展示。
