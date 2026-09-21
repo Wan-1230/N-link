@@ -382,8 +382,15 @@ class WifiDirectConnector @Inject constructor(
                 // 连接前可达性刷新（对齐 ZDROP "refreshing discovery before connect"）：
                 // 直接打一次 TCP 15740，把"相机不在这个地址/没醒"和"PTP 握手失败"分开，
                 // 让用户拿到的原因是有信息量的，而不是统一的"连接失败"。
-                val unreachable = !probeReachable(network, endpoint)
-                lastErr = if (unreachable) "camera_unreachable" else "ptp_handshake_failed"
+                // FR-02：已经确认「相机接了连接但不回事件通道」时不必再花 2.5s 探可达性 ——
+                // 那个结论我们已经从超时本身拿到了。
+                val ackSilent = ptpSession.lastEventAckTimedOut
+                val unreachable = !ackSilent && !probeReachable(network, endpoint)
+                lastErr = when {
+                    ackSilent -> "event_ack_timeout"
+                    unreachable -> "camera_unreachable"
+                    else -> "ptp_handshake_failed"
+                }
                 onRetry?.invoke()
                 Timber.tag(TAG).w("WiFi connect attempt $attempt failed (${endpoint.display}), backing off")
 

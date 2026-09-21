@@ -150,7 +150,7 @@
 - **风险**：采集本身引入日志噪声 → 采样率与开关由 FR-08 的诊断导出统一管。
 
 #### FR-02 STA 侧网络请求补齐超时与生命周期
-- **现状**：STA 路径存在无超时与不可取消的网络等待，失败时原因码不可解释（v2.2 §5.2）。
+- **现状**：**真因已定位（09-21 逐行复核，本文原引的 `StaNetworkRequester.kt:129` 是错的）** —— `PtpSessionManager.kt:259` 在非配对模式给 event 通道 `soTimeout = 0`，相机接了 TCP 却不回 `InitEventAck` 时卡在 `:269` 的阻塞读上；阻塞 read 不是挂起点，上层的 generation 校验根本没有执行机会。次因：`StaNetworkRequester` 用的是无系统超时的两参 `requestNetwork`、`WifiScanner.collectArp` 的 `timeoutMs` 声明了但没用、二段扫把 18s 写死而不看调用方预算。
 - **目标**：每个 STA 侧网络动作都有显式超时、可取消、失败原因唯一。
 - **边界**：**不**引入 OkHttp；沿用现有 socket 与协程取消语义。不碰 P0 的事务层。
 - **验收**：① 拔掉相机 WiFi 后，任一路径在既定超时内失败并给出对应原因码，不出现"永久转圈"；② 新增单测覆盖三条路径的超时分支。
@@ -377,6 +377,7 @@ FR-01 / 07 / 09 / 11 / 15 不新增用户可见行为，**明确不设闸门**�
 
 | 日期 | 改动 | 触发原因 |
 |---|---|---|
+| 2026-09-21（同日第四次更新） | **FR-02 落地**：event 通道非配对模式不再 `soTimeout = 0`；`InitEventAck` 超时单独成码 `event_ack_timeout`（新增 `Reason`，相机静默时不再退花 2.5s 去探可达性）；`StaNetworkRequester` 改用带系统超时的三参 `requestNetwork`；`collectArp` 真正使用 `timeoutMs`。三条判据抽成 `StaTimeoutPolicy` 以便单测（新增 6 个）。**同时订正本文与竞品分析 GAP-01 的错误证据行号**（原指 `StaNetworkRequester.kt:129`） | 逐行复核发现 PRD 自己引用的证据指错了文件，真因在 PTP 会话层 |
 | 2026-09-21（同日第三次更新） | **FR-08b 落地**：快门查询的 5 处 `delete()` 改为「成功即清空、失败留最新一份」，头部切片也留档（`cache/n-link_shutter/failed_<stage>_<文件名>`，日志打绝对路径）；验收① 需真机 adb pull，已并入 §九 矩阵 | M1 内不依赖真机的最高性价比项，顺手修掉 v2.4 自己挖的坑 |
 | 2026-09-21（同日第二次更新） | **FR-01 落地**：新增 `shared/metrics/BaselineMetrics.kt`（进程内聚合 + 最近秩 p50/p95 + 导出文本自带脱敏声明），接入 `ConnFunnel`（阶段耗时）、`TransferManager`（逐对象 MB/s 与失败桶）、`LiveViewManager`（轮次/超轮/掉帧率），设置页「导出日志」前置基线段；口径单独成文 `docs/指标口径-v2.5.md`；M0 的文档订正同步完成（v2.3 §十一 加订正块）。FR-01 无闸门（纯采集），与 §五 登记一致 | 用户要求按 PRD 推进，M0 提前开工 |
 | 2026-09-21 | 新增压力 6、FR-16、闸门 `v25_protect_select`、待拍板 6；§3.3 的 iOS/订阅/多机位三条**理由被证伪后重写**；FR-13 对位对象加入影控台 | 竞品分析新增 §2.11（影控台 App Store 一手取证 + 用户一手「Android 内测中」信息），连带 GAP-27/28 增补 |

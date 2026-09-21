@@ -93,6 +93,11 @@ class ConnFunnel @Inject constructor(
 
             // ── PTP 会话 ──
             PTP_INIT_REJECTED("ptp_init_rejected", "相机拒绝了本机的会话请求", "在相机上完成主机注册/按 OK 确认"),
+            EVENT_ACK_TIMEOUT(
+                "event_ack_timeout",
+                "相机接了连接但对事件通道一言不发",
+                "让相机停留在连接/配对页面；仍不行就关开一次相机电源"
+            ),
             PTP_BUSY_OTHER_CLIENT("ptp_busy", "相机已被其它客户端占用（机身同时只允许一个）", "关闭 SnapBridge 或另一台手机上的连接"),
             PTP_HANDSHAKE_FAILED("ptp_handshake_failed", "PTP 握手未完成", "保持相机停留在配对/连接页面后重试"),
             SESSION_DROP("session_drop", "会话中途断开", "等待自动重连，或手动重连"),

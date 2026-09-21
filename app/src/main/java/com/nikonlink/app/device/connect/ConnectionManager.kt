@@ -775,6 +775,7 @@ class ConnectionManager @Inject constructor(
     private fun mapConnectorReason(reason: String): ConnFunnel.Reason = when {
         reason.contains("no_wifi_network") -> ConnFunnel.Reason.NO_WIFI_NETWORK
         reason.contains("camera_unreachable") -> ConnFunnel.Reason.TCP_TIMEOUT
+        reason.contains("event_ack_timeout") -> ConnFunnel.Reason.EVENT_ACK_TIMEOUT
         reason.contains("ptp_handshake") -> ConnFunnel.Reason.PTP_HANDSHAKE_FAILED
         reason.contains("invalid_endpoint") -> ConnFunnel.Reason.NOT_ON_CAMERA_AP
         reason.contains("not_started") -> ConnFunnel.Reason.AP_NOT_FOUND
