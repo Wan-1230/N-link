@@ -189,7 +189,8 @@ class DashboardViewModel @Inject constructor(
             _hostReg.value = when (result) {
                 is HostRegistrationResult.Success ->
                     HostRegUiState.Success(
-                        "主机注册完成。现在可将相机切换到 STA 模式（连接本机热点），再用 N-Link 连接"
+                        "相机已接受注册。现在可把相机切到 STA 模式（连接本机热点）再用 N-Link 连接；" +
+                            "若下次握手仍被相机拒绝，这里会自动退回「需要注册」"
                     )
                 is HostRegistrationResult.Failure ->
                     HostRegUiState.Failure(result.detail)

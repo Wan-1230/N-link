@@ -302,6 +302,11 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     ShutterCountState.QUERYING -> getString(R.string.shutter_count_querying)
                     ShutterCountState.SUCCESS -> buildString {
                         append(getString(R.string.shutter_count_value, info.shutterCount))
+                        // FR-10：样张之间对不上就报区间。快门计数不会倒退，
+                        // 从两个数里挑一个装成精确值，比承认"这几张解得不一致"更坏。
+                        info.shutterCountRange?.let {
+                            append(getString(R.string.shutter_count_spread, it.first, it.last))
+                        }
                         append(
                             if (info.shutterCountSource == ShutterCountSource.CLOUD) {
                                 getString(R.string.shutter_count_source_cloud)
@@ -535,8 +540,8 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             !needed -> tv.visibility = View.GONE
             !registered -> {
                 tv.visibility = View.VISIBLE
-                tv.text = "首次使用请先注册：切到「WiFi-AP」模式连上相机，再点上方按钮，" +
-                        "按相机屏幕提示确认。"
+                tv.text = "相机没有记住本机（从未注册，或最近拒绝了我们的握手）：" +
+                        "切到「WiFi-AP」模式连上相机，再点上方按钮，按相机屏幕提示确认。"
             }
             else -> {
                 tv.visibility = View.VISIBLE
