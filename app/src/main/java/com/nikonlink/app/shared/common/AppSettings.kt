@@ -124,15 +124,32 @@ class AppSettings @Inject constructor(
         get() = prefs.getInt("bulb_duration_seconds", 30)
         set(value) = prefs.edit().putInt("bulb_duration_seconds", value).apply()
 
+    /** 已登记数据交接的授权现状，供诊断导出与设置页读（v2.5 FR-08c/d） */
+    fun dataHandoffs(): List<Pair<com.nikonlink.app.shared.privacy.DataHandoff, Boolean>> =
+        com.nikonlink.app.shared.privacy.HandoffConsent.snapshot(
+            prefs, com.nikonlink.app.shared.privacy.KnownHandoffs.all
+        )
+
     /**
      * 快门次数「云端解析」授权（PRD v2.4 §L4，默认关）。
      *
-     * 本机解析失败时的唯一退路是把样张原片交给第三方 EXIF 接口 —— 而相机原片里带着
-     * 机身序列号、镜头信息与 GPS。默认不上传，用户明确同意后才允许，且只同意一次。
+     * v2.5 FR-08c 起，这条交接的**事实**（给谁、传什么、键名）登记在
+     * [com.nikonlink.app.shared.privacy.KnownHandoffs.ShutterCloudAnalysis]，
+     * 这里只是它的读写门面。键名沿用 `shutter_cloud_consent` 不变 ——
+     * 已经同意过的用户不该因为重构被再问一遍。
      */
     var shutterCloudConsent: Boolean
-        get() = prefs.getBoolean("shutter_cloud_consent", false)
-        set(value) = prefs.edit().putBoolean("shutter_cloud_consent", value).apply()
+        get() = com.nikonlink.app.shared.privacy.HandoffConsent.isGranted(
+            prefs, com.nikonlink.app.shared.privacy.KnownHandoffs.ShutterCloudAnalysis
+        )
+        set(value) {
+            val handoff = com.nikonlink.app.shared.privacy.KnownHandoffs.ShutterCloudAnalysis
+            if (value) {
+                com.nikonlink.app.shared.privacy.HandoffConsent.grant(prefs, handoff)
+            } else {
+                com.nikonlink.app.shared.privacy.HandoffConsent.revoke(prefs, handoff)
+            }
+        }
 
     /**
      * 画面模式（连接策略，v1.0.2 用户提议的两档化）。

@@ -97,12 +97,17 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         runCatching {
             val packed = eventLogger.packLogsForExport() ?: return@registerForActivityResult
             requireContext().contentResolver.openOutputStream(uri)?.use { out ->
+                // 顺序固定：声明 → 基线 → 原始日志。声明必须在最前面，用户自己打开也能先看到边界
+                out.write(
+                    com.nikonlink.app.shared.privacy.DiagnosticsDisclosure
+                        .text(settings.dataHandoffs()).toByteArray()
+                )
                 out.write(baselineMetrics.render().toByteArray())
                 packed.inputStream().use { it.copyTo(out) }
             }
             NlGlass.dialog(requireContext())
                 .setTitle("导出成功")
-                .setMessage("日志与指标基线已保存，可在查看详情或提交反馈时附上。")
+                .setMessage("导出内容说明、指标基线与日志已保存；文件开头写明了这份东西里有哪些字段。")
                 .setPositiveButton("确定", null)
                 .show()
         }.onFailure { e ->
