@@ -239,6 +239,24 @@ for (const [name, width, height] of VIEWPORTS) {
   await page.close();
 }
 
+// 社交抓取要绝对 URL，相对 og:image 等于没有；这几项查的是产物 HTML 本身
+{
+  const html = fs.existsSync(path.join(ROOT, 'dist/index.html'))
+    ? fs.readFileSync(path.join(ROOT, 'dist/index.html'), 'utf8')
+    : '';
+  const ogImg = html.match(/property="og:image" content="([^"]+)"/)?.[1] ?? '';
+  const canonical = html.match(/rel="canonical" href="([^"]+)"/)?.[1] ?? '';
+  const ld = html.match(/application\/ld\+json">([^<]+)</)?.[1] ?? '';
+  console.log('\n### SEO 产物');
+  check('canonical 为绝对地址', /^https:\/\/.+\/$/.test(canonical));
+  check('og:image 为绝对地址', /^https:\/\/.+\/og\.png$/.test(ogImg));
+  check('无残留相对 og:image', !html.includes('content="/og.png"'));
+  check('JSON-LD 带 softwareVersion', /"softwareVersion":"v\d+\.\d+\.\d+"/.test(ld));
+  check('Release.isReleaseOf 指向本站 @id', ld.includes('#app') && !ld.includes('https://schema.org/N-Link'));
+  check('sitemap.xml 已生成', fs.existsSync(path.join(ROOT, 'dist/sitemap.xml')));
+  check('robots.txt 指向 sitemap', (fs.readFileSync(path.join(ROOT, 'dist/robots.txt'), 'utf8') || '').includes('Sitemap: https://'));
+}
+
 // reduced-motion 对照：动效关掉之后必须仍然可读，且不该偷偷留下 canvas 或隐藏文字
 {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });

@@ -1,2 +1,4 @@
 User-agent: *
 Allow: /
+
+Sitemap: https://n-link-qd0m70ho562.qoder.zone/sitemap.xml
