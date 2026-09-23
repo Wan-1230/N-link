@@ -1,14 +1,12 @@
-import { CountUp } from '../components/reactbits';
+import { Counter } from '../components/ui/Counter';
 import { GlassCard } from '../components/ui/GlassCard';
 import { useDict } from '../i18n';
-import { useReducedMotion } from '../hooks/useReducedMotion';
 import { DEVICE_MODELS } from '../lib/site';
 import './sections.css';
 import './Trust.css';
 
 export function Trust() {
   const dict = useDict();
-  const reduced = useReducedMotion();
 
   return (
     <section className="section tr" id="trust">
@@ -36,9 +34,7 @@ export function Trust() {
             <li key={m.label}>
               <GlassCard className="tr__metric">
                 <p className="tr__num plate">
-                  {m.prefix}
-                  {reduced ? m.value : <CountUp to={m.value} duration={1.8} />}
-                  {m.suffix}
+                  <Counter to={m.value} prefix={m.prefix} suffix={m.suffix} />
                 </p>
                 <p className="tr__label">{m.label}</p>
                 <p className="tr__note">{m.note}</p>

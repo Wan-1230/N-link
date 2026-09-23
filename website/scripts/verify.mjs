@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
@@ -20,9 +21,22 @@ const expectVersion = snapshot.latestTag;
 // 与 src/i18n/zh.ts 的 trust.metrics 对齐；改字典必须同时改这里（默认语言为 zh）
 const EXPECTED_NUMS = ['<3s', '<200ms', '46档', '40个'];
 
+const ASSETS = path.join(ROOT, 'dist/assets');
+const jsGzipBytes = fs.existsSync(ASSETS)
+  ? fs
+      .readdirSync(ASSETS)
+      .filter((f) => f.endsWith('.js'))
+      .reduce((sum, f) => sum + zlib.gzipSync(fs.readFileSync(path.join(ASSETS, f))).length, 0)
+  : 0;
+
 fs.mkdirSync(OUT, { recursive: true });
 const browser = await chromium.launch();
 let failures = 0;
+
+const check = (label, ok) => {
+  if (!ok) failures++;
+  console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${label}`);
+};
 
 for (const [name, width, height] of VIEWPORTS) {
   const page = await browser.newPage({ viewport: { width, height } });
@@ -32,9 +46,24 @@ for (const [name, width, height] of VIEWPORTS) {
   });
   page.on('pageerror', (e) => noise.push(`[pageerror] ${String(e).slice(0, 220)}`));
 
+  // 必须在导航前挂好观察器，否则 LCP 已经过去了
+  await page.addInitScript(() => {
+    window.__vitals = { lcp: 0, cls: 0 };
+    new PerformanceObserver((l) => {
+      for (const e of l.getEntries()) if (e.startTime > window.__vitals.lcp) window.__vitals.lcp = e.startTime;
+    }).observe({ type: 'largest-contentful-paint', buffered: true });
+    new PerformanceObserver((l) => {
+      for (const e of l.getEntries()) if (!e.hadRecentInput) window.__vitals.cls += e.value;
+    }).observe({ type: 'layout-shift', buffered: true });
+  });
+
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await page.waitForTimeout(2000);
   await page.screenshot({ path: path.join(OUT, `hero-${name}.png`) });
+
+  // vitals 必须在任何交互之前采：后面会滚页、还会切语言，切语言改变文本长度本身
+  // 就产生 layout shift，事后读到的 CLS 是探针自己制造的（实测能到 1.37）
+  const vitals = await page.evaluate(() => ({ lcp: Math.round(window.__vitals.lcp), cls: Number(window.__vitals.cls.toFixed(4)) }));
 
   // 逐段滚到视口内再截图：入场动画未触发的段落直接截会得到空白，那不是缺陷是假象。
   // id 必须写死而不能从 `main > section` 枚举——GSAP 的 pin-spacer 会把被钉住的段
@@ -55,11 +84,6 @@ for (const [name, width, height] of VIEWPORTS) {
   await page.waitForTimeout(1200);
   await page.screenshot({ path: path.join(OUT, `page-end-${name}.png`) });
   await page.evaluate(() => window.scrollTo(0, 0));
-
-  const check = (label, ok) => {
-    if (!ok) failures++;
-    console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${label}`);
-  };
 
   // 切到英文再扫一遍：字典形状由 TS 保证，但 fill() 的占位符替换只有跑起来才知道对不对
   await page.getByRole('button', { name: /Switch to English|切换为中文/ }).click();
@@ -139,7 +163,46 @@ for (const [name, width, height] of VIEWPORTS) {
     };
   });
 
+  // 预算在 node 侧对 dist 逐文件 gzip 求和。不用浏览器的 encodedBodySize：
+  // vite preview 默认不压缩，那样量出来的会是未压缩字节，等于没量。
+  // 口径取「全部 JS chunk 之和」，比首屏更严。
+  const jsBytes = jsGzipBytes;
+
+  const a11y = await page.evaluate(() => {
+    const controls = [...document.querySelectorAll('a,button')];
+    const noName = controls.filter(
+      (el) => !(el.textContent ?? '').trim() && !el.getAttribute('aria-label') && !el.querySelector('img[alt]:not([alt=""])')
+    ).length;
+    const noAlt = [...document.querySelectorAll('img')].filter((i) => i.getAttribute('alt') === null).length;
+    // WCAG 2.5.8 对「句中行内链接」有豁免：给它们撑到 24px 只会毁掉排版。
+    // 因此只要求非 inline 的控件达标，纯行内链接跳过。
+    const smallEls = controls
+      .filter((el) => getComputedStyle(el).display !== 'inline')
+      .filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && (r.height < 24 || r.width < 24);
+      })
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        return `${el.tagName.toLowerCase()}.${el.className || '-'} ${Math.round(r.width)}x${Math.round(r.height)}`;
+      });
+    const tiny = smallEls.length;
+    const levels = [...document.querySelectorAll('h1,h2,h3,h4')].map((h) => Number(h.tagName[1]));
+    let jumps = 0;
+    for (let i = 1; i < levels.length; i++) if (levels[i] - levels[i - 1] > 1) jumps++;
+    const v = window.__vitals ?? { lcp: 0, cls: 0 };
+    return { noName, noAlt, tiny, smallEls, jumps, lcp: Math.round(v.lcp), cls: Number(v.cls.toFixed(4)) };
+  });
+
   console.log(`\n### ${name} ${width}x${height}`);
+  check(`JS 合计 ${(jsBytes / 1024).toFixed(1)}KB gzip ≤ 200KB`, jsBytes <= 200 * 1024);
+  check('控件都有可访问名', a11y.noName === 0);
+  check('图片都有 alt', a11y.noAlt === 0);
+  check('触控目标 ≥24px（WCAG 2.5.8）', a11y.tiny === 0);
+  if (a11y.tiny) console.log('   tiny=' + JSON.stringify(a11y.smallEls));
+  check('标题层级不跳级', a11y.jumps === 0);
+  check(`CLS ${vitals.cls} < 0.1`, vitals.cls < 0.1);
+  check(`LCP ${vitals.lcp}ms < 2500ms`, vitals.lcp > 0 && vitals.lcp < 2500);
   check('指标终值与字典一致（非动画半程值）', settled);
   check(`badge 含快照版本 ${expectVersion}`, probe.badge.includes(expectVersion.replace(/^v/, '')));
   check('h1 非空', probe.h1.length > 4);
@@ -167,6 +230,38 @@ for (const [name, width, height] of VIEWPORTS) {
     console.log(`  console: clean${noise.length ? '（已排除 /api/releases 404 与 headless GL 告警）' : ''}`);
   }
 
+  await page.close();
+}
+
+// reduced-motion 对照：动效关掉之后必须仍然可读，且不该偷偷留下 canvas 或隐藏文字
+{
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' });
+  const noise = [];
+  page.on('pageerror', (e) => noise.push(String(e).slice(0, 200)));
+  await page.goto(BASE, { waitUntil: 'networkidle' });
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: path.join(OUT, 'hero-reduced-motion.png') });
+
+  const rm = await page.evaluate(() => {
+    const h1 = document.querySelector('h1');
+    const chars = [...document.querySelectorAll('.hero__line span, .hero__line')];
+    return {
+      canvas: !!document.querySelector('.hero__bg canvas'),
+      staticBg: !!document.querySelector('.hero__bg-static'),
+      h1Visible: !!h1 && getComputedStyle(h1).visibility !== 'hidden' && h1.innerText.trim().length > 4,
+      hiddenChars: chars.filter((c) => getComputedStyle(c).opacity === '0').length,
+      shineAnimated: getComputedStyle(document.querySelector('.hero__badge span') ?? document.body).animationName,
+    };
+  });
+  console.log('\n### reduced-motion 1440x900');
+  check('无 WebGL canvas', rm.canvas === false);
+  check('静态渐变背景顶上', rm.staticBg === true);
+  check('标题立即可读', rm.h1Visible === true);
+  check('没有停在 opacity:0 的文字', rm.hiddenChars === 0);
+  if (noise.length) {
+    failures++;
+    console.log('  pageerror:\n   ' + noise.join('\n   '));
+  }
   await page.close();
 }
 
