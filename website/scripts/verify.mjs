@@ -221,13 +221,13 @@ for (const [name, width, height] of VIEWPORTS) {
   console.log(`  badge="${probe.badge}" canvas=${probe.canvas} bg=${probe.bodyBg} docH=${probe.docH}`);
   console.log(`  changelog: ${cl.count} 条 / 首条 ${cl.firstVer} 要点 ${cl.bulletCount} / APK 链 ${cl.apkLinks}`);
 
-  // /api/releases 未部署时的 404、以及 headless GL 的驱动性能告警，都不是应用层错误
-  const appNoise = noise.filter((n) => !n.includes('/api/releases') && !n.includes('GL Driver Message'));
+  // Function 未部署时 /functions/v1/app 的 404、以及 headless GL 的驱动性能告警，都不是应用层错误
+  const appNoise = noise.filter((n) => !n.includes('/functions/v1/app') && !n.includes('GL Driver Message'));
   if (appNoise.length) {
     failures++;
     console.log('  CONSOLE:\n   ' + appNoise.join('\n   '));
   } else {
-    console.log(`  console: clean${noise.length ? '（已排除 /api/releases 404 与 headless GL 告警）' : ''}`);
+    console.log(`  console: clean${noise.length ? '（已排除未部署的 /functions/v1/app 404 与 headless GL 告警）' : ''}`);
   }
 
   await page.close();
