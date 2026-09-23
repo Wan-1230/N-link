@@ -588,7 +588,7 @@ sealed class PtpPacket {
             return true
         }
 
-        private fun createPacket(type: Int, payload: ByteArray): PtpPacket {
+        internal fun createPacket(type: Int, payload: ByteArray): PtpPacket {
             return when (type) {
                 PtpConstants.PACKET_TYPE_INIT_COMMAND -> InitCommandPacket.parse(payload)
                 PtpConstants.PACKET_TYPE_INIT_RESPONSE -> InitResponsePacket.parse(payload)

@@ -444,6 +444,11 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 { connFlags.setEnabled(ConnFlags.HOSTREG_VERIFY, it) }
             ),
             LabFlag(
+                ConnFlags.EVENT_SILENCE_HOLD, "传输期间容忍 event 静默（FR-04，默认关）",
+                { connFlags.isEnabled(ConnFlags.EVENT_SILENCE_HOLD) },
+                { connFlags.setEnabled(ConnFlags.EVENT_SILENCE_HOLD, it) }
+            ),
+            LabFlag(
                 UiFlags.ALBUM_INCR, "相册增量首屏（FR-03）",
                 { UiFlags.albumIncrementalEnabled(c) },
                 { UiFlags.set(c, UiFlags.ALBUM_INCR, it) }

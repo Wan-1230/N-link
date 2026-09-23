@@ -54,6 +54,19 @@ class ConnFlags @Inject constructor(
         const val HOSTREG_VERIFY = "v25_hostreg_verify"
 
         /**
+         * v2.5 FR-04：批量传输期间容忍 event 通道**静默**，不再拿读超时判死链路。
+         *
+         * 真机语义：相机在传大文件时会把固件注意力给命令通道，event 通道长时间一个字节
+         * 不来是**正常**的（见 `PtpSessionManager` 心跳里 G7 那段注释）。旧实现在 event
+         * 读取抛 `SocketTimeoutException` 时一律 `markLinkError("event_read_timeout")`，
+         * 于是"下载一张 60MB 的 RAW"会自己把链路掐了——周期性掉线最像样的那条假设。
+         *
+         * **默认关**（核心区）。只放行"一个字节都没读到"的那种超时；
+         * 包读到一半才超时属于流错位，开不开都要判死，这条不由本闸门决定。
+         */
+        const val EVENT_SILENCE_HOLD = "v25_event_silence_hold"
+
+        /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
          *
          * 尼康机身同时只接受一个 PTP/IP 客户端：我们自己发出的探测握手会占住这个槽，
@@ -102,6 +115,7 @@ class ConnFlags @Inject constructor(
             STA_TCP_ONLY to true,
             STA_TIMEOUTS to true,
             HOSTREG_VERIFY to true,
+            EVENT_SILENCE_HOLD to false,
             PROBE_TCP_ONLY to true,
             TRANSFER_HEARTBEAT to true,
             TRANSFER_THUMB_YIELD to true,
