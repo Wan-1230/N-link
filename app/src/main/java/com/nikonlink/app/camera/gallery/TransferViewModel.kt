@@ -197,6 +197,17 @@ class TransferViewModel @Inject constructor(
         _onlyNotDownloaded.value = enabled
     }
 
+    /**
+     * FR-16：「已保护」标签的呈现状态（出不出、带不带张数）。
+     *
+     * 只喂**相机源**的 `_photoList`（本地文件永远没有机内保护列，混进来会把
+     * "可用"判成"不支持"）。机身没报这一列时标签干脆不出现——与其给一个
+     * 筛出空列表的入口，不如根本没有这个入口。
+     */
+    val protectChip: StateFlow<ProtectChip> = _photoList
+        .map { protectChipOf(it) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ProtectChip(false, PhotoFilter.PROTECTED.label))
+
     /** F1：批量下载完成后弹「清除这些标记」确认的一次性事件（载荷 = 可清除张数） */
     private val _clearMarksPrompt = MutableSharedFlow<Int>(extraBufferCapacity = 1)
 
@@ -241,9 +252,14 @@ class TransferViewModel @Inject constructor(
         },
         _photoFilter,
         _sort,
-        _isLoading
-    ) { photos, filter, sort, loading ->
-        SortInput(photos.filter { filter.matches(it) }, sort, loading)
+        _isLoading,
+        _activeAlbum
+    ) { photos, filter, sort, loading, source ->
+        // FR-16：同 F2 的理由，「已保护」也只对相机源生效——本地文件的 CameraFile
+        // 永远没有机内保护列，套上去会把整栏清成空的。
+        val effective =
+            if (filter == PhotoFilter.PROTECTED && source != AlbumSource.CAMERA) PhotoFilter.ALL else filter
+        SortInput(photos.filter { effective.matches(it) }, sort, loading)
     }.mapLatest { input ->
         when {
             input.files.isEmpty() -> emptyList()
@@ -1475,13 +1491,17 @@ enum class AlbumSource(val label: String) {
 /**
  * 影像筛选：全部 / 照片 / 视频 / RAW / JPG
  * （旧「按日期」选项无实际过滤逻辑，已移除）
+ *
+ * [PROTECTED] 属 v2.5 FR-16，受 `UiFlags.PROTECT_SELECT` 控制：**标签行在闸门关闭时
+ * 根本不会生成这个 chip**，所以这里只是多一个取值，不影响既有筛选的任何判定。
  */
 enum class PhotoFilter(val label: String) {
     ALL("全部"),
     PHOTOS("照片"),
     VIDEO("视频"),
     RAW("RAW"),
-    JPEG("JPG");
+    JPEG("JPG"),
+    PROTECTED("已保护");
 
     fun matches(file: CameraFile): Boolean {
         return when (this) {
@@ -1490,6 +1510,9 @@ enum class PhotoFilter(val label: String) {
             VIDEO -> file.format == CameraFileFormat.VIDEO
             JPEG -> file.format == CameraFileFormat.JPEG
             RAW -> file.format == CameraFileFormat.RAW
+            // 未报告保护状态的文件按「不是已保护」处理：宁缺毋滥，
+            // 筛出来少几张可以解释，混进一堆没保护的让下载的人自己挑是更坏的结果。
+            PROTECTED -> file.isProtected
         }
     }
 }

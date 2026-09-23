@@ -54,6 +54,15 @@ object UiFlags {
      */
     const val SHUTTER_XCHECK = "v25_shutter_crosscheck"
 
+    /**
+     * v2.5 FR-16：相册增「已保护」筛选，把机内保护键当传输清单用。
+     *
+     * **默认关**。开着也只是多一个筛选标签——保护状态全程只读，
+     * 本 App 不写 `0x101A SetObjectProtectionStatus`（尼康机型支持面未验证，
+     * 竞品分析把它标在 ❓）。关掉 = 相册与 v2.3.2 完全一致。
+     */
+    const val PROTECT_SELECT = "v25_protect_select"
+
     private val DEFAULTS = mapOf(
         CLASSIC to false,
         REDUCE_TRANSPARENCY to false,
@@ -63,6 +72,7 @@ object UiFlags {
         DISPERSION to false,
         ALBUM_INCR to true,
         SHUTTER_XCHECK to true,
+        PROTECT_SELECT to false,
     )
 
     /**
@@ -177,6 +187,9 @@ object UiFlags {
 
     /** 快门次数多样本互验开关（与玻璃无关，见 [SHUTTER_XCHECK]） */
     fun shutterCrossCheckEnabled(c: Context): Boolean = get(c, SHUTTER_XCHECK)
+
+    /** 相册「已保护」筛选开关（与玻璃无关，见 [PROTECT_SELECT]） */
+    fun protectSelectEnabled(c: Context): Boolean = get(c, PROTECT_SELECT)
 
     /** 折射只在"真的采了背景"的面才有意义 */
     fun lensEnabled(c: Context): Boolean = blurEnabled(c) && get(c, LENS)

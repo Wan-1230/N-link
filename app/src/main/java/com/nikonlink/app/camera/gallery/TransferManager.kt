@@ -866,7 +866,7 @@ class TransferManager @Inject constructor(
             val buffer = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
             val storageId = buffer.int
             val formatCode = buffer.short.toInt() and 0xFFFF
-            val protectionStatus = buffer.short.toInt()
+            val protectionStatus = buffer.short.toInt() and 0xFFFF
             var compressedSize = buffer.int.toLong() and 0xFFFFFFFFL
             if (compressedSize == 0xFFFFFFFFL) compressedSize = 0L
             // Skip thumb format, thumb compressed size, thumb pix width/height
@@ -897,7 +897,8 @@ class TransferManager @Inject constructor(
                 formatCode = formatCode,
                 storageId = storageId,
                 format = classifyFormat(formatCode, fileName),
-                captureTimeMillis = dateCreated ?: dateModified
+                captureTimeMillis = dateCreated ?: dateModified,
+                protectionStatus = protectionStatus
             )
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Failed to parse object info for handle=$handle")
@@ -911,6 +912,7 @@ class TransferManager @Inject constructor(
      * 机身返回的属性集随机型而异，两个字段允许缺失并各有兜底：
      * - 文件名缺失 → 传空串，改由 formatCode 判定格式（classifyFormat 已支持）
      * - 时间缺失   → captureTimeMillis=null，按项目规则排在「有时间的文件」之后
+     * - 保护列缺失 → protectionStatus=null（未报告），**不**当成未保护，见 [CameraFile.protectionStatus]
      */
     private fun cameraFileFromProps(props: MtpObjectProps): CameraFile {
         val name = props.fileName ?: ""
@@ -923,7 +925,8 @@ class TransferManager @Inject constructor(
             storageId = props.storageId ?: 0,
             format = classifyFormat(formatCode, name),
             captureTimeMillis = MtpObjectPropListParser.parseMtpDate(props.dateCreatedRaw)
-                ?: MtpObjectPropListParser.parseMtpDate(props.dateModifiedRaw)
+                ?: MtpObjectPropListParser.parseMtpDate(props.dateModifiedRaw),
+            protectionStatus = props.protectionStatus
         )
     }
 
@@ -1652,7 +1655,16 @@ data class CameraFile(
      *
      * 为 null 的文件在排序时统一排在「有时间数据」的文件之后，不参与时间比较。
      */
-    val captureTimeMillis: Long? = null
+    val captureTimeMillis: Long? = null,
+    /**
+     * 机内保护状态原值（PTP ProtectionStatus，u16）；**null = 机身未报告这一项**，
+     * 不等于「未保护」。FR-16 的筛选必须把这两种情况分开，否则批量属性路径
+     * 一旦不含保护列，「只传已保护的」会静默筛出空列表，看着像"你没保护过任何一张"。
+     *
+     * 两条来源：逐张 `0x1008 GetObjectInfo` 的结构里必有此字段；
+     * 批量 `0x9805 GetObjectPropList` 则随机型返回的属性集而定。
+     */
+    val protectionStatus: Int? = null
 )
 
 /**
