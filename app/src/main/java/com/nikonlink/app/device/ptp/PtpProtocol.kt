@@ -382,7 +382,12 @@ data class MtpObjectProps(
     val fileName: String? = null,
     val dateCreatedRaw: String? = null,
     val dateModifiedRaw: String? = null,
-    val parentObject: Int? = null
+    val parentObject: Int? = null,
+    /**
+     * 0xDC03 ProtectionStatus 原值（u16）；**null 表示机身没返回这一列**，
+     * 与「返回了 0x0000 = 未保护」是两件事——后者是确定的否，前者只是不知道。
+     */
+    val protectionStatus: Int? = null
 ) {
     /** 目录（Association）而非照片：相册列表应当过滤掉 */
     val isAssociation: Boolean get() = objectFormat == 0x3001 || objectFormat == 0x3000
@@ -423,7 +428,10 @@ object MtpObjectPropListParser {
                 MtpObjectProp.DATE_CREATED -> (value as? String)?.let { b.dateCreated = it }
                 MtpObjectProp.DATE_MODIFIED -> (value as? String)?.let { b.dateModified = it }
                 MtpObjectProp.PARENT_OBJECT -> (value as? Number)?.let { b.parentObject = it.toInt() }
-                else -> Unit // 其余属性（保护状态、PersistentUID 等）相册用不到，跳过
+                // FR-16：保护位是批量属性里唯一相册真正还需要的列。读不到就留 null，
+                // 让上层区分「机身没报」与「报了未保护」，不要退化成逐张 0x1008。
+                MtpObjectProp.PROTECTION_STATUS -> (value as? Number)?.let { b.protectionStatus = it.toInt() and 0xFFFF }
+                else -> Unit // 其余属性（PersistentUID 等）相册用不到，跳过
             }
             entries++
             if (entries > 200_000) return null // 异常膨胀，判为脏数据
@@ -501,8 +509,10 @@ object MtpObjectPropListParser {
         var dateCreated: String? = null
         var dateModified: String? = null
         var parentObject: Int? = null
+        var protectionStatus: Int? = null
         fun build() = MtpObjectProps(
-            handle, storageId, objectFormat, objectSize, fileName, dateCreated, dateModified, parentObject
+            handle, storageId, objectFormat, objectSize, fileName, dateCreated, dateModified, parentObject,
+            protectionStatus
         )
     }
 
