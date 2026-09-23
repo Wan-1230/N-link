@@ -604,7 +604,7 @@ class TransferManager @Inject constructor(
                 val transport = currentTransport()
                 if (!transport.isConnected) return@withContext false
                 targetFile.parentFile?.mkdirs()
-                downloadToFile(transport, file, targetFile)
+                downloadToFile(transport, file, targetFile).isComplete
             } catch (e: Exception) {
                 Timber.tag(TAG).w(e, "Download photo to cache failed: ${file.fileName}")
                 false
@@ -666,20 +666,26 @@ class TransferManager @Inject constructor(
                 tempFile.delete()
             }
 
-            val completed = downloadToFile(transport, file, tempFile) { received, total ->
+            val outcome = downloadToFile(transport, file, tempFile) { received, total ->
                 val resolvedTotal = resolveProgressTotal(file.size, total, received)
                 onProgress?.invoke(received, resolvedTotal)
                 _transferState.value = TransferState.Downloading(file, received, resolvedTotal)
                 updateTransferSpeed(received)
             }
 
-            if (!completed) {
-                Timber.tag(TAG).w("Incomplete transfer: ${tempFile.length()}/${file.size} via ${channelName(transport)}")
-                recordTransfer("incomplete")
-                eventLogger.event("download_fail", "handle" to file.handle, "reason" to "incomplete")
-                return TransferResult.Failed(
-                    "传输中断（${tempFile.length()}/${file.size}），请检查连接后重试"
-                )
+            if (!outcome.isComplete) {
+                // FR-05 验收③：「机身续传范围之外」与「链路断了」必须分开说 ——
+                // 前者重连一万次也不会好，得知道为什么；后者才是可以重试的。
+                val (reasonCode, userText) = when (outcome) {
+                    DownloadOutcome.BeyondResumeRange -> "no_resume" to
+                        "这份文件超过 2GB，机身不支持从中间接着传；已重试整份仍未完成，请靠近路由器或改用数据线后重试"
+                    else -> "incomplete" to
+                        "传输中断（${tempFile.length()}/${file.size}），请检查连接后重试"
+                }
+                Timber.tag(TAG).w("Incomplete transfer (%s): ${tempFile.length()}/${file.size} via ${channelName(transport)}", reasonCode)
+                recordTransfer(reasonCode)
+                eventLogger.event("download_fail", "handle" to file.handle, "reason" to reasonCode)
+                return TransferResult.Failed(userText)
             }
 
             val prepared = prepareFileToSave(tempFile, file)
@@ -741,34 +747,37 @@ class TransferManager @Inject constructor(
         file: CameraFile,
         target: File,
         onProgress: ((Long, Long) -> Unit)? = null
-    ): Boolean {
+    ): DownloadOutcome {
         var totalReceived = target.length()
         if (file.size > 0 && totalReceived > file.size) {
             target.delete()
             totalReceived = 0
         }
-        if (file.size > 0 && totalReceived >= file.size) return true
+        if (file.size > 0 && totalReceived >= file.size) return DownloadOutcome.Complete
 
         // 相机未返回可靠文件大小时直接整文件下载，避免循环条件把文件当作空文件。
         if (file.size <= 0) {
-            return downloadWhole(transport, file, target, onProgress)
+            return if (downloadWhole(transport, file, target, onProgress)) DownloadOutcome.Complete
+            else DownloadOutcome.LinkBroken
         }
 
         val startOffset = totalReceived
         var chunkSize = PARTIAL_CHUNK_SIZE
+        var abortedBeyondRange = false
         while (totalReceived < file.size) {
             val remaining = (file.size - totalReceived).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
             val size = minOf(chunkSize, remaining)
 
             // v2.2（G10）：标准 PTP GetPartialObject 的 offset 是 **32 位**，>2GB 的文件
             // 续传时 totalReceived.toInt() 会回绕成负数、把文件写坏（旧版 4K 长 MOV 必现）。
-            // 尼康/MTP 的 64 位变体（GetPartialObject64）要按机身验证后才能用，
+            // 尼康/MTP 的 64 位变体（GetPartialObject64 = 0x95C1，厂商扩展区）要按机身验证后才能用，
             // 这里先安全退出续传，由下面的整文件下载兜底。
-            if (totalReceived > (Int.MAX_VALUE - size).toLong()) {
+            if (!ResumePolicy.offsetFits(totalReceived, size)) {
                 Timber.tag(TAG).w(
                     "Resume offset %d beyond 32-bit partial range, aborting chunked resume",
                     totalReceived
                 )
+                abortedBeyondRange = true
                 break
             }
 
@@ -794,15 +803,20 @@ class TransferManager @Inject constructor(
             onProgress?.invoke(totalReceived, file.size)
         }
 
-        if (totalReceived >= file.size) return true
+        if (totalReceived >= file.size) return DownloadOutcome.Complete
 
         // 部分传输完全不支持、或文件大到 32 位续传范围之外时，清掉占位文件后整文件下载。
         // GetObject 没有 offset 参数，因此 >2GB 文件走这条路是安全的（只是不能续传）。
-        if (startOffset == 0L || startOffset > Int.MAX_VALUE - 1L) {
+        if (ResumePolicy.restartWholeFileAfterAbort(startOffset)) {
             target.delete()
-            return downloadWhole(transport, file, target, onProgress)
+            val wholeOk = downloadWhole(transport, file, target, onProgress)
+            return when {
+                wholeOk -> DownloadOutcome.Complete
+                abortedBeyondRange -> DownloadOutcome.BeyondResumeRange
+                else -> DownloadOutcome.LinkBroken
+            }
         }
-        return false
+        return if (abortedBeyondRange) DownloadOutcome.BeyondResumeRange else DownloadOutcome.LinkBroken
     }
 
     /** 整文件下载（不支持部分传输时的兜底路径；WiFi/USB 统一流式写盘） */
