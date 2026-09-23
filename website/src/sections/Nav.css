@@ -178,9 +178,3 @@
     display: flex;
   }
 }
-
-@media (max-width: 560px) {
-  .nav__lang {
-    display: none;
-  }
-}

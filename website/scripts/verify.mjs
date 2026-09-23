@@ -17,6 +17,9 @@ const VIEWPORTS = [
 const snapshot = JSON.parse(fs.readFileSync(path.join(ROOT, 'src/data/releases.json'), 'utf8'));
 const expectVersion = snapshot.latestTag;
 
+// 与 src/i18n/zh.ts 的 trust.metrics 对齐；改字典必须同时改这里（默认语言为 zh）
+const EXPECTED_NUMS = ['<3s', '<200ms', '46档', '40个'];
+
 fs.mkdirSync(OUT, { recursive: true });
 const browser = await chromium.launch();
 let failures = 0;
@@ -33,13 +36,66 @@ for (const [name, width, height] of VIEWPORTS) {
   await page.waitForTimeout(2000);
   await page.screenshot({ path: path.join(OUT, `hero-${name}.png`) });
 
-  // 逐段滚到视口内再截图：入场动画未触发的段落直接截会得到空白，那不是缺陷是假象
-  const sections = await page.evaluate(() => [...document.querySelectorAll('main > section[id]')].map((s) => s.id));
-  for (const id of sections) {
+  // 逐段滚到视口内再截图：入场动画未触发的段落直接截会得到空白，那不是缺陷是假象。
+  // id 必须写死而不能从 `main > section` 枚举——GSAP 的 pin-spacer 会把被钉住的段
+  // 挪出 main 的直接子级，那样正好漏掉最该看的 Pipeline 段。
+  const SECTIONS = ['top', 'trust', 'pipeline', 'features', 'why', 'how', 'changelog', 'roadmap', 'tech', 'download'];
+  for (const id of SECTIONS) {
+    const found = await page.evaluate((anchor) => !!document.getElementById(anchor), id);
+    if (!found) {
+      console.log(`  !! 段 ${id} 不存在`);
+      failures++;
+      continue;
+    }
     await page.evaluate((anchor) => document.getElementById(anchor)?.scrollIntoView({ block: 'start' }), id);
     await page.waitForTimeout(900);
     await page.screenshot({ path: path.join(OUT, `section-${id}-${name}.png`) });
   }
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.waitForTimeout(1200);
+  await page.screenshot({ path: path.join(OUT, `page-end-${name}.png`) });
+  await page.evaluate(() => window.scrollTo(0, 0));
+
+  const check = (label, ok) => {
+    if (!ok) failures++;
+    console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${label}`);
+  };
+
+  // 切到英文再扫一遍：字典形状由 TS 保证，但 fill() 的占位符替换只有跑起来才知道对不对
+  await page.getByRole('button', { name: /Switch to English|切换为中文/ }).click();
+  await page.waitForTimeout(1200);
+  const en = await page.evaluate(() => {
+    const text = document.body.innerText;
+    return {
+      lang: document.documentElement.lang,
+      h1: document.querySelector('h1')?.innerText.replace(/\s+/g, ' ').trim() ?? '',
+      leaks: ['undefined', '[object', '{version}', '{time}', '{n}'].filter((w) => text.includes(w)),
+    };
+  });
+  await page.screenshot({ path: path.join(OUT, `hero-en-${name}.png`) });
+  check('切英文后 <html lang> 同步', en.lang === 'en');
+  check('标题已翻译', /never drop|nikon connection/i.test(en.h1));
+  check('无未替换占位符', en.leaks.length === 0);
+  if (en.leaks.length) console.log(`   leaks=${JSON.stringify(en.leaks)}`);
+  await page.getByRole('button', { name: /Switch to English|切换为中文/ }).click();
+  await page.waitForTimeout(400);
+
+  // CountUp 要跑 1.8s，等太短会抓到半程值（<2s、140ms 这种）。固定等待在小屏上是竞态，
+  // 所以轮询到终值出现为止；真写错了这里依然会超时失败。
+  await page.evaluate(() => document.getElementById('trust')?.scrollIntoView({ block: 'center' }));
+  const settled = await page
+    .waitForFunction(
+      (expected) =>
+        [...document.querySelectorAll('.tr__num')].map((n) => n.textContent.replace(/\s+/g, '')).join('|') === expected.join('|'),
+      EXPECTED_NUMS,
+      { timeout: 6000 }
+    )
+    .then(
+      () => true,
+      () => false
+    );
+  await page.screenshot({ path: path.join(OUT, `section-trust-settled-${name}.png`) });
+  const nums = await page.evaluate(() => [...document.querySelectorAll('.tr__num')].map((n) => n.textContent.replace(/\s+/g, '')));
   await page.evaluate(() => window.scrollTo(0, 0));
 
   const cl = await page.evaluate(() => {
@@ -70,12 +126,21 @@ for (const [name, width, height] of VIEWPORTS) {
     };
   });
 
-  const check = (label, ok) => {
-    if (!ok) failures++;
-    console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${label}`);
-  };
+  const nav = await page.evaluate(() => {
+    const ids = ['trust', 'pipeline', 'features', 'why', 'how', 'changelog', 'roadmap', 'tech', 'download'];
+    const missing = ids.filter((id) => !document.getElementById(id));
+    const text = document.body.innerText;
+    return {
+      missing,
+      sections: document.querySelectorAll('main > section').length,
+      h2: document.querySelectorAll('h2').length,
+      placeholders: ['TODO', 'TBD', 'Lorem', '占位', 'FIXME'].filter((w) => text.includes(w)),
+      emptyLinks: [...document.querySelectorAll('a[href="#"], a:not([href])')].length,
+    };
+  });
 
   console.log(`\n### ${name} ${width}x${height}`);
+  check('指标终值与字典一致（非动画半程值）', settled);
   check(`badge 含快照版本 ${expectVersion}`, probe.badge.includes(expectVersion.replace(/^v/, '')));
   check('h1 非空', probe.h1.length > 4);
   check('无横向溢出', !probe.overflowX);
@@ -86,6 +151,10 @@ for (const [name, width, height] of VIEWPORTS) {
   check('最新条目带「最新」标', cl.firstFlagsLatest === true);
   check('正文无未转换的 ** 粗体标记', cl.hasMdStars === false);
   check('存在 APK 直链', cl.apkLinks >= 1);
+  check('9 个内容段锚点齐全', nav.missing.length === 0);
+  check('无占位文案', nav.placeholders.length === 0);
+  check('无空链接', nav.emptyLinks === 0);
+  console.log(`  sections=${nav.sections} h2=${nav.h2} metrics=${JSON.stringify(nums)}`);
   console.log(`  badge="${probe.badge}" canvas=${probe.canvas} bg=${probe.bodyBg} docH=${probe.docH}`);
   console.log(`  changelog: ${cl.count} 条 / 首条 ${cl.firstVer} 要点 ${cl.bulletCount} / APK 链 ${cl.apkLinks}`);
 

@@ -401,3 +401,21 @@ P2 之后任何时刻站上都是可看的，不存在「半站」。
 - `fetch-reactbits.mjs` 补健壮性：网络失败原先直接 unhandled rejection 崩掉，现降级为明确报错且不改动本地已拷入文件。
 - 验收脚本升级为逐段滚动截图（入场动画未触发的段落直接截会得到空白，必须先滚进视口）。当前 4 档视口 × 10 项断言全通过，含「日志条目数 == 快照 21」「首条为 v2.3.1」「正文无未转换的 `**`」「存在 APK 直链」。
 - 遗留：产物 JS gzip 升至 **202.57 KB**（日志段与 motion 依赖），仍超 §12 的 200KB；P4 做 vendor 分包与按需加载。
+
+### P3（全站 12 段内容）已完成
+
+10 个内容段全部落地：hero / trust / pipeline / features / why / how / changelog / roadmap / tech / download + nav + footer。文案只取 README 与 Release 可证事实，双语字典由 `en: Dict` 编译期强制对齐（`tsc -b` 零错即证明无漏译）。
+
+**实现期发现并修掉的问题**
+
+- **用法段与下载段整幅重复**：「普通用户」标签页原本渲染的正是下载段那四张渠道卡。改为用法段只给三步上手（装 / 连 / 传）并把渠道矩阵留给下载段，`download.channels` 成为唯一出处。
+- **「应用内检查更新」被错链到 GitHub Releases**：它不是一个链接，点过去会误导。渠道 href 改为显式数组且第 4 项为 `null`，无链接时渲染普通卡片并去掉 ↗。
+- **过度宣称**：why 段写了「实测在 3 秒内恢复」，而 README 的 `<3s` 是设计目标。按 §7 给 `<200ms` 立过的同一规矩改成「目标是 3 秒内恢复」。
+- **CountUp 半程值陷阱**：截图抓到 `<2s / <140ms / 32 档 / 28 个`——动画 1.8s 未跑完。原先没有任何断言覆盖终值。现改为轮询到终值出现（上限 6s）再断言，并验证两次连跑稳定。固定 `waitForTimeout` 在 390px 上是竞态：同一份代码一次 FAIL 一次 PASS，因此换成 `waitForFunction`。
+- **验收探针的 pin-spacer 盲区**：探针用 `main > section[id]` 枚举段落，而 GSAP 钉住会把该段挪出 `main` 的直接子级——**恰好漏掉风险最高的 Pipeline 段**，桌面三档根本没截图。改为写死 id 清单。
+- **语言切换器在小屏被隐藏**：双语站藏掉切换器本身就不该，且让自动化点不到。改为始终可见，390px 实测放得下。
+- **英文标题是我生造的**：`The never-drops-` 断词别扭，改为 `Never drop the / Nikon connection`。
+- 新增英文态检查：切换后断言 `<html lang>` 同步、标题已翻译、页面无 `{version}` / `{time}` / `{n}` / `undefined` 等未替换占位符。
+- 页脚三项声明已在截图中确认到位：尼康非官方、仓库尚无 LICENSE、**React Bits 署名**（§3 许可要求）。
+
+**遗留进 P4**：JS gzip **217.33 KB**，超 §12 的 200KB 约 8.7%（P3 引入 CountUp / AnimatedContent / ScrollTrigger pin 后从 200.54 涨上来）。必须做 vendor 分包 + WebGL 背景按需加载，否则放弃该预算——不再靠调高阈值蒙过去。
