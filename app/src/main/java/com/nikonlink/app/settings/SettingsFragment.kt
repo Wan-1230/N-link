@@ -462,6 +462,11 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 UiFlags.PROTECT_SELECT, "「已保护」筛选（FR-16，默认关）",
                 { UiFlags.protectSelectEnabled(c) },
                 { UiFlags.set(c, UiFlags.PROTECT_SELECT, it) }
+            ),
+            LabFlag(
+                UiFlags.TONE_TOOLS, "影调工具·伪彩（FR-13，默认关）",
+                { UiFlags.toneToolsEnabled(c) },
+                { UiFlags.set(c, UiFlags.TONE_TOOLS, it) }
             )
         )
     }

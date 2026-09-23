@@ -33,6 +33,8 @@
     <!-- 参数手动输入 -->
     <!-- 优化项 4：遥控拍摄界面直方图开关 -->
     <string name="histogram_toggle">亮度直方图开关</string>
+    <string name="pseudo_color_toggle">伪彩色开关</string>
+    <string name="pseudo_color_note">按亮度给画面分档上色：越暗越蓝、越亮越红，白＝已溢出</string>
 
     <string name="param_input_hint">手动输入</string>
     <string name="param_input_hint_shutter">可填 1/250、250、0.6 或 30s；无此档位时自动切到最接近档</string>

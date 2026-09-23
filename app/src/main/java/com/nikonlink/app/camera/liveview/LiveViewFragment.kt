@@ -81,6 +81,15 @@ class LiveViewFragment : Fragment() {
     /** 模式切换进行中标记：防止重复下发，下发期间入口置灰 */
     private var modeSwitching = false
 
+    /**
+     * 伪彩闸门（`UiFlags.TONE_TOOLS`）是否开着。在 onViewCreated 读一次即可：
+     * 闸门是回退开关不是运行时偏好，开着时按钮才参与用户开关的渲染。
+     */
+    private var toneAvailable = false
+
+    /** 伪彩当前是否真的在上色：闸门 + 用户开关两者都开才算 */
+    private val toneOn: Boolean get() = settings.pseudoColorEnabled && toneAvailable
+
     private var controlsVisible = true
     private var gridVisible = true
     private var levelVisible = false
@@ -177,7 +186,9 @@ class LiveViewFragment : Fragment() {
         binding.btnGridToggle.setOnClickListener {
             gridVisible = !gridVisible
             binding.viewGridOverlay.setGridVisible(gridVisible)
-            binding.viewGridOverlay.visibility = if (gridVisible) View.VISIBLE else View.GONE
+            // 伪彩与网格线同在这一层：只看 gridVisible 会让"关掉网格"顺手把伪彩也带走
+            binding.viewGridOverlay.visibility =
+                if (gridVisible || toneOn) View.VISIBLE else View.GONE
         }
 
         // 优化项 4/修复：全屏页同样提供直方图开关，状态与遥控页共用
@@ -189,6 +200,24 @@ class LiveViewFragment : Fragment() {
             NlFeedback.show(requireContext(), if (enabled) "已开启亮度直方图" else "已关闭亮度直方图")
         }
         applyHistogramToggle(settings.histogramEnabled)
+
+        // v2.5 FR-13 伪彩：闸门关着时按钮根本不出现（顶栏与 v2.3.2 一致）。
+        // 只有这一页有它——遥控页没有取景叠加层，颜色没地方画。
+        toneAvailable = UiFlags.toneToolsEnabled(requireContext())
+        binding.btnPseudoColor.visibility = if (toneAvailable) View.VISIBLE else View.GONE
+        if (toneAvailable) {
+            binding.btnPseudoColor.pressEffect()
+            binding.btnPseudoColor.setOnClickListener {
+                val enabled = !settings.pseudoColorEnabled
+                settings.pseudoColorEnabled = enabled
+                applyPseudoColorToggle(enabled)
+                NlFeedback.show(
+                    requireContext(),
+                    if (enabled) getString(R.string.pseudo_color_note) else "已关闭伪彩"
+                )
+            }
+        }
+        applyPseudoColorToggle(settings.pseudoColorEnabled)
 
         binding.btnMore.pressEffect()
         binding.btnMore.setOnClickListener { showMoreMenu() }
@@ -241,6 +270,21 @@ class LiveViewFragment : Fragment() {
         binding.viewHistogram.visibility = if (enabled) View.VISIBLE else View.GONE
         binding.btnHistogram.alpha = if (enabled) 1f else 0.55f
         if (!enabled) binding.viewHistogram.clear()
+    }
+
+    /**
+     * v2.5 FR-13：伪彩开关状态落到叠加层。
+     * 闸门关着（按钮不可见）时强制按关处理，用户此前留下的 true 不会偷偷上色。
+     *
+     * 这一层还画着网格线，视图的可见性由两者共同决定：只 setToneVisible 而不管视图，
+     * "网格关着 + 伪彩开着"就什么也看不见。
+     */
+    private fun applyPseudoColorToggle(enabled: Boolean) {
+        val on = enabled && toneAvailable
+        binding.viewGridOverlay.setToneVisible(on)
+        binding.viewGridOverlay.visibility =
+            if (gridVisible || on) View.VISIBLE else View.GONE
+        binding.btnPseudoColor.alpha = if (on) 1f else 0.55f
     }
 
     private fun showMoreMenu() {
@@ -616,7 +660,8 @@ class LiveViewFragment : Fragment() {
         controlsVisible = true
         fadeIn(binding.topBarScroll, binding.paramsBar, binding.bottomControls)
         fadeIn(binding.btnDisp, binding.rightControls, binding.tvPerformance)
-        binding.viewGridOverlay.visibility = if (gridVisible) View.VISIBLE else View.GONE
+        binding.viewGridOverlay.visibility =
+            if (gridVisible || toneOn) View.VISIBLE else View.GONE
     }
 
     private fun fadeIn(vararg views: View) {
@@ -673,6 +718,8 @@ class LiveViewFragment : Fragment() {
                     binding.viewGridOverlay.invalidate()
                     // 优化项 4/修复：直方图与取景画面同帧刷新；关闭时跳过统计，零开销
                     if (settings.histogramEnabled) binding.viewHistogram.setFrame(bitmap)
+                    // 伪彩同理：不开就一个像素都不算（FR-13 验收①要求不掉帧率）
+                    if (toneOn) binding.viewGridOverlay.setToneFrame(bitmap)
                 }
             }
         }

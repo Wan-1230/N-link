@@ -74,6 +74,18 @@ class AppSettings @Inject constructor(
         get() = prefs.getBoolean("histogram_enabled", false)
         set(value) = prefs.edit().putBoolean("histogram_enabled", value).apply()
 
+    /**
+     * 伪彩色开关（v2.5 FR-13）：取景画面上按亮度分档上色。
+     *
+     * 默认关，同 [histogramEnabled]：进阶工具，默认铺开会挡取景。
+     * 但**只有全屏监看页有这个开关**——遥控页没有取景叠加层（网格线也只在那一页），
+     * 而伪彩是"盖在画面上的一层"，没有叠加层就没地方画，所以不跟着做成两页。
+     * 用户开关存在这里，能不能看见这个开关另由 `UiFlags.TONE_TOOLS` 决定。
+     */
+    var pseudoColorEnabled: Boolean
+        get() = prefs.getBoolean("pseudo_color_enabled", false)
+        set(value) = prefs.edit().putBoolean("pseudo_color_enabled", value).apply()
+
     /** 自动下载：相机拍摄新照片后自动同步到手机（需连接就绪） */
     var autoDownload: Boolean
         get() = prefs.getBoolean("auto_download", false)
