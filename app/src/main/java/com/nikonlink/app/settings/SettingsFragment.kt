@@ -27,6 +27,7 @@ import com.nikonlink.app.shared.ui.glass.UiFlags
 import com.nikonlink.app.BuildConfig
 import com.nikonlink.app.R
 import com.nikonlink.app.databinding.FragmentSettingsBinding
+import com.nikonlink.app.device.connect.ConnFlags
 import com.nikonlink.app.shared.common.AppEventLogger
 import com.nikonlink.app.shared.common.AppSettings
 import com.nikonlink.app.shared.ui.pressEffect
@@ -296,6 +297,9 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 .show()
         }
 
+        // 开发选项：把回退闸门摆成能点的开关。正式包里这一行连人都见不到（见 setupLabFlags）。
+        setupLabFlags()
+
         // 通用设置
         binding.rowTheme.pressEffect()
         binding.rowTheme.setOnClickListener {
@@ -403,6 +407,87 @@ class SettingsFragment : Fragment(), GlassInsetAware {
      * FR-08a：让用户能自证「我装的是哪一版、和网盘里那个是不是同一个包」。
      * 调用方负责放到 IO/Default 线程上（要扫完整个 APK）。
      */
+    /**
+     * 开发选项（**仅调试包**）：把 v2.5 那几个回退闸门摆成能点的开关。
+     *
+     * 存在的理由不是"给开发者图方便"：这些闸门的行为要靠真机才判得出来，而验收的人
+     * 手上只有一个装着调试包的手机、没有 adb —— 打不开 SharedPreferences，默认关的那几项
+     * （如 FR-16 的「已保护」筛选）就永远停在"未验证"。正式包里这一行连同分隔线都是 gone。
+     */
+    private fun setupLabFlags() {
+        if (!BuildConfig.DEBUG) return
+        binding.dividerLabs.visibility = View.VISIBLE
+        binding.rowLabs.visibility = View.VISIBLE
+        binding.rowLabs.pressEffect()
+        binding.rowLabs.setOnClickListener { showLabFlagsDialog() }
+    }
+
+    /** 一行一个闸门。读写分属 `ConnFlags` / `UiFlags` 两套 prefs，所以传的是闭包不是 key。 */
+    private class LabFlag(
+        val key: String,
+        val label: String,
+        val read: () -> Boolean,
+        val write: (Boolean) -> Unit
+    )
+
+    private fun labFlags(): List<LabFlag> {
+        val c = requireContext()
+        return listOf(
+            LabFlag(
+                ConnFlags.STA_TIMEOUTS, "STA 显式超时（FR-02）",
+                { connFlags.isEnabled(ConnFlags.STA_TIMEOUTS) },
+                { connFlags.setEnabled(ConnFlags.STA_TIMEOUTS, it) }
+            ),
+            LabFlag(
+                ConnFlags.HOSTREG_VERIFY, "主机注册看机身证据（FR-06）",
+                { connFlags.isEnabled(ConnFlags.HOSTREG_VERIFY) },
+                { connFlags.setEnabled(ConnFlags.HOSTREG_VERIFY, it) }
+            ),
+            LabFlag(
+                UiFlags.ALBUM_INCR, "相册增量首屏（FR-03）",
+                { UiFlags.albumIncrementalEnabled(c) },
+                { UiFlags.set(c, UiFlags.ALBUM_INCR, it) }
+            ),
+            LabFlag(
+                UiFlags.SHUTTER_XCHECK, "快门次数多样本互验（FR-10）",
+                { UiFlags.shutterCrossCheckEnabled(c) },
+                { UiFlags.set(c, UiFlags.SHUTTER_XCHECK, it) }
+            ),
+            LabFlag(
+                UiFlags.PROTECT_SELECT, "「已保护」筛选（FR-16，默认关）",
+                { UiFlags.protectSelectEnabled(c) },
+                { UiFlags.set(c, UiFlags.PROTECT_SELECT, it) }
+            )
+        )
+    }
+
+    private fun showLabFlagsDialog() {
+        val column = android.widget.LinearLayout(requireContext()).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(48, 8, 48, 8)
+        }
+        labFlags().forEach { flag ->
+            column.addView(android.widget.CheckBox(requireContext()).apply {
+                text = flag.label
+                textSize = 14f
+                setPadding(0, 12, 0, 12)
+                isChecked = flag.read()
+                setOnCheckedChangeListener { _, checked ->
+                    flag.write(checked)
+                    eventLogger.event("lab_flag", "key" to flag.key, "value" to checked)
+                }
+            })
+        }
+        NlGlass.dialog(requireContext())
+            .setTitle("开发选项（仅调试包）")
+            .setMessage("关掉即回到该功能之前的行为，用于真机 A/B 对照。" +
+                    "连接类还要设置页的「v2.2 连接改进」总闸开着才生效；" +
+                    "相册标签与快门类改动要重进对应页面或重连一次才看得出来。")
+            .setView(android.widget.ScrollView(requireContext()).apply { addView(column) })
+            .setPositiveButton("关闭", null)
+            .show()
+    }
+
     private fun packageSelfCheckText(): String {
         val ctx = requireContext()
         val apk = java.io.File(ctx.applicationInfo.sourceDir)

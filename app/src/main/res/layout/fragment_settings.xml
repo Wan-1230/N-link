@@ -524,6 +524,42 @@
                         android:textColor="@color/text_tertiary"
                         android:textSize="13sp" />
                 </LinearLayout>
+
+                <!-- 开发选项：默认 gone，由 SettingsFragment 只在调试包里点亮。
+                     闸门都是"关掉就回到旧行为"的回退开关，验收人没有 adb 就打不开
+                     SharedPreferences，等于默认关的那些项永远停在"未验证"。 -->
+                <View
+                    android:id="@+id/dividerLabs"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/divider_height"
+                    android:layout_marginStart="18dp"
+                    android:background="@color/divider"
+                    android:visibility="gone" />
+
+                <LinearLayout
+                    android:id="@+id/rowLabs"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="18dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="开发选项"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="回退闸门 · 仅调试包"
+                        android:textColor="@color/text_tertiary"
+                        android:textSize="13sp" />
+                </LinearLayout>
             </LinearLayout>
 
             <!-- 通用设置组 -->
