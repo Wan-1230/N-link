@@ -26,7 +26,8 @@ import javax.inject.Singleton
 class PtpSessionManager @Inject constructor(
     private val identityStore: PtpClientIdentity,
     private val eventLogger: AppEventLogger,
-    private val connFlags: com.nikonlink.app.device.connect.ConnFlags
+    private val connFlags: com.nikonlink.app.device.connect.ConnFlags,
+    private val funnel: com.nikonlink.app.device.connect.ConnFunnel
 ) {
 
     companion object {
@@ -213,6 +214,9 @@ class PtpSessionManager @Inject constructor(
             }.apply {
                 soTimeout = readTimeout
             }
+            // FR-01：TCP 建链完成 —— 漏斗原来只记 INTENT 与 READY，
+            // 于是导出的基线里"分阶段耗时"永远是空的，看不出慢在哪一段。
+            funnel.stage(com.nikonlink.app.device.connect.ConnFunnel.Stage.TCP, detail = "$host:$port")
             // WiFi 到相机端口的 TCP 连接已建立，此时相机端会进入配对确认界面
             onWifiConnected?.invoke()
             commandOutput = commandSocket!!.getOutputStream()
@@ -248,6 +252,7 @@ class PtpSessionManager @Inject constructor(
             }
 
             Timber.tag(TAG).i("phase=init OK server=%s session=%s", response.serverName, response.sessionId)
+            funnel.stage(com.nikonlink.app.device.connect.ConnFunnel.Stage.HANDSHAKE, detail = response.serverName)
             eventLogger.event("connect", "phase" to "init", "ok" to true, "session" to response.sessionId)
             // 握手成功 → 清除「被拒」标记（相机已接受本机）
             _lastInitFailReason.value = null
@@ -359,6 +364,7 @@ class PtpSessionManager @Inject constructor(
             startEventListener()
 
             Timber.tag(TAG).i("✓ PTP session established (session=$sessionId)")
+            funnel.stage(com.nikonlink.app.device.connect.ConnFunnel.Stage.FIRST_COMMAND, detail = "session=$sessionId")
             eventLogger.event("connect", "phase" to "established", "session" to sessionId)
             true
         } catch (e: Exception) {
