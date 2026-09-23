@@ -76,7 +76,13 @@ Roadmap 未完成项（Phase 4 AI 修图、监看色彩与 LUT、iOS）**只能�
 | i18n | 自建类型化字典 | 见 §9，漏译直接编译失败，无运行时体积 |
 | 图 | 手写 SVG + CSS mock，无位图依赖 | 仓库无截图，见 §7 第 2 段 |
 
-依赖上限：`react` `react-dom` `gsap` `lenis` + 构建期的 `vite` `typescript` `@vitejs/plugin-react`，Playwright 仅 dev。不加组件库、不加状态库、不加 UI framework。
+依赖上限：`react` `react-dom` `gsap` `@gsap/react` `motion` `ogl` `lenis` + 构建期 `vite` `typescript` `@vitejs/plugin-react`，Playwright 仅 dev。不加组件库、不加状态库、不加 UI framework。
+
+> 实现期修订（2026-09-23）：原写「react react-dom gsap lenis」四项，实测 React Bits 上游组件的 import 需要 `@gsap/react`（SplitText）、`motion`（BlurText / CountUp / TiltedCard / GradientText）、`ogl`（Aurora / Silk）三者，已补入上限。`gsap@3.15` 已把 SplitText 转为免费并随包发布，无需 Club 订阅。
+
+**React Bits 许可（实现期查明，影响交付形态）**：上游为 `MIT + Commons Clause License Condition v1.0`，GitHub SPDX 报 `NOASSERTION`。允许「作为应用 / 网站 / 产品的一部分」使用、修改、分发（含商用），**但禁止把组件本身单独出售、再授权或打包重分发**，且须保留版权声明与出处。因此：① 拷入的源码目录内保留 `LICENSE.upstream.txt` 与 `SOURCE.json`（commit pin + 逐文件 sha256）；② 站点页脚须署名「动效组件来自 React Bits © David Haz」；③ 不得把 `reactbits/` 目录单独作为组件包再发布。
+
+**取源通路（实现期查明）**：`raw.githubusercontent.com` 在本机网络下不可达，`reactbits.dev/r/*.json` 不存在（SPA 对所有路径兜底返回同一个 index.html，易被误判为可用）。可用通路是 jsDelivr 的 GitHub 镜像 `cdn.jsdelivr.net/gh/DavidHDev/react-bits@<sha>`，且**只认 7 位短 SHA**（40 位全 SHA 返回 403/404）。`.md` 文件会被 302 回 raw 域因而不可读，许可原文改由 `gh api repos/.../license` 取。`website/scripts/fetch-reactbits.mjs` 固化了这条通路。
 
 ---
 
@@ -266,7 +272,9 @@ Hero 用活 mock 而非截图，是因为仓库无截图而落地页无图即塌
 
 ## 8. 动效方案
 
-**React Bits（拷入源码）**：`SplitText` `BlurText` `ShinyText` `CountUp` `Magnet` `SpotlightCard` `GlareHover` `TiltedCard` `Aurora` `SilkyFloatingBalls` `ClickSpark` `StaggeredMenu`。逐个只取所需 props，不改其行为。
+**React Bits（拷入源码）**：`SplitText` `BlurText` `ShinyText` `CountUp` `GradientText` `Magnet` `AnimatedContent` `SpotlightCard` `TiltedCard` `Aurora` `Silk` `ClickSpark` `Stepper` `AnimatedList` `Dock`。逐个只取所需 props，不改其行为。
+
+> 实现期修订（2026-09-23）：初稿列的 `SilkyFloatingBalls` `GlareHover` `StaggeredMenu` 是凭印象写的名字，上游 78 个组件目录中**并不存在**。已按真实目录名替换：背景层用 `Silk`（+ `Aurora`）；`StaggeredMenu` 取消，导航改自研（玻璃导航不该被上游样式绑架）；`GlareHover` 取消，卡片高光由 `SpotlightCard` 承担。另外上游的 `Stepper` 与 `AnimatedList` 正好对上 §7 第 7 段（使用说明分步）与第 8 段（日志时间轴），从「自定义组件」升级为「拷入组件」；`Dock` 与 App v2.3 的悬浮玻璃 dock 同构，用于导航的移动端形态。取源清单固化在 `website/scripts/fetch-reactbits.mjs` 的 `CHOSEN`， provenance 见 `src/components/reactbits/SOURCE.json`。
 
 **滚动层**：Lenis 全站平滑滚动（`prefers-reduced-motion` 下关闭）；ScrollTrigger 驱动 ① 段背景视差 ② `pipeline` 钉住横滚 ③ 各段 `IntersectionObserver` 分层 reveal（错峰 ≤ 80ms）；顶部滚动进度条。
 
@@ -352,3 +360,32 @@ P2 之后任何时刻站上都是可看的，不存在「半站」。
 `vite build` → `prepare_site`（打包上传不可变草稿）→ 校验 `canPublish` → `publish_site` → 复核 `published=true` → `show_publish_confirmation` 给链接。
 
 两步需你单独点头，不默认执行：① `ensure_backend` 分配 Functions 云资源；② 访问策略设为公开（`public` + `confirmPublic`）。
+
+---
+
+## 16. 实现期修订记录
+
+### P1（脚手架 · 设计系统 · i18n · 导航 · Hero）已完成
+
+**取源与依赖**
+- React Bits 真源码 23 个文件拷入 `src/components/reactbits/`，pin 在 commit `b6666e9`，逐文件 sha256 见 `SOURCE.json`，许可原文（MIT + Commons Clause）存 `LICENSE.upstream.txt`。通路为 jsDelivr GitHub 镜像（详见 §3）。
+- 上游是 `.jsx`，故 `tsconfig` 开 `allowJs`；TS 从解构默认值推断会把 `SplitText.onLetterAnimationComplete`、`CountUp.onStart/onEnd` 判为必填，而运行时上游用 `?.()` 与 `typeof fn === 'function'` 保护，因此在 `reactbits/index.ts` 出口处集中标注为可选，不改上游一个字。
+- 字体自托管：`@fontsource-variable/space-grotesk` + `@fontsource/jetbrains-mono`（Google Fonts 在国内不可靠）。注意变量字体族名是 `'Space Grotesk Variable'` 而非 `'Space Grotesk'`。
+- 快照脚本联网需 `--use-system-ca`：本机有 MITM 证书装在 Windows 信任库，Node 自带 CA 包会报 `UNABLE_TO_VERIFY_LEAF_SIGNATURE`。**不采用关闭 TLS 校验的做法**。已固化进 `npm run snapshot`。
+
+**数据实测**
+- 21 条 release 全部有 APK 与 ≥4 条要点；`title`（`【vX.Y.Z · T】`格式）只有 v2.3.1 有，v2.2.0 及更早用 `【N-Link vX.Y.Z 更新内容】`，v1.1.0 及更早是带 `#`/`##` 的真 Markdown。
+- 因此解析器新增 `summary: string | null`：跳过空行、`---`、任意 `【…】` 头、`#{1,6} ` 标题、要点行、渠道行后，取第一条散文行（截断 160 字符）。实测 16/21 命中摘要。日志段以 `summary` 为主、`title` 为可选高亮，不得依赖 `title`。
+
+**组件适配**
+- `Silk` 依赖 `three` + `@react-three/fiber`（约 150KB gz），会顶破 §12 的 200KB 预算，**已弃用**，背景层只用 `Aurora`（ogl）。
+- `TiltedCard` 的 `imageSrc` 是必填且渲染 `<img>`，与「活 mock」不兼容 → Hero 改用自研 `<PhoneMock>`（CSS/SVG），`TiltedCard` 留给将来放真机截图。
+
+**验收工具**
+- 新增 `scripts/verify.mjs`（Playwright，pin 到与本机浏览器缓存匹配的 1.60.0）：4 档视口出图 + 断言徽章版本 == 快照 `latestTag`、无横向溢出、skip-link 在屏外、Aurora canvas 存在、控制台干净。当前 4/4 PASS。
+- 控制台白名单只排除两类**非应用错误**：`/api/releases` 未部署时的 404、headless GL 的 `GL Driver Message` 性能告警。
+- 已验证：SplitText 在折叠线以下时标题确实不可见，滚动入视口后正常逐字入场——属设计行为，但意味着**整页截图必须先滚动**，否则会把未触发的入场态误当成缺陷。
+
+**遗留（进 P4）**
+- 产物 JS gzip **200.54 KB**，比 §12 的 200KB 目标高 0.27%。待做：vendor 分包 + 按需动态 import WebGL 背景。
+- 移动端 Hero 高 1284px（约 1.5 屏），mock 已缩到 219px 仍偏大，P4 复核。
