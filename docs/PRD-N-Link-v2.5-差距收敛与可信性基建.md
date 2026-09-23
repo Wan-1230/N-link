@@ -378,6 +378,7 @@ FR-01 / 07 / 09 / 11 / 15 不新增用户可见行为，**明确不设闸门**�
 
 | 日期 | 改动 | 触发原因 |
 |---|---|---|
+| 2026-09-24 | **M1 内容以 v2.3.2（versionCode 24）提前发布**，不占 v2.5.0 的名额：Release `v2.3.2`（Latest、非 prerelease）、APK `bd203f75c0108eb0…`、夸克固定分享与百度本版新链接 `1xeVnqdFMbYyAWtjBwyb9IA?pwd=9qd9` 均已按公开接口复核；README 五处同步。**§七 的 M1 因此提前完成**，M2 目标不变（v2.5.0 = A 批次剩余 + FR-08 其余项） | 用户真机验证 M1 六项后要求直接发版 |
 | 2026-09-24 | **FR-01 验收① 回炉**：首份真机日志证明"分阶段耗时"导出是空的（`metric_conn … stages=`）—— 聚合与导出都对，但漏斗在真实连接路径上只打了 INTENT 与 READY 两个卡，我列的四个阶段一个都没人打。已在 `beginWifiPairing`（DISCOVER）、PTP 建链完成（TCP）、InitResponse（HANDSHAKE）、OpenSession 成功（FIRST_COMMAND）四处补打卡；同时把监看那条**改名为「超轮率」**：真机是 `交付=83/轮次=83、超轮=18`，一帧没丢，叫掉帧率是名字骗人。`AP?` 通道名改为 `AP-fallback`。FR-01 验收① 待新一轮真机导出确认 | 用户回传真机日志 |
 | 2026-09-21（同日第六次更新，M1 收口） | **FR-06 / FR-07 / FR-08a / FR-10 / FR-11 全部落地**，M1 完成。FR-06 把「已注册」从一次写入的永久布尔改成被机身证据管辖（收到 InitFail 即撤销，闸门 `v25_hostreg_verify` 可回退），**其验收②「取消 8.5s」经评估后本期不做**，理由与替代路径写在 FR-06 条目里；FR-07 抽出 `StaFailureClass`，争抢型失败进 `ptp_busy_other_client`（把一直声明却从没人发的 `PTP_BUSY_OTHER_CLIENT` 接上）并给出可执行腾挪指引；FR-08a 关于页加「版本 / versionCode / 安装包大小 / 本机 SHA-256 前 8 位 / 安装时间 / 三渠道」，哈希走 Default 线程；FR-10 `ShutterCrossCheck` 三样本互验，不一致时报区间（UI 新增 `shutter_count_spread`）；FR-11 设置页新增一行 + README 一节，明确写做不到的部分。新增单测 7+12 个，全套 147 绿 | 用户要求整段推完 M1，并立「只增量增强、大改必须可回退」为长期约束 |
 | 2026-09-21（同日第五次更新） | **FR-03 落地**：新增 `AlbumPageAccumulator`（累积 + 按当前排序出快照，按 handle 去重），`loadPhotos` 的逐页发射改用它 → 首屏不再等全量、也不再出现中间页翻转；`v25_album_incr` 关掉即回到 holdPages 老行为；发射节流 250ms；旧列表起积，刷新时第一帧不会把满屏缩成 18 张（+6 个单测，含「新快照前缀必须等于上一帧」这条不变量） | M1 第二项，且是纯逻辑改造、不依赖真机 |
