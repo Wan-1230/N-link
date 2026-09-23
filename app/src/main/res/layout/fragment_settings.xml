@@ -759,45 +759,6 @@
                     android:layout_marginStart="18dp"
                     android:background="@color/divider" />
 
-                <!-- PRD v2.5 FR-11：影像馆停服后的本地落盘路径说明（纯文案，不改任何行为） -->
-                <LinearLayout
-                    android:id="@+id/rowImageSpace"
-                    android:layout_width="match_parent"
-                    android:layout_height="52dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal"
-                    android:paddingHorizontal="18dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="相机照片不经云端的去处"
-                        android:textColor="@color/text_primary"
-                        android:textSize="14sp" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="说明"
-                        android:textColor="@color/text_tertiary"
-                        android:textSize="13sp" />
-
-                    <ImageView
-                        android:layout_width="16dp"
-                        android:layout_height="16dp"
-                        android:layout_marginStart="4dp"
-                        android:contentDescription="查看说明"
-                        android:src="@drawable/ic_chevron_right"
-                        app:tint="@color/text_tertiary" />
-                </LinearLayout>
-
-                <View
-                    android:layout_width="match_parent"
-                    android:layout_height="@dimen/divider_height"
-                    android:layout_marginStart="18dp"
-                    android:background="@color/divider" />
-
                 <LinearLayout
                     android:id="@+id/rowAbout"
                     android:layout_width="match_parent"

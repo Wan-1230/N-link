@@ -342,16 +342,6 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         binding.rowBaiduUpdate.pressEffect()
         binding.rowBaiduUpdate.setOnClickListener { openBaiduDownload() }
 
-        // PRD v2.5 FR-11：影像馆（IMAGE SPACE）中国版 2026-10-15 终止，给一段不夸大的承接说明
-        binding.rowImageSpace.pressEffect()
-        binding.rowImageSpace.setOnClickListener {
-            NlGlass.dialog(requireContext())
-                .setTitle(R.string.image_space_title)
-                .setMessage(R.string.image_space_note)
-                .setPositiveButton("知道了", null)
-                .show()
-        }
-
         binding.rowAbout.pressEffect()
         binding.rowAbout.setOnClickListener {
             val header = "为尼康 Z 系列微单打造的第三方连接应用：" +
