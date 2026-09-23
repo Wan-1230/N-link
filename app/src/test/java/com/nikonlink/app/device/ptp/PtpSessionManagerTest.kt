@@ -31,7 +31,7 @@ class PtpSessionManagerTest {
         val camera = MockPtpCamera()
         camera.start()
         try {
-            val session = PtpSessionManager(TestIdentity(), mockLog(), mockFlags())
+            val session = PtpSessionManager(TestIdentity(), mockLog(), mockFlags(), mockFunnel())
             withTimeout(10_000) {
                 val connected = session.connect(
                     host = "127.0.0.1",
@@ -71,7 +71,7 @@ class PtpSessionManagerTest {
         val camera = RejectingPtpCamera()
         camera.start()
         try {
-            val session = PtpSessionManager(TestIdentity(), mockLog(), mockFlags())
+            val session = PtpSessionManager(TestIdentity(), mockLog(), mockFlags(), mockFunnel())
             val connected = withTimeout(10_000) {
                 session.connect("127.0.0.1", camera.port, pairingMode = true)
             }
@@ -91,6 +91,10 @@ class PtpSessionManagerTest {
     }
 
     private fun mockLog(): AppEventLogger = mockk(relaxed = true)
+
+    /** FR-01 起 PtpSessionManager 会往漏斗打卡；测试里只要不炸就行。 */
+    private fun mockFunnel(): com.nikonlink.app.device.connect.ConnFunnel =
+        mockk<com.nikonlink.app.device.connect.ConnFunnel>(relaxed = true)
 
     /** v2.2 起 PtpSessionManager 依赖运行时开关；测试里统一全开，覆盖新路径。 */
     private fun mockFlags(): com.nikonlink.app.device.connect.ConnFlags {

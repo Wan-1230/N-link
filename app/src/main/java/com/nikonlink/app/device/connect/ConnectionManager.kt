@@ -246,7 +246,7 @@ class ConnectionManager @Inject constructor(
         }
 
         // v2.2（G11/G12）：先预检再连接 —— 权限/位置开关/OTG 这类硬阻断不该靠重试去碰运气
-        val mode = if (endpoint.host == DEFAULT_FALLBACK_HOST) "AP?" else "host"
+        val mode = if (endpoint.host == DEFAULT_FALLBACK_HOST) "AP-fallback" else "host"
         funnel.begin("WIFI", mode)
         // 已经连在相机热点上时跳过硬阻断：这条路径不需要扫描权限，WLAN 也必然是开的，
         // 拿权限项把用户当前能用的连接拦掉是倒退。
@@ -312,6 +312,9 @@ class ConnectionManager @Inject constructor(
         _connectionHint.value = null
         pairedDeviceAddress = endpoint.address
         userDisconnectRequested = false
+        // FR-01：地址学到手 = "发现相机"结束。漏斗原来这一段不打卡，
+        // 于是 TCP 的耗时把"扫描/学地址"和"建链"混在一起，看不出该优化哪个。
+        funnel.stage(ConnFunnel.Stage.DISCOVER, detail = endpoint.display)
 
         // RC-1：必须先同步登记 activeJob，再派发 StartConnect，
         // 否则状态机触发的重连观察者会认为没有任务在跑而再次发起连接
