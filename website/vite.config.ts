@@ -4,8 +4,8 @@ import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 import type { Plugin } from 'vite';
 
-// 站点域名由部署方给定；不知道就整段不写，绝不用猜的域名填 JSON-LD
-const SITE_URL = process.env.SITE_URL ?? '';
+// 上线后确定的真实来源；未部署到别处前不要改成猜的值
+const SITE_ORIGIN = 'https://n-link-qd0m70ho562.qoder.zone';
 
 function readSnapshot() {
   try {
@@ -32,6 +32,11 @@ function siteMeta(): Plugin {
       const version = `v${latest.version}`;
       return [
         { tag: 'meta', attrs: { name: 'version', content: version }, injectTo: 'head' },
+        { tag: 'link', attrs: { rel: 'canonical', href: `${SITE_ORIGIN}/` }, injectTo: 'head' },
+        // 社交抓取普遍要求绝对 URL，index.html 里那条相对 og:image 抓不到
+        { tag: 'meta', attrs: { property: 'og:url', content: `${SITE_ORIGIN}/` }, injectTo: 'head' },
+        { tag: 'meta', attrs: { property: 'og:image', content: `${SITE_ORIGIN}/og.png` }, injectTo: 'head' },
+        { tag: 'meta', attrs: { name: 'twitter:image', content: `${SITE_ORIGIN}/og.png` }, injectTo: 'head' },
         {
           tag: 'script',
           attrs: { type: 'application/ld+json' },
@@ -40,11 +45,12 @@ function siteMeta(): Plugin {
             '@graph': [
               {
                 '@type': 'SoftwareApplication',
+                '@id': `${SITE_ORIGIN}/#app`,
                 name: 'N-Link',
                 applicationCategory: 'MultimediaApplication',
                 operatingSystem: 'Android 10+',
                 softwareVersion: version,
-                ...(SITE_URL ? { url: SITE_URL } : {}),
+                url: SITE_ORIGIN,
                 downloadUrl: latest.apkUrl ?? latest.url,
                 codeRepository: 'https://github.com/Wan-1230/N-link',
                 isAccessibleForFree: true,
@@ -54,13 +60,26 @@ function siteMeta(): Plugin {
                 '@type': 'Release',
                 version: version,
                 datePublished: latest.date,
-                isReleaseOf: { '@id': 'https://schema.org/N-Link' },
+                isReleaseOf: { '@id': `${SITE_ORIGIN}/#app` },
               },
             ],
           }),
           injectTo: 'head',
         },
       ];
+    },
+    writeBundle() {
+      // 单页站也要有 sitemap：域名已定，之前没写是因为那时写了就是编
+      const iso = new Date().toISOString().slice(0, 10);
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>${SITE_ORIGIN}/</loc>
+    <lastmod>${iso}</lastmod>
+  </url>
+</urlset>
+`;
+      fs.writeFileSync(path.resolve('dist/sitemap.xml'), xml);
     },
   };
 }
