@@ -113,12 +113,12 @@ class BaselineMetrics @Inject constructor(
             "frames" to lvFrames,
             "failed" to lvFailures,
             "ms" to durationMs,
-            "fps" to if (durationMs > 0) lvFrames * 1000.0 / durationMs else 0.0,
-            "droprate" to lvDropRate()
+            "fps" to fmt(if (durationMs > 0) lvFrames * 1000.0 / durationMs else 0.0),
+            "overrun" to fmt(lvDropRate())
         )
     }
 
-    /** 掉帧率 = 取帧耗时 ≥ 目标间隔的轮次 / 总轮次（口径见文档 §3）。 */
+    /** 超轮率 = 取帧耗时 ≥ 目标间隔的轮次 / 总轮次（口径见文档 §3）。 */
     fun lvDropRate(): Double = if (lvRounds > 0) lvLateRounds * 100.0 / lvRounds else 0.0
 
     fun render(): String = buildString {
@@ -186,7 +186,9 @@ class BaselineMetrics @Inject constructor(
             return
         }
         appendLine("  轮次=$lvRounds 交付=$lvFrames 超轮=$lvLateRounds 失败=$lvFailures")
-        appendLine("  掉帧率=${fmt(lvDropRate())}%")
+        // 真机上出现过 frames==rounds 而超轮 21.7% 的情况：帧一张没丢，是每一轮取帧
+        // 本身就超过了 66ms。所以这里叫"超轮率"，不叫掉帧率 —— 名字骗人比数字难看更糟。
+        appendLine("  超轮率=${fmt(lvDropRate())}%（该轮取帧耗时 ≥${LV_TARGET_INTERVAL_MS}ms 的比例，帧没丢也算在内）")
     }
 
     private fun distribution(labels: List<String>, total: Int): String =

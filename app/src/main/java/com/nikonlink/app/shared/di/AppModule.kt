@@ -69,8 +69,9 @@ object AppModule {
     fun providePtpSessionManager(
         identityStore: PtpIdentityStore,
         eventLogger: AppEventLogger,
-        connFlags: com.nikonlink.app.device.connect.ConnFlags
-    ): PtpSessionManager = PtpSessionManager(identityStore, eventLogger, connFlags)
+        connFlags: com.nikonlink.app.device.connect.ConnFlags,
+        funnel: com.nikonlink.app.device.connect.ConnFunnel
+    ): PtpSessionManager = PtpSessionManager(identityStore, eventLogger, connFlags, funnel)
 
     @Provides
     @Singleton
