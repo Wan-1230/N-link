@@ -1,0 +1,102 @@
+.pl {
+  position: relative;
+  padding-block: var(--sp-10) var(--sp-9);
+  overflow: hidden;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.pl__head {
+  margin-bottom: var(--sp-7);
+}
+
+.pl__viewport {
+  width: 100%;
+}
+
+.pl__track {
+  list-style: none;
+  margin: 0;
+  padding: 0 var(--gutter);
+  display: flex;
+  gap: var(--sp-4);
+  width: max-content;
+  will-change: transform;
+}
+
+.pl__step {
+  position: relative;
+  flex: 0 0 clamp(260px, 30vw, 380px);
+  padding: var(--sp-5);
+  border-radius: var(--r);
+  border: 1px solid var(--hairline);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  backdrop-filter: blur(14px) saturate(150%);
+}
+
+.pl__idx {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--accent);
+  letter-spacing: 0.12em;
+  margin-bottom: var(--sp-3);
+}
+
+.pl__step h3 {
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
+}
+
+.pl__step p {
+  margin-top: var(--sp-3);
+  font-size: 0.9rem;
+  color: var(--fg-dim);
+}
+
+.pl__arrow {
+  position: absolute;
+  right: -18px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fg-faint);
+  font-size: 1.1rem;
+  z-index: 2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pl__viewport {
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    padding-bottom: var(--sp-4);
+  }
+
+  .pl__step {
+    scroll-snap-align: center;
+  }
+}
+
+@media (max-width: 640px) {
+  .pl {
+    padding-block: var(--sp-9);
+  }
+
+  .pl__viewport {
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    padding-bottom: var(--sp-4);
+  }
+
+  /* !important 是用来盖掉 GSAP 写在行内的那个 transform 的 */
+  .pl__track {
+    transform: none !important;
+  }
+
+  .pl__step {
+    flex-basis: 78vw;
+    scroll-snap-align: center;
+  }
+
+  .pl__arrow {
+    display: none;
+  }
+}
