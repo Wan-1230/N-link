@@ -3,8 +3,17 @@ import Lenis from 'lenis';
 import { ClickSpark } from './components/reactbits';
 import { Nav } from './sections/Nav';
 import { Hero } from './sections/Hero';
+import { Trust } from './sections/Trust';
+import { Pipeline } from './sections/Pipeline';
+import { Features } from './sections/Features';
+import { Why } from './sections/Why';
+import { How } from './sections/How';
 import { Changelog } from './sections/Changelog';
-import { LangProvider, useLang } from './i18n';
+import { Roadmap } from './sections/Roadmap';
+import { Tech } from './sections/Tech';
+import { Download } from './sections/Download';
+import { Footer } from './sections/Footer';
+import { LangProvider, useDict } from './i18n';
 import { useReducedMotion } from './hooks/useReducedMotion';
 
 function SmoothScroll() {
@@ -29,14 +38,14 @@ function SmoothScroll() {
 }
 
 function Shell() {
-  const { lang } = useLang();
+  const dict = useDict();
   const reduced = useReducedMotion();
 
   return (
     <>
       <SmoothScroll />
       <a className="skip-link" href="#main">
-        {lang === 'zh' ? '跳到主要内容' : 'Skip to content'}
+        {dict.skip}
       </a>
       <ClickSpark
         sparkColor="#ffe100"
@@ -48,8 +57,17 @@ function Shell() {
         <Nav />
         <main id="main">
           <Hero />
+          <Trust />
+          <Pipeline />
+          <Features />
+          <Why />
+          <How />
           <Changelog />
+          <Roadmap />
+          <Tech />
+          <Download />
         </main>
+        <Footer />
       </ClickSpark>
     </>
   );

@@ -1,0 +1,129 @@
+.dl__latest {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-5);
+  font-size: 0.82rem;
+  color: var(--fg-faint);
+}
+
+.dl__latest strong {
+  font-size: 1.5rem;
+  color: var(--accent);
+  letter-spacing: -0.03em;
+}
+
+.dl__size {
+  font-size: 0.78rem;
+  color: var(--fg-dim);
+}
+
+.dl__ch {
+  display: block;
+  color: inherit;
+}
+
+.dl__ch-card {
+  position: relative;
+  padding: var(--sp-5);
+  height: 100%;
+  transition: border-color var(--dur-2) var(--ease-out-expo);
+}
+
+.dl__ch:hover .dl__ch-card {
+  border-color: rgba(255, 225, 0, 0.35);
+}
+
+.dl__ch--plain:hover .dl__ch-card {
+  border-color: var(--hairline);
+}
+
+.dl__ch-card h3 {
+  font-size: 1.05rem;
+}
+
+.dl__ch-card p {
+  margin-top: var(--sp-2);
+  font-size: 0.86rem;
+  color: var(--fg-dim);
+  padding-right: var(--sp-6);
+}
+
+.dl__ch-go {
+  position: absolute;
+  top: var(--sp-4);
+  right: var(--sp-4);
+  color: var(--fg-faint);
+  transition:
+    color var(--dur-2) var(--ease-out-expo),
+    transform var(--dur-2) var(--ease-out-expo);
+}
+
+.dl__ch:hover .dl__ch-go {
+  color: var(--accent);
+  transform: translate(2px, -2px);
+}
+
+.dl__support {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: var(--sp-4);
+  margin-top: var(--sp-4);
+}
+
+.dl__desc {
+  margin-top: var(--sp-2);
+  font-size: 0.88rem;
+  color: var(--fg-dim);
+}
+
+.dl__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+}
+
+.dl__btn {
+  padding: 9px 18px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.dl__inapp {
+  font-size: 0.8rem;
+  color: var(--fg-faint);
+}
+
+.dl__donate {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+}
+
+.dl__qr {
+  flex: none;
+  width: 132px;
+  height: 132px;
+  object-fit: cover;
+  border-radius: var(--r);
+  background: #fff;
+  padding: 6px;
+}
+
+@media (max-width: 900px) {
+  .dl__support {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 520px) {
+  .dl__donate {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

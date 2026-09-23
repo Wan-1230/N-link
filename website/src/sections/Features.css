@@ -1,0 +1,8 @@
+.ft__tbl {
+  padding: var(--sp-5);
+  margin-bottom: var(--sp-5);
+}
+
+.ft__groups .card h3 {
+  color: var(--accent);
+}
