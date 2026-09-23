@@ -4,7 +4,8 @@ import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 import type { Plugin } from 'vite';
 
-const SITE_URL = 'https://n-link.qoder.site';
+// 站点域名由部署方给定；不知道就整段不写，绝不用猜的域名填 JSON-LD
+const SITE_URL = process.env.SITE_URL ?? '';
 
 function readSnapshot() {
   try {
@@ -43,7 +44,7 @@ function siteMeta(): Plugin {
                 applicationCategory: 'MultimediaApplication',
                 operatingSystem: 'Android 10+',
                 softwareVersion: version,
-                url: SITE_URL,
+                ...(SITE_URL ? { url: SITE_URL } : {}),
                 downloadUrl: latest.apkUrl ?? latest.url,
                 codeRepository: 'https://github.com/Wan-1230/N-link',
                 isAccessibleForFree: true,
@@ -66,5 +67,21 @@ function siteMeta(): Plugin {
 
 export default defineConfig({
   plugins: [react(), siteMeta()],
-  build: { target: 'es2022', cssCodeSplit: true },
+  build: {
+    target: 'es2022',
+    cssCodeSplit: true,
+    rollupOptions: {
+      output: {
+        manualChunks: (id: string) => {
+          if (!id.includes('node_modules')) return;
+          if (id.includes('react-dom') || id.includes('/react/')) return 'v-react';
+          if (id.includes('motion') || id.includes('framer')) return 'v-motion';
+          if (id.includes('gsap')) return 'v-gsap';
+          if (id.includes('ogl')) return 'v-ogl';
+          if (id.includes('lenis')) return 'v-lenis';
+          return 'v-other';
+        },
+      },
+    },
+  },
 });

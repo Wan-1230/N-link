@@ -6,18 +6,10 @@
 import type { ComponentType, HTMLAttributes, JSX, ReactNode } from 'react';
 
 import AnimatedContentRaw from './AnimatedContent/AnimatedContent.jsx';
-import AuroraRaw from './Aurora/Aurora.jsx';
-import BlurText from './BlurText/BlurText.jsx';
 import ClickSparkRaw from './ClickSpark/ClickSpark.jsx';
-import CountUpRaw from './CountUp/CountUp.jsx';
-import Dock from './Dock/Dock.jsx';
-import GradientText from './GradientText/GradientText.jsx';
 import MagnetRaw from './Magnet/Magnet.jsx';
-import ShinyTextRaw from './ShinyText/ShinyText.jsx';
 import SpotlightCardRaw from './SpotlightCard/SpotlightCard.jsx';
 import SplitTextRaw from './SplitText/SplitText.jsx';
-import Stepper from './Stepper/Stepper.jsx';
-import TiltedCard from './TiltedCard/TiltedCard.jsx';
 
 export type SplitTextProps = {
   text: string;
@@ -115,13 +107,16 @@ export type AnimatedContentProps = Omit<HTMLAttributes<HTMLDivElement>, 'childre
 };
 
 export const SplitText = SplitTextRaw as ComponentType<SplitTextProps>;
-export const CountUp = CountUpRaw as ComponentType<CountUpProps>;
-export const ShinyText = ShinyTextRaw as ComponentType<ShinyTextProps>;
 export const Magnet = MagnetRaw as ComponentType<MagnetProps>;
 export const ClickSpark = ClickSparkRaw as ComponentType<ClickSparkProps>;
-export const Aurora = AuroraRaw as ComponentType<AuroraProps>;
 export const SpotlightCard = SpotlightCardRaw as ComponentType<SpotlightCardProps>;
 export const AnimatedContent = AnimatedContentRaw as ComponentType<AnimatedContentProps>;
 
-// P3 才接上，届时按同一方式补类型标注。
-export { BlurText, Dock, GradientText, Stepper, TiltedCard };
+// 未用到的上游组件仍留在本目录里，但不从这里导出：它们各自 import 了 CSS，
+// 属于副作用，一旦出现在出口就无法被 tree-shake，会把 motion 与多余样式拖进首屏。
+// 需要时再加导出与类型标注。
+
+// CountUp / ShinyText（依赖 motion）与 Aurora（依赖 ogl）刻意不从这出口引出：
+// 前两者由 ui/Counter.tsx（rAF）与 ui/Shine.tsx（CSS 渐变）等价代劳，
+// Aurora 在 Hero 里动态导入，
+// 两者都只为把体积挪出首屏关键路径。源码仍在各自子目录，需要时再引。

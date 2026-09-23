@@ -419,3 +419,33 @@ P2 之后任何时刻站上都是可看的，不存在「半站」。
 - 页脚三项声明已在截图中确认到位：尼康非官方、仓库尚无 LICENSE、**React Bits 署名**（§3 许可要求）。
 
 **遗留进 P4**：JS gzip **217.33 KB**，超 §12 的 200KB 约 8.7%（P3 引入 CountUp / AnimatedContent / ScrollTrigger pin 后从 200.54 涨上来）。必须做 vendor 分包 + WebGL 背景按需加载，否则放弃该预算——不再靠调高阈值蒙过去。
+
+### P4（体积、a11y、性能、素材）已完成，仅剩部署
+
+**体积：217.33 → 171.9 KB gzip（达标，未改阈值）**
+
+按库切分实测（gzip）：`react` 64.8 / `gsap` 47.3 / 应用码 40.3 / **`motion` 43.2** / `ogl` 13.3 / `lenis` 5.4。两处不成比例的开销被换掉，上游源码仍保留在 `reactbits/` 目录、只是不从出口引出：
+
+- `CountUp` 与 `ShinyText` 各自拖进整个 `motion`（43.2KB），只为一个数字滚动和一个扫光。分别由 `ui/Counter.tsx`（rAF + IntersectionObserver）与 `ui/Shine.tsx`（CSS 渐变 background-clip）等价替代，`motion` 整棵依赖从产物中消失。
+- `Aurora`（`ogl` 13.3KB）改为 `lazy()` 动态导入，移出首屏关键路径；`Suspense` 的 fallback 直接复用静态渐变层，异步块到达前不空屏。
+- 先撤掉出口里 5 个从未使用的组件导出，再实测：**JS 一字节没降**（只省约 1KB CSS）。原先以为它们被 CSS 副作用拖住，实际本来就被 tree-shake 掉了——假设被测量否证，没有拿它当优化依据。
+
+**度量口径修正**：体积断言改在 node 侧对 `dist` 逐文件 `zlib.gzipSync` 求和，不用浏览器 `encodedBodySize`——`vite preview` 默认不压缩，那样量到的是未压缩字节。口径取「全部 chunk 之和」，比首屏更严。
+
+**性能与无障碍（新探针，共 100 项断言 / 4 档视口 + reduced-motion 对照）**
+
+- CLS 0.0002–0.0035，LCP 592–680ms（本地 preview 口径，**不是** Lighthouse 分数，不冒充）。
+- **探针自造的 CLS**：首轮报 1.3759，实为脚本在切语言之后才读 vitals——切换语言改变文本长度本身就产生位移。改为任何交互前采样，随即回到 0.00x。
+- 触控目标：footer 链接、GitHub star、「回到顶部」原为 17–20px 高，已加 padding 到 ≥26px。句中「去下载段」那类**行内链接按 WCAG 2.5.8 的 Inline 豁免不计**，判据改为只约束非 `inline` 显示的元素，而不是给它们撑 padding 把排版搞坏。
+- 控件可访问名、图片 alt、标题层级不跳级：全通过。
+- `prefers-reduced-motion` 对照四项：无 WebGL canvas、静态渐变顶上、标题即时可读、无文字卡在 `opacity:0`。
+
+**其它**
+
+- `scripts/make-og.mjs` 用 Playwright 截 Hero 出 `public/og.png`（1200×630 @2x），不引图像处理依赖。
+- 新增 `public/robots.txt`。**`sitemap.xml` 暂缓**：单页站的 sitemap 需要真实域名，而域名要到 Sites 部署时才产生，现在写就是编一个。
+- **删掉一处我先前编造的域名**：`vite.config.ts` 的 JSON-LD `url` 原本硬写了 `https://n-link.qoder.site`，那是我猜的。改为读 `SITE_URL` 环境变量，未提供时整段 `url` 不写；部署拿到真域名后再注入。
+- 钉住链路段原本下方留约 40% 死白，改为满屏垂直居中，并加一条随 scrub 推进的进度线（`--pl-progress`），补上「该横向滚了」的提示。
+- PR #4 已开：`feat/website → master`。
+
+**P4 未完成**：`prepare_site` / `publish_site` / 公开访问策略 / `ensure_backend`（Functions）/ `GITHUB_TOKEN` Secret —— 均为对外部系统的实质变更，等授权后执行。

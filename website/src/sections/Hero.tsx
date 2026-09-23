@@ -1,12 +1,18 @@
-import { Aurora, CountUp, Magnet, ShinyText, SplitText } from '../components/reactbits';
+import { Suspense, lazy } from 'react';
+import { Magnet, SplitText } from '../components/reactbits';
+import { Counter } from '../components/ui/Counter';
+import { Shine } from '../components/ui/Shine';
 import { PhoneMock } from '../components/ui/PhoneMock';
 import { fill, useDict, useLang } from '../i18n';
 import { useReducedMotion } from '../hooks/useReducedMotion';
 import { useReleases } from '../hooks/useReleases';
-import { formatDate, formatCount } from '../lib/format';
+import { formatDate } from '../lib/format';
 import { latestEntry } from '../lib/release-feed';
 import { REPO } from '../lib/site';
 import './Hero.css';
+
+// WebGL 背景不在关键路径上：动态导入把 ogl 挪出首屏 chunk
+const Aurora = lazy(() => import('../components/reactbits/Aurora/Aurora.jsx'));
 
 const AURORA_STOPS = ['#c9b400', '#141a22', '#2f5d7c'];
 
@@ -30,20 +36,20 @@ export function Hero() {
   return (
     <section className="hero" id="top">
       <div className="hero__bg" aria-hidden="true">
-        {reduced ? <div className="hero__bg-static" /> : <Aurora colorStops={AURORA_STOPS} amplitude={0.9} blend={0.6} />}
+        {reduced ? (
+          <div className="hero__bg-static" />
+        ) : (
+          <Suspense fallback={<div className="hero__bg-static" />}>
+            <Aurora colorStops={AURORA_STOPS} amplitude={0.9} blend={0.6} />
+          </Suspense>
+        )}
         <div className="hero__veil" />
       </div>
 
       <div className="hero__inner shell">
         <div className="hero__copy">
           <p className="hero__badge glass">
-            <ShinyText
-              text={`v${version} · ${dict.cta.latest}`}
-              color="#ffe100"
-              shineColor="#fff8c2"
-              speed={3}
-              spread={110}
-            />
+            <Shine text={`v${version} · ${dict.cta.latest}`} />
             <span className="hero__badge-sep" />
             <span className="hero__badge-note">{dict.hero.badge}</span>
           </p>
@@ -96,9 +102,7 @@ export function Hero() {
             </div>
             <div>
               <dt>{dict.hero.statStars}</dt>
-              <dd className="plate">
-                {feed.stars == null ? '—' : reduced ? formatCount(feed.stars) : <CountUp to={feed.stars} duration={1.6} />}
-              </dd>
+              <dd className="plate">{feed.stars == null ? '—' : <Counter to={feed.stars} />}</dd>
             </div>
           </dl>
         </div>

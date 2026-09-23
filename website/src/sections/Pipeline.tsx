@@ -31,6 +31,7 @@ export function Pipeline() {
     const track = trackRef.current;
     if (!section || !track) return;
 
+    section.classList.add('pl--pinned');
     const distance = () => Math.max(0, track.scrollWidth - window.innerWidth + 64);
 
     const tween = gsap.to(track, {
@@ -44,10 +45,14 @@ export function Pipeline() {
         scrub: 0.6,
         anticipatePin: 1,
         invalidateOnRefresh: true,
+        // 进度写进 CSS 变量，给下方那条细进度条用
+        onUpdate: (self) => section.style.setProperty('--pl-progress', self.progress.toFixed(4)),
       },
     });
 
     return () => {
+      section.classList.remove('pl--pinned');
+      section.style.removeProperty('--pl-progress');
       tween.scrollTrigger?.kill();
       tween.kill();
     };
@@ -59,6 +64,10 @@ export function Pipeline() {
         <p className="eyebrow">{dict.pipeline.eyebrow}</p>
         <h2>{dict.pipeline.title}</h2>
         <p className="lede">{dict.pipeline.lede}</p>
+      </div>
+
+      <div className="pl__bar" aria-hidden="true">
+        <span />
       </div>
 
       <div className="pl__viewport">
