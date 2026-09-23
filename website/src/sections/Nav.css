@@ -107,6 +107,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  min-height: 26px;
+  padding-block: 4px;
   color: var(--fg-dim);
   font-size: 0.8rem;
 }

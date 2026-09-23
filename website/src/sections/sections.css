@@ -151,7 +151,7 @@
 .copyable button {
   flex: none;
   font-size: 0.72rem;
-  padding: 3px 10px;
+  padding: 5px 12px;
   border-radius: var(--r-pill);
   border: 1px solid var(--hairline-strong);
   color: var(--fg-dim);

@@ -56,6 +56,8 @@
 }
 
 .ft2__col a {
+  display: inline-block;
+  padding-block: 4px;
   font-size: 0.86rem;
   color: var(--fg-dim);
 }
@@ -83,6 +85,10 @@
   border-top: 1px solid rgba(255, 255, 255, 0.06);
   font-size: 0.74rem;
   color: var(--fg-faint);
+}
+
+.ft2__top {
+  padding: 4px 8px;
 }
 
 .ft2__top:hover {

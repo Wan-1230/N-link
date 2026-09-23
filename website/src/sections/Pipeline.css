@@ -34,6 +34,36 @@
   backdrop-filter: blur(14px) saturate(150%);
 }
 
+.pl__bar {
+  display: none;
+}
+
+/* 钉住时占满一屏并把卡片垂直居中，否则下方会留约 40% 死白 */
+.pl--pinned {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-block: var(--nav-h) var(--sp-6);
+}
+
+.pl--pinned .pl__bar {
+  display: block;
+  height: 2px;
+  margin: 0 var(--gutter) var(--sp-6);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+}
+
+.pl--pinned .pl__bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transform-origin: left center;
+  transform: scaleX(var(--pl-progress, 0));
+}
+
 .pl__idx {
   display: block;
   font-size: 0.8rem;
