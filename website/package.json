@@ -9,7 +9,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "lint": "oxlint"
+    "lint": "oxlint",
+    "test": "node --test \"tests/*.test.ts\"",
+    "verify:vendor": "node scripts/verify-vendor.mjs",
+    "verify": "node scripts/verify.mjs"
   },
   "dependencies": {
     "@fontsource-variable/space-grotesk": "^5.3.0",
