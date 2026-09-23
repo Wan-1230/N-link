@@ -114,6 +114,21 @@
                 android:src="@drawable/ic_histogram"
                 app:tint="@color/white" />
 
+            <!-- 伪彩开关（v2.5 FR-13）：同规格排在直方图右侧。
+                 闸门 UiFlags.TONE_TOOLS 关掉时 LiveViewFragment 把它整个 setGone，
+                 顶栏与 v2.3.2 逐位一致。 -->
+            <ImageView
+                android:id="@+id/btnPseudoColor"
+                android:layout_width="38dp"
+                android:layout_height="38dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_lv_icon"
+                android:contentDescription="@string/pseudo_color_toggle"
+                android:padding="8dp"
+                android:src="@drawable/ic_pseudo_color"
+                android:visibility="gone"
+                app:tint="@color/white" />
+
             <ImageView
                 android:id="@+id/btnMore"
                 android:layout_width="38dp"
