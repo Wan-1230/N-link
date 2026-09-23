@@ -449,3 +449,20 @@ P2 之后任何时刻站上都是可看的，不存在「半站」。
 - PR #4 已开：`feat/website → master`。
 
 **P4 未完成**：`prepare_site` / `publish_site` / 公开访问策略 / `ensure_backend`（Functions）/ `GITHUB_TOKEN` Secret —— 均为对外部系统的实质变更，等授权后执行。
+
+### 部署结果（已上线）
+
+线上地址：**https://n-link-qd0m70ho562.qoder.zone**（`access_mode: public`，policy revision 2）。已发布两个版本，当前活跃 release 为 `01a0cfcf-…`。
+
+**自动同步在真实发版事件上验证通过**：首次发布后线上即报 **v2.3.2**，而构建时快照还是 v2.3.1 —— 因为 `npm run build` 的 `prebuild` 钩子会重跑快照，而 v2.3.2 恰好在会话期间（2026-09-23T18:56Z）真实发布。快照从 21 条变 22 条，新条目的 title / 8 个要点 / APK 全部解析正确。这条不是我们自测出来的，是被一次真实发版撞出来的。
+
+**Functions 代理分配不了**：`prepare_site` 带 `functionDirectory` 返回 `sites_quota_exceeded / backend_sites / limit=0` —— 当前订阅计划只支持静态站点。函数代码（`functions/index.ts` + `handler.ts` + 自包含 `release-feed.ts`）与 16 项单测保留在仓库，一旦有后端配额，设 `VITE_RELEASES_API=/functions/v1/app/releases` 即可启用。
+
+**过程中踩的两个坑，都记下来**：
+
+1. `prepare_site` 被 `sites_quota_exceeded` 拒绝时**已经把 Project 和 Site 建出来了**（前缀 `n-link` 被自己的半成品占走），导致后续带 `subdomain` 的重试全部 `sites_conflict`。正解是先 `list_sites` 查真实状态、再复用 `projectId` 且不再传 `subdomain`，而不是猜冲突原因。另外新站点必须传 `slug`，只传 `subdomain` 会 `sites_invalid_request`。
+2. 探针把控制台文本截到 180 字符，正好截掉 `loopback` 一词，使环境噪音过滤器匹配不上、白绕一轮。已放宽到 400 并改为按我们自己的 URL 匹配。
+
+**未验证项（不含糊过去）**：无后端时改走的「浏览器直连 GitHub」运行时补拉，在本机被 Chrome 的私有网络访问规则拦下 —— `api.github.com` 在这台机器上被解析到回环地址（与破坏 Node TLS 的是同一个本地代理），报 `Permission was denied for this request to access the loopback address space`。本地 localhost 能过（同源都是回环），线上真机访客是否会被拦**未验证**，不能声称已通。UI 侧行为是安全的：失败即静默留在构建快照，徽章如实显示「构建快照」。
+
+**线上实测指标**：100 项断言 × 4 档视口 + reduced-motion 全通过；CLS 0.0025；LCP 线上 2104ms（本地 664ms，真实网络下仍 < 2500ms 预算）；JS 合计 173.2KB gzip。
