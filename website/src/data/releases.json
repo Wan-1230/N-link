@@ -1,7 +1,35 @@
 {
-  "generatedAt": "2026-09-23T18:50:25.327Z",
-  "latestTag": "v2.3.1",
+  "generatedAt": "2026-09-23T19:05:37.461Z",
+  "latestTag": "v2.3.2",
   "releases": [
+    {
+      "tag": "v2.3.2",
+      "version": "2.3.2",
+      "name": "N-Link v2.3.2",
+      "title": "连不上不再干等，大库相册更快",
+      "summary": null,
+      "date": "2026-09-23T18:56:51Z",
+      "bullets": [
+        "连不上相机时不再一直转圈：最多 15 秒给出明确原因，告诉你下一步做什么",
+        "相机被其他设备占住时（机身同一时刻只允许一个连接），直接提醒去断开哪一个",
+        "主机注册不再骗人：相机拒绝过，界面上的「已注册」会自动退回「需要注册」",
+        "千张级存储卡进相册更快出画面，刷新时列表不再跳到别的照片上",
+        "快门次数改成用最新几张照片互相核对；对不上时报一个区间，不假装是精确值",
+        "解析失败时保留一张样张在应用内，反馈问题能一起给出，方便定位",
+        "设置页「关于」可查看版本与安装包校验值，确认没下错包",
+        "导出日志现在附带连接耗时、传输速率、实时取景统计"
+      ],
+      "apkUrl": "https://github.com/Wan-1230/N-link/releases/download/v2.3.2/N-Link-v2.3.2-release.apk",
+      "apkName": "N-Link-v2.3.2-release.apk",
+      "apkSize": 3959920,
+      "channels": {
+        "baidu": "https://pan.baidu.com/s/1xeVnqdFMbYyAWtjBwyb9IA?pwd=9qd9",
+        "quark": "https://pan.quark.cn/s/d060f7f350e8",
+        "github": "https://github.com/Wan-1230/N-link/releases/tag/v2.3.2"
+      },
+      "prerelease": false,
+      "url": "https://github.com/Wan-1230/N-link/releases/tag/v2.3.2"
+    },
     {
       "tag": "v2.3.1",
       "version": "2.3.1",

@@ -3,7 +3,8 @@ import snapshot from '../data/releases.json';
 import { emptyFeed, isReleasesFeed } from '../lib/release-feed';
 import type { ReleasesFeed } from '../lib/release-feed';
 
-const LIVE_ENDPOINT = '/api/releases';
+// Sites 的 Edge Function 以逻辑名 app 暴露，浏览器只走同源相对路径
+const LIVE_ENDPOINT = '/functions/v1/app/releases';
 const LIVE_TIMEOUT_MS = 4000;
 
 export type FeedStatus = 'snapshot' | 'live' | 'error';
