@@ -19,7 +19,6 @@ const CHOSEN = [
   'Components/SpotlightCard',
   'Components/TiltedCard',
   'Components/Stepper',
-  'Components/AnimatedList',
   'Components/Dock',
   'TextAnimations/SplitText',
   'TextAnimations/BlurText',
@@ -34,7 +33,7 @@ import { fileURLToPath } from 'node:url';
 const OUT_ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)), 'src/components/reactbits');
 
 function get(url, tries = 4) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const attempt = (n) =>
       https
         .get(url, { timeout: 30000, headers: { 'user-agent': 'nl-link-site/1.0' } }, (res) => {
@@ -48,7 +47,7 @@ function get(url, tries = 4) {
             resolve(null);
           });
         })
-        .on('error', () => (n < tries ? setTimeout(() => attempt(n + 1), 1200 * n) : reject(new Error('net ' + url))));
+        .on('error', () => (n < tries ? setTimeout(() => attempt(n + 1), 1200 * n) : resolve(null)));
     attempt(1);
   });
 }
@@ -56,7 +55,12 @@ function get(url, tries = 4) {
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const flat = JSON.parse(await get('https://data.jsdelivr.com/v1/packages/gh/DavidHDev/react-bits@main?structure=flat'));
+const listBody = await get('https://data.jsdelivr.com/v1/packages/gh/DavidHDev/react-bits@main?structure=flat');
+if (!listBody) {
+  console.error('[fail] 取不到上游文件清单（网络失败）。本地已拷入的组件与 SOURCE.json 未改动。');
+  process.exit(1);
+}
+const flat = JSON.parse(listBody);
 const all = flat.files.map((f) => f.name).filter((f) => f.startsWith('/src/content/'));
 
 const manifest = { upstream: 'https://github.com/DavidHDev/react-bits', commit: SHA, license: 'MIT + Commons Clause License Condition v1.0 (SPDX: NOASSERTION)', licenseFile: 'LICENSE.upstream.txt', note: 'React Bits 上游源码逐字拷入；仅本文件与 index.ts 为本地新增。许可允许作为网站/应用的一部分使用与分发（含商用），禁止单独出售、再授权或打包重分发组件本身，须保留版权声明与出处。', components: {} };

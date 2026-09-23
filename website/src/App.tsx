@@ -3,6 +3,7 @@ import Lenis from 'lenis';
 import { ClickSpark } from './components/reactbits';
 import { Nav } from './sections/Nav';
 import { Hero } from './sections/Hero';
+import { Changelog } from './sections/Changelog';
 import { LangProvider, useLang } from './i18n';
 import { useReducedMotion } from './hooks/useReducedMotion';
 
@@ -47,6 +48,7 @@ function Shell() {
         <Nav />
         <main id="main">
           <Hero />
+          <Changelog />
         </main>
       </ClickSpark>
     </>

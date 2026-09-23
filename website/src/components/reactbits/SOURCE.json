@@ -43,14 +43,6 @@
         "sha256": "1ca0baa117d299e8a53e0b9901a0d0267b929c80d1adc2e349e8123b358dc417"
       }
     ],
-    "Silk": [
-      {
-        "file": "Silk.jsx",
-        "upstreamPath": "/src/content/Backgrounds/Silk/Silk.jsx",
-        "bytes": 4076,
-        "sha256": "c01289f5e97e946e095a631b144a373b7d221eb2db5a4830a28ae1e480e1f64e"
-      }
-    ],
     "SpotlightCard": [
       {
         "file": "SpotlightCard.css",
@@ -91,20 +83,6 @@
         "upstreamPath": "/src/content/Components/Stepper/Stepper.jsx",
         "bytes": 7522,
         "sha256": "c1984e8ee9fced1c6d4adc99b5bc7f15d4c97b14dfaa483ac7dbf64c83388faf"
-      }
-    ],
-    "AnimatedList": [
-      {
-        "file": "AnimatedList.css",
-        "upstreamPath": "/src/content/Components/AnimatedList/AnimatedList.css",
-        "bytes": 1095,
-        "sha256": "b10367c73d4b8d76df07cba49c1270ce26864f079b2c42a790fec6b1d2dad5ef"
-      },
-      {
-        "file": "AnimatedList.jsx",
-        "upstreamPath": "/src/content/Components/AnimatedList/AnimatedList.jsx",
-        "bytes": 4909,
-        "sha256": "32e06e0c23bbd2a062d51356feb5cb8845d8da2785bdb3d1190f04fe2978fcb4"
       }
     ],
     "Dock": [
@@ -174,5 +152,9 @@
       }
     ]
   },
-  "filesWritten": 23
+  "filesWritten": 20,
+  "pruned": [
+    "Backgrounds/Silk（依赖 three + @react-three/fiber，体积不合算）",
+    "Components/AnimatedList（自带滚动条的定高小部件，不适合整页日志时间轴）"
+  ]
 }

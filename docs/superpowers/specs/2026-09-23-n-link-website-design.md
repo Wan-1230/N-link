@@ -389,3 +389,15 @@ P2 之后任何时刻站上都是可看的，不存在「半站」。
 **遗留（进 P4）**
 - 产物 JS gzip **200.54 KB**，比 §12 的 200KB 目标高 0.27%。待做：vendor 分包 + 按需动态 import WebGL 背景。
 - 移动端 Hero 高 1284px（约 1.5 屏），mock 已缩到 219px 仍偏大，P4 复核。
+
+### P2（数据管道与自动同步）已完成
+
+- `functions/releases.ts` 已按 §5.4 契约写完（600s TTL、上游失败回吐 stale、无缓存则 502），并纳入独立 `tsconfig.functions.json` 参与 `tsc -b`。**尚未部署**：需要 `ensure_backend` 分配云端资源，等授权。未部署期间站上显示「构建快照」灰点徽章，属如实状态而非降级故障。
+- `scripts/verify-vendor.mjs`（新增，`npm run verify:vendor`）：逐文件比对磁盘 sha256 与 `SOURCE.json`，双向检查（清单有盘上无 / 盘上有清单没记）。**它当场抓出 P1 提交里的 provenance 漂移**——`Silk` 与 `AnimatedList` 已从磁盘删除但清单仍记着。现 20/20 零漂移。
+- `AnimatedList` 撤出拷入集（连带 `Silk`）：它是自带滚动条的 400px 定高小部件，条目离屏即消失，放进整页日志会造出嵌套滚动。日志时间轴改为自研 `<ol>` + `AnimatedContent` 逐条入场。§8 里「AnimatedList 正好对上日志时间轴」的判断是错的，已纠正。
+- `npm test`（`node --test`，不引测试框架以守住 §3 依赖上限）11 项全过：三种真实正文格式各一组夹具、畸形输入（body null / tag 空 / assets 缺失）不抛错、draft 过滤、prerelease 不占 `latestTag`、`compareVersions` 逐段比较、`isReleasesFeed` 形状校验、160 字符摘要截断。
+- 语义修正：`AnimatedContent` 渲染 `<div>`，直接作 `<ol>` 子节点破坏列表语义 → 改为 `<li>` 包壳、卡片在内。
+- **粗体只转了一半**：`rich()` 起初只作用于 `bullets`，v0.1.4 的 `summary` 含 `**WiFi STA 连接重构**` 会以字面 `**` 显示。由验收断言抓出（实测 87 处粗体全部成对，问题不在解析而在渲染覆盖面），已把 `summary`/`title` 一并接入。
+- `fetch-reactbits.mjs` 补健壮性：网络失败原先直接 unhandled rejection 崩掉，现降级为明确报错且不改动本地已拷入文件。
+- 验收脚本升级为逐段滚动截图（入场动画未触发的段落直接截会得到空白，必须先滚进视口）。当前 4 档视口 × 10 项断言全通过，含「日志条目数 == 快照 21」「首条为 v2.3.1」「正文无未转换的 `**`」「存在 APK 直链」。
+- 遗留：产物 JS gzip 升至 **202.57 KB**（日志段与 motion 依赖），仍超 §12 的 200KB；P4 做 vendor 分包与按需加载。
