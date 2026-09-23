@@ -128,8 +128,9 @@ class HistogramView @JvmOverloads constructor(
         var peak = 0
         for (i in pixels.indices) {
             val c = pixels[i]
-            // 与 JPEG 亮度分量一致的 Rec.601 权重
-            val luma = ((c shr 16 and 0xFF) * 299 + (c shr 8 and 0xFF) * 587 + (c and 0xFF) * 114) / 1000
+            // 亮度口径与伪彩共用 PseudoColorLut.lumaOf（Rec.601，同 JPEG 的 Y 分量）：
+            // 两个工具各算各的迟早会出现"直方图说不曝、伪彩说曝"，那种矛盾没法解释也没法修
+            val luma = PseudoColorLut.lumaOf(c)
             val bin = luma * BIN_COUNT / 256
             val idx = if (bin >= BIN_COUNT) BIN_COUNT - 1 else bin
             val v = ++binCounts[idx]

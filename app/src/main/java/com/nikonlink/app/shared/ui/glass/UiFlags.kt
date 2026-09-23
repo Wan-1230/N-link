@@ -63,6 +63,15 @@ object UiFlags {
      */
     const val PROTECT_SELECT = "v25_protect_select"
 
+    /**
+     * v2.5 FR-13：影调工具（本批先做**伪彩**，RGB 分量波形随后）。
+     *
+     * **默认关**。关掉 = 取景叠加层只剩网格线与水平仪，与 v2.3.2 逐帧一致
+     * （伪彩每帧多花的钱只在开启后才发生，见验收①的帧率要求）。
+     * 这一项是本 App 黑白体系的一处有意例外：伪彩靠颜色传信息，改成灰阶等于把工具删了。
+     */
+    const val TONE_TOOLS = "v25_tone_tools"
+
     private val DEFAULTS = mapOf(
         CLASSIC to false,
         REDUCE_TRANSPARENCY to false,
@@ -73,6 +82,7 @@ object UiFlags {
         ALBUM_INCR to true,
         SHUTTER_XCHECK to true,
         PROTECT_SELECT to false,
+        TONE_TOOLS to false,
     )
 
     /**
@@ -190,6 +200,9 @@ object UiFlags {
 
     /** 相册「已保护」筛选开关（与玻璃无关，见 [PROTECT_SELECT]） */
     fun protectSelectEnabled(c: Context): Boolean = get(c, PROTECT_SELECT)
+
+    /** 影调工具总闸（与玻璃无关，见 [TONE_TOOLS]） */
+    fun toneToolsEnabled(c: Context): Boolean = get(c, TONE_TOOLS)
 
     /** 折射只在"真的采了背景"的面才有意义 */
     fun lensEnabled(c: Context): Boolean = blurEnabled(c) && get(c, LENS)
