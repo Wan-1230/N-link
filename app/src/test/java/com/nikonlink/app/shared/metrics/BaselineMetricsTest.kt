@@ -3,6 +3,7 @@ package com.nikonlink.app.shared.metrics
 import com.nikonlink.app.shared.common.AppEventLogger
 import io.mockk.mockk
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -79,10 +80,12 @@ class BaselineMetricsTest {
     }
 
     @Test
-    fun `导出文本自带脱敏声明与口径出处`() {
+    fun `导出文本给出口径出处并把字段范围交给统一声明`() {
         val text = metrics().render()
-        assertTrue(text.contains("不包含：文件路径与文件名"))
         assertTrue(text.contains("docs/指标口径-v2.5.md"))
+        assertTrue(text.contains("字段范围：见本文件开头的「导出内容声明」"))
+        // 字段清单只能有一处真源（FR-08d），这里不得再抄一份
+        assertFalse("指标块不应重复声明字段范围", text.contains("不包含："))
     }
 
     @Test

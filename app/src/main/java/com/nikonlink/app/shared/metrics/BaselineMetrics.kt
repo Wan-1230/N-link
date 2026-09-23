@@ -126,8 +126,9 @@ class BaselineMetrics @Inject constructor(
         appendLine("导出时刻：${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())}")
         appendLine("窗口：本次启动以来；连接≤$CONN_LIMIT 条、传输≤$TRANSFER_LIMIT 条，重启后百分比重置。")
         appendLine("口径：docs/指标口径-v2.5.md（p50/p95 = 最近秩法，非插值）")
-        appendLine("包含：机型与 ROM 家族、通道名、阶段耗时、字节数、失败原因码")
-        appendLine("不包含：文件路径与文件名、SSID/BSSID、IP/MAC、相机序列号、GPS、任何账号标识")
+        // 字段范围只有一处真源：文件开头的「导出内容声明」（FR-08d）。这里再写一遍，
+        // 两处迟早会对不上。
+        appendLine("字段范围：见本文件开头的「导出内容声明」")
         appendLine()
         appendConnSection()
         appendLine()
