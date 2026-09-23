@@ -958,47 +958,114 @@ class PtpSessionManager @Inject constructor(
         _sessionState.value = PtpSessionState.ERROR
     }
 
+    /**
+     * event 通道读取循环。
+     *
+     * 用 [EventStreamPump] 而不是直接 `PtpPacket.fromStream`：后者把"对端关闭""长度荒谬"
+     * "解不出来"都返回同一个 null，而 soTimeout 到期抛的异常又不区分"静默"与"包读到一半"。
+     * 判据拆干净之后，闸门 `v25_event_silence_hold` 才敢只放行其中一种（见该常量注释）。
+     *
+     * 闸门关闭时逐支回到 v2.3.2 行为：静默超时判死，其余异常静默退出循环。
+     */
     private fun startEventListener() {
+        val input = eventInput
+        if (input == null) {
+            markLinkError("event_stream_missing")
+            return
+        }
+        val silenceHold = connFlags.isEnabled(
+            com.nikonlink.app.device.connect.ConnFlags.EVENT_SILENCE_HOLD
+        )
+        val pump = EventStreamPump(input)
         eventListenerJob = scope?.launch(Dispatchers.IO) {
+            var unparsable = 0
             try {
                 while (isActive) {
-                    val packet = PtpPacket.fromStream(eventInput!!) ?: break
-                    lastEventActivityAt = System.currentTimeMillis()
-                    when (packet) {
-                        is EventResponsePacket -> {
-                            val event = PtpEvent(
-                                eventCode = packet.eventCode,
-                                transactionId = packet.transactionId,
-                                parameters = packet.parameters
+                    when (val outcome = pump.next()) {
+                        is EventStreamPump.Outcome.Packet -> {
+                            val packet = outcome.packet
+                            lastEventActivityAt = System.currentTimeMillis()
+                            when (packet) {
+                                is EventResponsePacket -> {
+                                    val event = PtpEvent(
+                                        eventCode = packet.eventCode,
+                                        transactionId = packet.transactionId,
+                                        parameters = packet.parameters
+                                    )
+                                    _events.tryEmit(event)
+                                    Timber.tag(TAG).d("Event received: code=0x${packet.eventCode.toString(16)}")
+                                }
+                                is PingPacket -> {
+                                    // Nikon sends ProbeRequest on the event channel to keep the link
+                                    // alive; it drops the session if the client does not answer.
+                                    eventOutput?.write(PongPacket.toBytes())
+                                    eventOutput?.flush()
+                                    Timber.tag(TAG).v("Camera probe answered with Pong")
+                                }
+                                is PongPacket -> {
+                                    Timber.tag(TAG).v("Pong received")
+                                }
+                                else -> Unit
+                            }
+                        }
+
+                        is EventStreamPump.Outcome.Idle -> {
+                            if (!silenceHold) {
+                                // 旧行为：45s 无入站即判死。传大文件时相机本就静默，这一支正是
+                                // "下载中自己掐自己"的来历 —— 所以才要闸门单独管它。
+                                markLinkError("event_read_timeout")
+                                break
+                            }
+                            // 静默不等于断链：真断链时命令通道会自己失败（数据读超时 / 写异常），
+                            // 心跳的 no_response_xN 也仍在算，只是不再由 event 侧抢先判死。
+                            Timber.tag(TAG).i(
+                                "event channel idle ${EVENT_READ_TIMEOUT_MS}ms, tolerated (bulk=${bulkDepth.get()})"
                             )
-                            _events.tryEmit(event)
-                            Timber.tag(TAG).d("Event received: code=0x${packet.eventCode.toString(16)}")
+                            eventLogger.event("event_idle_hold", "bulk" to bulkDepth.get())
                         }
-                        is PingPacket -> {
-                            // Nikon sends ProbeRequest on the event channel to keep the link
-                            // alive; it drops the session if the client does not answer.
-                            eventOutput?.write(PongPacket.toBytes())
-                            eventOutput?.flush()
-                            Timber.tag(TAG).v("Camera probe answered with Pong")
+
+                        is EventStreamPump.Outcome.Partial -> {
+                            // 包读到一半才超时：TCP 流已经错位，与闸门无关，只能重开连接。
+                            // 旧实现同样判死，只是原因码笼统成 event_read_timeout。
+                            markLinkError("event_partial_read")
+                            break
                         }
-                        is PongPacket -> {
-                            Timber.tag(TAG).v("Pong received")
+
+                        is EventStreamPump.Outcome.IoError -> {
+                            // 线真断了，不是话说不清 —— 与闸门无关，旧行为也是判死
+                            Timber.tag(TAG).w("event channel IO error: ${outcome.detail}")
+                            markLinkError("event_read_error")
+                            break
                         }
-                        else -> Unit
+
+                        is EventStreamPump.Outcome.Closed -> {
+                            if (silenceHold) markLinkError("event_peer_closed")
+                            break
+                        }
+
+                        is EventStreamPump.Outcome.BadFrame -> {
+                            if (silenceHold) markLinkError("event_${outcome.reason}")
+                            break
+                        }
+
+                        is EventStreamPump.Outcome.Unparsable -> {
+                            if (!silenceHold) break
+                            // 帧完整、只是这类包解不出来：流没坏，跳过它比杀连接贴近事实
+                            unparsable++
+                            Timber.tag(TAG).w(
+                                "event packet type=0x${outcome.type.toString(16)} skipped ($unparsable total)"
+                            )
+                        }
                     }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // 正常取消（关会话/停止服务）：不算链路错误，直接静默退出
                 Timber.tag(TAG).d("Event listener cancelled")
             } catch (e: Exception) {
+                // 只剩回写 Pong 这类泵管不到的动作会走到这里，判死口径与 v2.3.2 一致
                 if (isActive) {
-                    val reason = if (e is java.net.SocketTimeoutException) {
-                        "event_read_timeout"
-                    } else {
-                        "event_read_error"
-                    }
                     Timber.tag(TAG).w("Event listener error (${e.message})")
-                    markLinkError(reason)
+                    markLinkError("event_read_error")
                 }
             }
         }
