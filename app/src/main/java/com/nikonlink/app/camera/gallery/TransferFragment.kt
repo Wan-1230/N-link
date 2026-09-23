@@ -41,6 +41,7 @@ import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.util.Locale
 import javax.inject.Inject
@@ -275,6 +276,11 @@ class TransferFragment : Fragment(), GlassInsetAware {
     /** 分类标签：黑底白字胶囊（选中） / 灰底黑字（未选中） */
     private fun setupChips() {
         PhotoFilter.values().forEach { filter ->
+            // FR-16：「已保护」是闸门后的新增项。闸门关着时连标签都不生成，
+            // 标签行与 v2.3.2 逐位一致；开着时也要等机身报了保护状态才露出来（见 renderProtectChip）。
+            if (filter == PhotoFilter.PROTECTED && !UiFlags.protectSelectEnabled(requireContext())) {
+                return@forEach
+            }
             val chip = TextView(requireContext()).apply {
                 text = filter.label
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
@@ -324,6 +330,20 @@ class TransferFragment : Fragment(), GlassInsetAware {
             )
         }
         renderNotDownloadedChip(viewModel.onlyNotDownloaded.value)
+    }
+
+    /**
+     * FR-16：渲染「已保护」标签。闸门关闭时它根本没被创建（`chipViews` 里没有这一项），
+     * 直接返回即可；机身没报保护状态时隐藏，并且把已经选中它的筛选退回「全部」，
+     * 不允许出现"列表被筛空了但标签找不到"这种回不去的状态。
+     */
+    private fun renderProtectChip(chipState: ProtectChip, onCameraAlbum: Boolean) {
+        val chip = chipViews[PhotoFilter.PROTECTED] ?: return
+        chip.text = chipState.label
+        chip.visibility = if (onCameraAlbum && chipState.shown) View.VISIBLE else View.GONE
+        if (!chipState.shown && viewModel.photoFilter.value == PhotoFilter.PROTECTED) {
+            viewModel.setPhotoFilter(PhotoFilter.ALL)
+        }
     }
 
     /** F2：「未下载」chip 选中态渲染；仅相机源可见 */
@@ -727,6 +747,12 @@ class TransferFragment : Fragment(), GlassInsetAware {
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.onlyNotDownloaded.collect { renderNotDownloadedChip(it) }
+        }
+
+        // FR-16：「已保护」标签——机身真的报了保护状态、且停在相机相册时才出现
+        viewLifecycleOwner.lifecycleScope.launch {
+            combine(viewModel.protectChip, viewModel.activeAlbum) { chip, source -> chip to source }
+                .collect { (chip, source) -> renderProtectChip(chip, source == AlbumSource.CAMERA) }
         }
 
         viewLifecycleOwner.lifecycleScope.launch {
