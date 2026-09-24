@@ -46,11 +46,18 @@ for (const [name, width, height] of VIEWPORTS) {
   const ctx = await browser.newContext({ viewport: { width, height } });
   const page = await ctx.newPage();
   const noise = [];
+  const badUrls = [];
   page.on('console', (m) => {
     // 别截太短：曾经把 "loopback" 截掉，导致环境噪音过滤器匹配不上
     if (m.type() === 'error' || m.type() === 'warning') noise.push(`[${m.type()}] ${m.text().slice(0, 400)}`);
   });
   page.on('pageerror', (e) => noise.push(`[pageerror] ${String(e).slice(0, 260)}`));
+  // Chrome 对失败请求会另打一条不含 URL 的 "Failed to load resource"，只按文本匹配
+  // 会漏，所以把真实失败的 URL 单独记下来用于关联判断
+  page.on('response', (r) => {
+    if (r.status() >= 400) badUrls.push(r.url());
+  });
+  page.on('requestfailed', (r) => badUrls.push(r.url()));
 
   await page.addInitScript(() => {
     window.__vitals = { lcp: 0, cls: 0 };
@@ -201,13 +208,23 @@ for (const [name, width, height] of VIEWPORTS) {
   check('无未替换占位符', en.leaks.length === 0);
   if (en.leaks.length) console.log(`   leaks=${JSON.stringify(en.leaks)}`);
 
-  const ENV_NOISE = ['/functions/v1/app', 'GL Driver Message', 'api.github.com', 'net::ERR_FAILED'];
-  const appNoise = noise.filter((n) => !ENV_NOISE.some((w) => n.includes(w)));
+  const BENIGN = ['/functions/v1/app', 'api.github.com'];
+  const onlyBenignFailures = badUrls.every((u) => BENIGN.some((b) => u.includes(b)));
+  const appNoise = noise.filter((n) => {
+    // 三类噪音各自判定，别混在一个白名单里靠 includes 猜：
+    //  a) 不含 URL 的通用资源失败行 —— 只能靠真实失败 URL 列表关联判断
+    //  b) headless GL 的驱动性能告警
+    //  c) 带 URL 的行 —— 命中白名单 URL 才放行
+    if (n.includes('Failed to load resource')) return !onlyBenignFailures;
+    if (n.includes('GL Driver Message')) return false;
+    return !BENIGN.some((w) => n.includes(w));
+  });
   if (appNoise.length) {
     failures++;
     console.log('  CONSOLE:\n   ' + appNoise.join('\n   '));
+    if (badUrls.length) console.log('   badUrls=' + JSON.stringify([...new Set(badUrls)].slice(0, 4)));
   } else {
-    console.log(`  console: ${noise.length ? '仅环境噪音已排除' : 'clean'}`);
+    console.log(`  console: ${noise.length || badUrls.length ? `仅环境噪音（失败请求 ${badUrls.length} 个，均在白名单内）` : 'clean'}`);
   }
 
   await ctx.close();
@@ -226,6 +243,18 @@ for (const [name, width, height] of VIEWPORTS) {
   check('Release.isReleaseOf 指向本站 @id', ld.includes('#app') && !ld.includes('https://schema.org/N-Link'));
   check('sitemap.xml 已生成', fs.existsSync(path.join(ROOT, 'dist/sitemap.xml')));
   check('sitemap 含两个路由', (fs.readFileSync(path.join(ROOT, 'dist/sitemap.xml'), 'utf8').match(/<loc>/g) ?? []).length === 2);
+
+  // 两条路由必须有各自的 title 与自指 canonical，否则 /releases 会被判成重复页永不收录
+  const rel2 = fs.existsSync(path.join(ROOT, 'dist/releases/index.html'))
+    ? fs.readFileSync(path.join(ROOT, 'dist/releases/index.html'), 'utf8')
+    : '';
+  const homeTitle = html.match(/<title>([^<]*)<\/title>/)?.[1] ?? '';
+  const relTitle = rel2.match(/<title>([^<]*)<\/title>/)?.[1] ?? '';
+  const relCanon = rel2.match(/rel="canonical" href="([^"]+)"/)?.[1] ?? '';
+  check('/releases 有独立产物 HTML', rel2.length > 0);
+  check('两条路由 title 不同', relTitle.length > 0 && relTitle !== homeTitle);
+  check('/releases canonical 自指', relCanon.endsWith('/releases/'));
+  check('/releases 不指回首页', !html.match(/rel="canonical"[^/]*\/releases/) && relCanon !== canonical);
 }
 
 /* ---------- reduced-motion 对照 ---------- */
