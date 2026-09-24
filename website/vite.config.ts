@@ -4,80 +4,133 @@ import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 import type { Plugin } from 'vite';
 
-// 上线后确定的真实来源；未部署到别处前不要改成猜的值
 const SITE_ORIGIN = 'https://n-link-qd0m70ho562.qoder.zone';
+const REPO_LATEST = 'https://github.com/Wan-1230/N-link/releases/latest';
+const MARKER = '<!--head:meta-->';
 
-function readSnapshot() {
+interface Snapshot {
+  latestTag: string;
+  stars: number | null;
+  releases: { tag: string; version: string; date: string; title: string | null; apkUrl: string | null; url: string }[];
+}
+
+function readSnapshot(): Snapshot | null {
   try {
-    const file = path.resolve('src/data/releases.json');
-    return JSON.parse(fs.readFileSync(file, 'utf8')) as {
-      latestTag: string;
-      stars: number | null;
-      releases: { tag: string; version: string; date: string; apkUrl: string | null; url: string }[];
-    };
+    return JSON.parse(fs.readFileSync(path.resolve('src/data/releases.json'), 'utf8')) as Snapshot;
   } catch {
     return null;
   }
 }
 
-/** 把构建期快照的版本与日期写进 title / meta / JSON-LD，让未执行 JS 的抓取端也拿到准确版本号。 */
+const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
+/**
+ * 每个路由一份独立的 head。之前两条路由共用同一个 title，且 /releases 的 canonical
+ * 指向首页 —— 搜索引擎会把它判成重复页，永远不会单独收录。
+ * 这里在构建期直接产出 dist/releases/index.html，不依赖运行时改 DOM，
+ * 对不执行 JS 的抓取端同样有效。
+ */
+function headFor(route: '/' | '/releases/', snap: Snapshot, version: string): string {
+  const url = `${SITE_ORIGIN}${route}`;
+  const ogImage = `${SITE_ORIGIN}/og.png`;
+  const latest = snap.releases.find((r) => r.tag === snap.latestTag) ?? snap.releases[0];
+
+  const home = route === '/';
+  const title = home
+    ? 'N-Link · 尼康 Z 系列微单的 Android 连接与遥控伴侣'
+    : `N-Link v${version} 下载与更新日志 · 尼康 Z 系列遥控伴侣`;
+  const description = home
+    ? '开源 Android 应用，为尼康 Z50II / Z6III / Z8 / Z9 / Zf 打通连接、浏览、传输、遥控、监看的完整链路。版本号与更新日志自动同步 GitHub Releases。'
+    : `下载 N-Link v${version} APK，查看完整版本历史。开源 Android 尼康 Z 系列微单连接与遥控伴侣，支持 Z50II / Z6III / Z8 / Z9 / Zf。`;
+
+  const jsonLd = home
+    ? {
+        '@context': 'https://schema.org',
+        '@graph': [
+          {
+            '@type': 'SoftwareApplication',
+            '@id': `${SITE_ORIGIN}/#app`,
+            name: 'N-Link',
+            alternateName: 'N-Link 尼康遥控伴侣',
+            applicationCategory: 'MultimediaApplication',
+            operatingSystem: 'Android 10+',
+            softwareVersion: `v${version}`,
+            url: `${SITE_ORIGIN}/`,
+            downloadUrl: latest?.apkUrl ?? latest?.url ?? REPO_LATEST,
+            codeRepository: 'https://github.com/Wan-1230/N-link',
+            isAccessibleForFree: true,
+            dateModified: latest?.date ?? '',
+          },
+          {
+            '@type': 'Release',
+            version: `v${version}`,
+            datePublished: latest?.date ?? '',
+            isReleaseOf: { '@id': `${SITE_ORIGIN}/#app` },
+          },
+        ],
+      }
+    : {
+        '@context': 'https://schema.org',
+        '@type': 'CollectionPage',
+        '@id': url,
+        name: 'N-Link 下载与更新日志',
+        url,
+        isPartOf: { '@id': `${SITE_ORIGIN}/#app` },
+      };
+
+  return [
+    `<title>${esc(title)}</title>`,
+    `<meta name="description" content="${esc(description)}" />`,
+    `<meta name="version" content="v${version}" />`,
+    `<link rel="canonical" href="${url}" />`,
+    `<meta property="og:type" content="${home ? 'website' : 'article'}" />`,
+    `<meta property="og:site_name" content="N-Link" />`,
+    `<meta property="og:locale" content="zh_CN" />`,
+    `<meta property="og:title" content="${esc(title)}" />`,
+    `<meta property="og:description" content="${esc(description)}" />`,
+    `<meta property="og:url" content="${url}" />`,
+    `<meta property="og:image" content="${ogImage}" />`,
+    `<meta name="twitter:card" content="summary_large_image" />`,
+    `<meta name="twitter:title" content="${esc(title)}" />`,
+    `<meta name="twitter:description" content="${esc(description)}" />`,
+    `<meta name="twitter:image" content="${ogImage}" />`,
+    `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>`,
+  ].join('\n    ');
+}
+
 function siteMeta(): Plugin {
   return {
     name: 'n-link-site-meta',
-    transformIndexHtml() {
+    transformIndexHtml(html) {
       const snap = readSnapshot();
-      const latest = snap?.releases.find((r) => r.tag === snap.latestTag) ?? snap?.releases[0];
-      if (!latest) return [];
-
-      const version = `v${latest.version}`;
-      return [
-        { tag: 'meta', attrs: { name: 'version', content: version }, injectTo: 'head' },
-        { tag: 'link', attrs: { rel: 'canonical', href: `${SITE_ORIGIN}/` }, injectTo: 'head' },
-        // 社交抓取普遍要求绝对 URL，index.html 里那条相对 og:image 抓不到
-        { tag: 'meta', attrs: { property: 'og:url', content: `${SITE_ORIGIN}/` }, injectTo: 'head' },
-        { tag: 'meta', attrs: { property: 'og:image', content: `${SITE_ORIGIN}/og.png` }, injectTo: 'head' },
-        { tag: 'meta', attrs: { name: 'twitter:image', content: `${SITE_ORIGIN}/og.png` }, injectTo: 'head' },
-        {
-          tag: 'script',
-          attrs: { type: 'application/ld+json' },
-          children: JSON.stringify({
-            '@context': 'https://schema.org',
-            '@graph': [
-              {
-                '@type': 'SoftwareApplication',
-                '@id': `${SITE_ORIGIN}/#app`,
-                name: 'N-Link',
-                applicationCategory: 'MultimediaApplication',
-                operatingSystem: 'Android 10+',
-                softwareVersion: version,
-                url: SITE_ORIGIN,
-                downloadUrl: latest.apkUrl ?? latest.url,
-                codeRepository: 'https://github.com/Wan-1230/N-link',
-                isAccessibleForFree: true,
-                dateModified: latest.date,
-              },
-              {
-                '@type': 'Release',
-                version: version,
-                datePublished: latest.date,
-                isReleaseOf: { '@id': `${SITE_ORIGIN}/#app` },
-              },
-            ],
-          }),
-          injectTo: 'head',
-        },
-      ];
+      if (!snap) return html;
+      const version = (snap.releases.find((r) => r.tag === snap.latestTag) ?? snap.releases[0])?.version ?? '';
+      return html.replace(MARKER, headFor('/', snap, version));
     },
     writeBundle() {
-      // 单页站的 sitemap 之前刻意不写，是因为那时没有真域名、写了就是编
+      const snap = readSnapshot();
+      const file = path.resolve('dist/index.html');
+      if (!snap || !fs.existsSync(file)) return;
+
+      const html = fs.readFileSync(file, 'utf8');
+      const version = (snap.releases.find((r) => r.tag === snap.latestTag) ?? snap.releases[0])?.version ?? '';
+      const homeHead = headFor('/', snap, version);
+      if (!html.includes(homeHead)) {
+        console.warn('[site-meta] 首页 head 未命中，跳过 /releases 生成——两条路由会共用元数据');
+        return;
+      }
+
+      fs.mkdirSync(path.resolve('dist/releases'), { recursive: true });
+      fs.writeFileSync(path.resolve('dist/releases/index.html'), html.replace(homeHead, headFor('/releases/', snap, version)));
+
       const iso = new Date().toISOString().slice(0, 10);
       const urls = ['/', '/releases/'];
-      const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls.map((u) => `  <url>\n    <loc>${SITE_ORIGIN}${u}</loc>\n    <lastmod>${iso}</lastmod>\n  </url>`).join('\n')}
-</urlset>
-`;
-      fs.writeFileSync(path.resolve('dist/sitemap.xml'), xml);
+      fs.writeFileSync(
+        path.resolve('dist/sitemap.xml'),
+        `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls
+          .map((u) => `  <url>\n    <loc>${SITE_ORIGIN}${u}</loc>\n    <lastmod>${iso}</lastmod>\n  </url>`)
+          .join('\n')}\n</urlset>\n`
+      );
     },
   };
 }
