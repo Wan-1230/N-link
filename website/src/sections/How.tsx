@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { GlassCard } from '../components/ui/GlassCard';
 import { CopyLine } from '../components/ui/CopyLine';
 import { useDict } from '../i18n';
+import { Link } from '../lib/router';
 import { REPO } from '../lib/site';
 import './sections.css';
 import './How.css';
@@ -54,7 +55,9 @@ export function How() {
             </ol>
             <p className="hw__note">
               {dict.how.user.note}{' '}
-              <a href="#download">{dict.how.user.cta}</a>
+              <Link to="/releases" anchor="latest">
+                {dict.how.user.cta}
+              </Link>
             </p>
           </div>
         )}

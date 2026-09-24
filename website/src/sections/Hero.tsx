@@ -8,6 +8,7 @@ import { useReducedMotion } from '../hooks/useReducedMotion';
 import { useReleases } from '../hooks/useReleases';
 import { formatDate } from '../lib/format';
 import { latestEntry } from '../lib/release-feed';
+import { Link } from '../lib/router';
 import { REPO } from '../lib/site';
 import './Hero.css';
 
@@ -59,8 +60,18 @@ export function Hero() {
               title
             ) : (
               <>
-                <SplitText text={dict.hero.titleA} tag="span" className="hero__line" duration={1.1} delay={40} />
+                {/* GSAP SplitText 会缓存首次拆分时的 data-original-text，换 text prop
+                    是换不掉已渲染内容的；切语言必须靠 key 重挂载，否则标题冻在首次语言 */}
                 <SplitText
+                  key={`${lang}-title-a`}
+                  text={dict.hero.titleA}
+                  tag="span"
+                  className="hero__line"
+                  duration={1.1}
+                  delay={40}
+                />
+                <SplitText
+                  key={`${lang}-title-b`}
                   text={dict.hero.titleB}
                   tag="span"
                   className="hero__line hero__line--accent"
@@ -80,9 +91,9 @@ export function Hero() {
               </a>
             </Magnet>
             <Magnet padding={80} magnetStrength={4}>
-              <a className="btn btn--ghost" href="#changelog">
+              <Link className="btn btn--ghost" to="/releases" anchor="changelog">
                 {dict.hero.secondary}
-              </a>
+              </Link>
             </Magnet>
             <Magnet padding={80} magnetStrength={5}>
               <a className="btn btn--quiet" href={REPO.url} target="_blank" rel="noreferrer">
