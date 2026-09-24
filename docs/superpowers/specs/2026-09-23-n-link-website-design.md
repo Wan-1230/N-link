@@ -480,3 +480,23 @@ P2 之后任何时刻站上都是可看的，不存在「半站」。
 **Sites SPA fallback 的真实规则（实测，非文档推断）**：`spa: true` 之后直接访问 `/releases`，带 `Accept: text/html` → **200**，`Accept: */*` 或不带 → **404**，即回退按 `Accept` 协商。真实浏览器与搜索引擎都带 `text/html`，线上行为正确；但裸 `curl` 验会误判成部署失败——我第一次就是这么看错的，别拿裸 curl 当结论。
 
 **验收规模**：124 项断言 × 4 档视口 + SEO 产物 + reduced-motion 全通过；JS 合计 175.5KB gzip，仍在 200KB 预算内。
+
+### SEO 修正：/releases 的元数据与「首字节 vs 渲染后」
+
+**我先犯了一个错，留在这里当反面教材**：用裸 `curl` 探线上，看到 `/releases` 返回 404 就写下「宿主没做 SPA 回退」。实际回退是按 `Accept` 协商的，而这条规则本文档上一节已经记过一遍，还专门写了「别拿裸 curl 当结论」。带 `Accept: text/html` 重测，三条路径全是 200。
+
+**实测结论（`已验证`，curl + Playwright 双通道）**：
+
+| 路径 | 裸 curl（`Accept: */*`） | 浏览器（`Accept: text/html`） | 首字节 head 归属 |
+|---|---|---|---|
+| `/releases` | 404 | 200 | 首页（SPA 回退到根 index.html） |
+| `/releases/` | 200 | 200 | 首页（同上，宿主不做目录索引解析） |
+| `/releases/index.html` | 200 | 200 | 子页（构建期产物，精确路径命中） |
+
+**因此**：`dist/releases/index.html` 只在 `/releases/index.html` 这一条精确路径上生效，sitemap 与 canonical 用的是 `/releases/`，所以运行时那一遍不是冗余而是唯一有效路径 —— `router.tsx` 的 `syncRouteMeta()` 负责把 title / description / canonical / og:* / twitter:* 换成本路由的。不执行 JS 的抓取端在 `/releases/` 上仍会拿到首页 head，这是宿主限制，不掩盖。Google 与 Bing 都渲染 JS，canonical 以渲染后为准。
+
+**路由元数据唯一出处**：`src/lib/site.ts` 的 `ROUTE_META` + `routeMeta()`，构建期与运行期共读一份，避免两边写歪。它**不进 i18n** —— 静态 HTML 是中文，若跟着语言切换，抓取端看到的会与首页 head 不一致。`LangProvider` 里原先那行 `document.title = dicts[lang].meta.title` 已删，标题归 router 维护。
+
+**顺带修掉一个会伪装成「数据是新的」的问题**：`npm run snapshot` 在这台机器上必然 403 —— hosts 把 `api.github.com` 黑洞到 127.0.0.1，Node 直连拿到的是本地服务的 403，不是 GitHub 限流。失败路径会把 `stale: true` 写进 `releases.json` 并提交，而 `useReleases` 据此把状态判为 `snapshot`，更新日志右上角就长期显示「快照」而不是「实时」——把本机环境缺陷暴露成了访客可见的文案。修法是给快照脚本加第二通道：直连失败时回退 `gh api`（自带解析与凭证，实测返回 22 条）。两处措辞同步改为「直连与 gh 两通道都失败」。
+
+**验收规模**：128 项断言 × 4 档视口 + SEO 产物 + reduced-motion，3/3 连跑全绿；新增两条按**渲染后 DOM**断言（`/releases 渲染后 title 是自己的`、`canonical 自指`），此前那批 SEO 断言读的是本地 dist，结构上抓不到服务层问题。JS 合计 175.9KB gzip，预算 200KB。

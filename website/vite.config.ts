@@ -3,10 +3,10 @@ import path from 'node:path';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 import type { Plugin } from 'vite';
+import { routeMeta, SITE_ORIGIN } from './src/lib/site.ts';
 
-const SITE_ORIGIN = 'https://n-link-qd0m70ho562.qoder.zone';
-const REPO_LATEST = 'https://github.com/Wan-1230/N-link/releases/latest';
 const MARKER = '<!--head:meta-->';
+const REPO_LATEST = 'https://github.com/Wan-1230/N-link/releases/latest';
 
 interface Snapshot {
   latestTag: string;
@@ -36,12 +36,7 @@ function headFor(route: '/' | '/releases/', snap: Snapshot, version: string): st
   const latest = snap.releases.find((r) => r.tag === snap.latestTag) ?? snap.releases[0];
 
   const home = route === '/';
-  const title = home
-    ? 'N-Link · 尼康 Z 系列微单的 Android 连接与遥控伴侣'
-    : `N-Link v${version} 下载与更新日志 · 尼康 Z 系列遥控伴侣`;
-  const description = home
-    ? '开源 Android 应用，为尼康 Z50II / Z6III / Z8 / Z9 / Zf 打通连接、浏览、传输、遥控、监看的完整链路。版本号与更新日志自动同步 GitHub Releases。'
-    : `下载 N-Link v${version} APK，查看完整版本历史。开源 Android 尼康 Z 系列微单连接与遥控伴侣，支持 Z50II / Z6III / Z8 / Z9 / Zf。`;
+  const { title, description } = routeMeta(route, `v${version}`);
 
   const jsonLd = home
     ? {

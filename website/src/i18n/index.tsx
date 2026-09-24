@@ -35,7 +35,7 @@ export function LangProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     document.documentElement.lang = lang;
-    document.title = dicts[lang].meta.title;
+    // document.title 归 router 按路由维护（路由元数据与语言无关），这里不抢
     try {
       localStorage.setItem(STORAGE_KEY, lang);
     } catch {
