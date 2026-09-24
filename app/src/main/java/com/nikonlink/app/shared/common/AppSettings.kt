@@ -27,6 +27,11 @@ class AppSettings @Inject constructor(
         const val CONN_PREF_USB = "USB 优先"
         const val CONN_PREF_WIFI = "WiFi 优先"
 
+        /** RAW+JPEG 成对下载的三种方式（v2.5 FR-17） */
+        const val RAW_PAIR_MODE_BOTH = "成对下载"
+        const val RAW_PAIR_MODE_RAW = "只下 RAW"
+        const val RAW_PAIR_MODE_JPEG = "只下 JPG"
+
         /** 「更多动作」按钮的动作模式（模块 3）：间隔拍摄 / B 门长曝光 */
         const val ACTION_INTERVAL = "interval"
         const val ACTION_BULB = "bulb"
@@ -96,6 +101,18 @@ class AppSettings @Inject constructor(
     var waveformEnabled: Boolean
         get() = prefs.getBoolean("waveform_enabled", false)
         set(value) = prefs.edit().putBoolean("waveform_enabled", value).apply()
+
+    /**
+     * 成对下载的默认方式（v2.5 FR-17）。常量在类顶部的 companion 里。
+     *
+     * 默认「成对」：合并显示的意义就是"这一格代表这一次拍摄"，
+     * 如果默认只下其中一张，合并就成了偷偷少下东西。
+     * 这一项只在 `UiFlags.RAW_PAIR` 打开时出现在设置页——闸门关着时根本不合并不显示，
+     * 留一个不生效的模式选择只会让人以为它有用。
+     */
+    var rawPairDownloadMode: String
+        get() = prefs.getString("raw_pair_mode", RAW_PAIR_MODE_BOTH) ?: RAW_PAIR_MODE_BOTH
+        set(value) = prefs.edit().putString("raw_pair_mode", value).apply()
 
     /** 自动下载：相机拍摄新照片后自动同步到手机（需连接就绪） */
     var autoDownload: Boolean
