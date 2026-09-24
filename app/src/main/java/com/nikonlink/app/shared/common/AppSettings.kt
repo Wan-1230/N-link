@@ -86,6 +86,17 @@ class AppSettings @Inject constructor(
         get() = prefs.getBoolean("pseudo_color_enabled", false)
         set(value) = prefs.edit().putBoolean("pseudo_color_enabled", value).apply()
 
+    /**
+     * RGB 分量波形开关（v2.5 FR-13 第二件工具）。
+     *
+     * 与 [pseudoColorEnabled] 同一条闸门（`UiFlags.TONE_TOOLS`）管，默认关。
+     * 分开存而不是"影调工具一个开关全管"：波形要多算一次三通道累加，
+     * 有人只要伪彩、有人只要波形，绑在一起等于替他们做决定。
+     */
+    var waveformEnabled: Boolean
+        get() = prefs.getBoolean("waveform_enabled", false)
+        set(value) = prefs.edit().putBoolean("waveform_enabled", value).apply()
+
     /** 自动下载：相机拍摄新照片后自动同步到手机（需连接就绪） */
     var autoDownload: Boolean
         get() = prefs.getBoolean("auto_download", false)
