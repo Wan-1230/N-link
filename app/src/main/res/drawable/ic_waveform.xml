@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!--
+        RGB 分量波形图标：一个面板框里两条错位折线。
+        两条而不是柱状——柱状与 ic_histogram 同形并排会被认成同一个开关；
+        折线的横向起伏正是波形与直方图的差别（保留画面位置）。
+    -->
+    <path
+        android:fillAlpha="0.00"
+        android:strokeAlpha="0.45"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:pathData="M3.5,5.5h17v13h-17z" />
+    <path
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.6"
+        android:pathData="M5,16.5L8.5,11.5L11,14L14.5,7.5L19,12" />
+    <path
+        android:strokeAlpha="0.5"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.6"
+        android:pathData="M5,18.5L9,15.5L12,17L15.5,12.5L19,15.5" />
+</vector>

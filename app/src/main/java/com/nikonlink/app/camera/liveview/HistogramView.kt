@@ -5,7 +5,6 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.PorterDuff
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
@@ -40,10 +39,8 @@ class HistogramView @JvmOverloads constructor(
     private val binCounts = IntArray(BIN_COUNT)
     private val binHeights = FloatArray(BIN_COUNT)
 
-    /** 降采样用的复用位图与画布：避免每帧新建对象触发 GC */
-    private var scratch: Bitmap? = null
-    private val scratchCanvas = Canvas()
-    private var scratchPixels: IntArray? = null
+    /** 降采样取数交给 [FrameSampler]：与波形同一份缓存管理，不再各写一遍 */
+    private val sampler = FrameSampler(SAMPLE_WIDTH)
 
     /** 归一化基准（上一帧的最大柱高），做平滑避免直方图抖动 */
     private var smoothedPeak = 0f
@@ -71,11 +68,7 @@ class HistogramView @JvmOverloads constructor(
         color = Color.WHITE
     }
 
-    /** 降采样绘制用：显式开 FILTER_BITMAP，否则 paint 为 null 时走最近邻，采样会偏噪 */
-    private val drawPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-
     private val panelRect = RectF()
-    private val dstRect = RectF()
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -112,21 +105,13 @@ class HistogramView @JvmOverloads constructor(
      * 用最新一帧刷新直方图。调用方需保证只在视图可见时调用（关闭时零开销）。
      */
     fun setFrame(bitmap: Bitmap) {
-        val sw = SAMPLE_WIDTH
-        val sh = max(1, bitmap.height * sw / max(1, bitmap.width))
-        val target = ensureScratch(sw, sh) ?: return
-        val pixels = ensurePixels(sw * sh) ?: return
-
-        scratchCanvas.setBitmap(target)
-        // 先清底：源位图若带透明区域，残留像素会被算进亮度统计
-        scratchCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
-        dstRect.set(0f, 0f, sw.toFloat(), sh.toFloat())
-        scratchCanvas.drawBitmap(bitmap, null, dstRect, drawPaint)
-        target.getPixels(pixels, 0, sw, 0, 0, sw, sh)
+        val pixels = sampler.sample(bitmap) ?: return
+        val total = sampler.sampledWidth * sampler.sampledHeight
 
         binCounts.fill(0)
         var peak = 0
-        for (i in pixels.indices) {
+        // 只遍历本帧的有效区：数组是复用的，比本帧大的部分是上一帧的残留像素
+        for (i in 0 until total) {
             val c = pixels[i]
             // 亮度口径与伪彩共用 PseudoColorLut.lumaOf（Rec.601，同 JPEG 的 Y 分量）：
             // 两个工具各算各的迟早会出现"直方图说不曝、伪彩说曝"，那种矛盾没法解释也没法修
@@ -153,26 +138,5 @@ class HistogramView @JvmOverloads constructor(
         binHeights.fill(0f)
         smoothedPeak = 0f
         invalidate()
-    }
-
-    private fun ensureScratch(w: Int, h: Int): Bitmap? {
-        val current = scratch
-        if (current != null && current.width == w && current.height == h) return current
-        current?.recycle()
-        return try {
-            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { scratch = it }
-        } catch (e: Throwable) {
-            null
-        }
-    }
-
-    private fun ensurePixels(size: Int): IntArray? {
-        val current = scratchPixels
-        if (current != null && current.size >= size) return current
-        return try {
-            IntArray(size).also { scratchPixels = it }
-        } catch (e: Throwable) {
-            null
-        }
     }
 }

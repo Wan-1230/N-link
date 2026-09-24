@@ -129,6 +129,19 @@
                 android:visibility="gone"
                 app:tint="@color/white" />
 
+            <!-- RGB 分量波形开关（v2.5 FR-13 第二件工具）：同一条闸门管，默认不生成 -->
+            <ImageView
+                android:id="@+id/btnWaveform"
+                android:layout_width="38dp"
+                android:layout_height="38dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_lv_icon"
+                android:contentDescription="@string/waveform_toggle"
+                android:padding="8dp"
+                android:src="@drawable/ic_waveform"
+                android:visibility="gone"
+                app:tint="@color/white" />
+
             <ImageView
                 android:id="@+id/btnMore"
                 android:layout_width="38dp"
@@ -150,6 +163,18 @@
         android:layout_height="60dp"
         android:layout_gravity="top|end"
         android:layout_marginTop="62dp"
+        android:layout_marginEnd="12dp"
+        android:visibility="gone" />
+
+    <!-- RGB 分量波形（v2.5 FR-13）：贴在直方图正下方，同宽同高，两个面板一起看时
+         竖轴档位一致（都是 64 档）；直方图关掉时它自己仍在上移后的位置不好看，
+         所以固定这一格，不做联动排版。 -->
+    <com.nikonlink.app.camera.liveview.WaveformView
+        android:id="@+id/viewWaveform"
+        android:layout_width="130dp"
+        android:layout_height="60dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="128dp"
         android:layout_marginEnd="12dp"
         android:visibility="gone" />
 
