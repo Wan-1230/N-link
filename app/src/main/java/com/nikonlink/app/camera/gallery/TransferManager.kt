@@ -1664,7 +1664,15 @@ data class CameraFile(
      * 两条来源：逐张 `0x1008 GetObjectInfo` 的结构里必有此字段；
      * 批量 `0x9805 GetObjectPropList` 则随机型返回的属性集而定。
      */
-    val protectionStatus: Int? = null
+    val protectionStatus: Int? = null,
+    /**
+     * 这一次拍摄的另一张（JPG）句柄；null 表示没有配对的 JPG，或相册未开启成对显示。
+     *
+     * 只用于两件事：格子上多打一个「+JPG」角标、入队时把该下的一张找回来。
+     * **界面上这一格的"已下载"仍然只看 RAW 自己**——否则会出现"传了 JPG 就显示
+     * NEF 也传了"，那是假信息（FR-17 验收②）。
+     */
+    val pairedJpegHandle: Int? = null
 )
 
 /**

@@ -117,6 +117,51 @@
                         app:tint="@color/text_tertiary" />
                 </LinearLayout>
 
+                <!-- RAW+JPEG 下载方式（v2.5 FR-17）：默认 gone，只在闸门 UiFlags.RAW_PAIR
+                     打开时由 SettingsFragment 点亮。闸门关着时相册根本不合并，
+                     这一项没有可作用的对象，摆出来只会误导。 -->
+                <View
+                    android:id="@+id/dividerRawPair"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/divider_height"
+                    android:layout_marginStart="18dp"
+                    android:background="@color/divider"
+                    android:visibility="gone" />
+
+                <LinearLayout
+                    android:id="@+id/rowRawPair"
+                    android:layout_width="match_parent"
+                    android:layout_height="52dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="18dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="RAW+JPEG 下载方式"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+
+                    <TextView
+                        android:id="@+id/tvRawPairValue"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="成对下载"
+                        android:textColor="@color/text_tertiary"
+                        android:textSize="13sp" />
+
+                    <ImageView
+                        android:layout_width="16dp"
+                        android:layout_height="16dp"
+                        android:layout_marginStart="4dp"
+                        android:contentDescription="修改"
+                        android:src="@drawable/ic_chevron_right"
+                        app:tint="@color/text_tertiary" />
+                </LinearLayout>
+
                 <View
                     android:layout_width="match_parent"
                     android:layout_height="@dimen/divider_height"

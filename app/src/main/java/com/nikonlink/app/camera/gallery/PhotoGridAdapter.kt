@@ -432,8 +432,10 @@ class PhotoGridAdapter(
             resetAnimatableProperties()
             boundHandle = file.handle
             binding.tvFormatBadge.text = when (file.format) {
+                // FR-17：合并后这一格代表"这一次拍摄"，角标必须说清里面有两张——
+                // 否则界面看着是一张 NEF、实际排队是两个文件，用户无从核对
+                CameraFileFormat.RAW -> if (file.pairedJpegHandle != null) "RAW+JPG" else "RAW"
                 CameraFileFormat.JPEG -> "JPG"
-                CameraFileFormat.RAW -> "RAW"
                 CameraFileFormat.VIDEO -> "视频"
                 else -> "文件"
             }
