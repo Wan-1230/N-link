@@ -466,3 +466,17 @@ P2 之后任何时刻站上都是可看的，不存在「半站」。
 **未验证项（不含糊过去）**：无后端时改走的「浏览器直连 GitHub」运行时补拉，在本机被 Chrome 的私有网络访问规则拦下 —— `api.github.com` 在这台机器上被解析到回环地址（与破坏 Node TLS 的是同一个本地代理），报 `Permission was denied for this request to access the loopback address space`。本地 localhost 能过（同源都是回环），线上真机访客是否会被拦**未验证**，不能声称已通。UI 侧行为是安全的：失败即静默留在构建快照，徽章如实显示「构建快照」。
 
 **线上实测指标**：100 项断言 × 4 档视口 + reduced-motion 全通过；CLS 0.0025；LCP 线上 2104ms（本地 664ms，真实网络下仍 < 2500ms 预算）；JS 合计 173.2KB gzip。
+
+### 改版：拆出 /releases、导航改 mega-menu、前端打磨（已上线）
+
+**结构**：`/` 为介绍页（Hero、适配带、链路、功能、特性、用法、路线、技术）；`/releases` 为最新版卡置顶 + 完整历史时间轴 + 反馈与捐赠。路由自写 ~80 行 History 实现（`src/lib/router.tsx`），未引 react-router（约 15KB gzip，当时产物只剩 24KB 余量）。
+
+**导航**：7 项平铺 → 「产品 ▾」+「下载与日志」。菜单按 能力/上手/工程 三组、每项带一句说明；hover 与键盘 focus 均可开，Escape 与点击外部关闭，触屏不吃 hover（仅 `pointerType === 'mouse'` 才展开），移动端走抽屉。新增 scrollspy 与导航底沿滚动进度条。
+
+**打磨**：字号/行高/字距收敛为 `--fs-*` / `--lh-*` / `--ls-*` 阶梯（原先各处 `clamp` 各写各的，跳档明显）；阴影收成 `--el-1/2/3`；按钮与渠道卡补 `:active`；换页用 `key={path}` 重挂载 `main`，淡入才会真正重播。
+
+**修掉一个真 bug（本轮重构引入、发布前被抓）**：GSAP `SplitText` 缓存首次拆分时的 `data-original-text`，换 `text` prop 换不掉已渲染内容 —— 表现为 `<html lang>` 已变 `en` 而标题仍是中文，4 档视口全红。修法是按语言给 `SplitText` 加 `key` 强制重挂载。**已单独验证线上旧版不受影响**，不能把它说成生产事故。
+
+**Sites SPA fallback 的真实规则（实测，非文档推断）**：`spa: true` 之后直接访问 `/releases`，带 `Accept: text/html` → **200**，`Accept: */*` 或不带 → **404**，即回退按 `Accept` 协商。真实浏览器与搜索引擎都带 `text/html`，线上行为正确；但裸 `curl` 验会误判成部署失败——我第一次就是这么看错的，别拿裸 curl 当结论。
+
+**验收规模**：124 项断言 × 4 档视口 + SEO 产物 + reduced-motion 全通过；JS 合计 175.5KB gzip，仍在 200KB 预算内。
