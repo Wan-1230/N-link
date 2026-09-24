@@ -39,24 +39,46 @@ ol {
 }
 
 h1 {
-  font-size: clamp(2.25rem, 1.35rem + 4.5vw, 4.5rem);
-  line-height: 1.05;
-  letter-spacing: -0.035em;
+  font-size: var(--fs-900);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--ls-display);
   font-weight: 600;
 }
 
 h2 {
-  font-size: clamp(1.75rem, 1.2rem + 2.3vw, 2.75rem);
-  line-height: 1.15;
-  letter-spacing: -0.025em;
+  font-size: var(--fs-800);
+  line-height: var(--lh-snug);
+  letter-spacing: var(--ls-head);
   font-weight: 600;
 }
 
 h3 {
-  font-size: 1.125rem;
-  line-height: 1.35;
-  letter-spacing: -0.01em;
+  font-size: var(--fs-600);
+  line-height: 1.3;
+  letter-spacing: var(--ls-head);
   font-weight: 600;
+}
+
+/* 换页淡入；reduced-motion 下整段不动 */
+.route {
+  animation: route-in 0.45s var(--ease-out-expo) both;
+}
+
+@keyframes route-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route {
+    animation: none;
+  }
 }
 
 a {
