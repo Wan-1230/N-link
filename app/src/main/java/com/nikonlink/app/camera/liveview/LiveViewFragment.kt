@@ -90,6 +90,9 @@ class LiveViewFragment : Fragment() {
     /** 伪彩当前是否真的在上色：闸门 + 用户开关两者都开才算 */
     private val toneOn: Boolean get() = settings.pseudoColorEnabled && toneAvailable
 
+    /** 波形是否真的在算：与伪彩共用闸门，各存各的用户开关 */
+    private val waveformOn: Boolean get() = settings.waveformEnabled && toneAvailable
+
     private var controlsVisible = true
     private var gridVisible = true
     private var levelVisible = false
@@ -219,6 +222,22 @@ class LiveViewFragment : Fragment() {
         }
         applyPseudoColorToggle(settings.pseudoColorEnabled)
 
+        // RGB 分量波形：与伪彩同一条闸门（toneAvailable），两个工具各存各的开关
+        binding.btnWaveform.visibility = if (toneAvailable) View.VISIBLE else View.GONE
+        if (toneAvailable) {
+            binding.btnWaveform.pressEffect()
+            binding.btnWaveform.setOnClickListener {
+                val enabled = !settings.waveformEnabled
+                settings.waveformEnabled = enabled
+                applyWaveformToggle(enabled)
+                NlFeedback.show(
+                    requireContext(),
+                    if (enabled) getString(R.string.waveform_note) else "已关闭 RGB 波形"
+                )
+            }
+        }
+        applyWaveformToggle(settings.waveformEnabled)
+
         binding.btnMore.pressEffect()
         binding.btnMore.setOnClickListener { showMoreMenu() }
 
@@ -285,6 +304,17 @@ class LiveViewFragment : Fragment() {
         binding.viewGridOverlay.visibility =
             if (gridVisible || on) View.VISIBLE else View.GONE
         binding.btnPseudoColor.alpha = if (on) 1f else 0.55f
+    }
+
+    /**
+     * FR-13 第二件：RGB 分量波形面板的显隐。
+     * 只碰自己那块面板——直方图与波形的开关互不牵连，两个都要能单独开。
+     */
+    private fun applyWaveformToggle(enabled: Boolean) {
+        val on = enabled && toneAvailable
+        binding.viewWaveform.visibility = if (on) View.VISIBLE else View.GONE
+        binding.btnWaveform.alpha = if (on) 1f else 0.55f
+        if (!on) binding.viewWaveform.clear()
     }
 
     private fun showMoreMenu() {
@@ -720,6 +750,7 @@ class LiveViewFragment : Fragment() {
                     if (settings.histogramEnabled) binding.viewHistogram.setFrame(bitmap)
                     // 伪彩同理：不开就一个像素都不算（FR-13 验收①要求不掉帧率）
                     if (toneOn) binding.viewGridOverlay.setToneFrame(bitmap)
+                    if (waveformOn) binding.viewWaveform.setFrame(bitmap)
                 }
             }
         }
