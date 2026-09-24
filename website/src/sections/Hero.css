@@ -1,0 +1,247 @@
+.hero {
+  position: relative;
+  min-height: 100svh;
+  display: flex;
+  align-items: center;
+  padding-block: calc(var(--nav-h) + var(--sp-8)) var(--sp-9);
+  overflow: hidden;
+}
+
+.hero__bg {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+}
+
+/* Aurora 自带 .aurora-container{width/height:100%}，由 .hero__bg 的 inset:0 提供尺寸 */
+.hero__bg canvas {
+  opacity: 0.42;
+}
+
+.hero__bg-static {
+  background:
+    radial-gradient(80% 60% at 18% 8%, rgba(255, 225, 0, 0.1) 0%, transparent 60%),
+    radial-gradient(70% 60% at 82% 30%, rgba(47, 93, 124, 0.24) 0%, transparent 62%);
+}
+
+.hero__veil {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(8, 9, 10, 0.55) 0%, rgba(8, 9, 10, 0.2) 40%, var(--bg) 100%),
+    radial-gradient(120% 90% at 50% 120%, rgba(8, 9, 10, 0.9), transparent 60%);
+  pointer-events: none;
+}
+
+.hero__inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1.06fr) minmax(0, 0.94fr);
+  align-items: center;
+  gap: var(--sp-8);
+}
+
+.hero__copy {
+  max-width: 620px;
+}
+
+.hero__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 6px 14px;
+  border-radius: var(--r-pill);
+  font-size: 0.78rem;
+  margin-bottom: var(--sp-5);
+}
+
+.hero__badge-sep {
+  width: 1px;
+  height: 13px;
+  background: var(--hairline-strong);
+}
+
+.hero__badge-note {
+  color: var(--fg-faint);
+  letter-spacing: 0.02em;
+}
+
+.hero__title {
+  display: block;
+}
+
+.hero__line {
+  display: block;
+}
+
+.hero__line--accent {
+  color: var(--accent);
+}
+
+.hero__lede {
+  margin-top: var(--sp-5);
+  color: var(--fg-dim);
+  font-size: clamp(1rem, 0.94rem + 0.36vw, 1.18rem);
+  max-width: 56ch;
+}
+
+.hero__cta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-6);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 13px 24px;
+  border-radius: var(--r-pill);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  transition:
+    transform var(--dur-1) var(--ease-out-expo),
+    background var(--dur-1) var(--ease-out-expo),
+    border-color var(--dur-1) var(--ease-out-expo);
+}
+
+.btn--primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 14px 34px -16px rgba(255, 225, 0, 0.55);
+}
+
+.btn--primary:hover {
+  transform: translateY(-2px);
+}
+
+.btn--ghost {
+  border: 1px solid var(--hairline-strong);
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.btn--ghost:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.btn--quiet {
+  color: var(--fg-dim);
+  padding-inline: var(--sp-4);
+}
+
+.btn--quiet:hover {
+  color: var(--fg);
+}
+
+.hero__stats {
+  display: flex;
+  gap: var(--sp-6);
+  margin-top: var(--sp-7);
+  padding-top: var(--sp-5);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.hero__stats dt {
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+.hero__stats dd {
+  margin: 4px 0 0;
+  font-size: 1.05rem;
+  color: var(--fg);
+}
+
+.hero__stage {
+  display: grid;
+  place-items: center;
+  perspective: 1400px;
+}
+
+.hero__stage > * {
+  transform: rotateY(-11deg) rotateX(4deg);
+  animation: hero-float 9s var(--ease-out-quart) infinite;
+}
+
+@keyframes hero-float {
+  0%,
+  100% {
+    transform: rotateY(-11deg) rotateX(4deg) translateY(0);
+  }
+  50% {
+    transform: rotateY(-8deg) rotateX(2.5deg) translateY(-14px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero__stage > * {
+    animation: none;
+  }
+}
+
+.hero__hint {
+  position: absolute;
+  left: 50%;
+  bottom: var(--sp-5);
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+.hero__hint-line {
+  width: 1px;
+  height: 34px;
+  background: linear-gradient(180deg, var(--fg-faint), transparent);
+}
+
+@media (max-width: 900px) {
+  .hero {
+    min-height: auto;
+    padding-top: calc(var(--nav-h) + var(--sp-8));
+  }
+
+  .hero__inner {
+    grid-template-columns: 1fr;
+    gap: var(--sp-8);
+  }
+
+  .hero__stage {
+    order: -1;
+  }
+
+  .hero__stats {
+    gap: var(--sp-5);
+  }
+
+  .hero__hint {
+    display: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .hero__stats {
+    flex-wrap: wrap;
+  }
+
+  .hero__cta .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* 等比缩到 3/4，否则手机 mock 会独占一屏多，正文被推到折叠线下 */
+  .hero__stage > * {
+    width: 219px;
+  }
+}
