@@ -347,8 +347,12 @@ class PtpSessionManager @Inject constructor(
             }
             sessionId = response.sessionId
 
-            // OpenSession 后先排空 Nikon GetEventEx (0x90C7)，
-            // 清除相机缓存的旧事件，避免干扰后续异步事件监听
+            // OpenSession 后用 Nikon CheckEvent (0x90C7) 排空一次，
+            // 清除相机缓存的旧事件，避免干扰后续异步事件监听。
+            // 命名订正：这里调的是 CheckEvent（标准 PTP 里它只问「有没有事件」），
+            // 不是带事务号回取事件体的 GetEventEx（ZTransfer 声称是 0x9714）——
+            // 旧注释写成 GetEventEx 会让人以为我们已经取过事件体。要不要换码由
+            // PRD v2.5 FR-15② 的真机探测决定，本行不改行为。
             runCatching {
                 sendCommand(PtpConstants.OP_NIKON_CHECK_EVENT, listOf(0xFFFFFFFF.toInt(), 0, 0))
                 Timber.tag(TAG).i("GetEventEx drain after OpenSession")
