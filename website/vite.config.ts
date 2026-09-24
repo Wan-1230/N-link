@@ -69,14 +69,12 @@ function siteMeta(): Plugin {
       ];
     },
     writeBundle() {
-      // 单页站也要有 sitemap：域名已定，之前没写是因为那时写了就是编
+      // 单页站的 sitemap 之前刻意不写，是因为那时没有真域名、写了就是编
       const iso = new Date().toISOString().slice(0, 10);
+      const urls = ['/', '/releases/'];
       const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>${SITE_ORIGIN}/</loc>
-    <lastmod>${iso}</lastmod>
-  </url>
+${urls.map((u) => `  <url>\n    <loc>${SITE_ORIGIN}${u}</loc>\n    <lastmod>${iso}</lastmod>\n  </url>`).join('\n')}
 </urlset>
 `;
       fs.writeFileSync(path.resolve('dist/sitemap.xml'), xml);

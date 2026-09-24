@@ -2,18 +2,11 @@ import { useEffect } from 'react';
 import Lenis from 'lenis';
 import { ClickSpark } from './components/reactbits';
 import { Nav } from './sections/Nav';
-import { Hero } from './sections/Hero';
-import { Trust } from './sections/Trust';
-import { Pipeline } from './sections/Pipeline';
-import { Features } from './sections/Features';
-import { Why } from './sections/Why';
-import { How } from './sections/How';
-import { Changelog } from './sections/Changelog';
-import { Roadmap } from './sections/Roadmap';
-import { Tech } from './sections/Tech';
-import { Download } from './sections/Download';
 import { Footer } from './sections/Footer';
+import { Home } from './pages/Home';
+import { Releases } from './pages/Releases';
 import { LangProvider, useDict } from './i18n';
+import { RouterProvider, useRouter } from './lib/router';
 import { useReducedMotion } from './hooks/useReducedMotion';
 
 function SmoothScroll() {
@@ -40,6 +33,7 @@ function SmoothScroll() {
 function Shell() {
   const dict = useDict();
   const reduced = useReducedMotion();
+  const { path } = useRouter();
 
   return (
     <>
@@ -47,25 +41,11 @@ function Shell() {
       <a className="skip-link" href="#main">
         {dict.skip}
       </a>
-      <ClickSpark
-        sparkColor="#ffe100"
-        sparkSize={11}
-        sparkRadius={17}
-        sparkCount={reduced ? 0 : 6}
-        duration={420}
-      >
+      <ClickSpark sparkColor="#ffe100" sparkSize={11} sparkRadius={17} sparkCount={reduced ? 0 : 6} duration={420}>
         <Nav />
-        <main id="main">
-          <Hero />
-          <Trust />
-          <Pipeline />
-          <Features />
-          <Why />
-          <How />
-          <Changelog />
-          <Roadmap />
-          <Tech />
-          <Download />
+        {/* key 让换页时重挂载，淡入才会真的重播；否则只是同一棵树换个内容，看不出过渡 */}
+        <main id="main" className="route" key={path}>
+          {path === '/' ? <Home /> : <Releases />}
         </main>
         <Footer />
       </ClickSpark>
@@ -76,7 +56,9 @@ function Shell() {
 export default function App() {
   return (
     <LangProvider>
-      <Shell />
+      <RouterProvider>
+        <Shell />
+      </RouterProvider>
     </LangProvider>
   );
 }

@@ -1,19 +1,14 @@
 import { useState } from 'react';
-import type { ReactNode } from 'react';
 import { AnimatedContent } from '../components/reactbits';
 import { fill, useDict, useLang } from '../i18n';
 import { useReleases } from '../hooks/useReleases';
 import { formatBytes, formatDate, formatDateTime } from '../lib/format';
 import type { ReleaseEntry } from '../lib/release-feed';
+import { rich } from '../lib/rich';
 import { REPO } from '../lib/site';
 import './Changelog.css';
 
 const PREVIEW_BULLETS = 3;
-
-/** Release 正文里的 **粗体** 转成节点，不用 innerHTML。 */
-function rich(text: string): ReactNode[] {
-  return text.split(/\*\*(.+?)\*\*/g).map((part, i) => (i % 2 === 1 ? <strong key={i}>{part}</strong> : part));
-}
 
 function Entry({ entry, isLatest }: { entry: ReleaseEntry; isLatest: boolean }) {
   const dict = useDict();
@@ -87,7 +82,7 @@ function Entry({ entry, isLatest }: { entry: ReleaseEntry; isLatest: boolean }) 
   );
 }
 
-export function Changelog() {
+export function Changelog({ compact = false }: { compact?: boolean }) {
   const dict = useDict();
   const { lang } = useLang();
   const { feed, status, refresh } = useReleases();
@@ -106,9 +101,18 @@ export function Changelog() {
       <div className="shell">
         <div className="cl__top">
           <div>
-            <p className="eyebrow">{dict.changelog.eyebrow}</p>
-            <h2>{dict.changelog.title}</h2>
-            <p className="lede">{dict.changelog.lede}</p>
+            {compact ? (
+              <>
+                <h2 className="cl__h2">{dict.releasesPage.history}</h2>
+                <p className="lede">{fill(dict.releasesPage.historyCount, { n: feed.releases.length })}</p>
+              </>
+            ) : (
+              <>
+                <p className="eyebrow">{dict.changelog.eyebrow}</p>
+                <h2>{dict.changelog.title}</h2>
+                <p className="lede">{dict.changelog.lede}</p>
+              </>
+            )}
           </div>
 
           <div className="cl__meta">
@@ -136,7 +140,7 @@ export function Changelog() {
           </p>
         ) : (
           <>
-            <p className="cl__count plate">{fill(dict.changelog.count, { n: feed.releases.length })}</p>
+            {!compact && <p className="cl__count plate">{fill(dict.changelog.count, { n: feed.releases.length })}</p>}
             <ol className="cl__list">
               {feed.releases.map((entry, i) => (
                 <li key={entry.tag} className="cl__row">

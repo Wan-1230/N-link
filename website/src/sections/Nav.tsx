@@ -1,45 +1,123 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { LangToggle } from '../components/ui/LangToggle';
 import { useDict } from '../i18n';
-import { NAV_IDS, REPO } from '../lib/site';
+import { useScrollSpy } from '../hooks/useScrollSpy';
+import { useRouter, Link } from '../lib/router';
 import { formatCount } from '../lib/format';
+import { HOME_SECTIONS, PRODUCT_GROUPS, REPO, type ProductItemKey } from '../lib/site';
 import { useReleases } from '../hooks/useReleases';
 import './Nav.css';
 
 export function Nav() {
   const dict = useDict();
+  const { path, navigate } = useRouter();
   const { feed } = useReleases();
   const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
+  const [drawer, setDrawer] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const wrapRef = useRef<HTMLElement>(null);
+  const closeTimer = useRef<number>(0);
+
+  const onHome = path === '/';
+  const active = useScrollSpy(onHome ? HOME_SECTIONS : []);
 
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 24);
+    const onScroll = () => {
+      const y = window.scrollY;
+      setScrolled(y > 24);
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      setProgress(max > 0 ? Math.min(1, y / max) : 0);
+    };
     onScroll();
     addEventListener('scroll', onScroll, { passive: true });
     return () => removeEventListener('scroll', onScroll);
-  }, []);
+  }, [path]);
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    const onDown = (e: PointerEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
     addEventListener('keydown', onKey);
-    return () => removeEventListener('keydown', onKey);
+    addEventListener('pointerdown', onDown);
+    return () => {
+      removeEventListener('keydown', onKey);
+      removeEventListener('pointerdown', onDown);
+    };
   }, [open]);
 
+  const goProduct = (item: ProductItemKey) => {
+    setOpen(false);
+    setDrawer(false);
+    navigate('/', item);
+  };
+
+  const groupHasActive = (items: readonly string[]) => onHome && items.includes(active ?? '');
+
   return (
-    <header className={`nav${scrolled ? ' nav--scrolled' : ''}`}>
+    <header className={`nav${scrolled ? ' nav--scrolled' : ''}`} ref={wrapRef}>
       <div className="nav__inner shell">
-        <a className="nav__brand" href="#top" onClick={() => setOpen(false)}>
+        <Link className="nav__brand" to="/" onClick={() => setOpen(false)}>
           <span className="nav__mark" aria-hidden="true" />
           N-Link
-        </a>
+        </Link>
 
         <nav className="nav__links" aria-label="N-Link">
-          {NAV_IDS.map((id) => (
-            <a key={id} className="nav__link" href={`#${id}`} onClick={() => setOpen(false)}>
-              {dict.nav.sections[id]}
-            </a>
-          ))}
+          <div
+            className="nav__item"
+            onPointerEnter={(e) => {
+              if (e.pointerType !== 'mouse') return;
+              clearTimeout(closeTimer.current);
+              setOpen(true);
+            }}
+            onPointerLeave={(e) => {
+              if (e.pointerType !== 'mouse') return;
+              closeTimer.current = window.setTimeout(() => setOpen(false), 160);
+            }}
+          >
+            <button
+              type="button"
+              className={`nav__trigger${open || groupHasActive(['features', 'pipeline', 'why', 'how', 'tech', 'roadmap']) ? ' nav__trigger--on' : ''}`}
+              aria-expanded={open}
+              aria-controls="nav-product-menu"
+              onClick={() => setOpen((v) => !v)}
+            >
+              {dict.nav.product}
+              <span className={`nav__caret${open ? ' nav__caret--up' : ''}`} aria-hidden="true" />
+            </button>
+
+            <div id="nav-product-menu" className={`nav__mega${open ? ' nav__mega--open' : ''}`}>
+              <div className="nav__mega-groups">
+                {PRODUCT_GROUPS.map((g) => (
+                  <div key={g.key} className="nav__group">
+                    <p className="nav__group-title">{dict.nav.groups[g.key]}</p>
+                    {g.items.map((item) => (
+                      <button
+                        key={item}
+                        type="button"
+                        className={`nav__leaf${active === item ? ' nav__leaf--on' : ''}`}
+                        onClick={() => goProduct(item)}
+                      >
+                        <span className="nav__leaf-label">{dict.nav.items[item].label}</span>
+                        <span className="nav__leaf-desc">{dict.nav.items[item].desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                ))}
+              </div>
+              <p className="nav__mega-hint">{dict.nav.productHint}</p>
+            </div>
+          </div>
+
+          <Link
+            className={`nav__link${path === '/releases' ? ' nav__link--on' : ''}`}
+            to="/releases"
+            onClick={() => setOpen(false)}
+          >
+            {dict.nav.releases}
+          </Link>
         </nav>
 
         <div className="nav__actions">
@@ -50,15 +128,15 @@ export function Nav() {
             </svg>
             <span className="plate">{feed.stars == null ? 'GitHub' : formatCount(feed.stars)}</span>
           </a>
-          <a className="nav__cta" href={REPO.latest}>
+          <button type="button" className="nav__cta" onClick={() => navigate('/releases', 'latest')}>
             {dict.cta.download}
-          </a>
+          </button>
           <button
             type="button"
             className="nav__burger"
-            aria-expanded={open}
-            aria-label={open ? dict.nav.close : dict.nav.open}
-            onClick={() => setOpen((v) => !v)}
+            aria-expanded={drawer}
+            aria-label={drawer ? dict.nav.close : dict.nav.open}
+            onClick={() => setDrawer((v) => !v)}
           >
             <span />
             <span />
@@ -66,13 +144,26 @@ export function Nav() {
         </div>
       </div>
 
-      {open && (
-        <nav className="nav__mobile glass glass--strong" aria-label="N-Link">
-          {NAV_IDS.map((id) => (
-            <a key={id} href={`#${id}`} onClick={() => setOpen(false)}>
-              {dict.nav.sections[id]}
-            </a>
+      <span className="nav__progress" style={{ transform: `scaleX(${progress})` }} aria-hidden="true" />
+
+      {drawer && (
+        <nav className="nav__drawer glass glass--strong" aria-label="N-Link">
+          {PRODUCT_GROUPS.map((g) => (
+            <div key={g.key} className="nav__drawer-group">
+              <p>{dict.nav.groups[g.key]}</p>
+              {g.items.map((item) => (
+                <button key={item} type="button" onClick={() => goProduct(item)}>
+                  {dict.nav.items[item].label}
+                </button>
+              ))}
+            </div>
           ))}
+          <div className="nav__drawer-group">
+            <p>{dict.nav.releases}</p>
+            <button type="button" onClick={() => { setDrawer(false); navigate('/releases', 'latest'); }}>
+              {dict.cta.download}
+            </button>
+          </div>
         </nav>
       )}
     </header>

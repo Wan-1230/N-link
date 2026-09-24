@@ -39,6 +39,30 @@
   --blur: 20px;
   --saturate: 160%;
 
+  /* 字号阶梯：原先各处 clamp 各写各的，跳档明显；收敛成一档一档的刻度 */
+  --fs-900: clamp(2.5rem, 1.55rem + 4.4vw, 4.75rem);
+  --fs-800: clamp(2rem, 1.42rem + 2.5vw, 3.25rem);
+  --fs-700: clamp(1.375rem, 1.2rem + 0.75vw, 1.75rem);
+  --fs-600: 1.1875rem;
+  --fs-500: 1.0625rem;
+  --fs-400: 1rem;
+  --fs-300: 0.875rem;
+  --fs-200: 0.8125rem;
+  --fs-100: 0.75rem;
+
+  --lh-tight: 1.03;
+  --lh-snug: 1.14;
+  --lh-body: 1.65;
+  --ls-display: -0.042em;
+  --ls-head: -0.028em;
+  --ls-body: 0;
+
+  /* 三档高度，别再到处手写阴影 */
+  --el-1: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --el-2: 0 10px 30px -16px rgba(0, 0, 0, 0.75);
+  --el-3: 0 32px 80px -32px rgba(0, 0, 0, 0.9);
+  --el-ring: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+
   --font-sans: 'Space Grotesk Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
