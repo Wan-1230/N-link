@@ -93,6 +93,16 @@ class TransferViewModel @Inject constructor(
     private val _photoList = MutableStateFlow<List<CameraFile>>(emptyList())
     val photoList: StateFlow<List<CameraFile>> = _photoList.asStateFlow()
 
+    /**
+     * FR-17 成对显示闸门（`v25_raw_pair`，默认关）。
+     *
+     * 在 VM 建立时读一次：闸门是回退开关不是运行时偏好，改完重进相册自然生效。
+     * 关掉时不只是"不合并显示"——连入队展开都不做，纯 JPEG_ONLY/RAW_ONLY 模式下
+     * 也不会因为一个看不见的设置把某一格式悄悄漏掉，这才叫逐位回到 v2.3.2。
+     */
+    private val rawPairOn: Boolean =
+        com.nikonlink.app.shared.ui.glass.UiFlags.rawPairEnabled(context)
+
     private val _localPhotos = MutableStateFlow<List<CameraFile>>(emptyList())
     val localPhotos: StateFlow<List<CameraFile>> = _localPhotos.asStateFlow()
 
@@ -259,7 +269,13 @@ class TransferViewModel @Inject constructor(
         // 永远没有机内保护列，套上去会把整栏清成空的。
         val effective =
             if (filter == PhotoFilter.PROTECTED && source != AlbumSource.CAMERA) PhotoFilter.ALL else filter
-        SortInput(photos.filter { effective.matches(it) }, sort, loading)
+        val kept = photos.filter { effective.matches(it) }
+        // FR-17：成对显示只对相机源，且**在筛选之后**做——在筛剩的集合里配对，
+        // 意味着"被隐藏的那张一定在同视图里可见"，不会出现 RAW 被筛掉而 JPG 悄悄消失。
+        val merged = if (rawPairOn && source == AlbumSource.CAMERA) {
+            RawJpegPairing.applyMerge(kept, RawJpegPairing.plan(kept))
+        } else kept
+        SortInput(merged, sort, loading)
     }.mapLatest { input ->
         when {
             input.files.isEmpty() -> emptyList()
@@ -1243,7 +1259,7 @@ class TransferViewModel @Inject constructor(
             _message.value = "已标记 ${files.size} 张，可在「已标记」栏批量下载"
             // F1 可选增强：标记后自动入队下载原图（设置开关，默认关）
             if (settings.markAutoDownload && transferManager.hasActiveSession()) {
-                transferManager.enqueue(files)
+                enqueuePairs(files)
             }
         }
         return !allMarked
@@ -1258,7 +1274,7 @@ class TransferViewModel @Inject constructor(
     suspend fun markFile(file: CameraFile): Boolean {
         photoMarkRepository.mark(listOf(file))
         if (settings.markAutoDownload && transferManager.hasActiveSession()) {
-            transferManager.enqueue(listOf(file))
+            enqueuePairs(listOf(file))
         }
         return true
     }
@@ -1308,7 +1324,7 @@ class TransferViewModel @Inject constructor(
             return 0
         }
         pendingClearCandidates = candidates.mapTo(mutableSetOf()) { it.handle }
-        transferManager.enqueue(candidates)
+        enqueuePairs(candidates)
         _message.value = "已加入队列: ${candidates.size} 个文件"
         return candidates.size
     }
@@ -1382,7 +1398,7 @@ class TransferViewModel @Inject constructor(
             _message.value = "相机未连接，无法下载"
             return
         }
-        transferManager.enqueue(listOf(file))
+        enqueuePairs(listOf(file))
         _message.value = "已加入队列: ${file.fileName}"
     }
 
@@ -1390,7 +1406,7 @@ class TransferViewModel @Inject constructor(
      * 批量下载
      */
     fun downloadSelected(files: List<CameraFile>) {
-        transferManager.enqueue(files)
+        enqueuePairs(files)
         _message.value = "已加入队列: ${files.size} 个文件"
     }
 
@@ -1413,7 +1429,7 @@ class TransferViewModel @Inject constructor(
             _message.value = "相机未连接，无法下载"
             return
         }
-        transferManager.enqueue(selected)
+        enqueuePairs(selected)
         _message.value = "已加入队列: ${selected.size} 个文件"
     }
 
@@ -1455,7 +1471,7 @@ class TransferViewModel @Inject constructor(
         if (_activeAlbum.value == AlbumSource.LOCAL) return
         val files = filteredPhotos.value
         if (files.isNotEmpty()) {
-            transferManager.enqueue(files)
+            enqueuePairs(files)
             _message.value = "已加入队列: ${files.size} 个文件"
         }
     }
@@ -1469,9 +1485,37 @@ class TransferViewModel @Inject constructor(
         // 这里若用 _photoList 会把视频等被筛掉的项也拉进下载队列
         val all = filteredPhotos.value
         if (all.isNotEmpty()) {
-            transferManager.enqueue(all)
+            enqueuePairs(all)
             _message.value = "全部加入队列: ${all.size} 个文件"
         }
+    }
+
+    /**
+     * FR-17：把"用户选的格子"翻译成"该下的文件"。
+     *
+     * 界面上选中一格 = 选中这一次拍摄；落成几个下载任务由「RAW+JPEG 下载方式」决定。
+     * 闸门关着时原样入队（一个字都不改），这是"可回退"的字面意思。
+     * 配对表从**完整的相机列表**算而不是从当前筛过的列表算：查搭档要查得到被
+     * 隐藏掉的那张 JPG，否则"成对下载"会悄悄退化成"只下 RAW"。
+     */
+    private fun enqueuePairs(files: List<CameraFile>) {
+        if (!rawPairOn || files.isEmpty()) {
+            transferManager.enqueue(files)
+            return
+        }
+        val all = _photoList.value
+        val byHandle = all.associateBy { it.handle }
+        val expanded = RawJpegPairing.expand(
+            selected = files,
+            plan = RawJpegPairing.plan(all),
+            mode = when (settings.rawPairDownloadMode) {
+                AppSettings.RAW_PAIR_MODE_RAW -> RawJpegPairing.DownloadMode.RAW_ONLY
+                AppSettings.RAW_PAIR_MODE_JPEG -> RawJpegPairing.DownloadMode.JPEG_ONLY
+                else -> RawJpegPairing.DownloadMode.BOTH
+            },
+            lookup = { handle -> byHandle[handle] }
+        )
+        transferManager.enqueue(expanded)
     }
 
     fun pauseTransfer() = transferManager.pause()

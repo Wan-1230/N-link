@@ -72,6 +72,16 @@ object UiFlags {
      */
     const val TONE_TOOLS = "v25_tone_tools"
 
+    /**
+     * v2.5 FR-17：相册把同一次拍摄的 NEF 与 JPG **合成一条**显示。
+     *
+     * **默认关**。关掉 = 相册与 v2.3.2 逐位一致（两张平铺，谁没传一眼看得见）。
+     * 开着的收益是千张卡库里 RAW+JPG 连拍不再占两格；代价是"只传了 JPG 没传 RAW"
+     * 这种半完成状态变得要展开才看得出来——所以合并只敢做严格 1:1，
+     * 同名下出现两张同格式或只有一张，一律退回平铺，绝不为了少一格而丢文件。
+     */
+    const val RAW_PAIR = "v25_raw_pair"
+
     private val DEFAULTS = mapOf(
         CLASSIC to false,
         REDUCE_TRANSPARENCY to false,
@@ -83,6 +93,7 @@ object UiFlags {
         SHUTTER_XCHECK to true,
         PROTECT_SELECT to false,
         TONE_TOOLS to false,
+        RAW_PAIR to false,
     )
 
     /**
@@ -203,6 +214,9 @@ object UiFlags {
 
     /** 影调工具总闸（与玻璃无关，见 [TONE_TOOLS]） */
     fun toneToolsEnabled(c: Context): Boolean = get(c, TONE_TOOLS)
+
+    /** RAW+JPEG 合成一条显示的开关（与玻璃无关，见 [RAW_PAIR]） */
+    fun rawPairEnabled(c: Context): Boolean = get(c, RAW_PAIR)
 
     /** 折射只在"真的采了背景"的面才有意义 */
     fun lensEnabled(c: Context): Boolean = blurEnabled(c) && get(c, LENS)

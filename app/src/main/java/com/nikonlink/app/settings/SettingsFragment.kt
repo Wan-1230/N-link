@@ -206,6 +206,30 @@ class SettingsFragment : Fragment(), GlassInsetAware {
             }
         }
 
+        // RAW+JPEG 下载方式（FR-17）：闸门开着、相册真的会合并，这一项才有可作用的对象。
+        // 闸门关着时整行不出现——摆一个不生效的选择只会让人以为它管着点什么。
+        binding.tvRawPairValue.text = settings.rawPairDownloadMode
+        if (UiFlags.rawPairEnabled(requireContext())) {
+            binding.dividerRawPair.visibility = View.VISIBLE
+            binding.rowRawPair.visibility = View.VISIBLE
+            binding.rowRawPair.pressEffect()
+            binding.rowRawPair.setOnClickListener {
+                singleChoice(
+                    "RAW+JPEG 下载方式",
+                    arrayOf(
+                        AppSettings.RAW_PAIR_MODE_BOTH,
+                        AppSettings.RAW_PAIR_MODE_RAW,
+                        AppSettings.RAW_PAIR_MODE_JPEG
+                    ),
+                    settings.rawPairDownloadMode
+                ) {
+                    settings.rawPairDownloadMode = it
+                    binding.tvRawPairValue.text = it
+                    eventLogger.event("setting", "key" to "raw_pair_mode", "value" to it)
+                }
+            }
+        }
+
         binding.switchAutoDownload.setOnCheckedChangeListener { _, checked ->
             settings.autoDownload = checked
             eventLogger.event("setting", "key" to "auto_download", "value" to checked)
@@ -464,9 +488,14 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 { UiFlags.set(c, UiFlags.PROTECT_SELECT, it) }
             ),
             LabFlag(
-                UiFlags.TONE_TOOLS, "影调工具·伪彩（FR-13，默认关）",
+                UiFlags.TONE_TOOLS, "影调工具·伪彩/波形（FR-13，默认关）",
                 { UiFlags.toneToolsEnabled(c) },
                 { UiFlags.set(c, UiFlags.TONE_TOOLS, it) }
+            ),
+            LabFlag(
+                UiFlags.RAW_PAIR, "RAW+JPEG 合成一条（FR-17，默认关）",
+                { UiFlags.rawPairEnabled(c) },
+                { UiFlags.set(c, UiFlags.RAW_PAIR, it) }
             )
         )
     }
