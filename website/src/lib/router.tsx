@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { AnchorHTMLAttributes, ReactNode } from 'react';
+import snapshot from '../data/releases.json';
+import { routeMeta } from './site';
 
 /**
  * 只有两个页面，不值得为此背 react-router（约 15KB gzip，产物预算只剩 27KB）。
@@ -24,8 +26,44 @@ type RouterApi = {
 
 const Ctx = createContext<RouterApi | null>(null);
 
+function setMeta(selector: string, content: string) {
+  const el = document.head.querySelector(selector);
+  if (el) el.setAttribute('content', content);
+}
+
+/**
+ * 宿主只按精确文件路径给静态文件，/releases 与 /releases/ 都回退到根 index.html，
+ * 于是那两条入口会带着首页的 title 与 canonical。构建期生成的 dist/releases/index.html
+ * 只对 /releases/index.html 有效，所以运行时必须再同步一遍，否则 canonical 自指失败。
+ */
+function syncRouteMeta(path: Path) {
+  const latest = snapshot.releases.find((r: { tag: string }) => r.tag === snapshot.latestTag) ?? snapshot.releases[0];
+  const m = routeMeta(path === '/' ? '/' : '/releases/', `v${latest?.version ?? ''}`);
+
+  document.title = m.title;
+
+  let canonical = document.head.querySelector<HTMLLinkElement>('link[rel="canonical"]');
+  if (!canonical) {
+    canonical = document.createElement('link');
+    canonical.rel = 'canonical';
+    document.head.appendChild(canonical);
+  }
+  canonical.href = m.canonical;
+
+  setMeta('meta[name="description"]', m.description);
+  setMeta('meta[property="og:title"]', m.title);
+  setMeta('meta[property="og:description"]', m.description);
+  setMeta('meta[property="og:url"]', m.canonical);
+  setMeta('meta[name="twitter:title"]', m.title);
+  setMeta('meta[name="twitter:description"]', m.description);
+}
+
 export function RouterProvider({ children }: { children: ReactNode }) {
   const [path, setPath] = useState<Path>(current);
+
+  useEffect(() => {
+    syncRouteMeta(path);
+  }, [path]);
 
   useEffect(() => {
     const onPop = () => setPath(current());

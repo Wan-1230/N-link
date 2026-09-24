@@ -168,6 +168,8 @@ for (const [name, width, height] of VIEWPORTS) {
 
   const rel = await page.evaluate(() => ({
     path: location.pathname,
+    title: document.title,
+    canonical: document.head.querySelector('link[rel="canonical"]')?.href ?? '',
     h1: document.querySelector('h1')?.innerText.trim() ?? '',
     ver: document.querySelector('.lr__ver')?.innerText.trim() ?? '',
     apk: [...document.querySelectorAll('.lr__ch')].length,
@@ -179,6 +181,10 @@ for (const [name, width, height] of VIEWPORTS) {
   }));
 
   check('直接访问 /releases 不被 404（SPA fallback）', rel.path.startsWith('/releases'));
+  // 断言渲染后的 DOM 而不是本地 dist：宿主按精确路径给静态文件，
+  // /releases 回退到根 index.html，只有运行时同步才能让这条入口带上自己的元数据
+  check('/releases 渲染后 title 是自己的', rel.title.includes('下载与更新日志'));
+  check('/releases 渲染后 canonical 自指', rel.canonical.endsWith('/releases/'));
   check(`最新版卡置顶且为 ${expectVersion}`, rel.ver.replace(/\s/g, '').includes(expectVersion.replace(/^v/, '')));
   check('置顶卡含 4 个下载渠道', rel.apk === 4);
   check(`日志条目数 == 快照 ${snapshot.releases.length}`, rel.items === snapshot.releases.length);
