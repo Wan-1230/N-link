@@ -131,6 +131,33 @@ class ConnFlags @Inject constructor(
          */
         const val PREFLIGHT_SOFT = "v26_preflight_soft"
 
+        /**
+         * FR-26a：收到 `InitFail` 就把当前地址认定为真实相机 IP。
+         *
+         * 依据：`InitFail` 是**机身自己发出来的 PTP/IP 包**，能收到它就说明这个地址上
+         * 确实有一台尼康相机在应答，只是不认本机这个客户端 —— 这比"TCP 端口开着"强得多。
+         * 旧实现只在整条连接成功时才提升 `realCameraIp`，于是被拒的地址一律不记，
+         * App 重启后回落到硬编码 192.168.1.1：真机日志 01:11:07→01:11:31 对
+         * 192.168.1.1 / 192.168.0.1 / 192.168.3.1 / 10.0.0.1 各探一次全 TIMEOUT，
+         * 再加一次 30s socket 超时，而相机其实一直在 10.184.219.14。
+         *
+         * 关掉 = 只有整条连接成功才记地址（v2.3.2 行为）。
+         */
+        const val IP_PROMOTE = "v26_ip_promote"
+
+        /**
+         * FR-26b：USB 机身**完全不应答**时跳过「残留会话恢复」。
+         *
+         * 恢复的前提是"机身在、只是上一次的会话没关干净"；不应答说明它压根没在处理 PTP，
+         * 对它再发 CloseSession + DeviceReady 只是把两次读超时串起来。
+         * 真机证据：25 次 `stale_session_recovery` 全部失败、0 次成功；
+         * 历史上连成功的那几次 OpenSession 只用 5ms，失败的每次 16s 读超时，
+         * 加上这一步把单次失败从 16s 拖到 31s（01:08:38→01:09:09 实测）。
+         *
+         * 关掉 = 无论有没有应答都做残留会话恢复（v1.3.0 行为）。
+         */
+        const val USB_SKIP_RECOVERY = "v26_usb_skip_recovery"
+
 
         /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
@@ -194,6 +221,8 @@ class ConnFlags @Inject constructor(
             GIVEUP_FLOOR to true,
             IFACE_CLASSIFY to true,
             PREFLIGHT_SOFT to true,
+            IP_PROMOTE to true,
+            USB_SKIP_RECOVERY to true,
         )
     }
 

@@ -111,6 +111,31 @@ class UsbPtpManager @Inject constructor(
     private val _usbErrorMessage = MutableStateFlow<String?>(null)
     val usbErrorMessage: StateFlow<String?> = _usbErrorMessage.asStateFlow()
 
+    /**
+     * 机器可读的 USB 失败码（v2.6）。
+     *
+     * 为什么必须有它：上层原本靠 `usbErrorMessage` 里的**中文关键词**反推原因
+     * （`msg.contains("模式")` → 判成"相机未以 PTP 模式枚举"）。而那句提示是
+     * **给用户的建议**，里面本来就写着"确认 USB 模式为 PTP/MTP"——
+     * 于是只要走到这个分支就必然误判，哪怕同一秒 `usb_open ok=true model=Z 50II`
+     * 已经证明设备枚举得好好的。真机日志里 8 次 USB 失败全部记成
+     * `reason=no_usb_interface`，用户被指去看 USB 模式，而真实成因是机身 PTP 不应答。
+     *
+     * 取值见各写入点：`open_null` / `no_ptp_interface` / `claim_failed` /
+     * `session_open_failed` / `exception` / `permission_denied`。成功时置 null。
+     */
+    private val _usbFailCode = MutableStateFlow<String?>(null)
+    val usbFailCode: StateFlow<String?> = _usbFailCode.asStateFlow()
+
+    /**
+     * 最近一次 OpenSession 是否**完全没有应答**（v2.6）。
+     *
+     * 与"应答了但拒绝"分开，因为只有后者值得做残留会话恢复 ——
+     * 见 [openPtpSession] 调用点那段说明与真机数据（25 次恢复 0 次成功）。
+     */
+    @Volatile
+    private var lastOpenSessionNoAnswer = false
+
     /** 失败后的退避重连任务（1s/2s/4s 三次）；物理拔出或手动断开时撤销 */
     private var reconnectJob: Job? = null
 
@@ -355,7 +380,22 @@ class UsbPtpManager @Inject constructor(
                 val sessionOk = openPtpSession()
                 // v1.3.0（需求 6）：首次会话失败时做一次「残留会话恢复」再判定，
                 // 而不是直接报错重连 —— 见 recoverStaleSession() 说明。
-                val connected = sessionOk || recoverStaleSession()
+                //
+                // v2.6：但机身**完全不应答**时必须跳过这一步。残留会话恢复的前提是
+                // "机身在、只是上一次的会话没关干净"，而不应答说明它压根没在处理 PTP ——
+                // 对它再发 CloseSession + DeviceReady 只是把两次读超时串起来。
+                // 真机证据：25 次 `stale_session_recovery` 全部失败、0 次成功；
+                // 而历史上连成功的那几次 OpenSession 只用 **5ms**，失败的每次都要
+                // 16s 读超时，加上这一步就把单次失败从 16s 拖到 31s
+                // （01:08:38.313 → 01:09:09.779 实测）。
+                val skipRecovery = lastOpenSessionNoAnswer &&
+                    connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_SKIP_RECOVERY)
+                val connected = sessionOk || (!skipRecovery && recoverStaleSession())
+                if (!sessionOk && skipRecovery) {
+                    eventLogger.event(
+                        "usb_session", "ok" to false, "reason" to "no_answer_skip_recovery"
+                    )
+                }
                 if (connected) {
                     eventLogger.event("usb_session", "ok" to true)
                     // 相机名称以**机身自报的 Model** 为准：PID 映射表覆盖不全且存在
@@ -380,12 +420,19 @@ class UsbPtpManager @Inject constructor(
                         Timber.tag(TAG).i("USB LV pipeline pre-init 0xD1AC=3: $ok")
                     }
                     _usbErrorMessage.value = null
+                    _usbFailCode.value = null
                     _usbState.value = UsbConnectionState.CONNECTED
                     startEventPolling()
                     startKeepAlive()
                     Timber.tag(TAG).i("✓ USB PTP connected: ${_deviceInfo.value?.cameraModel}")
                 } else {
                     eventLogger.event("usb_session", "ok" to false)
+                    // v2.6：机器可读码。上层原本按文案关键词猜原因，而下面这句提示里
+                    // 写着"确认 USB 模式为 PTP/MTP"，于是必然命中 `contains("模式")`
+                    // 被判成 NO_USB_INTERFACE —— 可同一秒 `usb_open ok=true model=Z 50II`
+                    // 已经证明设备枚举得好好的。真机日志里 8 次 USB 失败全被这么误报，
+                    // 用户被指去改 USB 模式，而真实情况是机身不应答 PTP。
+                    _usbFailCode.value = "session_open_failed"
                     _usbErrorMessage.value =
                         "PTP 会话打开失败：相机无响应，请点亮相机屏幕并确认 USB 模式为 PTP/MTP 后重试"
                     _usbState.value = UsbConnectionState.ERROR
@@ -396,6 +443,7 @@ class UsbPtpManager @Inject constructor(
 
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "USB connection failed")
+            _usbFailCode.value = "exception"
             _usbErrorMessage.value = "USB 连接异常：${e.message ?: "未知错误"}（接口可能被占用，请重新插拔）"
             _usbState.value = UsbConnectionState.ERROR
             scheduleReconnect()
@@ -514,6 +562,9 @@ class UsbPtpManager @Inject constructor(
     private suspend fun openPtpSession(): Boolean = withContext(Dispatchers.IO) {
         try {
             val response = sendCommand(PtpConstants.OP_OPEN_SESSION, listOf(1))
+            // v2.6：区分「机身应答了但拒绝」与「机身一个字节都没回」。
+            // 这两者对 [recoverStaleSession] 的意义完全相反 —— 见该函数注释。
+            lastOpenSessionNoAnswer = response == null
             // Fix P0-3: 接受 OK 或 SESSION_ALREADY_OPEN（重复连接时相机可能已开会话）
             val ok = response?.isOk == true ||
                     response?.responseCode == PtpConstants.RESPONSE_SESSION_ALREADY_OPEN
@@ -521,6 +572,7 @@ class UsbPtpManager @Inject constructor(
             ok
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "OpenSession failed")
+            lastOpenSessionNoAnswer = true
             false
         }
     }
