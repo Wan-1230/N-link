@@ -175,9 +175,16 @@ class ConnFunnel @Inject constructor(
 
     private val _history = MutableStateFlow<List<Attempt>>(emptyList())
 
-    /** `2.3.2` / `2.6.0-debug` —— 报障时要能分清用户装的是哪个包、是不是调试包。 */
-    private val appVersion: String =
-        if (BuildConfig.DEBUG) "${BuildConfig.VERSION_NAME}-debug" else BuildConfig.VERSION_NAME
+    /**
+     * 报障时要能分清用户装的是哪个包。
+     *
+     * ⚠ 不要再手动拼 `-debug`：`app/build.gradle.kts` 的 debug buildType 已经有
+     * `versionNameSuffix = "-debug"`，`VERSION_NAME` 本身就带后缀。这里再拼一次，
+     * 真机日志里就成了 `av=2.3.2-debug-debug`（v2.6 首份验证日志即此）。
+     * 同一份日志里 `update_check current=2.3.2-debug` 用的是 `BuildConfig.VERSION_NAME`
+     * 原值，两处一对就能看出多出来的是谁。
+     */
+    private val appVersion: String = BuildConfig.VERSION_NAME
 
     /** 最近的连接尝试（含每次停在哪个阶段、原因码、耗时）。 */
     val history: StateFlow<List<Attempt>> = _history.asStateFlow()
