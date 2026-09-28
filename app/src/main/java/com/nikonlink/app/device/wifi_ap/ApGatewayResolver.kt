@@ -35,7 +35,8 @@ import javax.inject.Singleton
 class ApGatewayResolver @Inject constructor(
     @ApplicationContext private val context: Context,
     private val eventLogger: AppEventLogger,
-    private val connFlags: ConnFlags
+    private val connFlags: ConnFlags,
+    private val funnel: com.nikonlink.app.device.connect.ConnFunnel
 ) {
     companion object {
         private const val TAG = "ApGateway"
@@ -171,6 +172,18 @@ class ApGatewayResolver @Inject constructor(
             }
             Timber.tag(TAG).w("gateway host=$host has no PTP listener, trying factory defaults")
             eventLogger.event("ap_gateway", "host" to host, "stable" to stable, "probe" to "rejected")
+            // FR-21：网关明明学到了（还刚拿它探过一次），却又把 4 个出厂地址各试一遍 ——
+            // 这 4 次探测对象是**同一台机身**，而尼康同时只接受一个 PTP/IP 客户端，
+            // 每次 TCP 都可能留下一个要几十秒才被回收的半开会话。
+            // 换句话说：网关地址刚被拒，192.168.0.1 之类不会突然变成相机，
+            // 这 4 次探测**不带来新信息，只带来新的自伤**。
+            // 真机日志：第一次 `ap_gateway source=gateway`（探通）→ 5 秒后
+            // `sta_preconnect reachable=false` → 之后 5 次尝试全部 `probe=rejected`，
+            // 一路持续 4 分钟。
+            // 只有"网关压根没学到"（下面的 host == null）才值得盲试出厂地址。
+            if (connFlags.isEnabled(ConnFlags.PROBE_BUDGET)) {
+                return null
+            }
         } else {
             Timber.tag(TAG).w("no gateway found on wifi network, trying factory defaults")
             eventLogger.event("ap_gateway", "host" to "none")
@@ -195,12 +208,21 @@ class ApGatewayResolver @Inject constructor(
      * 关闭时回退到 v2.1.1 的完整握手探测（可用于二分定位）。
      */
     private suspend fun screenCameraPort(host: String, network: Network?): Boolean {
+        funnel.recordProbe()
         if (!connFlags.isEnabled(ConnFlags.PROBE_TCP_ONLY)) {
             return PtpIpProbe.probeDetailed(host, PtpConstants.DEFAULT_PORT, 1500L, network).isCandidate
         }
-        val open = PtpIpProbe.tcpConnectOnly(host, PtpConstants.DEFAULT_PORT, 800L, network)
-        if (open) delay(PROBE_SETTLE_MS)
-        return open
+        val screen = PtpIpProbe.tcpScreen(host, PtpConstants.DEFAULT_PORT, 800L, network)
+        // FR-18b：被拒时把**为什么**被拒写进日志。`reachable=false` / `probe=rejected`
+        // 这种布尔值把"端口拒绝""超时黑洞""路由根本不通"压成同一句话，
+        // 而三者的处置分别是：唤醒相机、等更久、换网络 —— 完全相反。
+        if (!screen.open) {
+            eventLogger.event(
+                "ap_probe", "host" to host, "grade" to screen.grade.name, "errno" to screen.errno
+            )
+        }
+        if (screen.open) delay(PROBE_SETTLE_MS)
+        return screen.open
     }
 
     /**

@@ -40,6 +40,19 @@ object PtpIpProbe {
         /** 连接超时 / 不可达（无主机或不在本网段） */
         TIMEOUT,
 
+        /**
+         * 路由不可达（ENETUNREACH / EHOSTUNREACH / NoRouteToHost）。
+         *
+         * 与 [TIMEOUT] 的区别有实际处置意义：TIMEOUT 是"包发出去了没人回"（相机休眠、
+         * 被 AP 隔离、黑洞路由），NO_ROUTE 是"本机根本没有通往这个地址的路"
+         * —— 手机压根不在相机那个网段上。后者重试一万次也不会好，
+         * 该提示的是"换网/重新扫描"而不是"唤醒相机"。
+         * PRD v2.6 FR-18b 新增；它不是 `ProbeResult` 老码值的一部分，
+         * 只做进程内判据，不进 [com.nikonlink.app.device.connect.ConnFunnel.Reason] 那种
+         * 对外稳定契约，所以加档不违反"只增不改"。
+         */
+        NO_ROUTE,
+
         /** 其它异常 */
         ERROR;
 
@@ -112,6 +125,21 @@ object PtpIpProbe {
     }
 
     /**
+     * TCP-only 筛探的**结论**（PRD v2.6 FR-18b）。
+     *
+     * 旧的 `tcpConnectOnly` 返回 Boolean，于是"端口被拒（相机在、没起监听）"
+     * "超时（黑洞）""路由不可达（根本不在同一个网段）"这三件完全不同的事
+     * 在日志里都是同一句 `reachable=false` —— 用户日志排查时根本分不出该关 VPN
+     * 还是该唤醒相机。本类型把档位连同原始异常身份一起带出来。
+     *
+     * @param open 端口是否连通（等价旧布尔值）
+     * @param grade 档位：[ProbeResult.OK] / [ProbeResult.REFUSED] / [ProbeResult.TIMEOUT] /
+     *              [ProbeResult.NO_ROUTE] / [ProbeResult.ERROR]
+     * @param errno 异常类名 + message，供日志核对；探通时为 null
+     */
+    data class TcpScreen(val open: Boolean, val grade: ProbeResult, val errno: String?)
+
+    /**
      * **只做 TCP 连接，不发 PTP/IP 握手**（PRD v2.2 §5.2 T-S3）。
      *
      * 网段盲扫期间对每个地址发 InitCommand 有两个代价：① 每个候选多花一个握手超时；
@@ -124,17 +152,50 @@ object PtpIpProbe {
         port: Int = PtpConstants.DEFAULT_PORT,
         timeoutMs: Long = 500L,
         network: Network? = null
-    ): Boolean = withContext(Dispatchers.IO) {
+    ): Boolean = tcpScreen(host, port, timeoutMs, network).open
+
+    /**
+     * [tcpConnectOnly] 的带档位版本（FR-18b）：连接流程要用它，
+     * 这样 `sta_preconnect` / `ap_gateway` 才说得出**为什么**没探通。
+     * 网段盲扫那种"只要知道开没开"的场合继续用布尔版本，别为了统一而把调用点搞复杂。
+     */
+    suspend fun tcpScreen(
+        host: String,
+        port: Int = PtpConstants.DEFAULT_PORT,
+        timeoutMs: Long = 500L,
+        network: Network? = null
+    ): TcpScreen = withContext(Dispatchers.IO) {
         val effective = timeoutMs.coerceIn(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS).toInt()
         try {
             val socket = if (network != null) network.socketFactory.createSocket() else Socket()
             socket.use {
                 it.connect(InetSocketAddress(host, port), effective)
-                true
+                TcpScreen(true, ProbeResult.OK, null)
             }
         } catch (e: Exception) {
             Timber.tag(TAG).v("TCP-only screen miss for %s:%d: %s", host, port, e.message)
-            false
+            TcpScreen(false, gradeOf(e), "${e.javaClass.simpleName}:${e.message}")
+        }
+    }
+
+    /**
+     * 异常 → 档位。抽成独立函数只为可测（FR-18b 的判据全在这一坨映射里，
+     * 而它跑在真 socket 的 catch 分支里，没法用普通单测触发）。
+     *
+     * 消息里的 errno 字面量是 libsocket 抛上来的 `ErrnoException.getMessage()`，
+     * Android 各版本措辞不一，所以两边都匹配。
+     */
+    internal fun gradeOf(e: Throwable): ProbeResult {
+        val msg = e.message?.lowercase().orEmpty()
+        return when {
+            e is SocketTimeoutException -> ProbeResult.TIMEOUT
+            e is PortUnreachableException -> ProbeResult.REFUSED
+            e is NoRouteToHostException -> ProbeResult.NO_ROUTE
+            msg.contains("refused") || msg.contains("econnrefused") -> ProbeResult.REFUSED
+            msg.contains("unreachable") || msg.contains("route") ||
+                msg.contains("enetrout") || msg.contains("ehostunreach") -> ProbeResult.NO_ROUTE
+            msg.contains("timed out") || msg.contains("timeout") -> ProbeResult.TIMEOUT
+            else -> ProbeResult.ERROR
         }
     }
 

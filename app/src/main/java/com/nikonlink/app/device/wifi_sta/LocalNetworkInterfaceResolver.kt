@@ -3,6 +3,7 @@ package com.nikonlink.app.device.wifi_sta
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import com.nikonlink.app.device.connect.ConnFlags
 import dagger.hilt.android.qualifiers.ApplicationContext
 import timber.log.Timber
 import java.net.Inet4Address
@@ -41,10 +42,42 @@ import javax.inject.Singleton
  */
 @Singleton
 class LocalNetworkInterfaceResolver @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val connFlags: ConnFlags
 ) {
     companion object {
         private const val TAG = "LocalNetIface"
+
+        /**
+         * FR-23：蜂窝与 VPN 接口的名字前缀**兜底表**。
+         *
+         * 它不是唯一判据 —— 主判据是 [nonWifiLikeInterfaceNames] 从 `ConnectivityManager`
+         * 读到的 transport，本表只是叠加保险：当蜂窝网络已注册但链路属性还没就绪、
+         * 或 ROM 干脆不给 VPN 派发 Network 对象时，名字仍能把黑洞出口拦下来。
+         *
+         * 出处（PRD v2.6 §十 要求每个数字/名单有来处）：
+         *  - `ccmni` —— 真机日志实际观测到 `ccmni2 10.32.64.21/8`、`ccmni4 10.3.9.110/8`
+         *    （MediaTek 平台蜂窝数据口，两份不同机器的日志里都出现过）
+         *  - `vgate` —— 真机日志实际观测到 `vgate0 172.30.235.180/32`（/32 点对点，虚拟网关）
+         *  - `rmnet` —— 高通平台蜂窝数据口的通用命名
+         *  - `tun` / `tap` —— 通用 VPN 虚拟网卡命名
+         *  - `ppp` —— 3GPPP 拨号与部分 VPN 的点对点命名（蜂窝/VPN 两侧都可能用到，两边都排）
+         *
+         * **不排**的东西：`ap0` / `swlan0` / `softap0` / `wlan1` 等热点与第二 WiFi 接口
+         * —— 它们正是"手机自己开热点、相机连上来"那条拓扑的唯一出口，误排就会退回
+         * RC-0 那个"能发现但恒判 no_wifi_network"的老坑（见本类头注释）。
+         */
+        internal val NON_WIFI_PREFIXES = listOf("ccmni", "rmnet", "vgate", "tun", "tap", "ppp")
+
+        /**
+         * 名字前缀判据（抽成纯函数只为可测）。
+         *
+         * 它是**兜底**，主判据是 transport —— 见 [isNonWifiName]。
+         * 断言里钉住 `ap0` / `wlan0` / `swlan0` 不被误排，因为那正是
+         * RC-0 那个"能发现但恒判 no_wifi_network"的坑会被重新踩回去的地方。
+         */
+        internal fun matchesNonWifiPrefix(name: String): Boolean =
+            NON_WIFI_PREFIXES.any { name.startsWith(it) }
     }
 
     /** 一个本机 IPv4 链路地址（网卡名 + 地址 + 前缀长度）。 */
@@ -102,13 +135,17 @@ class LocalNetworkInterfaceResolver @Inject constructor(
     }
 
     /**
-     * 本机 IPv4 网段列表（`地址 to 前缀`），**含热点接口** —— 供网段扫描使用。
+     * 本机 IPv4 网段列表（`地址 to 前缀`），**含热点接口、不含蜂窝与 VPN** —— 供网段扫描使用。
      *
      * 与 [WifiScanner.currentIpv4Addresses] 的 `ConnectivityManager` 版本互为补充：
      * 那个负责"客户端 WiFi 网段"，本方法负责"热点网段 + 其它内核可见网段"。
+     *
+     * FR-23：这里必须走 [wifiLikeAddresses] 而不是 [localAddresses] —— 蜂窝口常报 /8
+     * （真机观测到 `ccmni4 10.3.9.110/8`），把它并进扫描网段等于对着一整段运营商
+     * NAT 地址做盲扫，既扫不到二层直连的相机，又把探测预算烧光。
      */
     fun subnets(): List<Pair<String, Int>> =
-        localAddresses().map { it.address to it.prefixLength }.distinct()
+        wifiLikeAddresses().map { it.address to it.prefixLength }.distinct()
 
     private fun ipToInt(host: String): Int? {
         val parts = host.trim().split(".")
@@ -151,6 +188,48 @@ class LocalNetworkInterfaceResolver @Inject constructor(
     }
 
     /**
+     * 从 `ConnectivityManager` 动态取出「确定不是 WiFi」的接口名。
+     *
+     * 为什么以它为主判据：接口名在各 ROM 上完全不统一（本类头注释已警告过），
+     * 而 transport 是系统给的性质声明，跨机型稳定。
+     *
+     * FR-23 关闭时返回空集，退化成"只按名字前缀判"以外的原行为（等价 v2.3.2）。
+     */
+    private fun transportExcludedNames(): Set<String> {
+        if (!connFlags.isEnabled(ConnFlags.IFACE_CLASSIFY)) return emptySet()
+        val cm = runCatching { context.getSystemService(ConnectivityManager::class.java) }.getOrNull()
+            ?: return emptySet()
+        val names = mutableSetOf<String>()
+        for (network in runCatching { cm.allNetworks }.getOrNull() ?: return names) {
+            val caps = runCatching { cm.getNetworkCapabilities(network) }.getOrNull() ?: continue
+            val cellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+            val vpn = caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            if (!cellular && !vpn) continue
+            runCatching { cm.getLinkProperties(network)?.interfaceName }.getOrNull()?.let { names.add(it) }
+        }
+        return names
+    }
+
+    /** 这个接口名是不是蜂窝 / VPN 出口。 */
+    private fun isNonWifiName(name: String, transportExcluded: Set<String>): Boolean {
+        if (name in transportExcluded) return true
+        return connFlags.isEnabled(ConnFlags.IFACE_CLASSIFY) &&
+            NON_WIFI_PREFIXES.any { name.startsWith(it) }
+    }
+
+    /**
+     * 本机全部「类 WiFi 的可用 IPv4 链路地址」—— 蜂窝与 VPN 出口已剔除。
+     *
+     * [localAddresses] 是内核原始全量（含蜂窝），诊断文本要用它如实呈现；
+     * 凡是**决策**用得到的地方（有没有本地网络、默认路由能不能走）都必须用本方法，
+     * 否则就是 FR-23 修的那个"把蜂窝当 WiFi"的误判。
+     */
+    fun wifiLikeAddresses(): List<LocalAddress> {
+        val excluded = transportExcludedNames()
+        return localAddresses().filterNot { isNonWifiName(it.interfaceName, excluded) }
+    }
+
+    /**
      * 手机上是否存在「类 WiFi 的本地接口」—— 用于区分
      * **"真的一个网都没有"** 与 **"有热点但 ConnectivityManager 看不见"**。
      *
@@ -158,9 +237,14 @@ class LocalNetworkInterfaceResolver @Inject constructor(
      * 但手机开热点时 `allNetworks` 里确实没有 WiFi，而这个热点接口是**真实可用**的
      * （相机就连在它上面）。若此时还判 `no_wifi_network`，就是 RC-0 那个误判。
      *
-     * @return true = 存在至少一个非回环、有 IPv4 的接口（含热点）
+     * FR-23：判据从「有任意非回环 IPv4」收紧为「有非蜂窝、非 VPN 的 IPv4」。
+     * 旧实现把 `ccmni4`（蜂窝）与 `vgate0`（VPN）算成"类 WiFi"，于是 WiFi 没连上时
+     * 仍判"有本地网络"→ 走默认路由把 socket 打进蜂窝黑洞，白烧掉整个重试预算。
+     * 真机日志：15/15 次 `sta_fallback` 全部 `in_subnet=false`，`in_subnet=true` 出现 0 次。
+     *
+     * @return true = 存在至少一个非回环、有 IPv4、且不是蜂窝/VPN 的接口（含热点）
      */
-    fun hasLocalWifiLikeInterface(): Boolean = localAddresses().isNotEmpty()
+    fun hasLocalWifiLikeInterface(): Boolean = wifiLikeAddresses().isNotEmpty()
 
     /**
      * 当前是否处于「热点拓扑」：系统侧看不到 WiFi 客户端网络，
