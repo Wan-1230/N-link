@@ -597,6 +597,27 @@ class WifiDirectConnector @Inject constructor(
         } catch (e: CancellationException) {
             eventLogger.event("sta_cancel", "gen" to gen, "attempt" to attempt)
             throw e
+        } catch (e: Exception) {
+            // FR-26c 兜底：任何没被上面分支归类的异常，都**不许**让这一代连接静默消失。
+            //
+            // 旧实现只有 CancellationException 一个 catch，其余异常直接穿透到 launch，
+            // 于是 `run()` 的失败既不进日志、也不上 UI、也不关漏斗 —— 用户那边
+            // 就是"转了一下不动了"，只能自己再点一次（真机日志：4 个 generation
+            // 全死在 resolveNetwork，之后 53 秒一片空白，直到用户重新点击）。
+            Timber.tag(TAG).e(e, "STA connect loop died at attempt $attempt")
+            eventLogger.event(
+                "sta_loop_error", "gen" to gen, "attempt" to attempt,
+                "err" to e.javaClass.simpleName, "msg" to e.message,
+                "host" to endpoint.host
+            )
+            stateMachine.dispatch(
+                ConnectionEvent.ErrorOccurred(
+                    "连接流程自身出错（${e.javaClass.simpleName}），已停止本轮重试。" +
+                        "请再点一次连接；若反复出现请导出日志反馈",
+                    recoverable = true
+                )
+            )
+            onFail("loop_error")
         } finally {
             // 归还"连接尝试"这一次持锁（会话持有另算，引用计数保证不误放）
             networkMonitor.releaseLocks()
@@ -638,6 +659,21 @@ class WifiDirectConnector @Inject constructor(
      * （`held == null`）就会释放 callback，所以被取消是安全的，不会泄漏。
      * 其它两条是无副作用的只读查询，取消无成本。
      */
+    /**
+     * FR-26c：选网某一路抛异常时留痕。
+     *
+     * 不留痕的后果是整代连接静默死掉、日志里只剩一行 `sta_cancel`，
+     * 于是"被新连接顶掉"和"自己崩了"这两种完全不同的事看起来一模一样 ——
+     * 上一轮排查就是卡在这里，只能靠"死后 53 秒没有新 `sta_try`"反推。
+     */
+    private fun logResolveFailure(path: String, e: Throwable) {
+        Timber.tag(TAG).w(e, "resolveNetwork path=$path failed")
+        eventLogger.event(
+            "net_resolve_fail", "path" to path,
+            "err" to e.javaClass.simpleName, "msg" to e.message
+        )
+    }
+
     private suspend fun resolveNetwork(
         host: String,
         onProgress: ((String) -> Unit)? = null
@@ -647,11 +683,28 @@ class WifiDirectConnector @Inject constructor(
             // 首个非 null 结果通过它回传（conflated：后来者无人接也无所谓）
             val winner = Channel<android.net.Network>(Channel.CONFLATED)
 
+            // FR-26c：三路**各自**兜住异常。
+            //
+            // 旧写法只有第三路包了 runCatching；`awaitWifiNetworkFor` 是裸调，而它内部
+            // `allNetworks` / `getNetworkCapabilities` / `getLinkProperties` 三个 binder
+            // 调用一个都没兜 —— 网络正在拆除的瞬间它们会抛。一旦抛出，`coroutineScope`
+            // 取消整个父协程，把**这一代连接**打死：`run()` 只在 CancellationException
+            // 分支记一行 `sta_cancel` 就 rethrow，既不归类、不上报、也没有任何东西重启它。
+            // 用户看到的就是"转了一下不动了"。
+            //
+            // 真机 signature（vivo V2509A，2026-09-29）：4 个 generation 全部死在
+            // "上一轮失败分类之后 1~2.5 秒"，正是下一轮 resolveNetwork 刚跑起来的位置；
+            // 且死后 53 秒内没有任何新 `sta_try` —— 若是被新连接顶掉，
+            // `connect()` 会立刻打出下一条 `sta_try`，所以只能是这一代自己没了。
             val requester = async(Dispatchers.IO) {
-                networkRequester.acquire(host, AWAIT_NETWORK_MS)?.let { winner.trySend(it) }
+                runCatching { networkRequester.acquire(host, AWAIT_NETWORK_MS) }
+                    .onFailure { logResolveFailure("requester", it) }
+                    .getOrNull()?.let { winner.trySend(it) }
             }
             val monitor = async(Dispatchers.IO) {
-                networkMonitor.awaitWifiNetworkFor(host, AWAIT_NETWORK_MS)?.let { winner.trySend(it) }
+                runCatching { networkMonitor.awaitWifiNetworkFor(host, AWAIT_NETWORK_MS) }
+                    .onFailure { logResolveFailure("monitor", it) }
+                    .getOrNull()?.let { winner.trySend(it) }
             }
             val fallback = async(Dispatchers.IO) {
                 // FR-20：这里换成**纯查询**的 `activeWifiNetwork()`。
@@ -659,7 +712,9 @@ class WifiDirectConnector @Inject constructor(
                 // **落选**（另外两路先给出了结果），进程路由也已经被它改掉，
                 // 而调用方随后只按胜出者的 netId 判断 —— 两者可能不是同一张网。
                 // 绑定动作现在只发生在下面 `bindProcessTo(usable)` 那一处。
-                runCatching { wifiManager.activeWifiNetwork() }.getOrNull()?.let { winner.trySend(it) }
+                runCatching { wifiManager.activeWifiNetwork() }
+                    .onFailure { logResolveFailure("fallback", it) }
+                    .getOrNull()?.let { winner.trySend(it) }
             }
 
             // 进度心跳：并行等待期间保持用户感知
