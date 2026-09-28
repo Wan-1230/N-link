@@ -80,11 +80,15 @@ class StaNetworkRequester @Inject constructor(
      *    另一个子网，按"任意 WiFi 网络"选会绑错路由，所以必须按子网匹配；
      * 2. 慢路径：向系统 `requestNetwork` 并等待回调，期间持续按子网匹配。
      *
-     * 两条路径都拿不到精确匹配时，退而返回任意 WiFi 网络（总比没有强，
-     * 上层还有 PTP/IP Init 握手做最终确认）。
+     * 两条路径都拿不到**精确匹配**时：
+     *  - FR-20 开（默认）→ 返回 null。"总比没有强"是错觉：拿到句柄就意味着上层会
+     *    `bindProcessToNetwork`，把一个到不了相机的网段变成全进程的路由，
+     *    失败形态从"能重试"变成"每条 socket 都秒断"。返回 null 反而更好 ——
+     *    上层有默认路由回落这条正路，并且会把网段判据打进日志。
+     *  - FR-20 关 → 退回 v2.3.2 行为，返回任意 WiFi 网络。
      *
      * @param host 相机 IP，用于子网匹配；为 null 时只做"任意 WiFi 网络"。
-     * @return 申请到的网络；超时返回 null。
+     * @return 申请到的网络；超时或（FR-20 开时）无子网匹配则返回 null。
      */
     suspend fun acquire(host: String?, timeoutMs: Long = 6000L): Network? {
         val target = host?.let { ipToInt(it) }
@@ -172,6 +176,19 @@ class StaNetworkRequester @Inject constructor(
                 delay(POLL_INTERVAL_MS)
             }
 
+            // FR-20：曾经这里把"看见过的任意 WiFi"当兜底返回。
+            // 一旦返回，上层就会 `bindProcessToNetwork(it)` 把**整个进程**绑到一张
+            // 根本到不了相机 IP 的网上 —— 而绑错网时 `network != null`，
+            // 连 `in_subnet` 那条诊断都不会打（它只在 network == null 分支里）。
+            // 真机日志：某台机器 6/6 次 `tcp_timeout`、一条 `sta_fallback` 都没有、
+            // socket 全部 1.3s 内秒失败 —— 那就是绑错网后的 EHOSTUNREACH 形态。
+            // 现在宁可返回 null，让上层走默认路由回落并**把网段判据打进日志**。
+            if (fallback != null && connFlags.isEnabled(ConnFlags.BIND_SUBNET_CHECK)) {
+                Timber.tag(TAG).w(
+                    "saw wifi $fallback but its link addresses do not cover host=$host — 不绑，交默认路由回落"
+                )
+                return null
+            }
             if (fallback != null) {
                 Timber.tag(TAG).w("no subnet-matched wifi, fallback to $fallback (host=$host)")
                 held = fallback

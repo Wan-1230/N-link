@@ -66,6 +66,72 @@ class ConnFlags @Inject constructor(
          */
         const val EVENT_SILENCE_HOLD = "v25_event_silence_hold"
 
+        // ── v2.6 连接链路可观测性与首连成功率（PRD v2.6 §五）─────────────────
+
+        /**
+         * FR-19：一次用户意图 = 一个 generation。
+         *
+         * v2.3.2 的幂等守卫只判 `connector.isActive`，而 `learnFirst` 分支要先跑
+         * ~2.4s 的网关学习才碰到 connector，那段窗口里任何重入都放行；重入又用
+         * `pairingJob = launch{...}` **覆盖而不取消**旧 job → 孤儿协程各自发起一代连接。
+         * 真机日志：4.9s 内 22 条 `sta_try`，45 个连接样本里 36 个（80%）是 `superseded`。
+         * 关掉 = 回到 v2.3.2 的守卫。
+         */
+        const val CONN_SERIALIZE = "v26_conn_serialize"
+
+        /**
+         * FR-20：绑网前必须确认这张网的链路地址覆盖相机 IP。
+         *
+         * v2.3.2 的三路选网在子网不匹配时都会"退而求其次"返回任意 WiFi，然后把
+         * **整个进程**绑上去 —— 而 `in_subnet` 诊断只在拿不到 Network 的分支里打，
+         * 绑错网时日志一片安静。真机日志：某台机器 6/6 次 `tcp_timeout`，
+         * 一条 `sta_fallback` 都没有，socket 全部 1.3s 内秒失败。
+         * 关掉 = 回到"任意 WiFi 也绑"。
+         */
+        const val BIND_SUBNET_CHECK = "v26_bind_subnet_check"
+
+        /**
+         * FR-21：一次连接对机身 15740 的探测次数收敛。
+         *
+         * 尼康机身同时只接受一个 PTP/IP 客户端，而我们一次"点连接"要发 20 次量级的
+         * TCP 探测（网关 1 + 出厂兜底 4 + 每轮 preconnect 2 + 每轮失败后 1 + 真实 2，
+         * ×3 轮）。代码自己的注释记着实测：探测留下的半开会话要 **~35s** 才被机身收掉，
+         * 而 `PROBE_SETTLE_MS` 只有 400ms。真机日志：第一次探通，之后 4 分钟全 `probe=rejected`。
+         * 关掉 = 回到 v2.3.2 的探测密度。
+         */
+        const val PROBE_BUDGET = "v26_probe_budget"
+
+        /**
+         * FR-22：`camera_unreachable` 提前收口要同时满足"已经等够了"。
+         *
+         * 真机日志：失败恒定 20.1~21.4s 收口（n=6），而同型链路成功要 26.4~181.3s（n=4）。
+         * **成功所需时间 > 放弃预算** —— 这是"老版本能连、新版本连不上"最省假设的解释
+         * （v1.3.1 既无 `UNREACHABLE_GIVE_UP` 也无 `RETRY_BUDGET`，跑满 10 次退避）。
+         * 关掉 = 连续 3 次不可达立即收口，不看累计等待。
+         */
+        const val GIVEUP_FLOOR = "v26_giveup_floor"
+
+        /**
+         * FR-23：「类 WiFi 的本地接口」要排除蜂窝与 VPN。
+         *
+         * v2.3.2 的实现是 `localAddresses().isNotEmpty()`，于是 `ccmni4`（蜂窝）、
+         * `vgate0`（VPN）都算数 → 手机 WiFi 没连上时也判为"有本地网络"→ 走默认路由
+         * 把 socket 打进蜂窝黑洞。真机日志：15/15 次 `sta_fallback` 全部
+         * `in_subnet=false`，`in_subnet=true` 出现 **0** 次。
+         * 关掉 = 回到"任意非回环 IPv4 即算类 WiFi"（v2.0.1 修 RC-0 时的粗判据）。
+         */
+        const val IFACE_CLASSIFY = "v26_iface_classify"
+
+        /**
+         * FR-24：预检分「硬阻断」与「软告警」，软告警不受"已在相机热点上"豁免。
+         *
+         * v2.3.2 在 `isOnCameraAp()` 为真时**跳过全部预检**，包括 VPN 与「避开不良网络」
+         * 两项 —— 而恰恰是在相机热点上，这两项才是致败因素（日志里那台机器就有 `vgate0`）。
+         * 关掉 = 回到"热点上什么都不查"。
+         */
+        const val PREFLIGHT_SOFT = "v26_preflight_soft"
+
+
         /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
          *
@@ -122,6 +188,12 @@ class ConnFlags @Inject constructor(
             PREFLIGHT to true,
             USB_GRACE to true,
             USB_OTG_HINT to true,
+            CONN_SERIALIZE to true,
+            BIND_SUBNET_CHECK to true,
+            PROBE_BUDGET to true,
+            GIVEUP_FLOOR to true,
+            IFACE_CLASSIFY to true,
+            PREFLIGHT_SOFT to true,
         )
     }
 

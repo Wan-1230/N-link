@@ -375,8 +375,22 @@ class WifiManager @Inject constructor(
     }
 
     /**
+     * 当前可用的 WiFi 网络句柄，**纯查询、不产生任何副作用**。
+     *
+     * FR-20：[bindToActiveWifi] 会把"查一下有没有 WiFi"和"把整个进程绑上去"
+     * 两件事捏在一个调用里。当它作为并行竞速的一路被调用时，即使这一路**落选**，
+     * 进程也已经被绑到了它查到的那张网上 —— 而那张网未必能到达相机 IP。
+     * 绑定的决定权收归唯一一处（`WifiDirectConnector` 的子网校验之后）。
+     */
+    fun activeWifiNetwork(): Network? = resolveWifiNetwork()
+
+    /**
      * STA 模式下手机和相机处于同一路由器 WiFi。
      * 把进程默认网络绑定到当前 WiFi，确保 PTP/IP Socket 不会走到蜂窝网。
+     *
+     * ⚠ 有副作用（改的是全进程路由）。连接主循环请改用 [activeWifiNetwork] +
+     * 调用方自己的子网校验；本方法保留给"我确实就是要绑当前 WiFi"的场合
+     * （`ConnectionManager.establishPtpSession`）。
      */
     fun bindToActiveWifi(): Network? {
         val network = resolveWifiNetwork() ?: return null
