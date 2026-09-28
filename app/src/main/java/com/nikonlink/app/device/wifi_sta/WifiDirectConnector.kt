@@ -199,7 +199,7 @@ class WifiDirectConnector @Inject constructor(
         endpoint: WifiEndpoint,
         mode: Mode,
         onWaitingCameraOk: (() -> Unit)? = null,
-        onRetry: (() -> Unit)? = null,
+        onRetry: ((String?) -> Unit)? = null,
         onSuccess: () -> Unit = {},
         onFail: (String) -> Unit = {}
     ): Job {
@@ -240,7 +240,7 @@ class WifiDirectConnector @Inject constructor(
         gen: Int,
         mode: Mode,
         onWaitingCameraOk: (() -> Unit)?,
-        onRetry: (() -> Unit)?,
+        onRetry: ((String?) -> Unit)?,
         onSuccess: () -> Unit,
         onFail: (String) -> Unit
     ) {
@@ -261,6 +261,8 @@ class WifiDirectConnector @Inject constructor(
          * 这里把第一次的结论带下去复用。
          */
         var preconnectGrade: PtpIpProbe.ProbeResult? = null
+        /** FR-20④：本轮是否出现过「有 WiFi 但没有一张能覆盖相机 IP」——决定报 bind_failed 还是 no_wifi_network。 */
+        var rejectedBySubnetCheck = false
         // RC-5: 连接生命周期内持有 WifiLock/MulticastLock，finally 保证释放
         networkMonitor.acquireLocks()
         try {
@@ -283,7 +285,7 @@ class WifiDirectConnector @Inject constructor(
                 // FIX-2：三条路径**并行**竞争，不再串行叠加（旧版 8s + 8s = 16.2s 才出结果）
                 // 并行等待期间通过 onRetry 推进度文案，避免长时间静止无反馈
                 val network = resolveNetwork(endpoint.host) { progress ->
-                    onRetry?.invoke()
+                    onRetry?.invoke(progress)
                     eventLogger.event("sta_progress", "gen" to gen, "hint" to progress)
                 }
                 // FR-20：**拿到 Network 句柄 ≠ 这张网能到相机**。三路选网在子网不匹配时
@@ -297,7 +299,12 @@ class WifiDirectConnector @Inject constructor(
                     !connFlags.isEnabled(ConnFlags.BIND_SUBNET_CHECK) ||
                         networkMonitor.networkCoversHost(it, endpoint.host)
                 }
+                // FR-20④：把"有网、但不是能到相机的那张"和"压根没网"分开。
+                // 这两个原因码在 `ConnFunnel.Reason` 里早就都存在，但 BIND_FAILED
+                // 自加入起**零调用点** —— 于是一份满是"拿不到 WiFi"的日志里，
+                // 真正的绑错网被归到了错误的桶里，给用户的指引也是错的。
                 if (network != null && usable == null) {
+                    rejectedBySubnetCheck = true
                     // 把本机网卡地址一起打出来：`in_subnet` 那条诊断以前只在
                     // `network == null` 分支里打，于是"绑错网"这种情况一行日志都不留 ——
                     // 而这恰恰是最需要留的一种。
@@ -359,7 +366,11 @@ class WifiDirectConnector @Inject constructor(
                 }
 
                 if (usable == null && !defaultRouteFallback) {
-                    lastErr = "no_wifi_network"
+                    // FR-20④：「压根没连 WiFi」与「连了 WiFi 但没有一张能到相机 IP」是两件事，
+                    // 处置也不同 —— 前者去连网，后者要的是换一张网 / 关掉蜂窝与 VPN。
+                    // 合并成一句"手机未连接 WiFi"会把人指引到错误的设置页上。
+                    val reason = if (rejectedBySubnetCheck) "bind_failed" else "no_wifi_network"
+                    lastErr = reason
                     // v1.3.2 STA 反馈修复：手机压根没有任何本地网络时立刻收口。
                     // 旧版会走满 10 次退避（≈90s），用户面对"正在连接…"却永远等不到结果。
                     //
@@ -368,16 +379,25 @@ class WifiDirectConnector @Inject constructor(
                     // 不在 allNetworks 里，用 allNetworks 判断会得到"没有 WiFi"的假阴性。
                     // 真机日志铁证：9 轮尝试全是 reason=no_wifi_network attempt=1。
                     eventLogger.event(
-                        "sta_fail", "gen" to gen, "reason" to "no_wifi_network",
+                        "sta_fail", "gen" to gen, "reason" to reason,
                         "attempt" to attempt, "host" to endpoint.host
                     )
                     stateMachine.dispatch(
-                        ConnectionEvent.ErrorOccurred(
-                            "手机未连接 WiFi：请先连上相机所在的同一个 WiFi / 热点后重试",
-                            recoverable = true
-                        )
+                        if (rejectedBySubnetCheck) {
+                            ConnectionEvent.ErrorOccurred(
+                                "手机连着的 WiFi 到不了相机（${endpoint.host}）：这张网的地址段里没有它。" +
+                                    "请确认手机连的是相机自己发出的热点；" +
+                                    "若已在相机热点上仍报此错，请关闭移动数据与 VPN 后重试",
+                                recoverable = true
+                            )
+                        } else {
+                            ConnectionEvent.ErrorOccurred(
+                                "手机未连接 WiFi：请先连上相机所在的同一个 WiFi / 热点后重试",
+                                recoverable = true
+                            )
+                        }
                     )
-                    onFail("no_wifi_network")
+                    onFail(reason)
                     return
                 }
                 // ZDROP 同款：进程级绑定到 WiFi 网络，杜绝双卡手机蜂窝默认路由
@@ -414,7 +434,7 @@ class WifiDirectConnector @Inject constructor(
                 // 只用于：① 抢出几秒等待时间；② 让日志/UI 能区分"没起监听"与"握手失败"。
                 if (attempt <= PRECONNECT_MAX_ROUNDS) {
                     val screen = waitUntilReachable(usable, endpoint) { hint ->
-                        onRetry?.invoke()
+                        onRetry?.invoke(hint)
                         eventLogger.event("sta_progress", "gen" to gen, "hint" to hint)
                     }
                     // FR-18b：档位而不是布尔。REFUSED（相机在、端口没起）、
@@ -483,7 +503,7 @@ class WifiDirectConnector @Inject constructor(
                     ackSilent = ackSilent,
                     reachable = !unreachable
                 )
-                onRetry?.invoke()
+                onRetry?.invoke(null)
                 Timber.tag(TAG).w("WiFi connect attempt $attempt failed (${endpoint.display}), backing off")
 
                 // RC-6 附加：连续确认"相机不可达"时提前收口，别让用户干等。
@@ -524,7 +544,14 @@ class WifiDirectConnector @Inject constructor(
                             "waited_ms" to waited, "floor_ms" to GIVEUP_FLOOR_MS,
                             "reason" to "unreachable_but_under_floor", "host" to endpoint.host
                         )
-                        onRetry?.invoke()
+                        // FR-22②：把"还要等多久"说出来。
+                        // 转圈静止不动 → 用户以为死掉 → 再点一次 → 把这一代顶掉，
+                        // 于是又开一轮全新的探测与绑网（FR-19 那个风暴的入口就是这个）。
+                        // 等待变长是 FR-22 主动换来的代价，那它必须**可见**。
+                        val remainSec = ((GIVEUP_FLOOR_MS - waited) / 1000L).coerceAtLeast(0L)
+                        onRetry?.invoke(
+                            "相机还没响应，继续等待中（约还需 $remainSec 秒）…"
+                        )
                     }
                 } else {
                     consecutiveUnreachable = 0
@@ -751,6 +778,10 @@ class WifiDirectConnector @Inject constructor(
         val initFailReason = ptpSession.lastInitFailReason.value
         return when (reason) {
             "no_wifi_network" -> "手机未连接 WiFi：请先连上相机所在的同一个 WiFi / 热点后重试"
+            // FR-20④：和上一行必须分开 —— 一句让人去连 WiFi，一句让人换网/关蜂窝/关 VPN。
+            "bind_failed" ->
+                "手机连着的 WiFi 到不了相机（${endpoint.host}）。请确认连的是相机自己发出的热点；" +
+                    "已连上仍报此错，请关闭移动数据与 VPN 后重试"
             // FR-07：机身只有一个 PTP/IP 客户端槽位。这类失败用户自己就能解决，
             // 必须和「相机在忙/在休眠」分开说 —— 后者关不掉，前者关一下对方就行。
             StaFailureClass.BUSY_OTHER_CLIENT ->

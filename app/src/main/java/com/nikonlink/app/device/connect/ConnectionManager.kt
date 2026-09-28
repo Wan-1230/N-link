@@ -401,10 +401,12 @@ class ConnectionManager @Inject constructor(
                         ConnectionHint("请在相机配对完成画面按 OK，然后等待即可")
                 }
             },
-            onRetry = {
+            onRetry = { hint ->
                 if (_connectionHint.value != null) {
+                    // FR-22②：connector 给了具体等待文案时优先用它，
+                    // 因为"约还需 40 秒"比"请稍候"更能拦住用户的重复点击。
                     _connectionHint.value = ConnectionHint(
-                        "请稍候，相机正在完成重新连接。请勿切换相机网络设置界面或启动其他连接。"
+                        hint ?: "请稍候，相机正在完成重新连接。请勿切换相机网络设置界面或启动其他连接。"
                     )
                 }
             },
@@ -868,6 +870,10 @@ class ConnectionManager @Inject constructor(
 
     /** 连接类失败码 → 统一原因码（不新增语义，只是收口）。 */
     private fun mapConnectorReason(reason: String): ConnFunnel.Reason = when {
+        // FR-20④：BIND_FAILED 这个原因码自加入起就是**零调用点**的 dead branch ——
+        // 「连了一张到不了相机的 WiFi」当时会被归进 NO_WIFI_NETWORK，
+        // 于是把"换一张网"的场景指引到"去连 WiFi"那一句上。
+        reason.contains("bind_failed") -> ConnFunnel.Reason.BIND_FAILED
         reason.contains("no_wifi_network") -> ConnFunnel.Reason.NO_WIFI_NETWORK
         reason.contains("camera_unreachable") -> ConnFunnel.Reason.TCP_TIMEOUT
         reason.contains("event_ack_timeout") -> ConnFunnel.Reason.EVENT_ACK_TIMEOUT
