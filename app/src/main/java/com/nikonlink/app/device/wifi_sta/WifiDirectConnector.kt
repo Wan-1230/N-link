@@ -198,6 +198,20 @@ class WifiDirectConnector @Inject constructor(
     fun connect(
         endpoint: WifiEndpoint,
         mode: Mode,
+        /**
+         * 谁发起了这一代连接（v2.6）。
+         *
+         * 为什么必须有它：真机日志里 4 个 generation 全部在 attempt 2~4 就被
+         * `sta_cancel` 砍掉，`conn_result` 一律 `superseded`，**10 次重试预算一次都没跑完**。
+         * 而历史数据证明重试是有用的 —— 9 份日志里 138 次 `InitFail(fail_reason=1)`，
+         * 其中 6 份最终 `pair_ok`（26 次失败后成功、44 次后成功、16 次后 3 次成功）。
+         * 也就是说：砍断重试比重试本身更致命。
+         *
+         * 但 `sta_cancel` 只记了**被砍的那一代**，没记**是谁砍的**：
+         * 走 `connectToWifiCamera` 的会有 `conn_attempt caller=`，
+         * 而 `recoverWifiSession` 直接调本方法、完全不经漏斗，于是它砍人时一行都不留。
+         */
+        source: String = "unspecified",
         onWaitingCameraOk: (() -> Unit)? = null,
         onRetry: ((String?) -> Unit)? = null,
         onSuccess: () -> Unit = {},
@@ -207,6 +221,14 @@ class WifiDirectConnector @Inject constructor(
         // RC-1: 同步作废旧循环（旧 run 会在下一个校验点因 gen 过期退出），
         // 再占住 activeJob 槽位 —— 后续任何 observeReconnectTrigger 再进入
         // 都会看到 isActive == true，不再产生第二条循环。
+        val victim = activeJob?.takeIf { it.isActive }
+        if (victim != null) {
+            eventLogger.event(
+                "sta_supersede", "new_gen" to gen, "source" to source, "mode" to
+                    (if (mode == Mode.PAIRING) "pair" else "resume"),
+                "host" to endpoint.host
+            )
+        }
         activeJob?.cancel()
         activeJob = null
         // 新连接前把上一次会话的网络句柄/锁/绑网清干净，避免叠加持有

@@ -496,12 +496,76 @@ FR-19 / FR-20 / FR-24 不依赖 FR-18，可与之并行
 `ConnFunnelStageGapTest` 的三个既有断言**未作修改**：`stageGaps` 的算法对线性序列本来就是对的，问题出在样本被风暴污染。所以选择"标出脏样本并剔出百分位"，而不是改算法去迁就数字。
 
 ### 10.5 本期遗留（下一轮）
-
 1. **`camera_unreachable → TCP_TIMEOUT` 这条映射是错的**。`ConnectionManager.kt:872` 把"相机不可达"归进 `tcp_timeout`，于是日志3 那 6 次 socket **1.3 秒秒断**的失败在漏斗里全写着 `reason=tcp_timeout`。FR-18b 现在已把真实档位记进 `sta_classify`，但映射链还没用上它 —— 需要让 `onFail` 把档位带下来，而不是只带一个粗粒度字符串。**没在下手是因为只有映射、没有数据源就会改成猜的**，等 §九 回填一轮再动。
 2. `PROBE_SETTLE_MS` 定值（§10.2 决议 4）。
 3. FR-21 ① 的探测总上限（等 `probe_count` 基线）。
 4. FR-25 看门狗（等 `socket_try` 的 errno 分布）。
 5. 连接后 `op=0x1005/0x1007` 回 `0x2013` 单独立项（§10.2 决议 3）。
+
+---
+
+## 十一、v2.6 首轮真机回填（2026-09-29，vivo V2509A / Android 16 / Z 50II）
+
+FR-18 的诊断包第一次跑在真机上，**当场回答了 §2.4 五问里的四问**，也当场推翻了我自己的一条修复计划。
+
+### 11.1 一条被证据推翻的假设（记下来，别再提）
+
+原计划 S1：「`InitFail(fail_reason=1)` 是确定性拒绝，应立即收口不再重试」。
+
+**跨 9 份历史日志统计 `phase=init ok=false`：共 138 次，其中 6 份日志最终 `pair_ok`。**
+
+| 日志 | InitFail 次数 | 最终 pair_ok |
+|---|---|---|
+| 1789632439230 | 44 | 1 |
+| 1789576920029 | 26 | 2 |
+| 1789638392202 | 16 | 3 |
+| 1789628558566 | 17 | 1 |
+| 1790426146869 | 1 | 4 |
+| 1789620448543 / 1789576281082 | 11 / 14 | 0 / 0 |
+
+**重试恰恰是这条链路历史上唯一恢复成功过的路径。** 若按 S1 实现，会把 44 次失败后成功、26 次后成功这两类样本全部判死。S1 撤销。
+
+### 11.2 真问题：重试预算从来没跑完过
+
+同一份新日志里，4 个 generation **全部在 attempt 2~4 就被 `sta_cancel` 砍掉**，`conn_result` 一律 `superseded`，`MAX_ATTEMPTS=10` 一次都没用满：
+
+| generation | 被砍时的 attempt | conn_result |
+|---|---|---|
+| gen=4 | 2 | superseded（60.6s） |
+| gen=6 | 2 | superseded（53.8s） |
+| gen=8 | 2 | superseded（9.1s） |
+| gen=10 | 4 | superseded（152.1s） |
+
+`recoverWifiSession` 直接调 `connector.connect()`、**不经漏斗**，所以它砍人时一行日志都不留。本轮加了 `sta_supersede` 事件（记 `new_gen` / `source` / `mode`）与 `connect(source=...)` 参数，下一轮日志就能直接读出是谁砍的。**这条仍未定谳。**
+
+### 11.3 FR-18 当场兑现的价值
+
+| 问题（§2.4） | 本轮答案 |
+|---|---|
+| socket 抛什么 errno | `socket_try lane=command ok=false n=1 err=TIMEOUT ms=30027 ... from /10.56.31.140` —— 源地址是**蜂窝**口，30s 白等 |
+| 探测为什么失败 | `ap_probe grade=TIMEOUT`（4 个出厂地址全 TIMEOUT）· `sta_preconnect grade=ERROR errno=ConnectException:...ECONNABORTED` |
+| 谁发起的连接 | `caller=user_tap` / `caller=restore_paired` / USB 侧 `caller=unknown`（已补 `usb_state`） |
+| 什么机型 | `model=V2509A rom=VIVO sdk=36` + 基线「设备分布：V2509A/VIVO×3」 |
+| 在不在相机热点上 | `ap_ctx on_camera_ap=false ssid_is_nikon=false`，而 `sta_fallback ... in_subnet=true`（相机在手机自己的热点 10.184.219.14 上） |
+
+顺带**验证了 FR-20/23**：`in_subnet=true` 是 15 份日志里第一次出现（此前 15/15 全 false），`ap0` 被正确保留为类 WiFi 接口，`net_bind bound=true covers=true` 与 `ROUTE=30ms` 都对。`revisits=1` 的脏样本过滤也如期打出了 ⚠ 行。
+
+### 11.4 本轮改动（5 项，均已实现）
+
+| # | 改动 | 证据 |
+|---|---|---|
+| 1 | `InitFail` 即提升 `realCameraIp`（`camera_ip_promoted`） | InitFail 是**机身自己发的包**，比"端口开着"强得多。旧实现只在整条连接成功时才记，于是重启后回落到 192.168.1.1：01:11:07→01:11:31 对 4 个出厂地址全 TIMEOUT + 一次 30s socket 超时，而相机一直在 10.184.219.14 |
+| 2 | `sta_supersede` + `connect(source=)` | §11.2 |
+| 3 | USB 原因码改用机器可读 `usbFailCode`，新增 `Reason.USB_PTP_NO_RESPONSE` | `funnelReasonForUsbError` 按**文案关键词**匹配，而那句提示里写着"确认 USB 模式为 PTP/MTP"→ 必然命中 `contains("模式")` → 判成 `no_usb_interface`。可同一秒 `usb_open ok=true model=Z 50II` 已证伪。8 次失败全被这么误报，用户被指去改 USB 模式 |
+| 4 | USB `conn_attempt` 补 `caller=usb_state` | 此前全是 `caller=unknown`，"用户插了一次线"与"退避循环重试 8 轮"在日志里无法区分 |
+| 5 | 机身不应答时跳过 `recoverStaleSession` | 25 次 `stale_session_recovery` **全部失败、0 次成功**；历史成功案例 OpenSession 只用 **5ms**，失败每次 16s 读超时。对不应答的相机再发 CloseSession+DeviceReady 只是把两次超时串起来：01:08:38→01:09:09 实测单次失败被从 16s 拖到 31s |
+
+### 11.5 仍未定谳的两件事
+
+1. **谁在砍重试**（§11.2）。要下一轮带 `sta_supersede` 的日志才能回答。
+2. **USB 为什么不应答 PTP**。`usb_open ok=true model=Z 50II` 说明枚举与 claim 都正常，但 OpenSession 16s 无应答。历史上 USB 成功过 4 次（09-17 ×3、09-19 ×1）对 118 次失败，**长期就不稳**，不是 v2.6 引入的。09-17 那三次成功都发生在 WiFi 侧正在失败/已断的时段，所以"机身单槽跨 USB/WiFi 互斥"这个猜测**被证伪**（USB 成功时 WiFi 并没占着槽）。需要的补充信息：失败当时相机屏幕是否点亮、是否被 SnapBridge 或电脑占着、USB 线是否供电不足。
+
+> 本节所有耗时均为原始时间戳差值，不引用漏斗的分阶段数字（§2.1 D6）。
 
 ### 10.3 变更记录（本文自身的修订，倒序）
 

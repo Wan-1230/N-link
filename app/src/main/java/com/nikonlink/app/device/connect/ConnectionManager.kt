@@ -345,13 +345,13 @@ class ConnectionManager @Inject constructor(
                     )
                     Timber.tag(TAG).i("AP gateway learned: %s -> %s", endpoint.host, target.host)
                 }
-                withContext(Dispatchers.Main) { beginWifiPairing(target, deviceName) }
+                withContext(Dispatchers.Main) { beginWifiPairing(target, deviceName, caller.code) }
             }
             stateMachine.dispatch(ConnectionEvent.StartConnect)
             return
         }
 
-        beginWifiPairing(endpoint, deviceName)
+        beginWifiPairing(endpoint, deviceName, caller.code)
         stateMachine.dispatch(ConnectionEvent.StartConnect)
     }
 
@@ -382,7 +382,7 @@ class ConnectionManager @Inject constructor(
      * 真正发起一次 WiFi 相机配对/连接（RC-1/2/7/8 的并发治理都在 connector 内部）。
      * 调用方负责在合适时机派发 [ConnectionEvent.StartConnect]。
      */
-    private fun beginWifiPairing(endpoint: WifiEndpoint, deviceName: String?) {
+    private fun beginWifiPairing(endpoint: WifiEndpoint, deviceName: String?, source: String) {
         _connectionHint.value = null
         pairedDeviceAddress = endpoint.address
         userDisconnectRequested = false
@@ -395,6 +395,7 @@ class ConnectionManager @Inject constructor(
         pairingJob = connector.connect(
             endpoint = endpoint,
             mode = WifiDirectConnector.Mode.PAIRING,
+            source = source,
             onWaitingCameraOk = {
                 if (_connectionHint.value == null) {
                     _connectionHint.value =
@@ -713,9 +714,35 @@ class ConnectionManager @Inject constructor(
                     eventLogger.event("sta_hostreg_hint", "reason" to reason)
                     _staRegisterNeeded.value = true
                     revokeStaleHostClaim(reason)
+                    promoteAddressOnInitFail()
                 }
             }
         }
+    }
+
+    /**
+     * 收到 InitFail 就把当前地址记为「已确认的真实相机 IP」（v2.6）。
+     *
+     * 为什么被拒也算确认：`InitFail` 是**机身自己发的 PTP/IP 包**。能收到它，
+     * 就说明这个地址上确实有一台尼康相机在应答 —— 这比"TCP 端口开着"强得多，
+     * 只是它不认本机这个客户端而已。
+     *
+     * 旧实现只在整条连接成功时才提升 [realCameraIp]（`:1015`），于是被拒的地址
+     * 一律不被记住，App 重启后 `resolvePtpTarget` 回落到硬编码的 192.168.1.1。
+     * 真机日志实证这次回落的代价：01:11:07 起对 192.168.1.1 / 192.168.0.1 /
+     * 192.168.3.1 / 10.0.0.1 各探一次全部 TIMEOUT（`ap_probe grade=TIMEOUT`，
+     * 源地址是蜂窝的 /10.56.31.140），随后 `socket_try err=TIMEOUT ms=30027` ——
+     * 而相机其实一直在 10.184.219.14（手机自己的热点上，`in_subnet=true`）。
+     * 40 秒纯浪费，且用户看到的是"连不上"。
+     */
+    private fun promoteAddressOnInitFail() {
+        if (!connFlags.isEnabled(ConnFlags.IP_PROMOTE)) return
+        val endpoint = pairedDeviceAddress?.let { WifiEndpoint.parse(it) } ?: return
+        if (endpoint.host == DEFAULT_FALLBACK_HOST) return
+        if (realCameraIp == endpoint.host) return
+        realCameraIp = endpoint.host
+        eventLogger.event("camera_ip_promoted", "host" to endpoint.host, "evidence" to "init_fail")
+        Timber.tag(TAG).i("InitFail 证明 ${endpoint.host} 上就是相机，记为真实地址")
     }
 
     /**
@@ -840,7 +867,10 @@ class ConnectionManager @Inject constructor(
                 Timber.tag(TAG).d("USB state changed: $state")
                 // v2.2（G12）：USB 也纳入同一条漏斗，别再各说各话
                 if (state == UsbConnectionState.CONNECTING && !funnel.hasOngoing("USB")) {
-                    funnel.begin("USB")
+                    // v2.6：USB 的 conn_attempt 此前一律 `caller=unknown`，
+                    // 于是"用户插了一次线"和"UsbPtpManager 自己的退避循环重试了 8 轮"
+                    // 在日志里长得一模一样 —— 而这两者的处置完全相反。
+                    funnel.begin("USB", caller = ConnFunnel.Caller.USB_STATE.code)
                     funnel.stage(ConnFunnel.Stage.PREFLIGHT)
                 } else if (state == UsbConnectionState.CONNECTED && funnel.hasOngoing("USB")) {
                     funnel.stage(ConnFunnel.Stage.READY)
@@ -857,6 +887,17 @@ class ConnectionManager @Inject constructor(
 
     /** 把 USB 的分类文案映射回统一原因码。 */
     private fun funnelReasonForUsbError(): ConnFunnel.Reason {
+        // v2.6：优先用机器可读码。文案关键词匹配留作兜底 ——
+        // 它对 `no_ptp_interface` / `claim_failed` 是对的（那两句提示里说的就是接口与占用），
+        // 唯独 `session_open_failed` 会被误伤：那句提示是**给用户的建议**，
+        // 里面写着"确认 USB 模式为 PTP/MTP"，于是命中 `contains("模式")`
+        // 被判成 NO_USB_INTERFACE，而 `usb_open ok=true model=Z 50II` 已经证伪了它。
+        when (usbPtpManager.usbFailCode.value) {
+            "session_open_failed" -> return ConnFunnel.Reason.USB_PTP_NO_RESPONSE
+            "no_ptp_interface" -> return ConnFunnel.Reason.NO_USB_INTERFACE
+            "claim_failed" -> return ConnFunnel.Reason.CLAIM_FAILED
+            "open_null" -> return ConnFunnel.Reason.NO_USB_INTERFACE
+        }
         val msg = usbPtpManager.usbErrorMessage.value.orEmpty()
         return when {
             msg.contains("OTG") -> ConnFunnel.Reason.OTG_DISABLED
@@ -896,7 +937,11 @@ class ConnectionManager @Inject constructor(
             eventLogger.event("wifi_recover_start", "host" to endpoint.host, "port" to endpoint.port)
             connector.connect(
                 endpoint = endpoint,
-                mode = WifiDirectConnector.Mode.RESUME
+                mode = WifiDirectConnector.Mode.RESUME,
+                // v2.6：这条路径**不经漏斗**，所以它砍掉正在退避重试的配对循环时
+                // 原本一行日志都不留 —— 真机日志里 4 个 generation 全在 attempt 2~4
+                // 被 sta_cancel，而 conn_result 只写着 superseded，查不出是谁干的。
+                source = "recovery"
             )
             recoveryJob = null
         }
