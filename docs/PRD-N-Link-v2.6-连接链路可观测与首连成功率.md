@@ -563,9 +563,58 @@ FR-18 的诊断包第一次跑在真机上，**当场回答了 §2.4 五问里�
 ### 11.5 仍未定谳的两件事
 
 1. **谁在砍重试**（§11.2）。要下一轮带 `sta_supersede` 的日志才能回答。
-2. **USB 为什么不应答 PTP**。`usb_open ok=true model=Z 50II` 说明枚举与 claim 都正常，但 OpenSession 16s 无应答。历史上 USB 成功过 4 次（09-17 ×3、09-19 ×1）对 118 次失败，**长期就不稳**，不是 v2.6 引入的。09-17 那三次成功都发生在 WiFi 侧正在失败/已断的时段，所以"机身单槽跨 USB/WiFi 互斥"这个猜测**被证伪**（USB 成功时 WiFi 并没占着槽）。需要的补充信息：失败当时相机屏幕是否点亮、是否被 SnapBridge 或电脑占着、USB 线是否供电不足。
+2. **USB 为什么不应答 PTP**。`usb_open ok=true model=Z 50II` 说明枚举与 claim 都正常，但 OpenSession 16s 无应答。历史上 USB 成功过 4 次（09-17 ×3、09-19 ×1）对 118 次失败，**长期就不稳**，不是 v2.6 引入的。09-17 那三次成功都发生在 WiFi 侧正在失败/已断的时段，所以"机身单槽跨 USB/WiFi 互斥"这个猜测**被证伪**（USB 成功时 WiFi 并没占着槽）。
+   **2026-09-29 用户补充：失败当时相机屏幕是点亮的、没有同时连着别的设备、数据线没换过** —— 三条最常见的成因全部排除。剩下的候选只有：机身 USB 侧 PTP 服务未起（需要相机菜单里 USB 模式确实是 PTP/MTP，而不是"连接至智能设备"占着）、或 `UsbPtpManager` 的事务层在 claim 之后没把 OpenSession 送出去。**需要下一轮日志带 USB 事务层的收发包计数才能定，本轮不动。**
 
 > 本节所有耗时均为原始时间戳差值，不引用漏斗的分阶段数字（§2.1 D6）。
+
+---
+
+## 十二、第二轮：「谁砍断了重试」定谳（2026-09-29）
+
+§11.2 留下的开放问题，靠日志 signature + 代码结构定谳了，**不是**被新连接顶掉。
+
+### 12.1 证据
+
+4 次 `sta_cancel` 的位置完全同构 —— 都在"上一轮 `sta_classify` 之后 1~2.5 秒"，也就是下一轮 `resolveNetwork` 刚跑起来的地方：
+
+| generation | init 失败 | sta_classify | sta_cancel | 分类后间隔 |
+|---|---|---|---|---|
+| gen=4 | 01:03:50.962 | 01:03:51.372 | 01:03:53.232（attempt=2） | 1.9s |
+| gen=6 | 01:04:51.776 | 01:04:52.188 | 01:04:54.457（attempt=2） | 2.3s |
+| gen=8 | 01:05:46.261 | 01:05:46.816 | 01:05:47.886（attempt=2） | 1.1s |
+| gen=10 | 01:06:19.023 | 01:06:19.464 | 01:06:21.323（attempt=4） | 1.9s |
+
+决定性的一点：**gen=4 死掉之后 53 秒内没有任何新 `sta_try`**。若它是被新的 `connect()` 顶掉的，`connect()` 会同步 `generation++` 并立刻打出下一条 `sta_try` —— 日志里没有。所以是这一代自己没了。
+
+### 12.2 根因
+
+`resolveNetwork` 的三路竞速里，**只有第三路包了 `runCatching`**；`networkMonitor.awaitWifiNetworkFor` 是裸调，而它内部 `allNetworks` / `getNetworkCapabilities` / `getLinkProperties` 三个 binder 调用一个都没兜 —— 网络正在拆除的瞬间它们会抛。
+
+一旦抛出：`coroutineScope` 取消整个父协程 → `run()` 命中 `catch (CancellationException)` → 记一行 `sta_cancel` → rethrow → job 结束。而 `run()` **只有这一个 catch**，其余异常直接穿透到 `launch`：
+
+- 不进日志（除了那行语义含糊的 `sta_cancel`）
+- 不上 UI（用户看到的是"转了一下就不动了"）
+- 不关漏斗（于是 `conn_result` 只能等到下一次 `begin()` 才收口，记成 `superseded`）
+- **没有任何东西重启它**
+
+这也解释了 §11.2 里那个"4 个 `conn_result` 全是 `superseded`"的怪象：它们不是被顶掉的，是死掉的那一代在用户下次点击时才被动收口。`caller=user_tap` 是真的 —— 4 次点击间隔 61s / 54s / 9s，是人在等不到反馈之后反复点。
+
+### 12.3 FR-26c 修复
+
+| 改动 | 作用 |
+|---|---|
+| 三路竞速**各自** `runCatching` + `net_resolve_fail` 事件（记 `path` / `err` / `msg`） | 一路抛异常只降级成"这一路返回 null"，不再打死整代连接 |
+| `run()` 增加 `catch (e: Exception)` 兜底 → `sta_loop_error` + `ErrorOccurred` + `onFail("loop_error")` | 任何未归类异常都不再静默消失：进日志、上 UI、关漏斗 |
+
+**不设闸门**（同 FR-18 的处理）：这是纯粹的"别静默死掉"，关掉它等于保留静默死亡，没有可回退的旧行为值得保留。
+
+顺带把上一轮加的 `sta_supersede` 留住了 —— 它现在能明确区分"被顶掉"（有 `sta_supersede`）与"自己崩了"（有 `sta_loop_error` / `net_resolve_fail`），这两种此前在日志里长得一模一样。
+
+### 12.4 验证与未验证
+
+- 单测 222 / 0 failures（与基线一致，零回归）；`assembleDebug` 通过
+- **真机未验证**：`net_resolve_fail` 到底会不会出现、出现在哪一路，要下一轮日志才知道。如果它一次都不出现，说明 §12.2 的推断错了，真正的抛出点在别处 —— 但 §12.3 的兜底无论如何都该留着，因为"静默死掉"这个失效模式本身已经被日志证明了
 
 ### 10.3 变更记录（本文自身的修订，倒序）
 
