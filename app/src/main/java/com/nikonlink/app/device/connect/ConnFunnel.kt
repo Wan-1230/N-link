@@ -80,6 +80,12 @@ class ConnFunnel @Inject constructor(
             HEALTH_WORKER("health_worker"),
             RESTORE_PAIRED("restore_paired"),
             WIFI_STATE("wifi_state"),
+            /**
+             * USB 通道的重连由 `UsbPtpManager` 自己的退避循环发起，不经用户点击。
+             * v2.6 之前 USB 的 `conn_attempt` 全是 `caller=unknown`，
+             * 于是"用户插了一次线"和"程序自己重试了 8 轮"在日志里长得一样。
+             */
+            USB_STATE("usb_state"),
             PTP_SESSION("ptp_session"),
             UNKNOWN("unknown")
         }
@@ -133,6 +139,23 @@ class ConnFunnel @Inject constructor(
 
             // ── USB ──
             NO_USB_INTERFACE("no_usb_interface", "相机未以 PTP/StillImage 模式枚举", "在相机菜单把 USB 连接方式设为 PTP/Mass"),
+            /**
+             * USB 设备已枚举成功（`usb_open ok=true` 且读到了机型），但 PTP 会话打不开。
+             *
+             * 与 [NO_USB_INTERFACE] 必须分开：后者是"总线上根本没这台设备"，
+             * 前者是"设备在、机身不应答 PTP"。真机日志里两者被混成同一个码 ——
+             * `funnelReasonForUsbError` 按**文案关键词**匹配，而那句提示里写着
+             * "确认 USB 模式为 PTP/MTP"，于是命中"模式"被判成 NO_USB_INTERFACE，
+             * 同一秒的 `usb_open ok=true model=Z 50II` 直接把这个结论证伪了。
+             *
+             * 最常见的真实成因：机身同一时刻只允许一个 PTP 客户端，
+             * 而 WiFi 侧那条会话还挂在机身上没释放（见 `PTP_BUSY_OTHER_CLIENT`）。
+             */
+            USB_PTP_NO_RESPONSE(
+                "usb_ptp_no_response",
+                "USB 已识别相机，但机身不应答 PTP 会话",
+                "点亮相机屏幕；若相机正被 SnapBridge、电脑或本机的 WiFi 连接占着，先断开对方再重插 USB"
+            ),
             CLAIM_FAILED("claim_failed", "USB 接口被其它程序占用", "关闭图库/文件管理器等应用后重试"),
             USB_PERMISSION_DENIED("usb_permission_denied", "USB 访问授权被拒绝", "重新插拔并在弹窗中选择「允许」"),
             USB_CABLE_BROWNOUT("usb_cable_brownout", "USB 反复插拔（线材或供电不稳）", "换数据线，或给相机接外接电源"),

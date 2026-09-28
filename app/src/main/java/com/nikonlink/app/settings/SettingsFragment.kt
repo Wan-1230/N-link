@@ -505,6 +505,16 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 { connFlags.setEnabled(ConnFlags.PREFLIGHT_SOFT, it) }
             ),
             LabFlag(
+                ConnFlags.IP_PROMOTE, "被拒地址也记为相机（FR-26a；关=只有连成功才记，重启回落 192.168.1.1）",
+                { connFlags.isEnabled(ConnFlags.IP_PROMOTE) },
+                { connFlags.setEnabled(ConnFlags.IP_PROMOTE, it) }
+            ),
+            LabFlag(
+                ConnFlags.USB_SKIP_RECOVERY, "USB 不应答时跳过会话恢复（FR-26b；关=照样再等一次超时）",
+                { connFlags.isEnabled(ConnFlags.USB_SKIP_RECOVERY) },
+                { connFlags.setEnabled(ConnFlags.USB_SKIP_RECOVERY, it) }
+            ),
+            LabFlag(
                 UiFlags.ALBUM_INCR, "相册增量首屏（FR-03）",
                 { UiFlags.albumIncrementalEnabled(c) },
                 { UiFlags.set(c, UiFlags.ALBUM_INCR, it) }
