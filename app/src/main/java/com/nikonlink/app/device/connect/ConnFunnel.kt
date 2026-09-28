@@ -1,5 +1,6 @@
 package com.nikonlink.app.device.connect
 
+import com.nikonlink.app.BuildConfig
 import com.nikonlink.app.shared.common.AppEventLogger
 import com.nikonlink.app.shared.device.RomDetector
 import com.nikonlink.app.shared.metrics.BaselineMetrics
@@ -28,9 +29,18 @@ class ConnFunnel @Inject constructor(
     companion object {
         private const val HISTORY_LIMIT = 12
 
-        /** FR-01 口径里要单独给百分位的四个阶段（文档 §1）；其余阶段只进总耗时。 */
+        /**
+         * FR-01 口径里要单独给百分位的阶段（文档 §1）；其余阶段只进总耗时。
+         *
+         * v2.6 FR-18g 加入 `ROUTE`。它不是"多一个指标"，而是**修正 TCP 的定义**：
+         * `DISCOVER` 卡打在 `beginWifiPairing` 入口，而 DISCOVER→TCP 之间其实还夹着
+         * 选网（`resolveNetwork`，上限 4s）与连接前探活（`waitUntilReachable`，上限 3s）。
+         * 于是真机基线里 `TCP p95=178927ms` 根本不是建链耗时 —— 原始时间戳量出来同一次
+         * 尝试的建链只有 576ms（日志2 gen=49）。没有 `ROUTE` 这个分界卡，
+         * "慢在建链"和"慢在选网/探活"就永远分不开，也就永远不知道该优化哪个。
+         */
         private val MEASURED_STAGES = setOf(
-            Stage.DISCOVER, Stage.TCP, Stage.HANDSHAKE, Stage.FIRST_COMMAND
+            Stage.DISCOVER, Stage.ROUTE, Stage.TCP, Stage.HANDSHAKE, Stage.FIRST_COMMAND
         )
     }
 
@@ -53,6 +63,25 @@ class ConnFunnel @Inject constructor(
             FIRST_COMMAND("首条命令"),
             READY("可用"),
             RECONNECT("自动重连")
+        }
+
+        /**
+         * 一次连接尝试的**发起者**（FR-18c）。
+         *
+         * 真机日志里出现过 4.9 秒内 22 条 `sta_try`、45 个样本 80% 记 `superseded`
+         * 的风暴，但静态读代码只能排除"UI 点击"和 15 分钟一轮的 HealthWorker，
+         * 无法唯一锁定触发者 —— 因为 `conn_attempt` 这行不带来源。
+         * 风暴的**放大机制**已经查清（守卫盲区 + `pairingJob` 覆盖不取消），
+         * 剩下"谁在按按钮"这一半必须有数据。
+         */
+        enum class Caller(val code: String) {
+            USER_TAP("user_tap"),
+            RECONNECT_TRIGGER("reconnect_trigger"),
+            HEALTH_WORKER("health_worker"),
+            RESTORE_PAIRED("restore_paired"),
+            WIFI_STATE("wifi_state"),
+            PTP_SESSION("ptp_session"),
+            UNKNOWN("unknown")
         }
 
         /**
@@ -120,7 +149,14 @@ class ConnFunnel @Inject constructor(
             val channel: String,
             val startedAt: Long,
             val steps: MutableList<Step> = mutableListOf(),
-            var finishedAt: Long = 0L
+            var finishedAt: Long = 0L,
+            /**
+             * FR-18c：这一轮是谁发起的。`superseded` 刷屏但说不出触发者，
+             * 就永远分不清"用户狂点"与"程序自触发"——两者的修法完全相反。
+             */
+            var caller: String = Caller.UNKNOWN.code,
+            /** FR-18h：本轮对机身端口发起的 TCP 探测次数（不含真实连接的 command/event 两条 socket）。 */
+            var probes: Int = 0
         ) {
             val lastStage: Stage get() = steps.lastOrNull()?.stage ?: Stage.INTENT
             val durationMs: Long get() = (if (finishedAt > 0) finishedAt else System.currentTimeMillis()) - startedAt
@@ -139,16 +175,46 @@ class ConnFunnel @Inject constructor(
 
     private val _history = MutableStateFlow<List<Attempt>>(emptyList())
 
+    /** `2.3.2` / `2.6.0-debug` —— 报障时要能分清用户装的是哪个包、是不是调试包。 */
+    private val appVersion: String =
+        if (BuildConfig.DEBUG) "${BuildConfig.VERSION_NAME}-debug" else BuildConfig.VERSION_NAME
+
     /** 最近的连接尝试（含每次停在哪个阶段、原因码、耗时）。 */
     val history: StateFlow<List<Attempt>> = _history.asStateFlow()
 
-    fun begin(channel: String, mode: String = "") {
+    fun begin(channel: String, mode: String = "", caller: String = Caller.UNKNOWN.code) {
         // 上一轮还没收口（例如自动重连直接发起了新尝试）先记下来，别把失败丢了
         if (current != null) finish()
-        val attempt = Attempt(channel = channel + if (mode.isEmpty()) "" else "/$mode", startedAt = System.currentTimeMillis())
+        val attempt = Attempt(
+            channel = channel + if (mode.isEmpty()) "" else "/$mode",
+            startedAt = System.currentTimeMillis(),
+            caller = caller
+        )
         attempt.steps += Step(Stage.INTENT, attempt.startedAt, Reason.OK, "机型 ${Build.MODEL} / ROM ${RomDetector.family}")
         current = attempt
-        eventLogger.event("conn_attempt", "channel" to attempt.channel)
+        eventLogger.event(
+            "conn_attempt",
+            "channel" to attempt.channel,
+            "caller" to caller,
+            // FR-18f：报障日志此前判断不出是什么手机，机型归因做不了。
+            // 只带 Build 的公开字段，与 §四 FR-18 的脱敏边界一致（不带序列号/标识符）。
+            "model" to Build.MODEL,
+            "rom" to RomDetector.family,
+            "sdk" to Build.VERSION.SDK_INT,
+            "av" to appVersion
+        )
+    }
+
+    /**
+     * FR-18h：记一次对机身 15740 的 TCP 探测（连接前探活、网关筛探、失败后归类都算）。
+     *
+     * 尼康机身只有一个 PTP/IP 客户端槽，**每一次探测都在占它**：代码自己记的实测
+     * 是半开会话要 ~35s 才被机身收掉（`WifiDirectConnector` 的 `isCameraPortOpen` 注释），
+     * 而我们的让路间隔只给了 400ms。不把这个次数打出来，"探测反而把相机挡在门外"
+     * 这条假设就永远是推测。
+     */
+    fun recordProbe() {
+        current?.probes = (current?.probes ?: 0) + 1
     }
 
     /** 推进到某阶段；[reason] 非 OK 表示停在了这一步。 */
@@ -200,17 +266,39 @@ class ConnFunnel @Inject constructor(
             "channel" to attempt.channel,
             "stage" to (lastStep?.stage ?: Stage.INTENT).name,
             "ms" to attempt.durationMs,
-            "reason" to outcome.code
+            "reason" to outcome.code,
+            "caller" to attempt.caller,
+            "probes" to attempt.probes,
+            // FR-18g 的诚实标记：一个被测量阶段在一次尝试里出现两次以上，
+            // 说明这条尝试跨了多个连接循环，它的**分阶段耗时不可信**（总耗时仍可信）。
+            // 日志2 的 `TCP p95=178927ms` 就是这么来的 —— 那台机器 4.9 秒内开了 22 代连接，
+            // 20 个 DISCOVER 卡挤在同一条 attempt 里，TCP 的"上一步"根本不是本次的 DISCOVER。
+            // 不改 stageGaps 的算法（它对线性序列是对的，且已有单测钉住语义），
+            // 而是把被污染的样本标出来，让读日志的人不去信它。
+            "revisits" to revisitCount(attempt),
+            "rom" to RomDetector.family
         )
         baselineMetrics.recordConn(
             BaselineMetrics.ConnSample(
                 channel = attempt.channel,
                 outcome = outcome.code,
                 totalMs = attempt.durationMs,
-                stageMs = stageGaps(attempt)
+                stageMs = stageGaps(attempt),
+                probes = attempt.probes,
+                revisits = revisitCount(attempt),
+                device = "${Build.MODEL}/${RomDetector.family}"
             )
         )
     }
+
+    /**
+     * 被测量阶段里被**重访**的次数（同一阶段出现 > 1 次的那些）。
+     *
+     * 0 = 这条样本的阶段序列是线性的，分阶段耗时可信；> 0 = 只信总耗时。
+     */
+    internal fun revisitCount(attempt: Attempt): Int =
+        attempt.steps.map { it.stage }.filter { it in MEASURED_STAGES }
+            .groupingBy { it }.eachCount().count { it.value > 1 }
 
     /** 相邻阶段的时间差即该阶段自身耗时；INTENT 之后第一段是预检+发起的合计。 */
     internal fun stageGaps(attempt: Attempt): Map<String, Long> {

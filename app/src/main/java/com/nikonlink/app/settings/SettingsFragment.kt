@@ -472,6 +472,38 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 { connFlags.isEnabled(ConnFlags.EVENT_SILENCE_HOLD) },
                 { connFlags.setEnabled(ConnFlags.EVENT_SILENCE_HOLD, it) }
             ),
+            // ── v2.6 连接链路（PRD v2.6 §五）。关掉任一项 = 回到 v2.3.2 的那一条行为，
+            // 用于二分定位"这条改动到底有没有用"，所以标签写的是**关掉之后会怎样**。
+            LabFlag(
+                ConnFlags.CONN_SERIALIZE, "连接请求串行化（FR-19；关=重复点击会另起一代连接）",
+                { connFlags.isEnabled(ConnFlags.CONN_SERIALIZE) },
+                { connFlags.setEnabled(ConnFlags.CONN_SERIALIZE, it) }
+            ),
+            LabFlag(
+                ConnFlags.BIND_SUBNET_CHECK, "绑网前校子网（FR-20；关=到不了相机的 WiFi 也照绑）",
+                { connFlags.isEnabled(ConnFlags.BIND_SUBNET_CHECK) },
+                { connFlags.setEnabled(ConnFlags.BIND_SUBNET_CHECK, it) }
+            ),
+            LabFlag(
+                ConnFlags.PROBE_BUDGET, "探测收敛（FR-21；关=网关被拒后仍逐个试出厂地址）",
+                { connFlags.isEnabled(ConnFlags.PROBE_BUDGET) },
+                { connFlags.setEnabled(ConnFlags.PROBE_BUDGET, it) }
+            ),
+            LabFlag(
+                ConnFlags.GIVEUP_FLOOR, "放弃前先等够（FR-22；关=连续 3 次不可达立即判死）",
+                { connFlags.isEnabled(ConnFlags.GIVEUP_FLOOR) },
+                { connFlags.setEnabled(ConnFlags.GIVEUP_FLOOR, it) }
+            ),
+            LabFlag(
+                ConnFlags.IFACE_CLASSIFY, "网卡分性质（FR-23；关=蜂窝/VPN 口也算「类 WiFi」）",
+                { connFlags.isEnabled(ConnFlags.IFACE_CLASSIFY) },
+                { connFlags.setEnabled(ConnFlags.IFACE_CLASSIFY, it) }
+            ),
+            LabFlag(
+                ConnFlags.PREFLIGHT_SOFT, "软告警不豁免（FR-24；关=在相机热点上什么都不查）",
+                { connFlags.isEnabled(ConnFlags.PREFLIGHT_SOFT) },
+                { connFlags.setEnabled(ConnFlags.PREFLIGHT_SOFT, it) }
+            ),
             LabFlag(
                 UiFlags.ALBUM_INCR, "相册增量首屏（FR-03）",
                 { UiFlags.albumIncrementalEnabled(c) },

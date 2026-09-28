@@ -147,34 +147,69 @@ class PtpSessionManager @Inject constructor(
      * @param configure 在 connect 之前施加的 socket 选项。tcpNoDelay 与
      *   receiveBufferSize 必须在连接前设置才对 TCP 窗口协商生效。
      */
+    /**
+     * 建立一条 TCP socket，失败按官方策略重试。
+     *
+     * FR-18a：每一次失败现在都进**导出日志**（`socket_try` 行），不再只进 Timber。
+     * 这是此前排查连接问题时最大的一块盲区：导出物里只有
+     * `connect phase=socket` 和 `conn_stage TCP` 两个点，中间发生了什么一行都没有，
+     * 于是"1.3 秒秒失败"到底是 ECONNREFUSED（相机在、端口没起）还是
+     * EHOSTUNREACH（本机根本不通向那个网段）**答不出来** ——
+     * 而这两者的处置完全相反：前者该等、该重试，后者重试一万次也不会好。
+     * 用户机器上实测到的 84.75s / 97.74s 建链（自测机同一段是 0.012s）
+     * 同样只能干看着，分不清是 5 次合法重试叠加还是单次 connect 超了 30s 没返回。
+     *
+     * 音量控制：只记**失败**与"重试后才成功"，第一次就成功的不打（`eventLogger`
+     * 每次调用都是一次带全局锁的同步落盘，日志环只有 3×512KB）。
+     *
+     * @param label 区分 command / event 两条通道，便于看出是不是只有某一条被拒
+     */
     private fun connectSocketWithRetry(
         network: Network?,
         host: String,
         port: Int,
+        label: String,
         configure: Socket.() -> Unit
     ): Socket {
         var attempt = 0
         while (true) {
+            val startedAt = System.currentTimeMillis()
             val socket = createSocket(network)
             try {
                 socket.configure()
                 socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
                 if (attempt > 0) {
                     Timber.tag(TAG).i("connect ok after $attempt retries -> $host:$port")
+                    eventLogger.event(
+                        "socket_try", "lane" to label, "ok" to true, "n" to attempt + 1,
+                        "ms" to System.currentTimeMillis() - startedAt, "host" to host
+                    )
                 }
                 return socket
             } catch (e: java.net.SocketTimeoutException) {
                 runCatching { socket.close() }
                 Timber.tag(TAG).w("connect timeout (no retry) -> $host:$port")
+                eventLogger.event(
+                    "socket_try", "lane" to label, "ok" to false, "n" to attempt + 1,
+                    "err" to "TIMEOUT", "ms" to System.currentTimeMillis() - startedAt,
+                    "msg" to e.message, "host" to host, "retry" to false
+                )
                 throw e
             } catch (e: java.io.IOException) {
                 runCatching { socket.close() }
                 attempt++
-                if (attempt >= CONNECT_RETRY_MAX) {
+                val willRetry = attempt < CONNECT_RETRY_MAX
+                if (!willRetry) {
                     Timber.tag(TAG).w("connect failed after $attempt attempts: ${e.message}")
-                    throw e
+                } else {
+                    Timber.tag(TAG).i("retry connect [$attempt/$CONNECT_RETRY_MAX]: ${e.message}")
                 }
-                Timber.tag(TAG).i("retry connect [$attempt/$CONNECT_RETRY_MAX]: ${e.message}")
+                eventLogger.event(
+                    "socket_try", "lane" to label, "ok" to false, "n" to attempt,
+                    "err" to e.javaClass.simpleName, "ms" to System.currentTimeMillis() - startedAt,
+                    "msg" to e.message, "host" to host, "retry" to willRetry
+                )
+                if (!willRetry) throw e
                 Thread.sleep(CONNECT_RETRY_INTERVAL_MS)
             }
         }
@@ -206,7 +241,7 @@ class PtpSessionManager @Inject constructor(
             // 建立 Command 通道
             Timber.tag(TAG).i("phase=connecting host=%s:%d", host, port)
             eventLogger.event("connect", "phase" to "socket", "host" to host, "port" to port, "pairing" to pairingMode)
-            commandSocket = connectSocketWithRetry(network, host, port) {
+            commandSocket = connectSocketWithRetry(network, host, port, label = "command") {
                 tcpNoDelay = true
                 keepAlive = true
                 receiveBufferSize = 4 * 1024 * 1024  // 放大 TCP 接收窗口，提升大文件传输吞吐
@@ -259,7 +294,7 @@ class PtpSessionManager @Inject constructor(
 
             // 建立 Event 通道
             Timber.tag(TAG).i("phase=event connecting")
-            eventSocket = connectSocketWithRetry(network, host, port) {
+            eventSocket = connectSocketWithRetry(network, host, port, label = "event") {
                 // 官方对 data / event 两条通道都设 TCP_NODELAY。PTP/IP 是
                 // 小包一问一答，Nagle 会把 event 包压在缓冲区里等待累积，
                 // 白白叠加几十毫秒——原来这里漏了，只 command 通道设了。

@@ -59,7 +59,8 @@ class WifiDirectConnector @Inject constructor(
     private val localInterfaces: LocalNetworkInterfaceResolver,
     private val stateMachine: ConnectionStateMachine,
     private val eventLogger: AppEventLogger,
-    private val connFlags: ConnFlags
+    private val connFlags: ConnFlags,
+    private val funnel: com.nikonlink.app.device.connect.ConnFunnel
 ) {
     companion object {
         private const val TAG = "WifiDirect"
@@ -106,6 +107,20 @@ class WifiDirectConnector @Inject constructor(
          * 而"不可达"这个结论 2.5s 探测就拿到了，多等只是在消耗用户耐心。
          */
         private const val UNREACHABLE_GIVE_UP = 3
+
+        /**
+         * FR-22：`camera_unreachable` 提前收口所需的**累计等待下限**。
+         *
+         * 数值出处（PRD v2.6 §8.1 铁律 6 要求每个数字有来处）：
+         * 真机日志2 按原始时间戳量出的 TCP 建链耗时升序为
+         * 9.80 / 15.05 / 29.87 / 84.75 / 97.74 秒（n=5），最近秩法 p95 = 秩 5 = **97.74s**；
+         * 向上取整到 120s。同一份日志里 4 次**成功**的总耗时是
+         * 26.4 / 42.1 / 43.1 / 181.3 秒，而日志3 的 6 次失败全部在
+         * 20.1~21.4 秒收口（n=6，极差 1.3s）—— **旧预算比成功所需时间还短**，
+         * 这就是「老版本能连、新版本连不上」最省假设的成因
+         * （v1.3.1 既无 `UNREACHABLE_GIVE_UP` 也无 `RETRY_BUDGET`，会跑满 10 次退避）。
+         */
+        private const val GIVEUP_FLOOR_MS = 120_000L
     }
 
     enum class Mode { PAIRING, RESUME }
@@ -234,6 +249,18 @@ class WifiDirectConnector @Inject constructor(
         var lastErr: String? = null
         /** RC-6：连续判定"相机不可达"的次数，用于提前收口（见下方循环）。 */
         var consecutiveUnreachable = 0
+        /** FR-22：本轮连接循环的起点，用于"已经等够了才允许提前收口"。 */
+        val loopStartedAt = System.currentTimeMillis()
+        /**
+         * FR-21③：本轮**连接前**探活拿到的确定性判据。
+         *
+         * 旧流程每轮要探两次同一个端口：连接前 `waitUntilReachable` 一次，
+         * 真实连接失败后 [probeReachable] 再一次。第二次距第一次只有 1~15 秒，
+         * 而机身收回半开会话要几十秒 —— 第二次探不出来任何新东西，
+         * 只是又多占了一次那个唯一的 PTP/IP 客户端槽。
+         * 这里把第一次的结论带下去复用。
+         */
+        var preconnectGrade: PtpIpProbe.ProbeResult? = null
         // RC-5: 连接生命周期内持有 WifiLock/MulticastLock，finally 保证释放
         networkMonitor.acquireLocks()
         try {
@@ -259,6 +286,32 @@ class WifiDirectConnector @Inject constructor(
                     onRetry?.invoke()
                     eventLogger.event("sta_progress", "gen" to gen, "hint" to progress)
                 }
+                // FR-20：**拿到 Network 句柄 ≠ 这张网能到相机**。三路选网在子网不匹配时
+                // 都可能"退而求其次"返回一张别的 WiFi，而下一行就要
+                // `bindProcessToNetwork` —— 那改的是**全进程**路由，绑错一次，
+                // 后面每条 socket（包括不经本类创建的）都往那张到不了相机的网上撞。
+                // 真机日志里那台 6/6 全败、一条 `sta_fallback` 都没有、
+                // socket 一律 1.3s 秒断的机器，就是这个形态。
+                preconnectGrade = null
+                val usable: android.net.Network? = network?.takeIf {
+                    !connFlags.isEnabled(ConnFlags.BIND_SUBNET_CHECK) ||
+                        networkMonitor.networkCoversHost(it, endpoint.host)
+                }
+                if (network != null && usable == null) {
+                    // 把本机网卡地址一起打出来：`in_subnet` 那条诊断以前只在
+                    // `network == null` 分支里打，于是"绑错网"这种情况一行日志都不留 ——
+                    // 而这恰恰是最需要留的一种。
+                    val ifaces = runCatching { localInterfaces.localAddresses() }
+                        .getOrDefault(emptyList())
+                        .joinToString(",") { it.display }
+                    eventLogger.event(
+                        "net_bind", "gen" to gen, "attempt" to attempt, "bound" to false,
+                        "reason" to "no_subnet_cover", "host" to endpoint.host, "ifaces" to ifaces
+                    )
+                    Timber.tag(TAG).w(
+                        "resolved network does not cover ${endpoint.host} — 不绑，回落默认路由"
+                    )
+                }
                 // RC-6：拿不到 Network 句柄 ≠ 连不上，绝不能就此放弃。
                 //
                 // 【真机日志铁证 2026-09-16】新构建时段内 `connect phase=socket` 出现 **0 次** ——
@@ -273,7 +326,7 @@ class WifiDirectConnector @Inject constructor(
                 //
                 // 这正是 ZDROP 的 `socketFactory=default-route-fallback` 语义：
                 // **绑网失败时回落到默认路由继续连，而不是判死。**
-                val defaultRouteFallback = network == null &&
+                val defaultRouteFallback = usable == null &&
                     localInterfaces.hasLocalWifiLikeInterface()
                 if (defaultRouteFallback) {
                     val ifaces = runCatching { localInterfaces.localAddresses() }
@@ -305,7 +358,7 @@ class WifiDirectConnector @Inject constructor(
                     networkMonitor.bindProcessTo(null)
                 }
 
-                if (network == null && !defaultRouteFallback) {
+                if (usable == null && !defaultRouteFallback) {
                     lastErr = "no_wifi_network"
                     // v1.3.2 STA 反馈修复：手机压根没有任何本地网络时立刻收口。
                     // 旧版会走满 10 次退避（≈90s），用户面对"正在连接…"却永远等不到结果。
@@ -329,9 +382,25 @@ class WifiDirectConnector @Inject constructor(
                 }
                 // ZDROP 同款：进程级绑定到 WiFi 网络，杜绝双卡手机蜂窝默认路由
                 // 抢走 PTP/IP 通道（socket 级绑定无法覆盖所有创建点）。
-                // RC-6：defaultRouteFallback 时 network 为 null，此时**不绑**，
+                // RC-6：defaultRouteFallback 时句柄为 null，此时**不绑**，
                 // 交由内核按路由表选出口（热点接口有正常直连路由）。
-                network?.let { networkMonitor.bindProcessTo(it) }
+                // FR-20：这里只绑过了子网校验的 `usable`，并把绑定决策本身打进日志
+                // ——「最终绑到了哪张网」此前一行都没记过，是排查绑错网的最大空白。
+                usable?.let {
+                    val bound = networkMonitor.bindProcessTo(it)
+                    eventLogger.event(
+                        "net_bind", "gen" to gen, "attempt" to attempt, "bound" to bound,
+                        "covers" to true, "host" to endpoint.host, "route" to "process"
+                    )
+                }
+                // FR-18g：DISCOVER → ROUTE → TCP 的分界卡。
+                // 没有它，`TCP` 那一段实际裹着选网（上限 4s）+ 连接前探活（上限 3s）
+                // + 全部建链重试，于是导出物里的 `TCP p95=178927ms` 根本不是建链耗时
+                // —— 同一批日志用原始时间戳量，真实建链最短的一次只有 576ms。
+                funnel.stage(
+                    com.nikonlink.app.device.connect.ConnFunnel.Stage.ROUTE,
+                    detail = if (usable != null) "bound" else "default-route"
+                )
 
                 // ── FIX-5：连接前刷新发现（对齐 ZDROP "refreshing discovery before connect"）──
                 // ZDROP 在每次真正 connect 之前都会先刷一次对端可达性，原因是：
@@ -344,13 +413,19 @@ class WifiDirectConnector @Inject constructor(
                 // 探活结果**不作为硬门禁**（避免把"休眠中但可唤醒"的相机挡掉），
                 // 只用于：① 抢出几秒等待时间；② 让日志/UI 能区分"没起监听"与"握手失败"。
                 if (attempt <= PRECONNECT_MAX_ROUNDS) {
-                    val reachable = waitUntilReachable(network, endpoint) { hint ->
+                    val screen = waitUntilReachable(usable, endpoint) { hint ->
                         onRetry?.invoke()
                         eventLogger.event("sta_progress", "gen" to gen, "hint" to hint)
                     }
+                    // FR-18b：档位而不是布尔。REFUSED（相机在、端口没起）、
+                    // TIMEOUT（黑洞/休眠）、NO_ROUTE（本机压根不通向那个网段）
+                    // 三者的处置是"等机身"/"唤醒相机"/"换网络"，一句 `reachable=false`
+                    // 把它们糊成了同一个"再试一次"。
+                    preconnectGrade = screen.grade
                     eventLogger.event(
                         "sta_preconnect", "gen" to gen, "attempt" to attempt,
-                        "reachable" to reachable, "host" to endpoint.host
+                        "reachable" to screen.open, "grade" to screen.grade.name,
+                        "errno" to screen.errno, "host" to endpoint.host
                     )
                 }
 
@@ -358,7 +433,7 @@ class WifiDirectConnector @Inject constructor(
                     endpoint.host,
                     endpoint.port,
                     pairingMode = pairing,
-                    network = network
+                    network = usable
                 ) {
                     onWaitingCameraOk?.invoke()
                 }
@@ -385,7 +460,24 @@ class WifiDirectConnector @Inject constructor(
                 // FR-02：已经确认「相机接了连接但不回事件通道」时不必再花 2.5s 探可达性 ——
                 // 那个结论我们已经从超时本身拿到了。
                 val ackSilent = ptpSession.lastEventAckTimedOut
-                val unreachable = !ackSilent && !probeReachable(network, endpoint)
+                // FR-21③：本轮连接前的探活已经给出"端口不接"的确定性判据时，直接沿用，
+                // 不再对同一个端口探第二次。两次相隔只有 1~15 秒，而机身收回半开会话
+                // 要几十秒 —— 第二次既不会带来新信息，还多占了那个唯一的 PTP/IP 槽一次。
+                val carryOver = preconnectGrade?.takeIf { it != PtpIpProbe.ProbeResult.OK }
+                val reused = carryOver != null && connFlags.isEnabled(ConnFlags.PROBE_BUDGET)
+                val verdict: PtpIpProbe.TcpScreen? = when {
+                    ackSilent -> null                     // 相机接了连接但不回事件通道，结论已到手
+                    reused -> PtpIpProbe.TcpScreen(false, carryOver!!, null)
+                    else -> probeReachable(usable, endpoint)
+                }
+                val unreachable = verdict != null && !verdict.open
+                if (verdict != null) {
+                    eventLogger.event(
+                        "sta_classify", "gen" to gen, "attempt" to attempt,
+                        "grade" to verdict.grade.name, "errno" to verdict.errno,
+                        "reused_preconnect" to reused, "host" to endpoint.host
+                    )
+                }
                 lastErr = StaFailureClass.classify(
                     initFailReason = ptpSession.lastInitFailReason.value,
                     ackSilent = ackSilent,
@@ -401,11 +493,19 @@ class WifiDirectConnector @Inject constructor(
                 // `ptp_handshake_failed` 仍走满退避 —— 那属于"相机在、只是要用户按 OK"。
                 if (unreachable) {
                     consecutiveUnreachable++
-                    if (consecutiveUnreachable >= UNREACHABLE_GIVE_UP) {
+                    // FR-22：'连续 3 次不可达'这个结论本身不足以证明相机不在 ——
+                    // 机身端口可能只是还没起监听，而同一批真机日志里**成功**的那几次
+                    // 建链分别花了 26.4 / 42.1 / 43.1 / 181.3 秒，
+                    // 失败的却一律在 20.1~21.4 秒就被判死。旧预算比成功所需时间还短，
+                    // 于是"慢"被系统性地误判成"没有"。现在要求两者同时成立才收口。
+                    val waited = System.currentTimeMillis() - loopStartedAt
+                    val floorMet = !connFlags.isEnabled(ConnFlags.GIVEUP_FLOOR) ||
+                        waited >= GIVEUP_FLOOR_MS
+                    if (consecutiveUnreachable >= UNREACHABLE_GIVE_UP && floorMet) {
                         eventLogger.event(
                             "sta_fail", "gen" to gen, "reason" to "camera_unreachable",
                             "attempt" to attempt, "host" to endpoint.host,
-                            "fallback" to defaultRouteFallback
+                            "fallback" to defaultRouteFallback, "waited_ms" to waited
                         )
                         stateMachine.dispatch(
                             ConnectionEvent.ErrorOccurred(
@@ -415,6 +515,16 @@ class WifiDirectConnector @Inject constructor(
                         )
                         onFail("camera_unreachable")
                         return
+                    } else if (consecutiveUnreachable >= UNREACHABLE_GIVE_UP) {
+                        // 不可达的判据已经攒够了，但还没等够。显式记一行 ——
+                        // 否则日志里只有一段没有理由的等待，看的人（包括用户自己）
+                        // 会以为程序卡死，然后去点连接按钮，把这一代又顶掉（FR-19 的风暴）。
+                        eventLogger.event(
+                            "sta_hold", "gen" to gen, "attempt" to attempt,
+                            "waited_ms" to waited, "floor_ms" to GIVEUP_FLOOR_MS,
+                            "reason" to "unreachable_but_under_floor", "host" to endpoint.host
+                        )
+                        onRetry?.invoke()
                     }
                 } else {
                     consecutiveUnreachable = 0
@@ -495,8 +605,12 @@ class WifiDirectConnector @Inject constructor(
                 networkMonitor.awaitWifiNetworkFor(host, AWAIT_NETWORK_MS)?.let { winner.trySend(it) }
             }
             val fallback = async(Dispatchers.IO) {
-                // 兜底路径：既有 AP 通道的绑网实现，通常很快返回或立即失败
-                runCatching { wifiManager.bindToActiveWifi() }.getOrNull()?.let { winner.trySend(it) }
+                // FR-20：这里换成**纯查询**的 `activeWifiNetwork()`。
+                // 旧的 `bindToActiveWifi()` 一边查一边把进程绑上，于是这一路即使
+                // **落选**（另外两路先给出了结果），进程路由也已经被它改掉，
+                // 而调用方随后只按胜出者的 netId 判断 —— 两者可能不是同一张网。
+                // 绑定动作现在只发生在下面 `bindProcessTo(usable)` 那一处。
+                runCatching { wifiManager.activeWifiNetwork() }.getOrNull()?.let { winner.trySend(it) }
             }
 
             // 进度心跳：并行等待期间保持用户感知
@@ -548,19 +662,20 @@ class WifiDirectConnector @Inject constructor(
         network: android.net.Network?,
         endpoint: WifiEndpoint,
         onProgress: ((String) -> Unit)? = null
-    ): Boolean {
+    ): PtpIpProbe.TcpScreen {
         val deadline = System.currentTimeMillis() + PRECONNECT_WAIT_MS
         var waited = 0L
+        var last = PtpIpProbe.TcpScreen(false, PtpIpProbe.ProbeResult.ERROR, "no_probe_ran")
         while (System.currentTimeMillis() < deadline) {
-            val ok = isCameraPortOpen(network, endpoint, PRECONNECT_PROBE_TIMEOUT_MS)
-            if (ok) return true
+            last = isCameraPortOpen(network, endpoint, PRECONNECT_PROBE_TIMEOUT_MS)
+            if (last.open) return last
             delay(400)
             waited += 400 + PRECONNECT_PROBE_TIMEOUT_MS
             if (waited < PRECONNECT_WAIT_MS) {
                 onProgress?.invoke("正在等待相机响应（${waited / 1000}s）…")
             }
         }
-        return false
+        return last
     }
 
     /**
@@ -580,17 +695,25 @@ class WifiDirectConnector @Inject constructor(
         network: android.net.Network?,
         endpoint: WifiEndpoint,
         timeoutMs: Long
-    ): Boolean {
+    ): PtpIpProbe.TcpScreen {
+        funnel.recordProbe()
         if (!connFlags.isEnabled(ConnFlags.PROBE_TCP_ONLY)) {
-            return runCatching {
+            val ok = runCatching {
                 PtpIpProbe.probe(endpoint, timeoutMs = timeoutMs, network = network)
             }.getOrDefault(false)
+            return PtpIpProbe.TcpScreen(
+                ok,
+                if (ok) PtpIpProbe.ProbeResult.OK else PtpIpProbe.ProbeResult.ERROR,
+                if (ok) null else "legacy_full_handshake_probe"
+            )
         }
-        val open = runCatching {
-            PtpIpProbe.tcpConnectOnly(endpoint.host, endpoint.port, timeoutMs, network)
-        }.getOrDefault(false)
-        if (open) delay(PROBE_SETTLE_MS)
-        return open
+        val screen = runCatching {
+            PtpIpProbe.tcpScreen(endpoint.host, endpoint.port, timeoutMs, network)
+        }.getOrElse {
+            PtpIpProbe.TcpScreen(false, PtpIpProbe.ProbeResult.ERROR, it.javaClass.simpleName)
+        }
+        if (screen.open) delay(PROBE_SETTLE_MS)
+        return screen
     }
 
     // ---------------- v1.3.2 STA 诊断与反馈辅助 ----------------
@@ -612,8 +735,10 @@ class WifiDirectConnector @Inject constructor(
      * 这时重试 10 次也没有意义 —— 给出"不可达"的明确原因，用户可以去唤醒相机或
      * 重新扫描。
      */
-    private suspend fun probeReachable(network: android.net.Network?, endpoint: WifiEndpoint): Boolean =
-        isCameraPortOpen(network, endpoint, 2500L)
+    private suspend fun probeReachable(
+        network: android.net.Network?,
+        endpoint: WifiEndpoint
+    ): PtpIpProbe.TcpScreen = isCameraPortOpen(network, endpoint, 2500L)
 
     /**
      * 机器可读原因 → 用户可读文案（STA 场景的失败分类，P1 分级）。

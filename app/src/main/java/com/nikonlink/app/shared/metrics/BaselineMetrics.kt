@@ -32,7 +32,13 @@ class BaselineMetrics @Inject constructor(
         val channel: String,
         val outcome: String,
         val totalMs: Long,
-        val stageMs: Map<String, Long>
+        val stageMs: Map<String, Long>,
+        /** FR-18h：本轮对机身 15740 发起的 TCP 探测次数。 */
+        val probes: Int = 0,
+        /** FR-18g：> 0 说明这条样本跨了多个连接循环，分阶段耗时不可信，只有总耗时可信。 */
+        val revisits: Int = 0,
+        /** FR-18f：`机型/ROM 家族`，让报障日志能按设备归因。 */
+        val device: String = "unknown"
     )
 
     data class TransferSample(
@@ -64,7 +70,9 @@ class BaselineMetrics @Inject constructor(
             "channel" to sample.channel,
             "outcome" to sample.outcome,
             "total" to sample.totalMs,
-            "stages" to sample.stageMs.entries.joinToString(",") { "${it.key}=${it.value}" }
+            "stages" to sample.stageMs.entries.joinToString(",") { "${it.key}=${it.value}" },
+            "probes" to sample.probes,
+            "revisits" to sample.revisits
         )
     }
 
@@ -125,7 +133,7 @@ class BaselineMetrics @Inject constructor(
         appendLine("===== 指标基线（v2.5 FR-01）=====")
         appendLine("导出时刻：${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())}")
         appendLine("窗口：本次启动以来；连接≤$CONN_LIMIT 条、传输≤$TRANSFER_LIMIT 条，重启后百分比重置。")
-        appendLine("口径：docs/指标口径-v2.5.md（p50/p95 = 最近秩法，非插值）")
+        appendLine("口径：docs/指标口径-v2.5.md（p50/p95 = 最近秩法，非插值；v2.6 修订见该文件 §6）")
         // 字段范围只有一处真源：文件开头的「导出内容声明」（FR-08d）。这里再写一遍，
         // 两处迟早会对不上。
         appendLine("字段范围：见本文件开头的「导出内容声明」")
@@ -147,14 +155,38 @@ class BaselineMetrics @Inject constructor(
         samples.groupBy { it.channel }.forEach { (channel, list) ->
             val total = list.map { it.totalMs }
             appendLine("  $channel：总耗时 p50=${ms(total, 0.50)}ms p95=${ms(total, 0.95)}ms（n=${list.size}）")
-            val stages = list.flatMap { it.stageMs.keys }.distinct()
+            // FR-18g：分阶段耗时只在**阶段序列线性**的样本上算。
+            // 一条 attempt 里某个被测量阶段出现两次，说明它横跨了多个连接循环，
+            // 相邻阶段差值就不再是该阶段的耗时（真机日志里 `TCP p95=178927ms`
+            // 而同一次尝试的真实建链只有 576ms，就是这么污染的）。
+            // 以前的做法是把污染数字直接印出来，读的人无从判断 —— 现在改成
+            // 干净样本出数、脏样本单独报数，两个都不藏。
+            val clean = list.filter { it.revisits == 0 }
+            val stages = clean.flatMap { it.stageMs.keys }.distinct()
             for (stage in stages) {
-                val values = list.mapNotNull { it.stageMs[stage] }
+                val values = clean.mapNotNull { it.stageMs[stage] }
                 if (values.isNotEmpty()) {
-                    appendLine("    - $stage p50=${ms(values, 0.50)}ms p95=${ms(values, 0.95)}ms")
+                    appendLine("    - $stage p50=${ms(values, 0.50)}ms p95=${ms(values, 0.95)}ms（n=${values.size}）")
                 }
             }
+            if (clean.size < list.size) {
+                appendLine(
+                    "    ⚠ 另有 ${list.size - clean.size} 条样本的阶段被重访（一轮里跑了多个连接循环），" +
+                        "已从上面的分阶段统计中剔除，只计入总耗时"
+                )
+            }
         }
+        val probes = samples.map { it.probes.toLong() }
+        appendLine(
+            "  每次尝试对机身端口的 TCP 探测次数 p50=${ms(probes, 0.50)} " +
+                "p95=${ms(probes, 0.95)}（机身只有一个 PTP/IP 客户端槽，探测一次占一次）"
+        )
+        // FR-18f：机型归因。此前 3 份用户报障日志一份都判断不出是什么手机。
+        appendLine(
+            "  设备分布：" + samples.groupingBy { it.device }.eachCount()
+                .entries.sortedByDescending { it.value }
+                .joinToString("  ") { "${it.key}×${it.value}" }
+        )
         appendLine("  结果分布：${distribution(samples.map { it.outcome }, samples.size)}")
     }
 

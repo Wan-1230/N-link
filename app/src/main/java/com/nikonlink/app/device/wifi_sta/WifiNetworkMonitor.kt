@@ -33,7 +33,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class WifiNetworkMonitor @Inject constructor(
-    @ApplicationContext context: Context
+    @ApplicationContext context: Context,
+    private val connFlags: com.nikonlink.app.device.connect.ConnFlags
 ) {
     companion object {
         private const val TAG = "WifiNetMon"
@@ -134,10 +135,14 @@ class WifiNetworkMonitor @Inject constructor(
      * 通向相机的那张网（如手机自己开热点时，相机在热点子网而非上游 WiFi 子网），
      * 逐 socket 绑定也救不了路由。这里按 ZDROP t1.q 的做法：遍历网络的
      * LinkProperties，选"链路地址与相机 IP 同网段"的那个网络。
-     * 找不到精确匹配时回退任意 WiFi 网络；超时返回 null。
+     *
+     * FR-20：`v26_bind_subnet_check` 开（默认）时，找不到精确匹配就返回 **null**，
+     * 不再回退任意 WiFi —— 返回出去就会被调用方拿去 `bindProcessToNetwork`，
+     * 等于把全进程路由绑到一张到不了相机的网上。关掉闸门回到 v2.3.2 的回退行为。
      */
     suspend fun awaitWifiNetworkFor(host: String, timeoutMs: Long): Network? {
         val target = hostToInt(host) ?: return awaitWifiNetwork(timeoutMs)
+        val subnetCheck = connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.BIND_SUBNET_CHECK)
         val deadline = System.currentTimeMillis() + timeoutMs
         var anyWifi: Network? = null
         while (System.currentTimeMillis() < deadline) {
@@ -156,10 +161,47 @@ class WifiNetworkMonitor @Inject constructor(
                 if (anyWifi == null) anyWifi = network
             }
             _currentNetwork.value?.let { if (anyWifi == null) anyWifi = it }
-            if (anyWifi != null && System.currentTimeMillis() + 1000 >= deadline) break
+            // FR-20：判据开着时不能因为"已经看见一张 WiFi"就提前收工 —— 那张网可能
+            // 根本到不了相机 IP，而我们等的是一张**能到**的。继续等到截止点
+            // （上限就是 [timeoutMs]，`resolveNetwork` 现在给 4s，不会无限等）。
+            if (!subnetCheck && anyWifi != null && System.currentTimeMillis() + 1000 >= deadline) break
             delay(POLL_INTERVAL_MS)
         }
+        // FR-20：没有一张 WiFi 的链路地址覆盖相机 IP → 不返回它。
+        // 返回出去就意味着调用方 `bindProcessToNetwork`，把全进程路由交给一张到不了
+        // 相机的网；调用方还有"默认路由回落"这条正路，让它去走那条并把网段判据打进日志。
+        if (subnetCheck) {
+            if (anyWifi != null) {
+                Timber.tag(TAG).w(
+                    "awaitWifiNetworkFor: wifi $anyWifi does not cover host=$host — 返回 null 交默认路由"
+                )
+            }
+            return null
+        }
         return anyWifi
+    }
+
+    /**
+     * [network] 的链路地址是否覆盖 [host]。
+     *
+     * FR-20：这是**绑定前的最后一道校验**。三路选网各自都拦了一层，但
+     * `bindProcessToNetwork` 改的是全进程路由，错一次就殃及所有 socket
+     * （包括那些不经过本类的），所以绑定点自己必须再确认一次。
+     *
+     * @return true = 覆盖；false = 不覆盖（别绑）；拿不到链路属性时按 false 处理
+     *         —— 宁可退回默认路由，也不要绑到一张说不清的网络上。
+     */
+    fun networkCoversHost(network: Network, host: String): Boolean {
+        val target = hostToInt(host) ?: return false
+        val properties = runCatching { connectivityManager.getLinkProperties(network) }.getOrNull()
+            ?: return false
+        return properties.linkAddresses.any { address ->
+            val inet = address.address as? java.net.Inet4Address ?: return@any false
+            val base = inetToInt(inet) ?: return@any false
+            val mask = if (address.prefixLength <= 0) 0
+            else (0xFFFFFFFFL shl (32 - address.prefixLength)).toInt()
+            (base and mask) == (target and mask)
+        }
     }
 
     private fun hostToInt(host: String): Int? {

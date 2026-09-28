@@ -81,6 +81,22 @@ class PreflightGate @Inject constructor(
     fun firstBlocking(channel: String): Item? =
         checkAll(channel).firstOrNull { !it.ok && it.blocking }
 
+    /**
+     * 该通道的**软告警**：不解决也照样能连，但会显著拉低成功率。
+     *
+     * FR-24。判据直接复用 [Item.blocking] —— 它本来就在表达"硬阻断还是提醒"这层意思
+     * （`vpnNotice` / `smartSwitchAvoid` / `batteryExemption` / `autostartPolicy`
+     * 四项早就是 `blocking = false`），再叠一个 severity 枚举是同一件事记两遍，
+     * 迟早会对不上。
+     *
+     * 关键差别：硬阻断在"手机已经连在相机热点上"时被豁免（拦掉一条当前能用的连接
+     * 是倒退），而**软告警不受这个豁免**。恰恰是在相机热点上，VPN 与「避开不良网络」
+     * 才是致败因素 —— 旧实现在这里把两项一起跳过了，所以真机日志里那台带着
+     * `vgate0` 反复失败的机器，VPN 告警一行都没出现过。
+     */
+    fun warnings(channel: String): List<Item> =
+        checkAll(channel).filter { !it.ok && !it.blocking }
+
     // ── 各项检查 ────────────────────────────────────────────────────────────
 
     private fun wifiSwitchOn(): Item {

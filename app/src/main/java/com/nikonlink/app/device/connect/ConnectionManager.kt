@@ -221,7 +221,19 @@ class ConnectionManager @Inject constructor(
      * Mutex + activeJob 槽位消灭并发 pair_start 风暴，generation 令牌保证
      * 旧任务在每个挂起点失效，指数退避把重试窗口拉长到 ~90s。
      */
-    fun connectToWifiCamera(ipAddress: String, port: Int = 15740, deviceName: String? = null) {
+    fun connectToWifiCamera(
+        ipAddress: String,
+        port: Int = 15740,
+        deviceName: String? = null,
+        /**
+         * FR-18c：这一轮是谁发起的。真机日志里出现过 4.9 秒内 22 条 `sta_try`
+         * 的风暴，但静态读代码只能排除"UI 点击"和 15 分钟一轮的 HealthWorker，
+         * 无法唯一锁定触发者 —— 因为 `conn_attempt` 这行不带来源。
+         * 风暴的**放大机制**已经查清并修掉了（下面的 FR-19），
+         * 剩下"谁在按按钮"这一半必须有数据才能定，所以先把它记下来。
+         */
+        caller: ConnFunnel.Caller = ConnFunnel.Caller.USER_TAP
+    ) {
         val endpoint = WifiEndpoint.parse("wifi:$ipAddress:$port")
         if (endpoint == null) {
             eventLogger.event("sta_fail", "reason" to "invalid_endpoint", "host" to ipAddress)
@@ -236,32 +248,65 @@ class ConnectionManager @Inject constructor(
         // 等待的旧循环、把指数退避从 1s 清零，而机身唯一的 PTP/IP 客户端槽需要十几秒
         // 才自己收干净 —— 越快点、越连不上（2026-09-19：30 秒内 4 轮互相 cancel）。
         // 旧循环本身每 1~15s 就在重试，用户在机身上按了 OK 也会立刻被它接住。
-        if (connector.isActive && pairedDeviceAddress == endpoint.address &&
+        val loopRunning = connector.isActive && pairedDeviceAddress == endpoint.address &&
             !ptpSession.isConnected()
-        ) {
+        // FR-19：上面那道守卫只看 `connector.isActive`，而 learnFirst 分支要先跑
+        // ~2.4s 的网关学习（READINESS 1200ms + RESAMPLE 700ms + 筛探）才碰得到
+        // connector —— 那段窗口里 `connector.isActive` 恒为 false，任何重入都放行。
+        // 放行之后 `pairingJob = scope?.launch{...}` 又是**覆盖而不取消**，
+        // 于是每条重入都留下一枚孤儿协程，各自跑完 resolve() 后各自发起一代连接。
+        // 真机日志：4.9 秒内 22 条 `sta_try`，45 个连接样本里 36 个（80%）记 `superseded`。
+        // 同一个类里 `:834` 和 `:1058` 两处守卫**本来就判了** `pairingJob`，只有这里漏了。
+        val learning = connFlags.isEnabled(ConnFlags.CONN_SERIALIZE) &&
+            pairingJob?.isActive == true && pairedDeviceAddress == endpoint.address
+        if (loopRunning || learning) {
             _connectionHint.value = ConnectionHint("相机正在重试连接中，请稍候…")
-            Timber.tag(TAG).i("connect request ignored: loop already running for ${endpoint.display}")
-            eventLogger.event("connect_ignored", "host" to endpoint.host, "reason" to "loop_running")
+            Timber.tag(TAG).i("connect request ignored: ${endpoint.display}")
+            eventLogger.event(
+                "connect_ignored", "host" to endpoint.host, "caller" to caller.code,
+                "reason" to if (loopRunning) "loop_running" else "learn_running"
+            )
             return
         }
 
         // v2.2（G11/G12）：先预检再连接 —— 权限/位置开关/OTG 这类硬阻断不该靠重试去碰运气
         val mode = if (endpoint.host == DEFAULT_FALLBACK_HOST) "AP-fallback" else "host"
-        funnel.begin("WIFI", mode)
+        funnel.begin("WIFI", mode, caller.code)
+        emitEnvironment(endpoint.host)
         // 已经连在相机热点上时跳过硬阻断：这条路径不需要扫描权限，WLAN 也必然是开的，
         // 拿权限项把用户当前能用的连接拦掉是倒退。
-        if (connFlags.isEnabled(ConnFlags.PREFLIGHT) && !apGatewayResolver.isOnCameraAp()) {
-            val blocker = preflight.firstBlocking(PreflightGate.CHANNEL_WIFI)
-            if (blocker != null) {
-                funnel.stage(ConnFunnel.Stage.PREFLIGHT, blocker.reason, blocker.label)
-                funnel.fail(blocker.reason, blocker.label)
-                stateMachine.dispatch(
-                    ConnectionEvent.ErrorOccurred(
-                        "${blocker.label}\n${blocker.reason.hint ?: "请检查系统设置后重试"}",
-                        recoverable = true
+        if (connFlags.isEnabled(ConnFlags.PREFLIGHT)) {
+            val onCameraAp = apGatewayResolver.isOnCameraAp()
+            // FR-24：预检分两类。**硬阻断**（WLAN 关着、没权限）沿用"已在相机热点上
+            // 就不拦"的规则；**软告警**（VPN、避开不良网络、电池优化）一律照查照报 ——
+            // 恰恰是在相机热点上，这两项才是致败因素：它们会把没有网络的相机热点
+            // 踢掉、或把相机流量劫持进隧道。真机日志里那台连着 `vgate0` 反复失败的
+            // 机器，VPN 告警就因为这道豁免从来没有出现过。
+            // 软告警**不改变任何连接/重试/绑定行为**，只上日志与状态行。
+            if (connFlags.isEnabled(ConnFlags.PREFLIGHT_SOFT)) {
+                val warns = preflight.warnings(PreflightGate.CHANNEL_WIFI)
+                warns.forEach { warn ->
+                    eventLogger.event(
+                        "preflight_warn", "code" to warn.reason.code, "label" to warn.label
                     )
-                )
-                return
+                }
+                // 一次上屏而不是逐条覆盖 —— 循环里每条都写一遍 ` _statusMessage`
+                // 只会剩下最后一条，前面几条等于白报。
+                warns.lastOrNull()?.let { _statusMessage.value = it.surfaceText() }
+            }
+            if (!onCameraAp) {
+                val blocker = preflight.firstBlocking(PreflightGate.CHANNEL_WIFI)
+                if (blocker != null) {
+                    funnel.stage(ConnFunnel.Stage.PREFLIGHT, blocker.reason, blocker.label)
+                    funnel.fail(blocker.reason, blocker.label)
+                    stateMachine.dispatch(
+                        ConnectionEvent.ErrorOccurred(
+                            "${blocker.label}\n${blocker.reason.hint ?: "请检查系统设置后重试"}",
+                            recoverable = true
+                        )
+                    )
+                    return
+                }
             }
         }
 
@@ -277,6 +322,12 @@ class ConnectionManager @Inject constructor(
             pairedDeviceAddress = endpoint.address
             userDisconnectRequested = false
             // RC-1：先登记 job 再派发状态，避免状态机观察者并发发起第二次连接
+            // FR-19：覆盖 `pairingJob` 之前必须先取消旧 job。直接赋值会让上一条 learnFirst
+            // 协程变成**孤儿** —— 它照样会跑完网关学习、照样会调 beginWifiPairing，
+            // 于是每个孤儿各发起一代连接并把上一代 cancel 掉，
+            // 日志里就是 `sta_try gen=N` 与 `sta_cancel gen=N-1` 严格成对刷屏
+            // （真机：4.9 秒内 22 条 sta_try）。
+            if (connFlags.isEnabled(ConnFlags.CONN_SERIALIZE)) pairingJob?.cancel()
             pairingJob = scope?.launch(Dispatchers.IO) {
                 val learned = runCatching {
                     apGatewayResolver.resolve(
@@ -302,6 +353,29 @@ class ConnectionManager @Inject constructor(
 
         beginWifiPairing(endpoint, deviceName)
         stateMachine.dispatch(ConnectionEvent.StartConnect)
+    }
+
+    /**
+     * FR-18e：把「手机当时到底在不在相机那张网上」写进日志。
+     *
+     * 三份用户报障日志里，我们连"用户当时连的是相机热点还是家里路由器"都判断不了，
+     * 于是 D1（绑错网）与 D5（走蜂窝黑洞）这两条致败链只能推断、不能定谳。
+     *
+     * **脱敏边界**：只记 SSID 是不是 `NIKON*` 这个布尔，绝不记 SSID 原文 / BSSID /
+     * MAC —— 与 `DiagnosticsDisclosure` 的「不包含 WiFi SSID / BSSID / 密码、蓝牙 MAC」一致。
+     * 局域网 IP **是**会被记的（`ifaces=` / `host=`），那份声明里已如实写明，
+     * 因为不记它就没法判断"手机到底在哪张网上"。
+     */
+    private fun emitEnvironment(host: String) {
+        val ssid = apGatewayResolver.connectedSsid()
+        eventLogger.event(
+            "ap_ctx",
+            "on_camera_ap" to apGatewayResolver.isOnCameraAp(),
+            "ssid_is_nikon" to com.nikonlink.app.device.wifi_ap.ApGatewayResolver
+                .looksLikeCameraAp(ssid),
+            "ssid_known" to (ssid != null && ssid != "<unknown ssid>"),
+            "host" to host
+        )
     }
 
     /**
@@ -438,7 +512,8 @@ class ConnectionManager @Inject constructor(
                     connectToWifiCamera(
                         ipAddress = endpoint.host,
                         port = endpoint.port,
-                        deviceName = device.deviceName
+                        deviceName = device.deviceName,
+                        caller = ConnFunnel.Caller.HEALTH_WORKER
                     )
                 } else {
                     connectToDevice(device.address)
@@ -836,7 +911,11 @@ class ConnectionManager @Inject constructor(
                             val endpoint = WifiEndpoint.parse(address)
                             if (endpoint != null) {
                                 Timber.tag(TAG).i("Auto-reconnecting to WiFi camera ${endpoint.display}")
-                                connectToWifiCamera(endpoint.host, endpoint.port)
+                                connectToWifiCamera(
+                                    endpoint.host,
+                                    endpoint.port,
+                                    caller = ConnFunnel.Caller.RECONNECT_TRIGGER
+                                )
                             }
                         }
                     } else if (address != null &&
@@ -1029,7 +1108,8 @@ class ConnectionManager @Inject constructor(
                     connectToWifiCamera(
                         ipAddress = endpoint.host,
                         port = endpoint.port,
-                        deviceName = device.deviceName
+                        deviceName = device.deviceName,
+                        caller = ConnFunnel.Caller.RESTORE_PAIRED
                     )
                 } else {
                     connectToDevice(device.address)
