@@ -167,6 +167,43 @@ class ConnFlags @Inject constructor(
          */
         const val USB_RECONNECT_RAMP = "v26_usb_reconnect_ramp"
 
+        /**
+         * FR-28①：`claimInterface()` 的**返回值**必须当判据用。
+         *
+         * 本机 android.jar（compileSdk 35）实证：`public boolean claimInterface(UsbInterface, boolean)`
+         * —— 它返回布尔、**不抛异常**。旧写法 `runCatching { claimInterface(...) }.onFailure { … }`
+         * 结构上只能接住异常，claim 返回 false 时 `onFailure` 永不触发，于是带着一个没claim成功的
+         * 接口往下走、照样发 OpenSession。表现与用户报的一模一样：
+         * `usb_open ok=true` 之后「机身一个字节都不回」。
+         *
+         * 关掉 = 回到"返回值丢掉"的旧写法（v1.3.1~v2.6.0 的实际行为）。
+         */
+        const val USB_CLAIM_CHECK = "v28_usb_claim_check"
+
+        /**
+         * FR-28②：命令阶段的 bulkTransfer 要按**写全长度**判成败，不是只判 `< 0`。
+         *
+         * `bulkTransfer` 返回实际传输字节数：返回 0（超时未写入）或短写时，旧判据 `< 0`
+         * 一律放过，于是"根本没送到相机"被记成"送出去了但机身不回"，接下来必然是
+         * 5000ms 读超时 —— 这正是日志里那 30 多次 `usb_open → usb_session` 间隔 5.0~5.2s 的成因。
+         *
+         * 关掉 = 只把负值当失败（v2.6.0 行为）。
+         */
+        const val USB_WRITE_STRICT = "v28_usb_write_strict"
+
+        /**
+         * FR-28③：OpenSession 允许一次重试，从而走到既有的 clearHalt 恢复路径。
+         *
+         * `transact` 只在第 2 次尝试前调 `clearHaltBothEndpoints()`（:737），而 OpenSession
+         * 原来 `retryOnTimeout=false` → `maxAttempts=1` → 失败路径**一次都不清 stall、不排空**。
+         * 上一轮残留在管道里的容器会被本轮第一读捞到 → txid mismatch → 又是 null，
+         * 于是"机身不回"会被自己的失步永久锁住。
+         * OpenSession 无副作用（且 `SESSION_ALREADY_OPEN` 已被当作成功），重试是安全的。
+         *
+         * 关掉 = OpenSession 只发一次（v2.6.0 行为）。
+         */
+        const val USB_OPENSESSION_RETRY = "v28_usb_opensession_retry"
+
 
         /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
@@ -233,6 +270,9 @@ class ConnFlags @Inject constructor(
             IP_PROMOTE to true,
             USB_SKIP_RECOVERY to true,
             USB_RECONNECT_RAMP to true,
+            USB_CLAIM_CHECK to true,
+            USB_WRITE_STRICT to true,
+            USB_OPENSESSION_RETRY to true,
         )
     }
 
