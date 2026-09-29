@@ -539,6 +539,12 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 { connFlags.setEnabled(ConnFlags.USB_OPENSESSION_RETRY, it) }
             ),
             LabFlag(
+                ConnFlags.USB_CLOSE_SESSION_ON_TEARDOWN,
+                "拆 USB 链路前先发 CloseSession（FR-28④；关=只 releaseInterface+close，会话留在机身）",
+                { connFlags.isEnabled(ConnFlags.USB_CLOSE_SESSION_ON_TEARDOWN) },
+                { connFlags.setEnabled(ConnFlags.USB_CLOSE_SESSION_ON_TEARDOWN, it) }
+            ),
+            LabFlag(
                 UiFlags.ALBUM_INCR, "相册增量首屏（FR-03）",
                 { UiFlags.albumIncrementalEnabled(c) },
                 { UiFlags.set(c, UiFlags.ALBUM_INCR, it) }

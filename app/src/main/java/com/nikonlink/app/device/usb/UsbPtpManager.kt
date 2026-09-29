@@ -46,6 +46,12 @@ class UsbPtpManager @Inject constructor(
         private const val BULK_TIMEOUT_MS = 5000
 
         /**
+         * FR-28④：拆链路前那次 CloseSession 的超时。故意远小于正常事务超时 ——
+         * 这是"告别"不是"请求"，等久了只会拖慢重连。
+         */
+        private const val CLOSE_SESSION_TEARDOWN_MS = 1200
+
+        /**
          * v2.2（PRD §5.3 T-U1）：DETACHED 后的宽限窗口。
          * 线松、相机自动休眠唤醒、Hub 复位都会表现为一次瞬断再连；立刻判死会把
          * 「碰了一下线」变成用户眼中的「App 又把连接搞断了」。
@@ -1344,6 +1350,10 @@ class UsbPtpManager @Inject constructor(
                             _usbErrorMessage.value =
                                 "USB 链路超时断开：相机未响应保活，正在尝试自动重连…"
                             eventLogger.event("usb_keepalive_dead", "fails" to consecutiveFailures)
+                            // FR-28④：ERROR 会引来下一轮 openConnection → disconnect(silent)，
+                            // 那里只做 releaseInterface + close()。先在这里跟机身说一声，
+                            // 别把会话留在机身上——那正是下一次 OpenSession 没人答的形态。
+                            endSessionQuietly()
                             _usbState.value = UsbConnectionState.ERROR
                             scheduleReconnect()
                             break
@@ -1356,6 +1366,7 @@ class UsbPtpManager @Inject constructor(
                         _usbErrorMessage.value =
                             "USB 链路超时断开：相机未响应保活，正在尝试自动重连…"
                         eventLogger.event("usb_keepalive_dead", "fails" to consecutiveFailures)
+                        endSessionQuietly()
                         _usbState.value = UsbConnectionState.ERROR
                         scheduleReconnect()
                         break
@@ -1363,6 +1374,27 @@ class UsbPtpManager @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * FR-28④：拆链路之前礼貌地关一次会话。
+     *
+     * 只在"会话确实开过"（状态还是 CONNECTED）时发，超时压到 [CLOSE_SESSION_TEARDOWN_MS]，
+     * 结果不参与任何判定 —— 这一步的目的是**告诉机身"我不占你了"**，而不是等它回话。
+     * 旧路径只 `releaseInterface` + `connection.close()`，机身侧会话原样留着，
+     * 下一次 OpenSession 就没人应答（与真机看到的形态一致）。
+     */
+    private suspend fun endSessionQuietly() {
+        if (!connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_CLOSE_SESSION_ON_TEARDOWN)) return
+        if (_usbState.value != UsbConnectionState.CONNECTED) return
+        runCatching {
+            transact(
+                operationCode = PtpConstants.OP_CLOSE_SESSION,
+                params = emptyList(),
+                timeoutMs = CLOSE_SESSION_TEARDOWN_MS
+            )
+        }.onFailure { Timber.tag(TAG).w(it, "CloseSession on teardown threw") }
+        eventLogger.event("usb_session", "ok" to false, "reason" to "closed_on_teardown")
     }
 
     /**
