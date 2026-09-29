@@ -718,6 +718,25 @@ FR-18 的诊断包第一次跑在真机上，**当场回答了 §2.4 五问里�
 
 默认 false 的闸门精确清单：`ConnFlags` 23 键中 1 个（`v25_event_silence_hold`）；`UiFlags` 11 键中 5 个（其中真正"新功能没上线"的是 `v25_protect_select`、`v25_tone_tools` 两项，另三个 `ui_classic`/`ui_reduce_transparency`/`ui_dispersion` 属回退与无障碍性质）。
 
+### 13.5 「USB 照着 1.x 抄」这条路走到头了——逐字比对的结果是不一样不了
+
+用户三次指路「1.x.x 老版本能连上，参考它」。这次把 USB 这条链路按 tag 直接 diff，结论与预期相反，**必须先记录，免得下一轮再花一遍时间**：
+
+| 比对项 | v1.3.1 | v2.3.2 | 判定 |
+|---|---|---|---|
+| `scheduleReconnect()` 全函数体 | — | — | **`diff` 退出码 0，逐字节相同**【实】 |
+| 退避数组 | `longArrayOf(1000,2000,4000,8000,15000,15000,15000)`（`:370`） | 同一组值（`:452`） | 相同 |
+| `openConnection()` 开头同步置 `CONNECTING` | `:220` | `:263` | 相同 → **§13.2 的退避失效在 1.3.1 同样成立** |
+| `BULK_TIMEOUT_MS` | 5000（`:45`） | 5000 | 相同 |
+| `recoverStaleSession()` 参与判定（`sessionOk \|\| recoverStaleSession()`） | `:312` | 同 | 相同 |
+| `scheduleReconnect()` 调用点数 | 8 | 8 | 相同 |
+| 2.x 独有新增 | — | `enterDetachGraceWindow`（v2.2 T-U1）、`confirmLinkDead`、`adaptiveFrameTimeoutMs` | 均**不参与重连节律**：`ConnectionManager.kt:762` 的 `usbState` 观察者在 2.x 只多了漏斗记账（G12），**不回头调 `openConnection`**【实，两版对照读取】 |
+
+**所以：USB 连不上不是从 1.x 到 2.x 的回归。** §13.2 那个"45 次重连/273 秒"的退避失效，在能连上的老版本里**一模一样地存在过**——它是陈年缺陷，不是新坑。FR-27 因此是**首次修复**，而不是"退回老版本行为"；这也意味着它不会是把 USB 变好的那把钥匙。
+
+**推论（对排期的实际影响）**：既然节律代码两版相同，那 1.x 与现在 USB 观感差异只剩两种可能——① 相机侧状态（机身 PTP 服务是否应答，与 App 版本无关）；② 我们看不见的东西（这正是 `usb_ptp op/code/answered` 与 `usb_attach/usb_detach` 三个新事件要回答的，此前 attach/detach 只进 Timber，导出日志里根本没有）。
+**因此 R1a 的验收口径必须收窄**：FR-27 达标的标志是"重连次数从 45 次/273 秒降到 ≤8 轮并停手"，**不是**"USB 连上了"。连不连得上要等 R2a 拿 `answered` 分布才能判。
+
 ---
 
 ## 十四、接下来的优化路径（合并后的唯一排期）
