@@ -503,6 +503,7 @@ FR-19 / FR-20 / FR-24 不依赖 FR-18，可与之并行
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-29（第四次） | 新增 **§十六 FR-28 USB 通道全链路**：先否定"机身不应答"这个笼统叙述（27 次 1–26ms 即刻失败 vs ≈30 次 5s 真超时），再修两条 API 误用（`claimInterface` 返回值被丢、`bulkTransfer` 只判 `<0`）+ 两条节律（OpenSession 重试走到 clearHalt、拆链路前发 CloseSession）。四款竞品只落到"它们都有 CloseSession"这一条硬事实；`setConfiguration` 那条是**误命中、已撤回**，`changeToPtpMtpMode` 反汇编取不到、不作实现依据。**用户真机实测 USB 已连通**，据此发 v2.6.1 |
 | 2026-09-29（第三次） | **v2.6.0 正式发布**；§十四 重排为 14.0 发布事实 + R1 收口 / R2 等日志 / R3 竞品驱动 / R4 竞品逆向 / R5 不做；新增 §13.6（逆向对照：主机注册已与 ZDROP 同形，撤销 T-S4 那半）；用户解除"竞品逆向不做"，该项从 R4「不做」移入 R4「要做」 |
 | 2026-09-29（第二次） | 文档合并：v2.5 正文并入（新增 §十三 逐项审计、§十四 唯一排期、§十五 合并说明），v2.5 原稿移入 `docs/archive/`；§1.4「目标用户与使用场景」自 v2.5 迁入并订正 `v25_raw_pair` 默认值；顺手删掉尾部一份重复的 §10.3 残片 |
 | 2026-09-29 | §10.2 四项拍板落定 + 新增 §10.2b 记三处实现期偏离。A/B/C 三批次的 FR-18/19/20/21(②③)/22/23/24 已实现，FR-25 撤销出本期 |
@@ -925,3 +926,72 @@ FR-05② 64 位续传（先要有 >2GB 真机样本）、FR-12 帧率阶梯（�
 | v2.5 的 **§1.4 目标用户与使用场景** | **已并入本文 §1.4**（`f7e24e0` 由用户在 master 上补回，不能被归档动作埋掉）。并入时订正 1 处：原写 `v25_raw_pair` 默认关，本轮已转默认开 |
 | 第 4 处文档/代码失实 | v2.5 §五与 FR-17 写 `RAW_PAIR` 默认关，本轮按用户要求改为默认开。已在 §13.4 记为"默认值本轮已改"，不算遗留失实 |
 | 若要物理删除 archive | 一次性动作：`git rm docs/archive/PRD-N-Link-v2.5-差距收敛与可信性基建.md`。**在此之前请确认那 208 处 `PRD §x.x` 注释可接受指向缺失文件** |
+
+---
+
+## 十六、FR-28 USB 通道全链路（2026-09-29，用户第 5 次追同一问题后转守为攻）
+
+用户指示：**参考四款竞品的 USB 有线方案做全链路优化，其他功能不动**。APK 由用户当场提供
+（ZDROP 1.0.257 / ZRelay 3.0.46 / PixCake 1.9.0-269 / 影犀），影犀包与盘上旧产物
+`sha256` 一致（`3f4997fd…75d8092`），可直接复用。
+
+### 16.1 先否定"机身不应答"这个笼统叙述【实，日志量化】
+
+对 `n-link_logs_1790657151677.txt` 里 575 条 USB 事件做间隔统计：
+
+| 形态 | 次数 | 真实含义 |
+|---|---|---|
+| `usb_open → usb_session` 间隔 **1–26ms** | **27** | 不是超时。要么 `usbConnection ?: throw`（`UsbPtpManager.kt:761`）即刻失败，要么写阶段立刻返回 |
+| 间隔 **5.0–5.2s** | ≈30 | 真·等满 `BULK_TIMEOUT_MS=5000` 无应答 |
+
+**所以"机身一个字节都不回"只解释了一半失败，另一半是我们自己瞬间失败。** 之前几轮全靠
+`ms=` 收口值反推，从没把这两类分开——这是 §四 FR-18 可观测性欠的那块账。
+
+### 16.2 两条 API 误用（不是判据分歧）【实，本机 android.jar + javap 实证】
+
+```
+public boolean claimInterface(android.hardware.usb.UsbInterface, boolean);
+public int     bulkTransfer(android.hardware.usb.UsbEndpoint, byte[], int, int);
+```
+
+| # | 缺陷 | 后果 |
+|---|---|---|
+| FR-28① | `claimInterface` **返回 boolean、不抛异常**，旧写法 `runCatching{}.onFailure{}` 结构上接不住 `false` | 接口没claim成功照样发 OpenSession → 表现为"openDevice 成功、机身不回"。**旧的「USB 接口被占用」提示永远不会出现**，日志里 `claim_failed` 一次都没有，与这条一致 |
+| FR-28② | `bulkTransfer` 返回**实际字节数**，旧判据只认 `< 0` | 返回 0（未写入）与短写被当成发送成功 → "没送到"记成"送到了没人答"，接着空等 5s，即上表那 ≈30 次 |
+| FR-28③ | OpenSession `maxAttempts=1`，而 `clearHaltBothEndpoints()` 只在 `attempt>0` 分支 | 失败路径一次都不清 stall/不排空 → 残留字节引发 txid mismatch → 永久失步自锁。OpenSession 无副作用且 `SESSION_ALREADY_OPEN` 已当成功，重试安全 |
+| FR-28④ | 正常拆链路（保活判死 → ERROR → `disconnect(silent)`）**从不发 CloseSession** | 机身认为会话还在自己手里 → 下一次 OpenSession 没人答。**四款竞品都有 CloseSession**（ZDROP `sendCloseSession`、像素蛋糕 SDK 内甚至有品牌专用的 `NikonCloseSessionAction`/`CloseSessionCommand`） |
+
+### 16.3 逆向这条路上被推翻/否掉的东西（重要，别再走）
+
+| 结论 | 证据 | 处置 |
+|---|---|---|
+| ~~ZDROP 用 `setConfiguration` 切 USB 配置~~ | 那 3 处命中其实是 **`setConfigurationChangeObserver`**，另一个 API | **误命中，已撤回**。竞品没有任何配置切换证据 |
+| ~~`changeToPtpMtpMode` 可以抄~~ | 符号确在 `libcamerawirelesscontrol.so`（`cwc.str.txt:770/771`，且构造子带 `CameraConnectMode` 参数），**但类在 `ptpip` 命名空间下，语义无法确定；本机 mingw objdump 不支持 aarch64，反汇编取不到** | **不作为实现依据**。仅记为待验线索 |
+| 配置枚举能力是存在的 | `javap` 实证 `getConfigurationCount()` / `getConfiguration(i)` / `setConfiguration(cfg)` **全是公开 API**，而我们全仓零调用 | 不进本轮（改了会碰唯一跑通的通道），列为 **R6a**，等真机 `bConfigurationValue` dump |
+| USB/WiFi 通道互斥缺失 | `ConnectionManager` 里没有任何"切 USB 前关 WiFi 会话"的代码；机身只有一套 PTP 引擎 | 列为 **R6b**，需真机决策（会动 WiFi 那条跑通路，不盲改） |
+
+外部实操旁证【据外部资料，需核实】：照片直播行业「尼康 Z8 + 安卓有线」教程要求机身
+**USB 数据连接=MTP/PTP、USB 连接优先=拍摄、USB 电力输送=OFF、WiFi/FTP=OFF**。
+最后一条与 R6b 同向。
+
+### 16.4 闸门与验证
+
+`v28_usb_claim_check`、`v28_usb_write_strict`、`v28_usb_opensession_retry`、`v28_usb_close_session`
+默认全开，均已进调试包「开发选项」面板；关任一位即回到 v2.6.0 对应行为。
+可观测性同步补：`usb_open` 带 `claim=`/`cfg_total=`/`if_total=`，`usb_ptp` 带 `err=`/`retried=`，
+`usb_session` 新增 `reason=closed_on_teardown`；隐私声明同步登记这三个字段。
+
+| 项 | 结果 |
+|---|---|
+| 单测 | **224 / 0 failures / 0 errors / 1 skipped**（基线 222，+2 例 `UsbWriteRuleTest` 钉判据规则；既有断言一条未改） |
+| 构建 | `assembleDebug` BUILD SUCCESSFUL；包内已验 `v28_usb_*` / `closed_on_teardown` 在 dex 中（该包 17 个 dex） |
+| 真机 | **用户实测 USB 连接成功**（2026-09-29，FR-28 调试包）→ 这是本轮唯一一次真机兑现，也是发 2.6.1 的依据 |
+| 范围 | 只动 `device/usb/`、`ConnFlags`（闸门登记）、调试面板、隐私声明 + 1 个测试文件。**其他功能一行未动** |
+
+### 16.5 新增遗留
+
+| # | 项 | 为什么这轮不做 |
+|---|---|---|
+| R6a | USB **配置枚举与选择**（`getConfigurationCount`/`setConfiguration`） | 公开 API 已证实存在，但没有任何一家的证据说它们需要切配置；在已跑通的通道上盲切配置，风险 > 收益。需要一次真机 `bConfigurationValue` + 全描述符 dump 才能立项（`getRawDescriptors()` 也是公开的） |
+| R6b | **USB ↔ WiFi 通道互斥**：开 USB 前把 PTP/IP 会话关干净 | 会动 WiFi 那条跑通链路，属 §8.1 铁律保护面。先取一轮日志看 `usb_session` 失败与 WiFi 会话存续的时间相关性再定 |
+| R6c | 监看帧与命令共用 `commandMutex`，单帧最长持锁 8s | 属监看面，用户要求不动 |
