@@ -93,7 +93,7 @@ object UiFlags {
         SHUTTER_XCHECK to true,
         PROTECT_SELECT to false,
         TONE_TOOLS to false,
-        RAW_PAIR to false,
+        RAW_PAIR to true,
     )
 
     /**
