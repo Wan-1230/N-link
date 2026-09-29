@@ -204,6 +204,20 @@ class ConnFlags @Inject constructor(
          */
         const val USB_OPENSESSION_RETRY = "v28_usb_opensession_retry"
 
+        /**
+         * FR-28④：拆 USB 链路之前，先给机身发一次 CloseSession(0x1003)。
+         *
+         * 四款竞品的静态产物里**都有** CloseSession（ZDROP `sendCloseSession`、
+         * 像素蛋糕那套 SDK 甚至有品牌专用的 `NikonCloseSessionAction` 与 `CloseSessionCommand`），
+         * 而我们的正常拆链路路径（保活判死 → ERROR → 下一轮 `disconnect(silent=true)`）
+         * 只做 `releaseInterface` + `connection.close()`，**一个字节都不告诉机身** ——
+         * 于是机身认为会话还在自己手里，下一次 OpenSession 没人应答。
+         *
+         * 超时单独压到 1200ms 且结果不参与判定（这一步只是尽力而为）。
+         * 关掉 = 拆链路不发 CloseSession（v2.6.0 行为）。
+         */
+        const val USB_CLOSE_SESSION_ON_TEARDOWN = "v28_usb_close_session"
+
 
         /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
@@ -273,6 +287,7 @@ class ConnFlags @Inject constructor(
             USB_CLAIM_CHECK to true,
             USB_WRITE_STRICT to true,
             USB_OPENSESSION_RETRY to true,
+            USB_CLOSE_SESSION_ON_TEARDOWN to true,
         )
     }
 
