@@ -53,6 +53,14 @@ class UsbPtpManager @Inject constructor(
         private const val DETACH_GRACE_MS = 3000L
         private const val GRACE_POLL_MS = 400L
 
+        /**
+         * FR-27：USB 自动重连最多推进多少轮，之后停手等物理重插。
+         *
+         * 取 8 是为了覆盖退避数组 `[1000,2000,4000,8000,15000×3]` 的全窗口
+         * （≈68s），再往上一台明确不应答的机身继续敲没有意义。
+         */
+        private const val RECONNECT_ROUNDS_MAX = 8
+
         /** 监看帧专用短超时。v2.2 起作为**下限**，实际上限见 [LV_FRAME_TIMEOUT_MAX_MS] */
         private const val LV_FRAME_TIMEOUT_MS = 2500
 
@@ -153,11 +161,28 @@ class UsbPtpManager @Inject constructor(
                     val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
                     if (device != null && UsbPtpProtocol.isNikonCamera(device.vendorId, device.productId)) {
                         Timber.tag(TAG).i("Nikon camera attached: ${device.deviceName}")
+                        // v2.6 FR-27：attach/detach 只进 Timber，导出日志里一行都没有。
+                        // 而本次真机日志最需要回答的就是"这台设备到底在总线上反复插断，
+                        // 还是我们自己 disconnect() 造成的软件层抖动"——没有这两个事件就分不开。
+                        eventLogger.event(
+                            "usb_attach", "vid" to device.vendorId, "pid" to device.productId
+                        )
+                        // FR-27：物理重插 = 用户按指引做了一次动作，退避计数归零重来
+                        reconnectRound = 0
                         requestPermissionAndConnect(device)
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     Timber.tag(TAG).w("USB device detached")
+                    val detached = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+                    eventLogger.event(
+                        "usb_detach",
+                        "vid" to detached?.vendorId, "pid" to detached?.productId,
+                        "is_camera" to (detached != null && UsbPtpProtocol.isNikonCamera(
+                            detached.vendorId, detached.productId)),
+                        "grace" to connFlags.isEnabled(
+                            com.nikonlink.app.device.connect.ConnFlags.USB_GRACE)
+                    )
                     // v2.2（T-U1）：先进宽限窗轮询，不立刻拆会话。相机休眠唤醒 / 线材瞬断
                     // 会在 3s 内以同一 VID/PID 重新出现，命中就直接重连，用户无感。
                     if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_GRACE)) {
@@ -421,6 +446,8 @@ class UsbPtpManager @Inject constructor(
                     }
                     _usbErrorMessage.value = null
                     _usbFailCode.value = null
+                    // FR-27：连上了就把退避轮次清零，下次瞬断仍从最短间隔起跳
+                    reconnectRound = 0
                     _usbState.value = UsbConnectionState.CONNECTED
                     startEventPolling()
                     startKeepAlive()
@@ -492,13 +519,45 @@ class UsbPtpManager @Inject constructor(
      * 旧版只试 3 次共 7s，相机还在睡眠就已放弃，用户只能拔线重插）。
      * 仅当设备仍在 USB 总线上时重试；物理拔出（DETACHED）或手动断开会撤销任务。
      */
+    /**
+     * v2.6 FR-27：跨轮次单调递增的重连轮次。
+     *
+     * 为什么必须有它 —— 旧实现在这里有个很隐蔽的失效：
+     * `openConnection()` 会**同步**把 `_usbState` 置为 CONNECTING，于是退避循环末尾那句
+     * `if (_usbState.value == CONNECTING) return@launch` 立刻命中并 `return`，job 就此结束；
+     * 约 5 秒后异步的 OpenSession 超时、失败分支再调一次 `scheduleReconnect()`，
+     * 此时 `reconnectJob` 已不 active → 从 `delays[0] = 1000ms` **重新开始**。
+     * 结果：那条号称 ~68 秒窗口的 `[1000,2000,4000,8000,15000,15000,15000]`
+     * 数组永远走不出第 0 项。
+     *
+     * 真机代价（vivo V2509A，12:41:18 → 12:45:51）：**273 秒内 45 次重连**，
+     * 平均 6 秒一次，一次都不退让。而每次重连都要 open 设备 2 遍 +
+     * 在相机 PTP 会话还活着的时候 `releaseInterface` + `connection.close()` ——
+     * 这正是把机身留在"卡住不应答"状态的标准做法，也是我们自己在维持它。
+     */
+    private var reconnectRound = 0
+
     private fun scheduleReconnect() {
         if (reconnectJob?.isActive == true) return
         val scope = this.scope ?: return
+        if (reconnectRound >= RECONNECT_ROUNDS_MAX) {
+            // 到顶就停手，等物理重插：ATTACHED 广播会把计数清零并重新拉起。
+            // 继续敲一台明确不应答的机身没有意义，只会让它更不可能恢复。
+            _usbErrorMessage.value =
+                "USB 自动重连已停止（连续 $RECONNECT_ROUNDS_MAX 轮无应答）：" +
+                    "请重新插拔数据线，或先关掉相机的 WiFi 连接（机身同一时刻只服务一个 PTP 客户端）"
+            eventLogger.event("usb_reconnect_giveup", "rounds" to reconnectRound)
+            return
+        }
+        val round = reconnectRound++
+        val gate = connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_RECONNECT_RAMP)
         reconnectJob = scope.launch {
             // ~68s 覆盖窗口：相机自动休眠最短 30s，唤醒后第一个退避点即可命中
             val delays = longArrayOf(1000, 2000, 4000, 8000, 15000, 15000, 15000)
-            delays.forEachIndexed { attempt, delayMs ->
+            // FR-27：闸门开 → 本轮从 delays[round] 起步（跨轮次单调变长）；
+            // 关 → 沿用旧行为，每轮都从 1000ms 重新开始。
+            val startIdx = if (gate) round.coerceAtMost(delays.size - 1) else 0
+            delays.drop(startIdx).forEachIndexed { _, delayMs ->
                 delay(delayMs)
                 if (_usbState.value == UsbConnectionState.CONNECTED ||
                     _usbState.value == UsbConnectionState.CONNECTING
@@ -507,10 +566,10 @@ class UsbPtpManager @Inject constructor(
                     UsbPtpProtocol.isNikonCamera(it.vendorId, it.productId)
                 }
                 if (device == null) {
-                    Timber.tag(TAG).i("Reconnect attempt ${attempt + 1}: no camera on bus, stop")
+                    Timber.tag(TAG).i("Reconnect round $round: no camera on bus, stop")
                     return@launch
                 }
-                Timber.tag(TAG).i("USB reconnect attempt ${attempt + 1}/${delays.size}")
+                Timber.tag(TAG).i("USB reconnect round $round (waited ${delayMs}ms)")
                 if (usbManager.hasPermission(device)) {
                     openConnection(device)
                 } else {
@@ -568,7 +627,17 @@ class UsbPtpManager @Inject constructor(
             // Fix P0-3: 接受 OK 或 SESSION_ALREADY_OPEN（重复连接时相机可能已开会话）
             val ok = response?.isOk == true ||
                     response?.responseCode == PtpConstants.RESPONSE_SESSION_ALREADY_OPEN
-            if (!ok) Timber.tag(TAG).e("OpenSession code=0x${response?.responseCode?.toString(16)}")
+            if (!ok) {
+                Timber.tag(TAG).e("OpenSession code=0x${response?.responseCode?.toString(16)}")
+                // FR-27：这一行以前只进 Timber。而"机身回了个拒绝码"与"机身一个字都没回"
+                // 是两件完全不同的事（前者是槽位被占/模式不对，后者是 PTP 服务根本没起），
+                // 处置方向相反。导出日志必须能分清，否则每次都要靠耗时反推。
+                eventLogger.event(
+                    "usb_ptp", "op" to "OpenSession",
+                    "code" to (response?.responseCode?.let { "0x" + it.toString(16) } ?: "null"),
+                    "answered" to (response != null)
+                )
+            }
             ok
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "OpenSession failed")

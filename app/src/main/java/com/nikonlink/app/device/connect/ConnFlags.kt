@@ -158,6 +158,15 @@ class ConnFlags @Inject constructor(
          */
         const val USB_SKIP_RECOVERY = "v26_usb_skip_recovery"
 
+        /**
+         * FR-27：USB 自动重连的退避要**跨轮次单调变长**。
+         *
+         * 关掉 = 每轮都从 1000ms 重新开始（v2.2~v2.3.2 的实际行为）。
+         * 真机实测代价：273 秒内重连 45 次，每次都要 open 设备两遍并在机身 PTP
+         * 会话还活着的时候 `releaseInterface` + `close()`。
+         */
+        const val USB_RECONNECT_RAMP = "v26_usb_reconnect_ramp"
+
 
         /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
@@ -223,6 +232,7 @@ class ConnFlags @Inject constructor(
             PREFLIGHT_SOFT to true,
             IP_PROMOTE to true,
             USB_SKIP_RECOVERY to true,
+            USB_RECONNECT_RAMP to true,
         )
     }
 

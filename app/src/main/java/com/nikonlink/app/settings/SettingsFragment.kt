@@ -515,6 +515,12 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 { connFlags.setEnabled(ConnFlags.USB_SKIP_RECOVERY, it) }
             ),
             LabFlag(
+                ConnFlags.USB_RECONNECT_RAMP,
+                "USB 重连退避跨轮递增（FR-27；关=每轮都从 1 秒重新开始敲）",
+                { connFlags.isEnabled(ConnFlags.USB_RECONNECT_RAMP) },
+                { connFlags.setEnabled(ConnFlags.USB_RECONNECT_RAMP, it) }
+            ),
+            LabFlag(
                 UiFlags.ALBUM_INCR, "相册增量首屏（FR-03）",
                 { UiFlags.albumIncrementalEnabled(c) },
                 { UiFlags.set(c, UiFlags.ALBUM_INCR, it) }
