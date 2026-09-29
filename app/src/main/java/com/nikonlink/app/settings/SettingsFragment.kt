@@ -521,6 +521,24 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 { connFlags.setEnabled(ConnFlags.USB_RECONNECT_RAMP, it) }
             ),
             LabFlag(
+                ConnFlags.USB_CLAIM_CHECK,
+                "USB 把 claimInterface 返回值当判据（FR-28①；关=返回 false 也照样发命令）",
+                { connFlags.isEnabled(ConnFlags.USB_CLAIM_CHECK) },
+                { connFlags.setEnabled(ConnFlags.USB_CLAIM_CHECK, it) }
+            ),
+            LabFlag(
+                ConnFlags.USB_WRITE_STRICT,
+                "USB 命令必须写满长度才算成功（FR-28②；关=返回 0 与短写也被放过，接着空等 5 秒）",
+                { connFlags.isEnabled(ConnFlags.USB_WRITE_STRICT) },
+                { connFlags.setEnabled(ConnFlags.USB_WRITE_STRICT, it) }
+            ),
+            LabFlag(
+                ConnFlags.USB_OPENSESSION_RETRY,
+                "OpenSession 允许重试一次以走到清 stall（FR-28③；关=只发一次、管道失步永久锁住）",
+                { connFlags.isEnabled(ConnFlags.USB_OPENSESSION_RETRY) },
+                { connFlags.setEnabled(ConnFlags.USB_OPENSESSION_RETRY, it) }
+            ),
+            LabFlag(
                 UiFlags.ALBUM_INCR, "相册增量首屏（FR-03）",
                 { UiFlags.albumIncrementalEnabled(c) },
                 { UiFlags.set(c, UiFlags.ALBUM_INCR, it) }

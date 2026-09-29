@@ -144,6 +144,10 @@ class UsbPtpManager @Inject constructor(
     @Volatile
     private var lastOpenSessionNoAnswer = false
 
+    /** FR-28：最近一次事务失败的原因（短写 / 连接已关 / txid 不符 / 流损坏），成功时清空。 */
+    @Volatile
+    private var lastTransactError: String? = null
+
     /** 失败后的退避重连任务（1s/2s/4s 三次）；物理拔出或手动断开时撤销 */
     private var reconnectJob: Job? = null
 
@@ -367,15 +371,24 @@ class UsbPtpManager @Inject constructor(
                 return
             }
 
-            runCatching { connection.claimInterface(ptpInterface, true) }.onFailure { e ->
-                Timber.tag(TAG).e(e, "Claim USB interface failed")
-                eventLogger.event("usb_open", "ok" to false, "reason" to "claim_failed")
-                _usbErrorMessage.value =
-                    "USB 接口被占用：请关闭其它正在使用相机的应用后重新插拔"
-                connection.close()
-                _usbState.value = UsbConnectionState.ERROR
-                scheduleReconnect()
-                return
+            // FR-28①：claimInterface 返回 boolean 且不抛异常（本机 android.jar 实证），
+            // 旧写法 runCatching{}.onFailure{} 接不住 false —— 接口没claim成功也会一路走到
+            // 发 OpenSession，表现就是"openDevice 成功、机身一个字节不回"。
+            val claimed = runCatching { connection.claimInterface(ptpInterface, true) }
+                .onFailure { e -> Timber.tag(TAG).e(e, "Claim USB interface threw") }
+                .getOrDefault(false)
+            if (!claimed) {
+                Timber.tag(TAG).e("claimInterface returned false — 接口未真正占用，后续 bulkTransfer 必然失败")
+                if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_CLAIM_CHECK)) {
+                    eventLogger.event("usb_open", "ok" to false, "reason" to "claim_returned_false")
+                    _usbFailCode.value = "usb_claim_failed"
+                    _usbErrorMessage.value =
+                        "USB 接口被占用：请关闭其它正在使用相机的应用（电脑端、SnapBridge 等）后重新插拔"
+                    runCatching { connection.close() }
+                    _usbState.value = UsbConnectionState.ERROR
+                    scheduleReconnect()
+                    return
+                }
             }
 
             usbConnection = connection
@@ -397,7 +410,13 @@ class UsbPtpManager @Inject constructor(
             eventLogger.event(
                 "usb_open",
                 "ok" to true,
-                "model" to (_deviceInfo.value?.cameraModel ?: "unknown")
+                "model" to (_deviceInfo.value?.cameraModel ?: "unknown"),
+                // FR-28：把"到底claim成没成、命中第几个接口、设备一共几个配置"记进导出日志。
+                // 此前 claim 的返回值不进日志、配置数不进日志，"机身不应答"就只能靠耗时反推。
+                // 只记编号与类码，不记序列号。
+                "claim" to claimed,
+                "cfg_total" to device.configurationCount,
+                "if_total" to device.interfaceCount
             )
 
             // 打开 PTP 会话
@@ -620,7 +639,14 @@ class UsbPtpManager @Inject constructor(
      */
     private suspend fun openPtpSession(): Boolean = withContext(Dispatchers.IO) {
         try {
-            val response = sendCommand(PtpConstants.OP_OPEN_SESSION, listOf(1))
+            // FR-28③：给一次重试，才会走到 transact 里 attempt>0 的 clearHaltBothEndpoints()。
+            // OpenSession 重试是安全的：真有副作用的是"相机已开会话"，而下面已经把
+            // SESSION_ALREADY_OPEN 当作成功接住了。
+            val retry = connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_OPENSESSION_RETRY)
+            lastTransactError = null
+            val response = sendCommand(
+                PtpConstants.OP_OPEN_SESSION, listOf(1), retryOnTimeout = retry
+            )
             // v2.6：区分「机身应答了但拒绝」与「机身一个字节都没回」。
             // 这两者对 [recoverStaleSession] 的意义完全相反 —— 见该函数注释。
             lastOpenSessionNoAnswer = response == null
@@ -635,7 +661,11 @@ class UsbPtpManager @Inject constructor(
                 eventLogger.event(
                     "usb_ptp", "op" to "OpenSession",
                     "code" to (response?.responseCode?.let { "0x" + it.toString(16) } ?: "null"),
-                    "answered" to (response != null)
+                    "answered" to (response != null),
+                    // FR-28：把失败层次摊开 —— 短写 / 连接已关 / txid 不符 / 无原因。
+                    // 这几种"机身不应答"的处置方向完全不同，不能再混成一句。
+                    "err" to (lastTransactError ?: "none"),
+                    "retried" to retry
                 )
             }
             ok
@@ -743,6 +773,9 @@ class UsbPtpManager @Inject constructor(
                     )
                 } catch (e: TransactException) {
                     Timber.tag(TAG).w("transact fail op=0x${operationCode.toString(16)}: ${e.message}")
+                    // FR-28：失败原因此前只进 Timber，导出日志里看不到。留最后一次的原始原因，
+                    // 让 usb_ptp 能区分"写没送出去"与"送出去了没人答"。
+                    lastTransactError = e.message
                 }
             }
             TransactOutcome.FAILURE
@@ -766,14 +799,19 @@ class UsbPtpManager @Inject constructor(
         val txId = transactionId.incrementAndGet()
 
         // ---- 命令阶段（+ 可选数据出阶段）----
+        val strictWrite = connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_WRITE_STRICT)
         val command = UsbPtpProtocol.buildCommandContainer(txId, operationCode, params)
-        if (conn.bulkTransfer(out, command, command.size, timeoutMs) < 0) {
-            throw TransactException("bulk out failed op=0x${operationCode.toString(16)}")
+        val wroteCmd = conn.bulkTransfer(out, command, command.size, timeoutMs)
+        if (usbWriteFailed(wroteCmd, command.size, strictWrite)) {
+            throw TransactException("bulk out op=0x${operationCode.toString(16)} wrote=$wroteCmd/${command.size}")
         }
         if (dataOut != null) {
             val dataContainer = UsbPtpProtocol.buildDataContainer(txId, dataOut)
-            if (conn.bulkTransfer(out, dataContainer, dataContainer.size, timeoutMs) < 0) {
-                throw TransactException("bulk out data failed op=0x${operationCode.toString(16)}")
+            val wroteData = conn.bulkTransfer(out, dataContainer, dataContainer.size, timeoutMs)
+            if (usbWriteFailed(wroteData, dataContainer.size, strictWrite)) {
+                throw TransactException(
+                    "bulk out data op=0x${operationCode.toString(16)} wrote=$wroteData/${dataContainer.size}"
+                )
             }
         }
 
@@ -1419,3 +1457,16 @@ data class UsbCameraInfo(
     val cameraModel: String,
     val serialNumber: String
 )
+
+/**
+ * FR-28②：命令/数据出阶段的成败判据。
+ *
+ * `bulkTransfer` 返回**实际传输字节数**（本机 android.jar 实证签名为 `public int bulkTransfer(...)`），
+ * 返回 0 表示超时且未写入、小于期望值表示短写。旧判据只把 `< 0` 当失败，于是
+ * "根本没送到相机"被记成"送到了但机身不回"，接着必然空等 5000ms 读超时 ——
+ * 真机日志里 `usb_open → usb_session` 稳定间隔 5.0~5.2s 的那 30 多次就是这条。
+ *
+ * 抽成纯函数是为了能被单测钉住规则本身（USB 栈交互 JVM 测不到，但判据可以）。
+ */
+internal fun usbWriteFailed(returned: Int, expected: Int, strict: Boolean): Boolean =
+    if (strict) returned != expected else returned < 0
