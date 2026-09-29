@@ -20,6 +20,8 @@ object DiagnosticsDisclosure {
         appendLine("【日志部分包含】")
         appendLine("  · 手机机型（Build.MODEL）与 ROM 家族")
         appendLine("  · 相机型号（USB 通道下取自 GetDeviceInfo）")
+        appendLine("  · **USB 总线的结构性信息**（`claim=`接口是否真占用成功、`cfg_total=`/`if_total=`")
+        appendLine("    设备有几个配置几个接口、`err=`传输失败的层次）—— 只有编号与布尔，不含序列号")
         appendLine("  · 相机 / 网关的 IP 地址与端口（`host=` / `port=`）—— 局域网地址，不是公网出口 IP")
         appendLine("  · **手机本机网卡名与链路地址**（`ifaces=wlan0 192.168.1.36/24,…` 这样）")
         appendLine("    —— v2.6 排查「绑错网 / 走了蜂窝黑洞」必须要有它，代价是暴露本机网段规划")
