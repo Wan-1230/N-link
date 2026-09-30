@@ -1,0 +1,82 @@
+.glass {
+  position: relative;
+  background: var(--surface-glass);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(var(--saturate));
+  backdrop-filter: blur(var(--blur)) saturate(var(--saturate));
+  border: 1px solid var(--hairline);
+  border-radius: var(--r);
+  isolation: isolate;
+}
+
+.glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0) 42%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.glass::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: conic-gradient(
+    from 210deg at 50% 50%,
+    rgba(255, 255, 255, 0) 0deg,
+    rgba(255, 225, 0, 0.055) 62deg,
+    rgba(120, 200, 255, 0.05) 148deg,
+    rgba(255, 255, 255, 0) 240deg
+  );
+  opacity: 0.9;
+  pointer-events: none;
+  z-index: -1;
+  transition: opacity var(--dur-2) var(--ease-out-expo);
+}
+
+.glass--strong {
+  background: var(--surface-glass-strong);
+}
+
+@supports not ((backdrop-filter: blur(2px)) or (-webkit-backdrop-filter: blur(2px))) {
+  .glass,
+  .glass--strong {
+    background: var(--bg-elev);
+  }
+}
+
+/* 玻璃面上的文字若达不到 AA，退回不透明白底 —— 与 App v2.3 同规则，不留例外。 */
+.glass--readable {
+  background: #121415;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-color: var(--hairline-strong);
+}
+
+.glass--readable::after {
+  opacity: 0;
+}
+
+/* 长列表项一律禁用实时模糊（性能与可读性），仅容器用玻璃。 */
+.no-glass {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: transparent;
+  border-color: transparent;
+}
+
+.no-glass::before,
+.no-glass::after {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .glass::after {
+    opacity: 0;
+  }
+}

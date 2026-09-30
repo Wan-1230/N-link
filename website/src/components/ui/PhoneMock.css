@@ -1,0 +1,209 @@
+.mock {
+  position: relative;
+  width: 292px;
+  aspect-ratio: 292 / 604;
+  border-radius: 38px;
+  padding: 9px;
+  background: linear-gradient(160deg, #26292c 0%, #101214 55%, #1c1f22 100%);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.1) inset,
+    0 42px 90px -30px rgba(0, 0, 0, 0.85),
+    0 0 120px -40px rgba(255, 225, 0, 0.16);
+}
+
+.mock__screen {
+  position: relative;
+  height: 100%;
+  border-radius: 30px;
+  overflow: hidden;
+  background: #060708;
+  display: flex;
+  flex-direction: column;
+}
+
+.mock__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--fg-faint);
+  letter-spacing: 0.04em;
+}
+
+.mock__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 10px var(--ok);
+}
+
+.mock__chips {
+  display: flex;
+  gap: 4px;
+  padding: 0 12px 8px;
+}
+
+.mock__chip {
+  font-size: 8.5px;
+  padding: 3px 7px;
+  border-radius: var(--r-pill);
+  color: var(--fg-faint);
+  border: 1px solid var(--hairline);
+}
+
+.mock__chip--on {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.mock__stage {
+  position: relative;
+  flex: 1;
+  margin: 0 12px;
+  border-radius: var(--r);
+  overflow: hidden;
+  background:
+    radial-gradient(26% 16% at 32% 28%, rgba(255, 225, 0, 0.16) 0%, transparent 72%),
+    radial-gradient(15% 10% at 66% 33%, rgba(126, 200, 255, 0.15) 0%, transparent 70%),
+    radial-gradient(11% 7% at 79% 58%, rgba(255, 170, 90, 0.13) 0%, transparent 70%),
+    linear-gradient(180deg, #16202b 0%, #0d1319 55%, #1b1509 100%);
+}
+
+/* 地平线：让这块区域读起来像取景器里的实景，而不是一块空板 */
+.mock__stage::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 62%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 225, 0, 0.4) 22%, rgba(255, 255, 255, 0.5) 55%, transparent);
+  opacity: 0.75;
+}
+
+.mock__stage::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 62%;
+  bottom: 0;
+  z-index: 0;
+  background: linear-gradient(180deg, rgba(255, 200, 60, 0.09), rgba(0, 0, 0, 0.35));
+}
+
+.mock__grid {
+  z-index: 1;
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.13) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.13) 1px, transparent 1px);
+  background-size: 33.333% 33.333%;
+  opacity: 0.5;
+}
+
+.mock__af {
+  position: absolute;
+  z-index: 2;
+  left: 52%;
+  top: 44%;
+  width: 54px;
+  height: 42px;
+  border: 1.4px solid var(--accent);
+  border-radius: 3px;
+  box-shadow: 0 0 14px rgba(255, 225, 0, 0.35);
+}
+
+.mock__af::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border: 1px solid rgba(255, 225, 0, 0.32);
+  border-radius: 5px;
+}
+
+.mock__hud {
+  position: absolute;
+  z-index: 3;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  color: rgba(255, 255, 255, 0.82);
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(8, 9, 10, 0.55);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--hairline);
+}
+
+.mock__shutter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 12px 0 4px;
+}
+
+.mock__shutter-ring {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.6);
+  display: grid;
+  place-items: center;
+}
+
+.mock__shutter-core {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 18px rgba(255, 225, 0, 0.5);
+}
+
+.mock__mini {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--hairline-strong);
+  background: var(--surface-glass);
+}
+
+.mock__dock {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 13px;
+  height: 40px;
+  border-radius: var(--r-lg);
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  background: rgba(255, 255, 255, 0.07);
+  -webkit-backdrop-filter: blur(16px) saturate(170%);
+  backdrop-filter: blur(16px) saturate(170%);
+  border: 1px solid var(--hairline-strong);
+  box-shadow: 0 10px 26px -12px rgba(0, 0, 0, 0.9);
+}
+
+.mock__dock-item {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.mock__dock-item--on {
+  background: var(--accent);
+  box-shadow: 0 0 12px rgba(255, 225, 0, 0.55);
+}
