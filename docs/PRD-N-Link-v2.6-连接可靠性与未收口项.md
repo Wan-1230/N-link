@@ -995,3 +995,74 @@ public int     bulkTransfer(android.hardware.usb.UsbEndpoint, byte[], int, int);
 | R6a | USB **配置枚举与选择**（`getConfigurationCount`/`setConfiguration`） | 公开 API 已证实存在，但没有任何一家的证据说它们需要切配置；在已跑通的通道上盲切配置，风险 > 收益。需要一次真机 `bConfigurationValue` + 全描述符 dump 才能立项（`getRawDescriptors()` 也是公开的） |
 | R6b | **USB ↔ WiFi 通道互斥**：开 USB 前把 PTP/IP 会话关干净 | 会动 WiFi 那条跑通链路，属 §8.1 铁律保护面。先取一轮日志看 `usb_session` 失败与 WiFi 会话存续的时间相关性再定 |
 | R6c | 监看帧与命令共用 `commandMutex`，单帧最长持锁 8s | 属监看面，用户要求不动 |
+
+---
+
+## 十七、FR-29 STA 专项（2026-10-01，基线 = 远端 `51795fa`「v2.6.5」）
+
+> 触发：用户要求对 STA 做专项优化，授权解包 ZDROP 1.0.257 / ZRelay 3.0.46，硬约束
+> **只动 STA、已跑通功能零改动**。分支 `sta-hardening`，提交 `f306568` / `58c1474` / `f4e69e8`。
+>
+> ⚠ 基线须知：`51795fa` 的提交名写「v2.6.5」，但 `build.gradle.kts` 仍是
+> `versionCode 26 / versionName 2.6.1`，tag 与 GitHub Release 也停在 `v2.6.1` ——
+> **2.6.2~2.6.5 是内部迭代记号，没有发布过**。另：该提交带一个红灯测试
+> （`ProtectionFilterTest.kt:65` 期望 `"已保护"`，而 `51795fa` 把 `TransferViewModel.kt:1587`
+> 改成了 `PROTECTED("已筛选")` 未同步测试）。属相册模块，按范围约束**未在此修**，
+> 本轮回归基线定义为「1 个既有失败（相册）+ 0 个新增失败」。
+
+### 17.1 竞品对照的结论：**大部分做法我们已经有**
+
+ZDROP 完整反编译（`/tmp/zdrop-out/sources/`，未加固）后的逐条比对：
+
+| ZDROP 的做法 | 证据 | 我们的状态 |
+|---|---|---|
+| 绑到「相机 IP 落在其 LinkAddress 子网内」的 WiFi，socket 全走 `Network.getSocketFactory()` | `A.java:180`、`C0528y.java:47-62`、`B6.java:51` | **已有**：FR-20 `BIND_SUBNET_CHECK` + `networkCoversHost` + `ptpSession.connect(network = usable)` |
+| `requestNetwork` 显式 `removeCapability(NET_CAPABILITY_INTERNET)` | `A.java:180` | **等价、无需改**：移除该能力位是因为相机热点无公网；我们从未 `addCapability(INTERNET)`，请求同样不要求公网 |
+| host GUID 持久化复用（`host_guid`，一次生成长期用） | `o7.java:477-495` | **已有**：`PtpIdentityStore`，`KEY_GUID = "ptp_ip_client_guid"`，注释里就写着随机会被机身当新设备 |
+| mDNS 发现 `_nikon._tcp.` + `_ptp._tcp.`，TXT 取端口、缺省 15740 | `C0492t3.java:104`、`C0484s3.java:52` | **已有**：`WifiScanner.kt:89-90` 两个类型都订，`:678` 一起用 |
+| 注册重试 ≤4 次、间隔 `{0,2000,4000,6000}`，且**只对 socket/INIT 阶段重试**；`PrepareHost` 被拒视为终态 | `o7.java:3936`、`:3889` | **方向一致**：我们也是 prepare 失败即 `return`（`PtpSessionManager:516`），不原地重试 |
+| 单飞闸 + 2000ms 冷却（`elapsedRealtime()+2000`） | `o7.y0():6025-6055`、`:2809` | **已有**：FR-19 `CONN_SERIALIZE`（`ConnectionManager:271`）、`FALLBACK_COOLDOWN_MS = 180_000` |
+| INIT_COMMAND → event socket 之间 settle **首次 350ms / 重试 650ms** | `o7.java:3889` | 我们是常量 `PROBE_SETTLE_MS = 400`，落在两者之间。**不动**：§14 R2d 已说明 settle 治不了探测密度问题（机身回收半开会话要 ~35s，差两个数量级） |
+
+**竞品也没有的东西（扫遍未命中，别当成"对手有秘诀"）**：注册前读设备属性判断向导态（ZDROP 全类无 `0x1014/0x1015`，也无 `0x9435/0x90C2/0x90C8`）、注册前发 CloseSession 清场、`PrepareHost` 返回 `0x201F` 的专用处置、`InitFail reason=1` 的独立分类、相机休眠检测与唤醒。**ZRelay 3.0.46 的 dump 里 `0x952B/0x935A` 计数为 0 —— 它根本不实现主机注册**，无从对比。
+
+→ 结论：`docs/STA注册失败-根因分析与优化方案.md` §1.4 的判断成立，**0x201F 是相机侧状态问题，不是我们协议实现的缺陷**。竞品能"成功"是因为它们同样要求相机停在向导页，且它们把这件事写进了文案（ZDROP：「请让相机停留在 STA 主机配置向导，并等待相机完成保存」）。
+
+### 17.2 本轮落地的 7 项
+
+| # | 项 | 性质 |
+|---|---|---|
+| ① | `camera_unreachable` 改挂自己的 Reason，不再映射到 `TCP_TIMEOUT`（该码**全仓零生产者**） | 可归因。`ConnFunnel` 只增不改，`TCP_TIMEOUT` 保留 |
+| ② | `loop_error` / `round_budget_exhausted` 各自成码；硬闸出口原来把**中文文案当机器码**传给 `onFail`，整类失败在漏斗里全是 `unknown` | 可归因 |
+| ③ | `WifiNetworkMonitor` 三个 binder 调用不再裸调（按"单张网卡查不到就跳过"的粒度兜） | 加固。代码注释自己记着真机曾有 4 个 generation 全死在此，但修法只在调用方包 `runCatching` |
+| ④ | 三路选网竞争落选时归还 `requester` 申请的网络 | 修泄漏。只有它注册 NetworkCallback 并留 `held`；胜出者不是它时无人认领，而**成功路径永不 `release()`** |
+| ⑤ | R4 蜂窝黑洞判据从网卡枚举改为 `ConnectivityManager`，规则收紧为"默认路由在蜂窝 **且** 无任何 WiFi 覆盖相机"两条同时成立 | 修判据（闸门仍默认关，本轮对现网零影响） |
+| ⑥ | `HOSTREG_HINT_V2` / `HOSTREG_PRECHECK` 转**默认开** | 让 v2.6.3 已写好的两条真正生效（面板是 debug-only，默认关 = 正式包永远不生效） |
+| ⑦ | 新增 `sta_probe_ctx` 事件，把新旧两个蜂窝判据并排记录，**不改行为** | 取证据。判定规则：`cm_cellular_hole=true` 的轮次里只要有成功的，R4 永久不能开 |
+
+### 17.3 三条**否决**的改动（都有反证，别再提）
+
+| 提议 | 否决依据 |
+|---|---|
+| 学 ZDROP 把 connect 超时从 30000ms 缩到 6000ms | §1.1 记着真机**成功**建链耗时 9.80 / 15.05 / 29.87 / 84.75 / **97.74** 秒。缩到 6 秒会把本来能连上的判死 |
+| 学 ZDROP 做连接前路由预检、拿不到同网地址就中止 | 与 §13.3 撤销 S3 同一个理由：判据来源在主力机上是假阴性，硬中止会杀掉能连上的场景 |
+| 用户清单里的「多 STA 并发调度与连接池管理」 | 机身同时只接受 **1 个 PTP/IP 客户端**，全程 1 台相机 1 条会话。连接池是没人调用的机器，还会给已跑通的传输链路增加并发风险 |
+
+另有一条**我自己中途撤回**的写法：原想在 `StaNetworkRequester.acquire` 的 `finally` 里"发现协程已取消就无条件释放 callback"，但 `held = fallback; return fallback` 与取消观测之间无法区分"调用方拿到了"和"调用方超时丢了"——前者被注销 callback 会**打断 STA 的断链检测**（`networkLost` 收不到），那是改一条跑通的路。④ 因此改到真正知道自己丢了结果的调用方去修。
+
+### 17.4 验证与范围
+
+| 项 | 结果 |
+|---|---|
+| 单测 | **231 / 1 failed / 0 errors / 1 skipped**（基线 224，新增 7 例全绿：`ConnFunnelReasonContractTest` 4 例 + `CellularBlackholeRuleTest` 3 例）。唯一失败 = `ProtectionFilterTest:65`，先于本轮存在，属相册 |
+| 构建 | `compileDebugKotlin` / `assembleDebug` 均 BUILD SUCCESSFUL；调试包 21,268,954 字节，`sta_probe_ctx`/`cm_cellular_hole`/`cellular_blackhole`/`round_budget_exhausted` 均已验入 dex（该包 17 个 dex） |
+| 改动面 | `ConnFunnel`（只增枚举）、`ConnectionManager`（映射表 5 行）、`wifi_sta/` 三个文件、`ConnFlags`（文档+2 个默认值）、2 个新测试文件 |
+| **零改动** | AP 通道、USB 通道、传输/相册/监看业务、UI 布局、`build.gradle.kts`、启动流程；**无新增第三方依赖** |
+| 未验证 | 全部真机行为。⑥ 转默认开的两条、⑤ 的新判据、⑦ 的双记，都要一轮真机日志才算数 |
+
+### 17.5 下一步（按证据强度排）
+
+1. **拿一轮真机日志**，看 `sta_probe_ctx` 的 `nic_covers` 与 `cm_cellular_hole` 在成功/失败轮次里的分布 → 定 R4 生死（⑦ 就是为这件事装的）。
+2. 看 `hostreg` + `device_caps`（`lastSupportedOperations`）在 0x201F 现场的实际取值 → 验证 R2 是否真能提前拦住，以及 §4.4 那组对照实验（相机进「连接至 PC」向导 vs 进「连接至智能设备」）。
+3. R3（`0x201F` 之后是否仍发 `ConfirmHost`）**仍未做**：需要先用 ZDROP 在已注册过的相机上跑一次，观察 `0x201F` 后 ConfirmHost 是否照样成功。无此证据不动注册主链路。
+4. FTP 架构（B）下抑制 STA PTP 自动重连：`staArchitecture` 在 `ConnectionManager` **0 命中**，三条自动路径（`reconnectLastDeviceIfPaired:1239`、`observeReconnectTrigger:1040`、HealthWorker `:552`）仍会发起最长 240s 的 STA 连接轮，而 `bindProcessToNetwork` 是**进程级**的，会影响 FTP 监听 socket 的出口选择。要动 `ConnectionManager` 的自动重连闭环，属"已跑通功能"，**先不碰**，等 FTP 那条线自己稳定。
