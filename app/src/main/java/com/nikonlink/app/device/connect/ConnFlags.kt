@@ -295,6 +295,23 @@ class ConnFlags @Inject constructor(
          */
         const val STA_SCAN_EARLY_EXIT = "v32_scan_early_exit"
 
+        /**
+         * FR-32：注册收到 InitFail reason=1（槽位被占）后冷却 35s 才允许再次发现+注册。
+         *
+         * 机身收回半开会话要几十秒（FR-21 实测）；2026-10-02 真机连轰 4 次 reason=1
+         * 期间相机向导进入失败态（用户目视「连接失败」并关热点）。冷却把"连点重复
+         * 已知结论"换成一次明确等待。
+         */
+        const val STA_REG_REASON1_COOLDOWN = "v32_reg_reason1_cooldown"
+
+        /**
+         * FR-32：链路层/opcode 诊断（net_bind 带 ifaces、net_unbind、建链后 15s
+         * `sta_ifaces` 采样、`ptp_tx` opcode+响应码）。**纯日志、零行为变化**：
+         * 2026-10-02 的悬案「谁杀了 wlan0（我们的 bind / vivo / 相机 AP 周期）」
+         * 与「相机断热点前我们最后发了哪条包」只有这组字段能回答。
+         */
+        const val STA_LINK_DIAG = "v32_link_diag"
+
 
         /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
@@ -387,8 +404,12 @@ class ConnFlags @Inject constructor(
             STA_SKIP_CELLULAR to false,
             // AP 空闲断链修复：默认开（这是修复不是实验，但保留开关便于现场二分定位）
             SESSION_IDLE_REFRESH to true,
-            // FR-32：扫描早退默认关（坏包回归回退项，真机再定默认值）
-            STA_SCAN_EARLY_EXIT to false,
+            // FR-32：扫描早退默认开（注册发现 8~18s → 1~3s 已验证；常规扫描有 1.5s 宽限，
+            // 多相机漏列可重扫兜底；现场二分可关）。
+            STA_SCAN_EARLY_EXIT to true,
+            // FR-32：reason=1 冷却与链路诊断默认开（前者修已验证的连拒链，后者纯日志）
+            STA_REG_REASON1_COOLDOWN to true,
+            STA_LINK_DIAG to true,
         )
     }
 

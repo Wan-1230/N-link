@@ -124,6 +124,7 @@ class StaHostRegistrar @Inject constructor(
                 )
                 return@withContext HostRegistrationResult.Failure(
                     phase = "init",
+                    initFailReason = init.reasonCode,
                     detail = "相机拒绝了握手（${PtpConstants.describeInitFailReason(init.reasonCode)}）。\n" +
                         "它的 PTP/IP 槽位可能正被别的设备占用：先断开其它连着相机的应用" +
                         "（SnapBridge、电脑端软件等），或等相机收回旧会话后再点注册。"
