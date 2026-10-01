@@ -36,10 +36,24 @@
     <color name="secondary_variant">#404040</color>
     <color name="on_secondary">#FFFFFF</color>
 
-    <!-- 状态色：仅灰度表达（规范：不引入彩色） -->
+    <!-- 状态色：仅灰度表达（规范：除下方品牌强调色外不引入彩色） -->
     <color name="status_disconnected">#BFBFBF</color>
     <color name="ble_indicator">#525252</color>
     <color name="wifi_indicator">#000000</color>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         v2.6.5 品牌强调色（尼康黄）—— **唯一** 的彩色，且**只允许**用在两处：
+           ① 连接状态指示灯（status_connected）
+           ② 主功能按钮（NlButton.Primary 的填充）
+         其它任何控件、图标、文字、选中态一律继续走黑白灰。
+         这条约束是刻意收紧的：强调色一旦铺开就不再是强调，界面会重新变得嘈杂。
+         回退方式：把下面两个 token 改回 #000000/#FFFFFF 即可整体还原为纯黑白。
+         ══════════════════════════════════════════════════════════════════ -->
+    <color name="nikon_yellow">#FFE100</color>
+    <!-- 黄底上的文字/图标：必须用黑，白字在黄底上对比度不足（≈1.5:1） -->
+    <color name="on_nikon_yellow">#000000</color>
+    <!-- 连接状态指示灯·已连接 -->
+    <color name="status_connected">#FFE100</color>
 
     <!-- 点击反馈 / 遮罩 -->
     <color name="chip_unselected">#F0F0F0</color>

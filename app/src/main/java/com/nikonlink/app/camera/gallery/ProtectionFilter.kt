@@ -40,12 +40,37 @@ enum class ProtectionReport {
  */
 fun protectionReportOf(files: List<CameraFile>): ProtectionReport = when {
     files.isEmpty() -> ProtectionReport.NO_DATA
-    files.any { it.protectionKnown } -> ProtectionReport.REPORTED
+    // v2.6.4：保护列 或 评级列，任一报告过就算"筛选可用"
+    files.any { it.protectionKnown || it.ratingKnown } -> ProtectionReport.REPORTED
     else -> ProtectionReport.UNREPORTED
 }
 
+/**
+ * 机内是否被打过评级（星级 > 0）。
+ *
+ * 与 [isProtected] 同一套约定：`null` 是"机身没报"，按未评级处理，
+ * 但 [ratingKnown] 会把这两种情况分开，供"这个筛选到底能不能用"的判定使用。
+ */
+val CameraFile.ratingKnown: Boolean
+    get() = rating != null
+
+val CameraFile.isRated: Boolean
+    get() = (rating ?: 0) > 0
+
+/**
+ * v2.6.4：「相机端已筛选」= 保护键 或 评级，二者任一即算。
+ *
+ * 对应影速传那类"只传机内筛过的照片"的用法：摄影师在机身上按保护键 / 打星做一轮粗选，
+ * 手机上不再面对整卡几百张，只处理筛出来的那些 —— 列表加载与传图都直接受益。
+ */
+val CameraFile.isScreenedInCamera: Boolean
+    get() = isProtected || isRated
+
 /** 已保护的张数；未报告的条目不计入。 */
 fun protectedCountOf(files: List<CameraFile>): Int = files.count { it.isProtected }
+
+/** v2.6.4：已筛选（保护 或 评级）的张数。 */
+fun screenedCountOf(files: List<CameraFile>): Int = files.count { it.isScreenedInCamera }
 
 /** 相册「已保护」标签的呈现：出不出、叫什么。 */
 data class ProtectChip(val shown: Boolean, val label: String)
@@ -58,7 +83,7 @@ fun protectChipOf(files: List<CameraFile>): ProtectChip {
     if (protectionReportOf(files) != ProtectionReport.REPORTED) {
         return ProtectChip(shown = false, label = PhotoFilter.PROTECTED.label)
     }
-    val count = protectedCountOf(files)
+    val count = screenedCountOf(files)
     return ProtectChip(
         shown = true,
         label = if (count == 0) PhotoFilter.PROTECTED.label else "${PhotoFilter.PROTECTED.label} $count"

@@ -179,7 +179,6 @@ class ConnFlags @Inject constructor(
          * 关掉 = 回到"返回值丢掉"的旧写法（v1.3.1~v2.6.0 的实际行为）。
          */
         const val USB_CLAIM_CHECK = "v28_usb_claim_check"
-
         /**
          * FR-28②：命令阶段的 bulkTransfer 要按**写全长度**判成败，不是只判 `< 0`。
          *
@@ -217,6 +216,66 @@ class ConnFlags @Inject constructor(
          * 关掉 = 拆链路不发 CloseSession（v2.6.0 行为）。
          */
         const val USB_CLOSE_SESSION_ON_TEARDOWN = "v28_usb_close_session"
+
+        // ── v2.6.3 STA 注册链路加固（见 docs/STA注册失败-根因分析与优化方案.md §4）──
+        //
+        // 三条**默认关**：它们改的是"失败之后如何解释与如何少走弯路"，不解决注册本身
+        // 成功与否。默认关 = 与 v2.6.2 逐位等价，真机验证过再逐个打开。
+
+        /**
+         * R1：按 InitFail **原因**决定怎么引导，而不是一律"需要注册"。
+         *
+         * 原实现把所有 InitFail 都当作"相机不认本机"→ 置 `staRegisterNeeded`。
+         * 但 reason=1 是 `connection_in_use`（机身唯一的 PTP/IP 客户端槽还被上一代
+         * 会话的尸体占着），正确动作是**等十几秒重试**，不是让用户去点注册 ——
+         * 2026-09-30 那份日志里 15:50:24 的 `fail_reason=1` 正是这种，用户被引导去
+         * 注册，而相机当时根本不在配置向导，注册必然被 0x201F 拒。
+         *
+         * 打开后：reason=1 → 只提示"相机正忙"；reason=2 → 才置需要注册；
+         * reason=3 → 直接视为已注册。
+         */
+        const val HOSTREG_HINT_V2 = "v263_hostreg_hint_v2"
+
+        /**
+         * R2：注册前先用 `GetDeviceInfo` 的 `OperationsSupported` 检查相机**当前模式**
+         * 支不支持主机注册（0x952B）。
+         *
+         * 尼康的 SnapBridge AP（连接至智能设备）与主机配置向导**都在 192.168.1.1
+         * 提供 PTP/IP**，但只有向导接受 0x952B。原实现不看这个，直接盲发 → 拿到
+         * 0x201F 之后只能给一句笼统的"请确认相机屏幕处于可接受连接的画面"。
+         * 打开后：不支持就**不发**，直接给出"相机不在主机配置向导"的明确结论，
+         * 并把 SupportedOperations 摘要写进 I/O 日志。
+         */
+        const val HOSTREG_PRECHECK = "v263_hostreg_precheck"
+
+        /**
+         * R4：STA 预连接探测遇到"源地址是蜂窝口"时直接判不可达，不再发 socket。
+         *
+         * 2026-09-30 日志：手机已离开相机热点（`ifaces=ap0+ccmni4`，无 192.168.1.x），
+         * App 仍对 192.168.1.1 从 `/10.56.31.140`（ccmni4 蜂窝）发起连接，
+         * 15:50:45 空转到 15:51:38（约 53s）才等到手机回连相机热点。
+         * 蜂窝口上打私网地址是纯浪费 —— 它是黑洞，既不 RST 也不可达。
+         */
+        const val STA_SKIP_CELLULAR = "v263_sta_skip_cellular"
+
+        /**
+         * v2.6.4 **AP 空闲断链修复**（修复项，默认开）。
+         *
+         * 现象：AP 连上后静置 2~7 分钟，相机自己把 PTP/IP 会话关掉
+         * （2026-10-01 日志：01:09:00 最后一次下载 → 01:15:27 `ping_write_failed`
+         * + `event_read_error` → `network_lost`）。
+         *
+         * 原因：相机侧的会话空闲计时器看的是 **PTP 命令**活动，不是 PTP/IP 传输层的
+         * Ping（type 13）。我们的保活为了"把命令通道完全留给业务"，只发 Ping，
+         * 于是相机认为这个客户端一直在空转，到点就断。Ping 只能发现 TCP 半开，
+         * 刷新不了相机的计时器 —— 两件事不能互相替代。
+         *
+         * 打开后：命令通道空闲超过 60s 且不在批量传输中，补一条最轻量的
+         * `DeviceReady`，把相机的空闲计时器拨回去。**批量传输期间一律不发**
+         * （那时命令通道本来就在忙，相机也不会判空闲）。
+         * 关掉 = 回到 v2.6.3 的"只发 Ping"（会在数分钟后断链）。
+         */
+        const val SESSION_IDLE_REFRESH = "v264_session_idle_refresh"
 
 
         /**
@@ -288,6 +347,12 @@ class ConnFlags @Inject constructor(
             USB_WRITE_STRICT to true,
             USB_OPENSESSION_RETRY to true,
             USB_CLOSE_SESSION_ON_TEARDOWN to true,
+            // v2.6.3 STA 注册链路加固：三条默认关（与 v2.6.2 逐位等价，真机验证后再开）
+            HOSTREG_HINT_V2 to false,
+            HOSTREG_PRECHECK to false,
+            STA_SKIP_CELLULAR to false,
+            // AP 空闲断链修复：默认开（这是修复不是实验，但保留开关便于现场二分定位）
+            SESSION_IDLE_REFRESH to true,
         )
     }
 
