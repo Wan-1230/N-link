@@ -19,7 +19,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import java.net.DatagramPacket
@@ -81,6 +83,9 @@ class WifiScanner @Inject constructor(
 
         /** 网段盲扫的单主机探测超时（要控制 254 个地址的总耗时） */
         private const val SWEEP_PROBE_TIMEOUT_MS = 800L
+
+        /** FR-31④：强候选命中后的宽限——给第二条路径一点补登记同名相机的时间，再收工 */
+        private const val EARLY_EXIT_GRACE_MS = 1_500L
 
         /** 候选确认 / 第二轮补扫的探测超时（覆盖相机从休眠唤醒的时延） */
         private const val CONFIRM_PROBE_TIMEOUT_MS = 2_500L
@@ -164,13 +169,26 @@ class WifiScanner @Inject constructor(
 
     /**
      * 同时监听 mDNS 广播并扫描当前网段的 15740 端口。
+     *
+     * @param ptpConfirm 候选确认是否发 PTP/IP InitCommand 握手。
+     *   `false` = 只做 TCP 筛探（FR-31③）：InitCommand 会占用相机**唯一**的 PTP/IP
+     *   客户端槽位几十秒，紧随其后开注册链路的场景（STA 未连接态自主注册）会被
+     *   相机以 InitFail reason=1 拒掉（2026-10-02 真机连拒 4 次，间隔 83~327ms）。
+     *   常规扫描保持 `true`（握手确认能挡掉"端口碰巧开着的非相机主机"）。
+     * @param earlyExit 强候选（握手确认 OK / TCP-only 模式下端口开放）命中后，
+     *   再收 [EARLY_EXIT_GRACE_MS] 的宽限即提前收工（FR-31④）。
+     *   ZDROP 的发现代际实测 1.4s 提交，我们旧实现恒跑满 timeout（注册路径真机
+     *   实测 8~18s）—— 慢的几乎全是"命中之后还在等"这一段。
      */
     suspend fun scan(
         timeoutMs: Long = DEFAULT_SCAN_TIMEOUT_MS,
         network: Network? = null,
-        hotspotMode: Boolean = false
+        hotspotMode: Boolean = false,
+        ptpConfirm: Boolean = true,
+        earlyExit: Boolean = false
     ): List<WifiCameraCandidate> {
         val results = ConcurrentHashMap.newKeySet<WifiCameraCandidate>()
+        val firstStrong = CompletableDeferred<Unit>()
         // ZDROP 同款：扫描期间进程级绑定到 WiFi 网络。双卡手机默认路由在蜂窝时，
         // 组播/NSD/网段探测 socket 的路由都可能被抢，仅靠逐 socket 绑定不可靠。
         // 调用方没给网络（STA 首次发现）时，先向系统申请一张 WiFi 网再扫，
@@ -246,15 +264,36 @@ class WifiScanner @Inject constructor(
                 if (gateReason == null) {
                     // 网络一律用 target（调用方给的，或本次主动申请到的），
                     // 不能再用可能为 null 的 network —— 否则 socket 会落到蜂窝网口
-                    val mdnsJob = async { collectMdns(timeoutMs, results, target, mdnsSeen, diag) }
+                    val mdnsJob = async {
+                        collectMdns(timeoutMs, results, target, mdnsSeen, diag, ptpConfirm, firstStrong)
+                    }
                     val subnetJob = async {
-                        scanSubnet(timeoutMs, results, target, hotspotMode, probed, subnets, diag)
+                        scanSubnet(timeoutMs, results, target, hotspotMode, probed, subnets, diag, ptpConfirm, firstStrong)
                     }
-                    val nsdJob = async { collectNsd(timeoutMs, results, target, nsdSeen, diag) }
+                    val nsdJob = async {
+                        collectNsd(timeoutMs, results, target, nsdSeen, diag, ptpConfirm, firstStrong)
+                    }
                     val arpJob = async {
-                        collectArp(timeoutMs, results, target, probed, arpEntries, diag)
+                        collectArp(timeoutMs, results, target, probed, arpEntries, diag, ptpConfirm, firstStrong)
                     }
-                    awaitAll(mdnsJob, subnetJob, nsdJob, arpJob)
+                    val jobs = listOf(mdnsJob, subnetJob, nsdJob, arpJob)
+                    // FR-32：早退受闸门控制（v32_scan_early_exit）。2026-10-02 坏包回归
+                    // 复盘时它随 FR-31① 一起回退过一轮，重落地时默认关、调试面板可开 ——
+                    // 真机证明它对注册发现有效（discover 段 8~18s → 1~3s），但对常规扫描
+                    // 的多相机列表有 1.5s 宽限外的漏列代价，交给真机再定默认值。
+                    if (earlyExit && connFlags.isEnabled(ConnFlags.STA_SCAN_EARLY_EXIT)) {
+                        // FR-31④：强候选命中即提前收工。被 cancel 的收集任务
+                        // 已写入 results 的候选保留，await 抛的 CancellationException 逐任务吞掉。
+                        val early = launch {
+                            val hit = runCatching { withTimeout(timeoutMs) { firstStrong.await() } }.isSuccess
+                            if (hit) delay(EARLY_EXIT_GRACE_MS)
+                            jobs.forEach { it.cancel() }
+                        }
+                        jobs.forEach { runCatching { it.await() } }
+                        early.cancel()
+                    } else {
+                        awaitAll(mdnsJob, subnetJob, nsdJob, arpJob)
+                    }
 
                     // ── v1.3.2 第二轮补扫（对齐 ZDROP 的重试语义）────────────────
                     // 第一轮用 800ms 短超时压缩总耗时；若一条路径都没出候选，
@@ -263,7 +302,7 @@ class WifiScanner @Inject constructor(
                     if (results.isEmpty() && subnets.isNotEmpty()) {
                         Timber.tag(TAG).i("No candidate in wave-1, running wave-2 (longer timeout)")
                         delay(600)
-                        collectSlowSubnet(results, target, subnets, probed, diag)
+                        collectSlowSubnet(results, target, subnets, probed, diag, ptpConfirm, firstStrong)
                     }
                 } else {
                     Timber.tag(TAG).w("Scan gated before discovery: " + gateReason)
@@ -325,7 +364,9 @@ class WifiScanner @Inject constructor(
         results: MutableSet<WifiCameraCandidate>,
         network: Network?,
         mdnsSeen: java.util.concurrent.atomic.AtomicInteger,
-        diag: Diag
+        diag: Diag,
+        ptpConfirm: Boolean,
+        firstStrong: CompletableDeferred<Unit>
     ) {
         val multicastLock = runCatching {
             wifiManager.createMulticastLock("N-LinkWifiScan")
@@ -386,9 +427,20 @@ class WifiScanner @Inject constructor(
                     // v1.3.2：mDNS 主动播报 _ptp._tcp 的主机已高度可信，
                     // 确认超时放宽到 2.5s，并接受「TCP 通但 PTP 握手超时」
                     // （相机休眠中）—— 旧版只认握手成功，休眠相机直接被丢弃。
-                    val verdict = PtpIpProbe.probeDetailed(
-                        candidate.ip, candidate.port, CONFIRM_PROBE_TIMEOUT_MS, network
-                    )
+                    // FR-31③：ptpConfirm=false 时只 TCP 筛探，不发 InitCommand
+                    // （握手会占住相机唯一的 PTP/IP 槽，紧跟的注册链路会被 reason=1 拒）。
+                    val verdict = if (ptpConfirm) {
+                        PtpIpProbe.probeDetailed(
+                            candidate.ip, candidate.port, CONFIRM_PROBE_TIMEOUT_MS, network
+                        )
+                    } else if (PtpIpProbe.tcpConnectOnly(
+                            candidate.ip, candidate.port, CONFIRM_PROBE_TIMEOUT_MS, network
+                        )
+                    ) {
+                        PtpIpProbe.ProbeResult.OK
+                    } else {
+                        PtpIpProbe.ProbeResult.TIMEOUT
+                    }
                     when (verdict) {
                         PtpIpProbe.ProbeResult.OK -> diag.probeOk.incrementAndGet()
                         PtpIpProbe.ProbeResult.TCP_OPEN_NO_PTP ->
@@ -405,6 +457,7 @@ class WifiScanner @Inject constructor(
                             "WiFi"
                         )
                     )
+                    noteHit(firstStrong, verdict == PtpIpProbe.ProbeResult.OK)
                     Timber.tag(TAG).i("mDNS candidate: ${candidate.name} @ ${candidate.ip}:${candidate.port}")
                 } catch (_: SocketTimeoutException) {
                     // 继续监听直到超时
@@ -470,7 +523,9 @@ class WifiScanner @Inject constructor(
         hotspotMode: Boolean = false,
         probed: java.util.concurrent.atomic.AtomicInteger,
         networks: List<Pair<String, Int>>,
-        diag: Diag
+        diag: Diag,
+        ptpConfirm: Boolean = true,
+        firstStrong: CompletableDeferred<Unit>? = null
     ) {
         if (networks.isEmpty()) {
             // v1.3.2：不再静默返回——网段缺失已在 scan() 的门控里等过并有 gateReason，
@@ -514,18 +569,23 @@ class WifiScanner @Inject constructor(
                         // v2.2（PRD §5.2 T-S3）：两段式筛选 —— 先用「只连 TCP、不发握手」快筛
                         // 掉绝大多数空地址。对每个地址都发一次 InitCommand 不仅慢，还会反复
                         // 挤占相机**唯一**的 PTP/IP 客户端槽位，反而把真正要连的目标挤下线。
-                        val tcpOpen = if (connFlags.isEnabled(ConnFlags.STA_TCP_ONLY)) {
-                            PtpIpProbe.tcpConnectOnly(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)
-                        } else true
-                        val verdict = if (tcpOpen) {
-                            PtpIpProbe.probeDetailed(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)
-                        } else {
-                            PtpIpProbe.ProbeResult.TIMEOUT
+                        // FR-31③：ptpConfirm=false 时第二段也省掉（TCP 开即候选）。
+                        val tcpOpen = when {
+                            !ptpConfirm -> PtpIpProbe.tcpConnectOnly(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)
+                            connFlags.isEnabled(ConnFlags.STA_TCP_ONLY) ->
+                                PtpIpProbe.tcpConnectOnly(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)
+                            else -> true
+                        }
+                        val verdict = when {
+                            !tcpOpen -> PtpIpProbe.ProbeResult.TIMEOUT
+                            ptpConfirm -> PtpIpProbe.probeDetailed(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)
+                            else -> PtpIpProbe.ProbeResult.OK
                         }
                         when (verdict) {
                             PtpIpProbe.ProbeResult.OK -> {
                                 diag.probeOk.incrementAndGet()
                                 results.add(WifiCameraCandidate(host, PTP_PORT, "尼康相机", "WiFi"))
+                                noteHit(firstStrong, true)
                                 Timber.tag(TAG).i("Port scan found camera at " + host)
                             }
                             PtpIpProbe.ProbeResult.TCP_OPEN_NO_PTP -> {
@@ -562,7 +622,9 @@ class WifiScanner @Inject constructor(
         network: Network?,
         networks: List<Pair<String, Int>>,
         probed: java.util.concurrent.atomic.AtomicInteger,
-        diag: Diag
+        diag: Diag,
+        ptpConfirm: Boolean = true,
+        firstStrong: CompletableDeferred<Unit>? = null
     ) {
         val hosts = networks.flatMap { (ip, prefix) ->
             subnetHosts(ip, prefix).filterNot { it == ip }
@@ -578,10 +640,21 @@ class WifiScanner @Inject constructor(
                     try {
                         if (System.currentTimeMillis() >= deadline) return@async
                         probed.incrementAndGet()
-                        when (PtpIpProbe.probeDetailed(host, PTP_PORT, CONFIRM_PROBE_TIMEOUT_MS, network)) {
+                        // FR-31③：补扫同样受 ptpConfirm 约束（注册发现不发 InitCommand）
+                        val verdict = when {
+                            !ptpConfirm ->
+                                if (PtpIpProbe.tcpConnectOnly(host, PTP_PORT, CONFIRM_PROBE_TIMEOUT_MS, network)) {
+                                    PtpIpProbe.ProbeResult.OK
+                                } else {
+                                    PtpIpProbe.ProbeResult.TIMEOUT
+                                }
+                            else -> PtpIpProbe.probeDetailed(host, PTP_PORT, CONFIRM_PROBE_TIMEOUT_MS, network)
+                        }
+                        when (verdict) {
                             PtpIpProbe.ProbeResult.OK -> {
                                 diag.probeOk.incrementAndGet()
                                 results.add(WifiCameraCandidate(host, PTP_PORT, "尼康相机", "WiFi"))
+                                noteHit(firstStrong, true)
                                 Timber.tag(TAG).i("wave-2 found camera at " + host)
                             }
                             PtpIpProbe.ProbeResult.TCP_OPEN_NO_PTP -> {
@@ -611,7 +684,9 @@ class WifiScanner @Inject constructor(
         results: MutableSet<WifiCameraCandidate>,
         network: Network?,
         nsdSeen: java.util.concurrent.atomic.AtomicInteger,
-        diag: Diag
+        diag: Diag,
+        ptpConfirm: Boolean = true,
+        firstStrong: CompletableDeferred<Unit>? = null
     ) {
         val nsdManager = context.getSystemService(Context.NSD_SERVICE) as? NsdManager
         if (nsdManager == null) {
@@ -695,19 +770,33 @@ class WifiScanner @Inject constructor(
             discovered.map { (entry, serviceName) ->
                 async(Dispatchers.IO) {
                     val endpoint = WifiEndpoint.parse("wifi:$entry")
-                    if (endpoint != null &&
+                    // FR-31③：ptpConfirm=false 时 NSD 候选也只 TCP 确认，不发 InitCommand
+                    val confirmed = endpoint != null &&
                         results.none { it.ipAddress == endpoint.host } &&
-                        PtpIpProbe.probe(endpoint, timeoutMs = 1200L, network = network)
-                    ) {
+                        if (ptpConfirm) {
+                            PtpIpProbe.probe(endpoint, timeoutMs = 1200L, network = network)
+                        } else {
+                            PtpIpProbe.tcpConnectOnly(endpoint.host, endpoint.port, 1200L, network)
+                        }
+                    if (confirmed && endpoint != null) {
                         val name = serviceName.ifBlank { GENERIC_NAME }
                         results.add(
                             WifiCameraCandidate(endpoint.host, endpoint.port, name, "WiFi-nsd")
                         )
+                        noteHit(firstStrong, true)
                         Timber.tag(TAG).i("NSD candidate: ${endpoint.host}:${endpoint.port} name=$name")
                     }
                 }
             }.awaitAll()
         }
+    }
+
+    /**
+     * FR-31④：登记一个"强候选"（握手确认 OK；TCP-only 模式下端口开放即算）。
+     * 只通知第一次 —— [scan] 的早退协程在它上面 await。
+     */
+    private fun noteHit(firstStrong: CompletableDeferred<Unit>?, strong: Boolean) {
+        if (strong) firstStrong?.complete(Unit)
     }
 
     /**
@@ -734,7 +823,9 @@ class WifiScanner @Inject constructor(
         network: Network?,
         probed: java.util.concurrent.atomic.AtomicInteger,
         arpEntries: java.util.concurrent.atomic.AtomicInteger,
-        diag: Diag
+        diag: Diag,
+        ptpConfirm: Boolean = true,
+        firstStrong: CompletableDeferred<Unit>? = null
     ) {
         // 给 ARP 表一点学习时间（相机刚入网时表里可能还没有它）
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -757,13 +848,17 @@ class WifiScanner @Inject constructor(
                         // v2.2（PRD §5.2 T-S3）：两段式筛选 —— 先用「只连 TCP、不发握手」快筛
                         // 掉绝大多数空地址。对每个地址都发一次 InitCommand 不仅慢，还会反复
                         // 挤占相机**唯一**的 PTP/IP 客户端槽位，反而把真正要连的目标挤下线。
-                        val tcpOpen = if (connFlags.isEnabled(ConnFlags.STA_TCP_ONLY)) {
-                            PtpIpProbe.tcpConnectOnly(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)
-                        } else true
-                        val verdict = if (tcpOpen) {
-                            PtpIpProbe.probeDetailed(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)
-                        } else {
-                            PtpIpProbe.ProbeResult.TIMEOUT
+                        // FR-31③：ptpConfirm=false 时第二段也省掉（TCP 开即候选）。
+                        val tcpOpen = when {
+                            !ptpConfirm -> PtpIpProbe.tcpConnectOnly(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)
+                            connFlags.isEnabled(ConnFlags.STA_TCP_ONLY) ->
+                                PtpIpProbe.tcpConnectOnly(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)
+                            else -> true
+                        }
+                        val verdict = when {
+                            !tcpOpen -> PtpIpProbe.ProbeResult.TIMEOUT
+                            ptpConfirm -> PtpIpProbe.probeDetailed(host, PTP_PORT, SWEEP_PROBE_TIMEOUT_MS, network)
+                            else -> PtpIpProbe.ProbeResult.OK
                         }
                         when (verdict) {
                             PtpIpProbe.ProbeResult.OK -> {
@@ -771,6 +866,7 @@ class WifiScanner @Inject constructor(
                                 results.add(
                                     WifiCameraCandidate(host, PTP_PORT, GENERIC_NAME, "WiFi-arp")
                                 )
+                                noteHit(firstStrong, true)
                                 Timber.tag(TAG).i("ARP candidate: " + host)
                             }
                             PtpIpProbe.ProbeResult.TCP_OPEN_NO_PTP -> {

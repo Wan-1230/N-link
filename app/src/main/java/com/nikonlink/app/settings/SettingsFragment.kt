@@ -575,6 +575,12 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 { connFlags.setEnabled(ConnFlags.USB_CLOSE_SESSION_ON_TEARDOWN, it) }
             ),
             LabFlag(
+                ConnFlags.STA_SCAN_EARLY_EXIT,
+                "扫描强候选命中即早退（FR-32；关=跑满扫描预算，多相机列表最全）",
+                { connFlags.isEnabled(ConnFlags.STA_SCAN_EARLY_EXIT) },
+                { connFlags.setEnabled(ConnFlags.STA_SCAN_EARLY_EXIT, it) }
+            ),
+            LabFlag(
                 UiFlags.ALBUM_INCR, "相册增量首屏（FR-03）",
                 { UiFlags.albumIncrementalEnabled(c) },
                 { UiFlags.set(c, UiFlags.ALBUM_INCR, it) }
