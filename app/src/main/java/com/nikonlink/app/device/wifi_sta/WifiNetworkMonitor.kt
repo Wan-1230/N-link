@@ -216,8 +216,43 @@ class WifiNetworkMonitor @Inject constructor(
         }
     }
 
-    private fun hostToInt(host: String): Int? {
-        val parts = host.split(".").mapNotNull { it.toIntOrNull() }
+    /**
+     * v2.6.6 FR-29⑤：这次探测会不会掉进**蜂窝黑洞**。
+     *
+     * 判据全部走 `ConnectivityManager`（FR-23 已确立它为主判据），**刻意不用网卡枚举**：
+     * PRD §13.3 用真机数据否掉了后者 —— 那台 vivo 的 `localAddresses()` 看不见实际承载
+     * 相机流量的接口（只列出 `ap0 10.184.219.24/24` + `ccmni4 10.56.31.140/8`），
+     * `in_subnet` 因此是**假阴性**，而同一次连接在 `in_subnet=false` 的情况下于 12:39:56
+     * 成功了。反过来，同一份日志里 `net_bind covers=true`（走的正是本类
+     * [networkCoversHost]）判定正确 —— 两个来源谁可信，真机已经给了答案。
+     *
+     * 所以 v2.6.3 的 R4 用 `subnetsContain()` 做硬拦截是**不能开的**：它会把这台机器上
+     * 能连上的场景判死。这里换成"默认路由是不是蜂窝 + 有没有任何 WiFi 覆盖 host"。
+     *
+     * @return true = 这一探必然走蜂窝打私网地址（既不回 RST 也不可达，只会耗干 30s 超时）
+     */
+    fun probeWouldUseCellular(host: String): Boolean {
+        val active = runCatching { connectivityManager.activeNetwork }
+            .onFailure { Timber.tag(TAG).w(it, "activeNetwork threw") }
+            .getOrNull() ?: return false
+        val activeCaps = runCatching { connectivityManager.getNetworkCapabilities(active) }
+            .onFailure { Timber.tag(TAG).w(it, "getNetworkCapabilities(active) threw") }
+            .getOrNull() ?: return false
+        val anyWifiCovers = runCatching { connectivityManager.allNetworks }
+            .onFailure { Timber.tag(TAG).w(it, "allNetworks threw") }
+            .getOrNull()
+            ?.any { network ->
+                val caps = runCatching { connectivityManager.getNetworkCapabilities(network) }.getOrNull()
+                caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true &&
+                    networkCoversHost(network, host)
+            } == true
+        return cellularBlackhole(
+            activeIsCellular = activeCaps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR),
+            anyWifiCoversHost = anyWifiCovers
+        )
+    }
+
+    private fun hostToInt(host: String): Int? {        val parts = host.split(".").mapNotNull { it.toIntOrNull() }
         if (parts.size != 4 || parts.any { it < 0 || it > 255 }) return null
         return (parts[0] shl 24) or (parts[1] shl 16) or (parts[2] shl 8) or parts[3]
     }
@@ -318,3 +353,15 @@ class WifiNetworkMonitor @Inject constructor(
         }
     }
 }
+
+/**
+ * v2.6.6 FR-29⑤：蜂窝黑洞的判定规则（纯函数，供单测钉住）。
+ *
+ * 两个条件必须**同时**成立才判黑洞：默认路由确实在蜂窝上，且没有任何一张 WiFi 覆盖相机地址。
+ * 只满足前一条不够 —— 手机热点 + 蜂窝并存时默认路由可能报蜂窝，但相机其实在热点子网里，
+ * 那一次探测是能通的（真机日志 `in_subnet=true` 那轮一次就成）。
+ * 只满足后一条更不够 —— 没有 WiFi 覆盖、但默认路由是 WiFi/VPN 时，失败会快速返回，
+ * 不会像蜂窝那样耗干 30s。
+ */
+internal fun cellularBlackhole(activeIsCellular: Boolean, anyWifiCoversHost: Boolean): Boolean =
+    activeIsCellular && !anyWifiCoversHost

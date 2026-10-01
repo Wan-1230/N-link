@@ -869,13 +869,21 @@ class WifiDirectConnector @Inject constructor(
         // **AP 链路豁免**：已在相机热点上时不查这一条（与 PreflightGate 的豁免同源）——
         // 相机热点刚接上、网卡还在 DHCP 的那一小段窗口里也必须继续探。
         // 闸门默认关，关掉即与 v2.6.2 逐位等价。
+        //
+        // v2.6.6 FR-29⑤：**判据换掉了**。原来用 `localInterfaces.subnetsContain(host)`，
+        // 而 PRD §13.3 已用真机数据证明这个来源在本项目主力机（vivo V2509A）上是**假阴性**：
+        // `localAddresses()` 看不见实际承载相机流量的接口，同一次连接在 `in_subnet=false`
+        // 的情况下于 12:39:56 成功。以它为据做硬拦截 = 把能连上的场景判死，
+        // 这正是 §13.3 撤销 S3 的同一个理由。现改走 ConnectivityManager（FR-23 已确立为主判据，
+        // 且同一份日志里 `net_bind covers=true` 判定正确）：只有"默认路由在蜂窝 **且**
+        // 没有任何 WiFi 覆盖相机地址"才算黑洞。见 [WifiNetworkMonitor.probeWouldUseCellular]。
         if (connFlags.isEnabled(ConnFlags.STA_SKIP_CELLULAR)) {
             val onCameraAp = runCatching { apGatewayResolver.isOnCameraAp() }.getOrDefault(false)
-            if (!onCameraAp && !localInterfaces.subnetsContain(endpoint.host)) {
-                eventLogger.event("sta_probe_skipped", "reason" to "no_local_subnet_match",
+            if (!onCameraAp && networkMonitor.probeWouldUseCellular(endpoint.host)) {
+                eventLogger.event("sta_probe_skipped", "reason" to "cellular_blackhole",
                     "host" to endpoint.host)
                 return PtpIpProbe.TcpScreen(
-                    false, PtpIpProbe.ProbeResult.ERROR, "no_local_subnet_match"
+                    false, PtpIpProbe.ProbeResult.ERROR, "cellular_blackhole"
                 )
             }
         }
