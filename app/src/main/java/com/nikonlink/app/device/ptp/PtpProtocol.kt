@@ -610,6 +610,66 @@ sealed class PtpPacket {
 }
 
 /**
+ * PTP GetDeviceInfo 的最小解析器（v2.6.3 R2）。
+ *
+ * 只解到 `OperationsSupported` 就停 —— 注册前置检查需要的就是它：相机**当前模式**下
+ * 支不支持 0x952B（主机注册预备）。尼康的 SnapBridge AP（连接至智能设备）与主机配置
+ * 向导都在 192.168.1.1 提供 PTP/IP，但只有向导把 0x952B 列进 OperationsSupported，
+ * 这是**在发命令之前**就能判定的，不必等 0x201F。
+ *
+ * DeviceInfo 结构（PTP 1.1 §13.2，小端）：
+ *   UINT16 StandardVersion
+ *   UINT32 VendorExtensionID
+ *   UINT16 VendorExtensionVersion
+ *   STRING VendorExtensionDesc        ← 1 字节长度 + UTF-16LE（含结尾 NUL）
+ *   UINT16 FunctionalMode
+ *   AUINT16 OperationsSupported       ← 4 字节个数 + N×2 字节
+ *   …（后面的 Events/Properties/Formats 与两个 STRING 本解析器不看）
+ *
+ * 解析失败一律返回 null —— 调用方据此**放行**（宁可按旧路径盲发，也不要因为解析器
+ * 的问题把一条本来能成的注册拦掉）。
+ */
+object PtpDeviceInfo {
+
+    fun parseOperations(raw: ByteArray?): Set<Int>? {
+        if (raw == null || raw.size < 12) return null
+        return try {
+            var p = 0
+            fun u16(): Int {
+                val v = (raw[p].toInt() and 0xFF) or ((raw[p + 1].toInt() and 0xFF) shl 8)
+                p += 2
+                return v
+            }
+
+            p += 2                    // StandardVersion
+            p += 4                    // VendorExtensionID
+            p += 2                    // VendorExtensionVersion
+            val descLen = raw[p].toInt() and 0xFF
+            p += 1 + descLen * 2      // VendorExtensionDesc（长度字节 + UTF-16LE）
+            p += 2                    // FunctionalMode
+            if (p + 4 > raw.size) return null
+            var count = (raw[p].toInt() and 0xFF) or
+                ((raw[p + 1].toInt() and 0xFF) shl 8) or
+                ((raw[p + 2].toInt() and 0xFF) shl 16) or
+                ((raw[p + 3].toInt() and 0xFF) shl 24)
+            p += 4
+            if (count < 0) return null
+            // 机身偶尔会把个数写大；按剩余字节数夹住，避免越界
+            count = count.coerceAtMost((raw.size - p) / 2)
+            val ops = HashSet<Int>(count * 2)
+            var i = 0
+            while (i < count) {
+                ops.add(u16())
+                i++
+            }
+            ops
+        } catch (e: Exception) {
+            null
+        }
+    }
+}
+
+/**
  * 初始化命令请求包
  */
 data class InitCommandPacket(

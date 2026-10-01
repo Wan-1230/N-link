@@ -197,6 +197,32 @@
                     android:textColor="@color/white"
                     android:textSize="12sp" />
             </LinearLayout>
+
+            <!-- 删除：与「标记 / 下载 / EXIF / 分享」同一套底栏按钮规范
+                 （24dp 图标 + 12sp 白字 + weight=1 等分）。 -->
+            <LinearLayout
+                android:id="@+id/btnDelete"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:contentDescription="删除"
+                    android:src="@drawable/ic_delete"
+                    app:tint="@color/white" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="删除"
+                    android:textColor="@color/white"
+                    android:textSize="12sp" />
+            </LinearLayout>
         </LinearLayout>
     </LinearLayout>
 </FrameLayout>

@@ -17,15 +17,27 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
 
+        <!-- 标题自动缩放（v2.6.3 修复「标题栏显示不全」）：
+             本页顶栏是三页里控件最多的 —— 跳过已下载(48) + 刷新(48) + 排序(minWidth) +
+             多选，尾部落到 242dp，加 page_margin 48dp 后 360dp 屏上标题只剩 ~70dp，
+             而 24sp 的「相机照片」要 ~96dp → 只能显示两个字。
+             autoSize 让标题在 24sp→16sp 之间缩，宽了就完整显示、实在放不下才退回省略号。
+             设备页/设置页控件少、空间充裕，保持固定 24sp 不动（本页单独改，不进共享 style）。 -->
         <TextView
             android:id="@+id/tvTitle"
             style="@style/NlText.Title"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:autoSizeTextType="uniform"
+            android:autoSizeMinTextSize="16sp"
+            android:autoSizeMaxTextSize="24sp"
+            android:autoSizeStepGranularity="1sp"
             android:text="相机照片" />
 
-        <!-- 模块 4.2：「跳过已下载」开关（仅已标记栏可见），置于刷新键左侧 -->
+        <!-- 模块 4.2：「跳过已下载」开关。XML 注释写的"仅已标记栏可见"已过时 ——
+             v1.3.0 需求 2 把它扩到了相机照片源（见 renderSkipDownloadedChip），
+             正是这次标题被挤没的直接原因。置于刷新键左侧 -->
         <ImageView
             android:id="@+id/btnSkipDownloaded"
             android:layout_width="48dp"
@@ -52,7 +64,7 @@
             android:layout_width="wrap_content"
             android:layout_height="32dp"
             android:layout_marginStart="8dp"
-            android:minWidth="76dp"
+            android:minWidth="64dp"
             android:background="@drawable/bg_chip"
             android:contentDescription="选择相册排序方式（拍摄时间 / 文件类型，升序或降序）"
             android:gravity="center"
@@ -68,7 +80,7 @@
             android:layout_marginStart="8dp"
             android:background="@drawable/bg_chip"
             android:gravity="center"
-            android:paddingHorizontal="14dp"
+            android:paddingHorizontal="12dp"
             android:text="多选"
             android:textColor="@color/text_primary"
             android:textSize="13sp" />

@@ -36,6 +36,22 @@
     <!-- 26% → 8%：整圈 20% 黑的描边 + 1px 10% 黑底线，在通栏顶栏上就是两条黑线 -->
     <color name="glass_rim_bottom">#14000000</color>
     <color name="glass_edge_lens">#4DFFFFFF</color>
+
+    <!-- ===== v2.6.2 新增：镜面亮线 + 内阴影 =====
+         苹果玻璃的"像玻璃"靠的是**上沿那条极亮的细线**（镜面反射的主峰）与
+         **底边内侧那道短暗渐变**（内阴影 → 厚度）。原来的四条边信息里这两条都没有：
+         顶部只有一条铺满半张面的白色渐变（读作磨砂塑料），底部只有 1px 8% 黑。
+         补上之后层级才从"半透明面片"变成"有厚度的实体"。 -->
+    <!-- 上沿镜面亮线：比 rim_top 更亮、更窄 -->
+    <color name="glass_specular_line">#B3FFFFFF</color>
+    <!-- 底边内侧内阴影（向上衰减），给玻璃厚度 -->
+    <color name="glass_inner_shadow">#1F000000</color>
+    <!-- 顶部高光带的高度上限（dp）：原来恒取面高的一半，62dp 的 dock 会白掉 31dp -->
+    <item name="glass_rim_band_max_dp" format="float" type="dimen">16</item>
+    <!-- 上沿亮线的厚度（dp） -->
+    <item name="glass_specular_h_dp" format="float" type="dimen">1.2</item>
+    <!-- 内阴影带的高度上限（dp） -->
+    <item name="glass_inner_band_max_dp" format="float" type="dimen">8</item>
     <!-- 通栏（radius=0）贴屏幕边时唯一保留的那条发丝线，比 rim_bottom 更轻 -->
     <color name="glass_hairline_fitted">#0F000000</color>
 
@@ -64,6 +80,9 @@
 
     <!-- ===== 运行时预算与配额（PRD §3.1、§8.2） ===== -->
     <item name="glass_backdrop_downscale" format="float" type="dimen">0.125</item>
+    <!-- 苹果式 vibrancy：模糊后在线性空间把饱和度抬一档（>1 生效）。
+         灰阶 UI 上不可见，压在照片 / 彩色内容上才显出来。参考两边项目的实现。 -->
+    <item name="glass_saturation" format="float" type="dimen">1.15</item>
     <integer name="glass_backdrop_max_long_edge">320</integer>
     <integer name="glass_backdrop_debounce_ms">120</integer>
     <integer name="glass_backdrop_scroll_idle_ms">90</integer>

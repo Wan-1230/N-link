@@ -68,11 +68,12 @@
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
                 android:background="@drawable/bg_lv_pill"
+                android:contentDescription="拍摄模式，点击可远程切换"
                 android:gravity="center"
                 android:minWidth="30dp"
                 android:paddingHorizontal="8dp"
                 android:paddingVertical="6dp"
-                android:text="P"
+                android:text="模式 P ▾"
                 android:textColor="@color/white"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -215,24 +216,59 @@
         android:layout_marginEnd="12dp"
         android:orientation="vertical">
 
-        <ImageView
-            android:id="@+id/btnRotate"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:background="@drawable/bg_lv_icon"
-            android:contentDescription="切换横竖屏"
-            android:padding="11dp"
-            android:src="@drawable/ic_rotate_lv" />
+        <!-- v2.6.5：右栏两个按钮补文字标签。
+             原先只有图标，用户看不出上下两个圆钮各是什么（尤其第二个「水平仪」）——
+             图标语义再准，也不如一行字直接。标签沿用底栏那套"图标 + 小字"的读法。 -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
 
-        <ImageView
-            android:id="@+id/btnLevel"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
+            <ImageView
+                android:id="@+id/btnRotate"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_lv_icon"
+                android:contentDescription="切换横竖屏"
+                android:padding="11dp"
+                android:src="@drawable/ic_rotate_lv" />
+
+            <TextView
+                android:id="@+id/tvRotateLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="旋转"
+                android:textColor="@color/white"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
-            android:background="@drawable/bg_lv_icon"
-            android:contentDescription="水平仪"
-            android:padding="11dp"
-            android:src="@drawable/ic_level_lv" />
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <ImageView
+                android:id="@+id/btnLevel"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_lv_icon"
+                android:contentDescription="水平仪"
+                android:padding="11dp"
+                android:src="@drawable/ic_level_lv" />
+
+            <TextView
+                android:id="@+id/tvLevelLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="水平仪"
+                android:textColor="@color/white"
+                android:textSize="11sp" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- 底部参数信息栏 -->
