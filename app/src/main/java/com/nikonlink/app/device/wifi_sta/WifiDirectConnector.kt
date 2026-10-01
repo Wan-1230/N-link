@@ -860,6 +860,28 @@ class WifiDirectConnector @Inject constructor(
         endpoint: WifiEndpoint,
         timeoutMs: Long
     ): PtpIpProbe.TcpScreen {
+        // v2.6.6 FR-29⑦：**双记判据，不改行为**。
+        // R4（STA_SKIP_CELLULAR）该不该开，卡在"哪个判据可信"上，而这件事推理不出来 ——
+        // PRD §13.3 那次成功连接发生时，网卡枚举说 in_subnet=false，默认路由又确实在蜂窝，
+        // 两个来源看着都指向"该拦"，可它就是连上了。所以这里把两个判据并排记下来：
+        // `nic_covers` = 网卡枚举（旧 R4 的依据，已知在 vivo 上假阴性），
+        // `cm_cellular_hole` = ConnectivityManager（FR-29⑤ 的新依据）。
+        // 只在**两者不一致**或**新判据会拦**时记，健康路径不打 —— 探测次数本来就受
+        // FR-21 预算约束，日志环只有 3×512KB，不能每次探测都写一条。
+        // 拿到一轮真机数据后：若 `cm_cellular_hole=true` 的那些轮次里有连接成功的，
+        // R4 就永久不能开；若全部失败，才可以开。
+        runCatching {
+            val nicCovers = localInterfaces.subnetsContain(endpoint.host)
+            val cellularHole = networkMonitor.probeWouldUseCellular(endpoint.host)
+            if (cellularHole || !nicCovers) {
+                eventLogger.event(
+                    "sta_probe_ctx", "host" to endpoint.host,
+                    "nic_covers" to nicCovers, "cm_cellular_hole" to cellularHole,
+                    "ifaces" to localInterfaces.localAddresses().joinToString(",") { it.display }
+                )
+            }
+        }.onFailure { Timber.tag(TAG).w(it, "sta_probe_ctx 采集失败（不影响连接）") }
+
         // v2.6.3 R4（ConnFlags.STA_SKIP_CELLULAR）：本机没有任何网卡落在相机所在网段时，
         // 这次探测必然走默认路由 —— 现场几乎一定是蜂窝口。蜂窝上打私网地址是**黑洞**
         // （既不回 RST 也不可达），只会把整个 30s 超时耗干。2026-09-30 日志实证：
