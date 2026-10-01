@@ -486,8 +486,18 @@ class PtpSessionManager @Inject constructor(
                         }
                     } while (response != null && response !is CommandResponsePacket)
 
-                    (response as? CommandResponsePacket)
+                    val finalResp = (response as? CommandResponsePacket)
                         ?: CommandResponsePacket(txId, PtpConstants.RESPONSE_GENERAL_ERROR)
+                    // FR-32 R3：opcode 级收发诊断（不含 payload）。2026-10-02 的悬案
+                    // 「相机断热点前我们最后发出去的是哪条包」只有这个字段能回答 ——
+                    // 导出环此前只记 connect/hostreg 阶段，常规命令一律无痕。
+                    if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.STA_LINK_DIAG)) {
+                        eventLogger.event(
+                            "ptp_tx", "op" to "0x${operationCode.toString(16)}",
+                            "tx" to txId, "code" to "0x${finalResp.responseCode.toString(16)}"
+                        )
+                    }
+                    finalResp
                 } catch (e: Exception) {
                     Timber.tag(TAG).e(e, "Command failed: op=0x${operationCode.toString(16)}")
                     CommandResponsePacket(txId, PtpConstants.RESPONSE_GENERAL_ERROR)
@@ -1235,6 +1245,7 @@ sealed class HostRegistrationResult {
     /** 注册成功：相机已记住本机 GUID，切 STA 模式后可正常连接 */
     data object Success : HostRegistrationResult()
 
-    /** 注册失败：[phase] 为失败的阶段（prepare/confirm），[detail] 为用户可读的说明 */
-    data class Failure(val phase: String, val detail: String) : HostRegistrationResult()
+    /** 注册失败：[phase] 为失败的阶段（prepare/confirm），[detail] 为用户可读的说明；
+     *  [initFailReason] 仅握手被 InitFail 拒绝时非空（FR-32：reason=1 冷却判据）。 */
+    data class Failure(val phase: String, val detail: String, val initFailReason: Int? = null) : HostRegistrationResult()
 }

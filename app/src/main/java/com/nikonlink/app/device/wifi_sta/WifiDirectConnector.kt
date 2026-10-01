@@ -437,6 +437,12 @@ class WifiDirectConnector @Inject constructor(
                     // 明确回到默认路由：清掉可能残留的进程级绑网，
                     // 让 socket 完全交给内核按路由表选择出口。
                     networkMonitor.bindProcessTo(null)
+                    if (connFlags.isEnabled(ConnFlags.STA_LINK_DIAG)) {
+                        eventLogger.event(
+                            "net_unbind", "gen" to gen, "attempt" to attempt,
+                            "reason" to "default_route_fallback", "host" to endpoint.host
+                        )
+                    }
                 }
 
                 if (usable == null && !defaultRouteFallback) {
@@ -484,7 +490,15 @@ class WifiDirectConnector @Inject constructor(
                     val bound = networkMonitor.bindProcessTo(it)
                     eventLogger.event(
                         "net_bind", "gen" to gen, "attempt" to attempt, "bound" to bound,
-                        "covers" to true, "host" to endpoint.host, "route" to "process"
+                        "covers" to true, "host" to endpoint.host, "route" to "process",
+                        // FR-32 R3：绑网时刻的本机网卡快照。2026-10-02 悬案「谁杀了 wlan0」
+                        // 需要把 bind 时刻与 network_lost 时刻的 ifaces 对齐才能答。
+                        "ifaces" to if (connFlags.isEnabled(ConnFlags.STA_LINK_DIAG)) {
+                            runCatching { localInterfaces.localAddresses() }.getOrDefault(emptyList())
+                                .joinToString(",") { a -> a.display }
+                        } else {
+                            ""
+                        }
                     )
                 }
                 // FR-18g：DISCOVER → ROUTE → TCP 的分界卡。
@@ -543,6 +557,23 @@ class WifiDirectConnector @Inject constructor(
                         "gen" to gen, "attempt" to attempt,
                         "host" to endpoint.host, "port" to endpoint.port
                     )
+                    // FR-32 R3：建链后 15s 的网卡采样。旧日志里 AP 会话总在 +7~10s 死亡，
+                    // 却没有任何一行能回答"死的那一刻 wlan0 还在不在"——补上这段就能
+                    // 区分手机侧掉线（ifaces 里 wlan0 消失）与相机侧关服务（ifaces 不变）。
+                    if (connFlags.isEnabled(ConnFlags.STA_LINK_DIAG)) {
+                        scope?.launch(Dispatchers.IO) {
+                            repeat(15) { i ->
+                                delay(1000L)
+                                runCatching {
+                                    eventLogger.event(
+                                        "sta_ifaces", "gen" to gen, "s" to (i + 1),
+                                        "ifaces" to localInterfaces.localAddresses()
+                                            .joinToString(",") { a -> a.display }
+                                    )
+                                }
+                            }
+                        }
+                    }
                     stateMachine.dispatch(ConnectionEvent.WifiConnected)
                     onSuccess()
                     return
@@ -692,6 +723,12 @@ class WifiDirectConnector @Inject constructor(
             // 连上后必须保持，否则数据通道会被系统默认路由抢走（STA 断流根因）
             if (!sessionBound) {
                 networkMonitor.bindProcessTo(null)
+                if (connFlags.isEnabled(ConnFlags.STA_LINK_DIAG)) {
+                    eventLogger.event(
+                        "net_unbind", "gen" to gen, "attempt" to attempt,
+                        "reason" to "teardown", "host" to endpoint.host
+                    )
+                }
                 networkRequester.release()
             }
             // 任何异常出口都保证会话被清干净，不残留半开 socket

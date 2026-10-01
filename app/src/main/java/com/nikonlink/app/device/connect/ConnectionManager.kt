@@ -95,6 +95,13 @@ class ConnectionManager @Inject constructor(
          * 注册是用户手动点的动作，超过这个数还不如让用户先看一眼相机屏幕。
          */
         private const val REG_DISCOVERY_TIMEOUT_MS = 8_000L
+
+        /**
+         * FR-32：注册收到 InitFail reason=1（槽位被占）后的冷却窗。
+         * 数值出处：FR-21 实测机身收回半开会话要几十秒（ZDROP 对照同量级）；
+         * 2026-10-02 真机连轰 4 次 reason=1 期间相机向导进入失败态（用户目视「连接失败」）。
+         */
+        private const val REG_REASON1_COOLDOWN_MS = 35_000L
     }
 
     private var scope: CoroutineScope? = null
@@ -118,6 +125,10 @@ class ConnectionManager @Inject constructor(
 
     /** v2.6.4：兜底地址上一次连接失败的时间戳（0 = 从未失败），供自动重连做冷却 */
     private var lastFallbackFailAt = 0L
+
+    /** FR-32：最近一次注册收到 InitFail reason=1 的时间戳（0 = 从未），供冷却窗判据 */
+    @Volatile
+    private var lastRegReason1At = 0L
 
     private val _connectionMetrics = MutableStateFlow(ConnectionMetrics())
     val connectionMetrics: StateFlow<ConnectionMetrics> = _connectionMetrics.asStateFlow()
@@ -747,6 +758,22 @@ class ConnectionManager @Inject constructor(
     private suspend fun registerStaHostStandalone(
         onProgress: ((String) -> Unit)?
     ): HostRegistrationResult {
+        // FR-32：reason=1 冷却。机身收回半开会话要几十秒，冷却窗内重发只会
+        // 重复已知结论，并把向导态往失败态上推（2026-10-02 真机连拒 4 次）。
+        if (connFlags.isEnabled(ConnFlags.STA_REG_REASON1_COOLDOWN)) {
+            val since = System.currentTimeMillis() - lastRegReason1At
+            if (lastRegReason1At != 0L && since < REG_REASON1_COOLDOWN_MS) {
+                val remain = ((REG_REASON1_COOLDOWN_MS - since) / 1000L).coerceAtLeast(1L)
+                eventLogger.event(
+                    "hostreg", "phase" to "cooldown", "transport" to "standalone", "remain_s" to remain
+                )
+                return HostRegistrationResult.Failure(
+                    phase = "cooldown",
+                    detail = "相机刚报过「槽位被占」（reason=1），机身收回旧会话还要几十秒。\n" +
+                        "请约 $remain 秒后再点注册；连点只会重复被拒，还会把相机向导推入失败态。"
+                )
+            }
+        }
         onProgress?.invoke("正在本地网络寻找相机…")
         eventLogger.event("hostreg", "phase" to "discover_start", "transport" to "standalone")
         // FR-31③④：注册发现**不发 InitCommand**（会占住相机唯一槽位，把紧随其后的
@@ -786,6 +813,11 @@ class ConnectionManager @Inject constructor(
             "host" to candidate.ipAddress, "source" to candidate.source
         )
         val result = staHostRegistrar.register(WifiEndpoint(candidate.ipAddress, candidate.port), onProgress)
+        if (result is HostRegistrationResult.Failure &&
+            result.initFailReason == PtpConstants.INIT_FAIL_CONNECTION_IN_USE
+        ) {
+            lastRegReason1At = System.currentTimeMillis()
+        }
         if (result is HostRegistrationResult.Success) {
             prefs.edit().putBoolean(PREFS_STA_HOST_REGISTERED, true).apply()
             _staHostRegistered.value = true

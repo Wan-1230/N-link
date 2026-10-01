@@ -581,6 +581,18 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 { connFlags.setEnabled(ConnFlags.STA_SCAN_EARLY_EXIT, it) }
             ),
             LabFlag(
+                ConnFlags.STA_REG_REASON1_COOLDOWN,
+                "注册 reason=1 后冷却 35s（FR-32；关=立即允许重试，旧行为）",
+                { connFlags.isEnabled(ConnFlags.STA_REG_REASON1_COOLDOWN) },
+                { connFlags.setEnabled(ConnFlags.STA_REG_REASON1_COOLDOWN, it) }
+            ),
+            LabFlag(
+                ConnFlags.STA_LINK_DIAG,
+                "链路层/opcode 诊断日志（FR-32；纯日志零行为，排查期建议保持开）",
+                { connFlags.isEnabled(ConnFlags.STA_LINK_DIAG) },
+                { connFlags.setEnabled(ConnFlags.STA_LINK_DIAG, it) }
+            ),
+            LabFlag(
                 UiFlags.ALBUM_INCR, "相册增量首屏（FR-03）",
                 { UiFlags.albumIncrementalEnabled(c) },
                 { UiFlags.set(c, UiFlags.ALBUM_INCR, it) }
