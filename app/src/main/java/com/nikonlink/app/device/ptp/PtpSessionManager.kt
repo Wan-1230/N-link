@@ -123,6 +123,19 @@ class PtpSessionManager @Inject constructor(
     var lastEventAckTimedOut = false
         private set
 
+    /**
+     * 最近一次 connect() 失败时**正处在**的阶段（FR-31②）：
+     * `socket` / `init` / `init_event` / `opensession`，连接成功置 null。
+     *
+     * 实现是"进度标记"：connect() 随阶段推进更新它，异常/失败返回时标记自然停在
+     * 出事的那一段 —— 调用方无需解析异常文案就能区分「event 通道被冷启动 reset」
+     * （相机 PTP/IP 事件服务还没就绪，秒级恢复，值得拉长退避再试）与其它失败。
+     * 2026-10-02 ZDROP AP 日志同源现象：INIT_EVENT Connection reset 后 delay=7000ms 重试即中。
+     */
+    @Volatile
+    var lastFailPhase: String? = null
+        private set
+
     fun start(scope: CoroutineScope) {
         this.scope = scope
     }
@@ -239,6 +252,7 @@ class PtpSessionManager @Inject constructor(
         try {
             closeSession()
             lastEventAckTimedOut = false
+            lastFailPhase = "socket"
             _sessionState.value = PtpSessionState.CONNECTING
             Timber.tag(TAG).i("Connecting to $host:$port")
 
@@ -269,6 +283,7 @@ class PtpSessionManager @Inject constructor(
 
             // 发送初始化命令
             Timber.tag(TAG).i("phase=init sending InitCommand")
+            lastFailPhase = "init"
             val initPacket = InitCommandPacket(
                 clientGuid = clientGuid,
                 clientName = clientName
@@ -301,6 +316,7 @@ class PtpSessionManager @Inject constructor(
             eventLogger.event("connect", "phase" to "init", "ok" to true, "session" to response.sessionId)
             // 握手成功 → 清除「被拒」标记（相机已接受本机）
             _lastInitFailReason.value = null
+            lastFailPhase = "init_event"
 
             // 建立 Event 通道
             Timber.tag(TAG).i("phase=event connecting")
@@ -350,6 +366,7 @@ class PtpSessionManager @Inject constructor(
             }
             Timber.tag(TAG).i("phase=event OK (InitEventAck)")
             eventLogger.event("connect", "phase" to "event", "ok" to true)
+            lastFailPhase = "opensession"
 
             // EventAck 后客户端主动发送 PING，收到 PONG 才继续。
             // 部分相机在缺少这一握手时会把连接判定为失败，并在数秒后断开。
@@ -401,6 +418,7 @@ class PtpSessionManager @Inject constructor(
                 return@withContext false
             }
             sessionId = response.sessionId
+            lastFailPhase = null
 
             // OpenSession 后用 Nikon CheckEvent (0x90C7) 排空一次，
             // 清除相机缓存的旧事件，避免干扰后续异步事件监听。
