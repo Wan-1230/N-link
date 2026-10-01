@@ -357,8 +357,24 @@ class ConnFlags @Inject constructor(
             USB_OPENSESSION_RETRY to true,
             USB_CLOSE_SESSION_ON_TEARDOWN to true,
             // v2.6.3 STA 注册链路加固：三条默认关（与 v2.6.2 逐位等价，真机验证后再开）
-            HOSTREG_HINT_V2 to false,
-            HOSTREG_PRECHECK to false,
+            // v2.6.6 FR-29⑥：R1/R2 转默认开。理由不是"觉得该开了"，是三条：
+            // ①「开发选项」面板是 debug-only（`SettingsFragment.setupLabFlags` 首行
+            //    `if (!BuildConfig.DEBUG) return`）—— 默认关等于**正式包里永远不生效**，
+            //    这两条的价值到 v2.6.5 为止一直是 0；
+            // ② 两条都只影响"怎么解释失败"和"要不要盲发一次注册"，不改任何已跑通的建链路径：
+            //    R1 是 InitFail 的 reason 分级（1=机身忙→等待重试，2=门控拒绝→才提示注册，
+            //    3=已注册→直接置位），修的是"把 connection_in_use 误报成需要注册"；
+            //    R2 是发 0x952B 前先看 GetDeviceInfo 的 OperationsSupported 里有没有它，
+            //    没有就直接说"相机不在主机配置向导"，而**不是**等相机回 0x201F 再猜。
+            //    这正是本轮真机故障（`prepare_fail code=0x201f` 10ms 秒拒）最对症的一条；
+            // ③ R2 的解析失败语义是"不知道就不拦"（`lastSupportedOperations == null` 放行），
+            //    所以解析不出来时行为与关闸门一致，不会误伤。
+            HOSTREG_HINT_V2 to true,
+            HOSTREG_PRECHECK to true,
+            // R4 仍默认关：判据已在 FR-29⑤ 换成 ConnectivityManager，但**真机数据还没站它这边**。
+            // PRD §13.3 那次成功连接发生时，默认路由确实在蜂窝（socket 从 /10.56.31.140 出），
+            // 也没有任何 WiFi 覆盖 192.168.1.1 —— 按新判据同样会被拦，而它实际连上了。
+            // 唯一能分清"新判据对不对"的办法是双记一轮：见 FR-29⑦ 的 `sta_probe_ctx`。
             STA_SKIP_CELLULAR to false,
             // AP 空闲断链修复：默认开（这是修复不是实验，但保留开关便于现场二分定位）
             SESSION_IDLE_REFRESH to true,
