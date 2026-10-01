@@ -198,6 +198,12 @@ class StaNetworkRequester @Inject constructor(
             // FIX-3：只要本次没把网络"交出去"（返回给调用方长期持有），
             // 就必须把 callback 释放掉 —— 旧实现在超时/异常出口漏了 release()，
             // 是回调堆积的第二条路径。
+            //
+            // v2.6.6 注：**取消窗口不在这里修**。曾考虑"finally 里发现协程已取消就无条件释放"，
+            // 但 `held = fallback; return fallback` 与取消观测之间无法区分
+            // "调用方拿到了这个网络" 和 "调用方因超时把结果丢了" —— 前者若被注销 callback，
+            // `networkLost` 就再也收不到，等于打断 STA 的断链检测（那是跑通的路）。
+            // 正确位置在**知道自己丢了结果**的调用方：`WifiDirectConnector` 的竞争落选分支。
             if (held == null) releaseCallbackOnly()
         }
         Timber.tag(TAG).w("acquire wifi network timeout (host=$host, ${timeoutMs}ms)")

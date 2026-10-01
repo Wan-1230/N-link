@@ -146,10 +146,22 @@ class WifiNetworkMonitor @Inject constructor(
         val deadline = System.currentTimeMillis() + timeoutMs
         var anyWifi: Network? = null
         while (System.currentTimeMillis() < deadline) {
-            for (network in connectivityManager.allNetworks) {
-                val caps = connectivityManager.getNetworkCapabilities(network)
+            // v2.6.6 FR-29③：这三个 binder 调用原来裸调。`WifiDirectConnector:720-730`
+            // 的注释记着真机上曾有 4 个 generation 全死在这里，修法却只是在**调用方**包
+            // runCatching —— 方法本身仍是裸的，任何新调用点都会重新踩雷。
+            // 现在按"单张网卡查不到就跳过它"的粒度兜住：一张网卡的 binder 抖动
+            // 不该让整轮扫描空手而归。
+            val networks = runCatching { connectivityManager.allNetworks }
+                .onFailure { Timber.tag(TAG).w(it, "allNetworks threw") }
+                .getOrNull() ?: emptyArray()
+            for (network in networks) {
+                val caps = runCatching { connectivityManager.getNetworkCapabilities(network) }
+                    .onFailure { Timber.tag(TAG).w(it, "getNetworkCapabilities threw") }
+                    .getOrNull()
                 if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) != true) continue
-                val properties = connectivityManager.getLinkProperties(network) ?: continue
+                val properties = runCatching { connectivityManager.getLinkProperties(network) }
+                    .onFailure { Timber.tag(TAG).w(it, "getLinkProperties threw") }
+                    .getOrNull() ?: continue
                 val coversHost = properties.linkAddresses.any { address ->
                     val inet = address.address as? java.net.Inet4Address ?: return@any false
                     val base = inetToInt(inet) ?: return@any false
@@ -294,8 +306,14 @@ class WifiNetworkMonitor @Inject constructor(
     }
 
     private fun queryCurrentWifiNetwork(): Network? {
-        return connectivityManager.allNetworks.firstOrNull { network ->
-            val caps = connectivityManager.getNetworkCapabilities(network)
+        // v2.6.6 FR-29③：同 awaitWifiNetworkFor，binder 调用不再裸调。
+        // 这条是"纯查询"路径（拿不到就返回 null 让上层走默认路由），
+        // 抛异常会把整代连接打死，收益却是零。
+        val networks = runCatching { connectivityManager.allNetworks }
+            .onFailure { Timber.tag(TAG).w(it, "allNetworks threw (query)") }
+            .getOrNull() ?: return null
+        return networks.firstOrNull { network ->
+            val caps = runCatching { connectivityManager.getNetworkCapabilities(network) }.getOrNull()
             caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
         }
     }
