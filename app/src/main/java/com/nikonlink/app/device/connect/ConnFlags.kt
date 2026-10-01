@@ -249,12 +249,21 @@ class ConnFlags @Inject constructor(
         const val HOSTREG_PRECHECK = "v263_hostreg_precheck"
 
         /**
-         * R4：STA 预连接探测遇到"源地址是蜂窝口"时直接判不可达，不再发 socket。
+         * R4：STA 预连接探测会掉进**蜂窝黑洞**时直接判不可达，不再发 socket。
          *
          * 2026-09-30 日志：手机已离开相机热点（`ifaces=ap0+ccmni4`，无 192.168.1.x），
          * App 仍对 192.168.1.1 从 `/10.56.31.140`（ccmni4 蜂窝）发起连接，
          * 15:50:45 空转到 15:51:38（约 53s）才等到手机回连相机热点。
          * 蜂窝口上打私网地址是纯浪费 —— 它是黑洞，既不 RST 也不可达。
+         *
+         * **v2.6.6 FR-29⑤：判据换过，原来那版不能开。**
+         * v2.6.3 用 `localInterfaces.subnetsContain(host)`，而 PRD §13.3 已用真机数据证明
+         * 这个来源在本项目主力机（vivo V2509A）上是**假阴性**：`localAddresses()` 看不见
+         * 实际承载相机流量的接口（只列出 `ap0` + `ccmni4`），同一次连接在 `in_subnet=false`
+         * 的情况下于 12:39:56 成功。以它为据硬拦截 = 把能连上的场景判死（§13.3 撤销 S3 同理）。
+         * 现改走 `ConnectivityManager`（FR-23 已确立为主判据；同一份日志里 `net_bind covers=true`
+         * 判定正确）：只有"默认路由在蜂窝 **且** 没有任何 WiFi 覆盖相机地址"才算黑洞。
+         * 见 `WifiNetworkMonitor.probeWouldUseCellular` / 纯函数 `cellularBlackhole`。
          */
         const val STA_SKIP_CELLULAR = "v263_sta_skip_cellular"
 
