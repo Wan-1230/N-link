@@ -328,7 +328,17 @@ class WifiDirectConnector @Inject constructor(
                         "host" to endpoint.host,
                         "waited_ms" to elapsed
                     )
-                    onFail(describeStaFailure("round_budget_exhausted", endpoint))
+                    // v2.6.6 FR-29②：这里原来把 describeStaFailure() 的**中文文案**当机器码
+                    // 传给 onFail，于是 mapConnectorReason 落到 else → UNKNOWN，
+                    // "跑满 4 分钟硬闸"这一整类失败在漏斗里完全不可归因。
+                    // 改成与 :622-628 同一个范式：文案走 dispatch，机器码走 onFail。
+                    stateMachine.dispatch(
+                        ConnectionEvent.ErrorOccurred(
+                            describeStaFailure("round_budget_exhausted", endpoint),
+                            recoverable = true
+                        )
+                    )
+                    onFail("round_budget_exhausted")
                     return
                 }
                 attempt++
@@ -728,10 +738,17 @@ class WifiDirectConnector @Inject constructor(
             // "上一轮失败分类之后 1~2.5 秒"，正是下一轮 resolveNetwork 刚跑起来的位置；
             // 且死后 53 秒内没有任何新 `sta_try` —— 若是被新连接顶掉，
             // `connect()` 会立刻打出下一条 `sta_try`，所以只能是这一代自己没了。
+            // v2.6.6 FR-29④：记下 requester 这一路交出来的是哪张网。
+            // 三路里只有它会注册 NetworkCallback 并在 StaNetworkRequester 内部留下 `held`；
+            // 竞争落选时那张网没人认领，而**成功路径**（sessionBound=true）永远不会调
+            // `networkRequester.release()`，callback 就此长期泄漏 —— 形态与
+            // `StaNetworkRequester:96-101` 记的 netId 127→131、一次连发 6 条 sta_net_lost 同型。
+            // 跨协程写，用 AtomicReference 保证可见性。
+            val requesterPick = java.util.concurrent.atomic.AtomicReference<android.net.Network?>(null)
             val requester = async(Dispatchers.IO) {
                 runCatching { networkRequester.acquire(host, AWAIT_NETWORK_MS) }
                     .onFailure { logResolveFailure("requester", it) }
-                    .getOrNull()?.let { winner.trySend(it) }
+                    .getOrNull()?.let { n -> requesterPick.set(n); winner.trySend(n) }
             }
             val monitor = async(Dispatchers.IO) {
                 runCatching { networkMonitor.awaitWifiNetworkFor(host, AWAIT_NETWORK_MS) }
@@ -768,6 +785,17 @@ class WifiDirectConnector @Inject constructor(
             ticker.cancel()
             // 未被选中的分支取消掉，避免占着网络请求不做事的协程继续跑
             listOf(requester, monitor, fallback).forEach { if (it.isActive) it.cancel() }
+            // FR-29④：胜出者不是 requester 那一路时，把它申请到的网络归还掉。
+            // 判据用**引用相等**：只有同一张网被交出去且被采用，held 才算有人认领。
+            // release() 是幂等的（`releaseCallbackOnly` 已 synchronized + 置空），
+            // requester 什么都没申请到时调它也无害。
+            val picked = requesterPick.get()
+            if (picked != null && resolved !== picked) {
+                Timber.tag(TAG).w(
+                    "requester 申请到的网络未被采用（winner=${resolved?.let { it.toString() } ?: "none"}），归还以免 callback 泄漏"
+                )
+                networkRequester.release()
+            }
             resolved
         }.also { network ->
             if (network != null) {
