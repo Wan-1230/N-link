@@ -87,6 +87,12 @@ object PtpIpProbe {
         timeoutMs: Long = 1200L,
         network: Network? = null
     ): ProbeResult = withContext(Dispatchers.IO) {
+        // v2.6.4：只探测"值得探测"的地址。
+        // 真机日志里出现过 mDNS/NSD 把 **IPv6 链路本地地址**（`fe80::…%ap0`）当成候选，
+        // 一路传到连接入口被 `WifiEndpoint.parse` 拒掉（`sta_fail reason=invalid_endpoint`）。
+        // 那种地址带 scope id（`%ap0`）且没有跨网路由，探测必然超时，白白占扫描配额 ——
+        // 与其在入口报错，不如在探测这一层就统一挡掉（所有扫描/确认路径都过这里）。
+        if (!WifiEndpoint.isProbeCandidate(host)) return@withContext ProbeResult.ERROR
         val effective = timeoutMs.coerceIn(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS).toInt()
         try {
             val socket = if (network != null) network.socketFactory.createSocket() else Socket()
@@ -165,6 +171,10 @@ object PtpIpProbe {
         timeoutMs: Long = 500L,
         network: Network? = null
     ): TcpScreen = withContext(Dispatchers.IO) {
+        // v2.6.4：同 probeDetailed —— 非 IPv4 / 特殊用途地址（含 IPv6 链路本地）不探
+        if (!WifiEndpoint.isProbeCandidate(host)) {
+            return@withContext TcpScreen(false, ProbeResult.ERROR, "not_probe_candidate")
+        }
         val effective = timeoutMs.coerceIn(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS).toInt()
         try {
             val socket = if (network != null) network.socketFactory.createSocket() else Socket()

@@ -1,5 +1,6 @@
 package com.nikonlink.app.shared.ui.glass
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -12,7 +13,9 @@ import timber.log.Timber
 import java.lang.ref.WeakReference
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /**
  * 可分离 box blur，三趟 ≈ 高斯。
@@ -20,11 +23,18 @@ import kotlin.math.roundToInt
  * 只在**降采样的小纹理**上跑（长边 ≤320px，约 4 万像素），所以 API 29 到 API 36
  * 共用一条代码路径、开销恒定 —— 这是放弃 `RenderEffect` 换来的收益：
  * 不必为 Android 10/11 单独设计一套"降级残影"（PRD §9.1 的实现修正）。
+ *
+ * **必须先预乘再模糊**（v2.6.2 修复）。滑窗求的是算术平均，而 `Bitmap.getPixels()`
+ * 给出的是**非预乘** ARGB：一个 alpha=0 的透明像素其 RGB 仍是 0（黑），直接平均就会把
+ * 黑算进邻域 —— 纹理里被自我屏蔽的玻璃区域、以及内容没铺满的空白全是这种像素，
+ * 于是每条玻璃边缘外翻出一圈灰黑晕（走查「毛玻璃发灰、脏」的主因）。
+ * 预乘后透明像素对 RGB 的贡献自然为 0，模糊完再除回 alpha 即可。
  */
 internal object BoxBlur {
 
     fun blur(px: IntArray, w: Int, h: Int, radius: Int) {
         if (radius < 1 || w <= 0 || h <= 0) return
+        toPremultiplied(px)
         // 三趟一维滑窗 ≈ 高斯核；两数组来回倒换，src 最终必须落回 px
         var src = px
         var dst = IntArray(px.size)
@@ -35,6 +45,38 @@ internal object BoxBlur {
             t = src; src = dst; dst = t
         }
         if (src !== px) System.arraycopy(src, 0, px, 0, px.size)
+        fromPremultiplied(px)
+    }
+
+    /** ARGB → 预乘（RGB 乘以 alpha/255）。透明像素的 RGB 归零，才不会被平均进邻域 */
+    private fun toPremultiplied(px: IntArray) {
+        for (i in px.indices) {
+            val p = px[i]
+            val a = Color.alpha(p)
+            if (a == 255) continue
+            if (a == 0) {
+                px[i] = 0
+                continue
+            }
+            px[i] = (a shl 24) or
+                (Color.red(p) * a / 255 shl 16) or
+                (Color.green(p) * a / 255 shl 8) or
+                (Color.blue(p) * a / 255)
+        }
+    }
+
+    /** 预乘 → 非预乘（除回 alpha）。alpha=0 的像素保持全 0，不再凭空造色 */
+    private fun fromPremultiplied(px: IntArray) {
+        for (i in px.indices) {
+            val p = px[i]
+            val a = Color.alpha(p)
+            if (a == 0 || a == 255) continue
+            val inv = 255f / a
+            px[i] = (a shl 24) or
+                (min(255, (Color.red(p) * inv).toInt()) shl 16) or
+                (min(255, (Color.green(p) * inv).toInt()) shl 8) or
+                min(255, (Color.blue(p) * inv).toInt())
+        }
     }
 
     private fun horizontal(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int) {
@@ -94,6 +136,26 @@ class GlassCoordinator private constructor(val source: View) {
 
     companion object {
         /**
+         * sRGB → 线性查找表。饱和度提升必须在线性空间做才物理正确（QmDeve 的
+         * `saturateColor` 同款流程），逐像素 `pow()` 太贵，查表后整张纹理亚毫秒。
+         */
+        private val SRGB_TO_LIN = FloatArray(256).also { t ->
+            for (i in 0..255) {
+                val s = i / 255f
+                t[i] = if (s <= 0.04045f) s / 12.92f else ((s + 0.055f) / 1.055f).pow(2.4f)
+            }
+        }
+
+        /** 线性 → sRGB，量化到 257 级；在 1/8 模糊纹理上看不出误差 */
+        private val LIN_TO_SRGB = IntArray(257).also { t ->
+            for (i in 0..256) {
+                val l = i / 256f
+                val s = if (l <= 0.0031308f) l * 12.92f else 1.055f * l.pow(1f / 2.4f) - 0.055f
+                t[i] = (s.coerceIn(0f, 1f) * 255f).roundToInt()
+            }
+        }
+
+        /**
          * 非滚动期两次采集的最小间隔。
          *
          * 玻璃面每次绘制都可能请求重采，而重采完成又会触发一次重绘 —— 所以这个值就是
@@ -108,9 +170,56 @@ class GlassCoordinator private constructor(val source: View) {
          */
         private const val SCROLL_REFRESH_MS = 70L
 
-        fun attach(source: View): GlassCoordinator =
-            (source.getTag(R.id.glass_coordinator) as? GlassCoordinator)
-                ?: GlassCoordinator(source).also { source.setTag(R.id.glass_coordinator, it) }
+        fun attach(source: View): GlassCoordinator {
+            val existing = source.getTag(R.id.glass_coordinator) as? GlassCoordinator
+            if (existing != null) return existing
+            val c = GlassCoordinator(source)
+            source.setTag(R.id.glass_coordinator, c)
+            live.removeAll { it.get() == null }
+            if (live.size > 32) live.removeAt(0)
+            live.add(WeakReference(c))
+            // PRD §8.3 写了"内存吃紧时释放纹理"，但 [GlassCoordinator.release] 全仓
+            // 没有任何调用点 —— 回收通道没接线，纹理只在进程死时才归还。这里补上：
+            // 首次 attach 时挂一次进程级回调，后台 / onLowMemory 时统一释放。
+            installMemoryWatcher(source.context)
+            return c
+        }
+
+        /** 进程内活着的全部协调器（弱引用），供内存回调统一释放 */
+        private val live = mutableListOf<WeakReference<GlassCoordinator>>()
+
+        @Volatile private var watcherInstalled = false
+
+        /**
+         * 挂 `ComponentCallbacks2`：应用转入后台或系统内存吃紧时释放所有纹理。
+         *
+         * 只装一次（[watcherInstalled]），用 applicationContext 所以不随 Activity 泄漏。
+         * 释放后下一次绘制会走 [GlassCoordinator.refreshNow] 自动重建，不需要调用方配合。
+         */
+        private fun installMemoryWatcher(context: Context) {
+            if (watcherInstalled) return
+            val app = context.applicationContext ?: return
+            runCatching {
+                app.registerComponentCallbacks(object : android.content.ComponentCallbacks2 {
+                    override fun onTrimMemory(level: Int) {
+                        // UI_HIDDEN(20) = 应用进后台；再往上(40/60/80)是系统真的在收内存
+                        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+                            releaseAll()
+                        }
+                    }
+
+                    override fun onLowMemory() = releaseAll()
+
+                    override fun onConfigurationChanged(p0: android.content.res.Configuration) = Unit
+                })
+            }.onSuccess { watcherInstalled = true }
+        }
+
+        private fun releaseAll() {
+            val snapshot = live.toList()
+            live.clear()
+            snapshot.forEach { runCatching { it.get()?.release() } }
+        }
 
         /** 从任意 view 往上找已注册的内容源；找不到返回 null（该面退化成实体材质） */
         fun find(view: View): GlassCoordinator? {
@@ -272,6 +381,30 @@ class GlassCoordinator private constructor(val source: View) {
         }
     }
 
+    /**
+     * 按当前登记的玻璃面重算所需半径（v2.6.2 修复 [reportBlurNeed] 只增不减）。
+     *
+     * 一份纹理服务同屏多面玻璃，取的是最大值。原实现只有"变大"这一条路：监看页
+     * HUD(60dp) 一旦出现过，`currentBlurDp` 就永久停在 60，退回主界面后 dock(24dp)
+     * 仍按 60dp 糊 —— 悬浮控件被糊得过厚、内容划过时失去细节，"玻璃"变成"毛玻璃贴纸"。
+     * 每次采集前重新扫一遍活着的宿主，半径才会跟着页面回落。
+     */
+    private fun syncBlurNeed() {
+        var maxDp = 0f
+        var i = 0
+        while (i < hosts.size) {
+            val s = hosts[i].get()
+            if (s == null) {
+                hosts.removeAt(i)
+                continue
+            }
+            val b = s.material.blurDp
+            if (b > maxDp) maxDp = b
+            i++
+        }
+        if (maxDp > 0f && maxDp != currentBlurDp) currentBlurDp = maxDp
+    }
+
     private fun schedule() {
         if (scheduled) return
         scheduled = true
@@ -325,10 +458,19 @@ class GlassCoordinator private constructor(val source: View) {
         }
         bmp.getPixels(pixels, 0, tw, 0, 0, tw, th)
 
-        // 24dp 模糊换算到 1/8 纹理上只剩几个像素，开销近乎恒定（PRD §8.2 第 2 条）
+        // 先按**当前还活着**的玻璃面重算所需半径，再定模糊核（见 [syncBlurNeed]）
+        syncBlurNeed()
+        // 24dp 模糊换算到 1/8 纹理上只剩几个像素，开销近乎恒定（PRD §8.2 第 2 条）。
+        //
+        // 上限不再写死 12（v2.6.2 修复）：12 纹理像素在 3x 屏上只折合 96/3 = 32dp，
+        // 于是 `glass_blur_xl`(60dp) 的 HUD 从来没拿到过它要的糊度，而且这个截断值
+        // 随 density 漂移（2x 屏折合 48dp、3x 屏只有 32dp）—— 同一份 token 在不同
+        // 手机上表现为两种材质。改成按纹理短边的 1/4 封顶：物理含义是"核不超过纹理
+        // 的 1/4，再糊就整片摊平"，与密度无关，滑窗是 O(1)/像素所以也不增加开销。
         val radius = (GlassTokens.dp(source.context, currentBlurDp) * downscale).toInt()
-            .coerceIn(1, 12)
+            .coerceIn(1, (minOf(tw, th) / 4).coerceAtLeast(4))
         BoxBlur.blur(pixels, tw, th, radius)
+        saturate(pixels)
         bmp.setPixels(pixels, 0, tw, 0, 0, tw, th)
         generation++
         // 这张纹理对应的就是"此刻的内容位置"，累计位移到此作废
@@ -352,6 +494,9 @@ class GlassCoordinator private constructor(val source: View) {
         texH = 0
         avgLuminance = -1f
         lastRefreshAt = 0L
+        // 换代：否则玻璃面会拿"上一代"的透镜缓存继续画，而那批像素已经随位图回收了
+        generation++
+        shiftY = 0
     }
 
     /** 纹理中对应 [host] 屏幕区域的子矩形（纹理坐标系）；失败返回 false */
@@ -399,6 +544,74 @@ class GlassCoordinator private constructor(val source: View) {
         }
     }
 
+    /**
+     * 纹理中 [src] 区域的平均相对亮度（0..1）；失败 / 区域全透明返回 -1。
+     *
+     * v2.6.2：对比度自适应原本吃的是 [avgLuminance] —— **整张屏幕**的平均亮度。
+     * 但玻璃是局部材质：dock 压在暗色照片上时整屏可能仍然很亮（上方是白色列表），
+     * 于是 tint 不加浓 → 白字压在暗照片上不可读；反过来整屏偏暗时 dock 明明压在
+     * 白底上却被加浓到不透明，"玻璃"被自己的可读性保护吃掉。
+     * 苹果的 material 是按**材质所在区域**自适应的，这里补上这一层。
+     * 缓冲复用、采样步长 4（区域只有几千像素，比整屏那次密一点代价仍可忽略）。
+     */
+    fun regionLuminance(src: Rect): Float {
+        val bmp = bitmap() ?: return -1f
+        if (!textureReady) return -1f
+        val w = src.width()
+        val h = src.height()
+        if (w <= 0 || h <= 0) return -1f
+        val need = w * h
+        if (lumBuf.size < need) lumBuf = IntArray(need)
+        return try {
+            bmp.getPixels(lumBuf, 0, w, src.left, src.top, w, h)
+            var sum = 0.0
+            var n = 0
+            var i = 0
+            while (i < need) {
+                val p = lumBuf[i]
+                if (Color.alpha(p) > 8) {
+                    sum += relativeLuminance(p)
+                    n++
+                }
+                i += 4
+            }
+            if (n == 0) -1f else (sum / n).toFloat()
+        } catch (e: Exception) {
+            -1f
+        }
+    }
+
+    private var lumBuf = IntArray(0)
+
+    /**
+     * 苹果式 vibrancy：模糊后把饱和度轻微抬一档（线性空间）。
+     *
+     * 对照 QmDeve 的 AGSL（`saturateColor`，sRGB→线性→抬饱和→回 sRGB）与
+     * QWEA0 的 `saturation = 140%`：真实玻璃会把透过的颜色稍微"提纯"，纯 alpha 叠底色
+     * 做不出来这个效果 —— 这就是"玻璃比毛玻璃贵"的那一点。灰阶 UI 上几乎不可见，
+     * 压在照片 / 彩色内容上才显出来，所以零风险。
+     *
+     * 用 256 项 LUT 做线性转换：整张 4 万像素 × 15 次查表 ≈ 亚毫秒，不动帧预算。
+     */
+    private fun saturate(px: IntArray) {
+        val amount = GlassTokens.num(source.context, R.dimen.glass_saturation)
+        if (amount <= 1.001f) return
+        for (i in px.indices) {
+            val p = px[i]
+            if (Color.alpha(p) == 0) continue
+            val lr = SRGB_TO_LIN[Color.red(p)]
+            val lg = SRGB_TO_LIN[Color.green(p)]
+            val lb = SRGB_TO_LIN[Color.blue(p)]
+            val y = 0.2126f * lr + 0.7152f * lg + 0.0722f * lb
+            px[i] = Color.argb(
+                Color.alpha(p),
+                LIN_TO_SRGB[((lr + (lr - y) * (amount - 1f)) * 256f).roundToInt().coerceIn(0, 256)],
+                LIN_TO_SRGB[((lg + (lg - y) * (amount - 1f)) * 256f).roundToInt().coerceIn(0, 256)],
+                LIN_TO_SRGB[((lb + (lb - y) * (amount - 1f)) * 256f).roundToInt().coerceIn(0, 256)],
+            )
+        }
+    }
+
     private fun measureLuminance(pixels: IntArray) {
         var sum = 0.0
         var n = 0
@@ -429,74 +642,112 @@ class GlassCoordinator private constructor(val source: View) {
  * 一块玻璃面的 footprint 只有 150×10 上下 ≈ 1500 像素，一次重算几十微秒，
  * **反而比 GPU 路径更省**（不必为每个面开 render node 链）。
  *
- * 色散（RGB 三通道按不同半径取样）默认关闭：`colors.xml:39` 的灰阶规范，见 PRD §3.7 / Q1。
+ * **v2.6.3 对照 QmDeve/AndroidLiquidGlassView 的 AGSL 实现重写**（MIT，主参考）：
+ *
+ *  1. **位移剖面换成 `circleMap`**：原实现用 `(1-t)²`，位移沿整条带摊开，边缘只是一条
+ *     略弯的带，读不出"透镜"。QmDeve 用 `1 - sqrt(1 - u²)`（u = 1 - 深度/带高），
+ *     半带处位移只剩 **13%**（二次剖面还有 25%）—— 位移被压进贴边一薄层，
+ *     形成苹果那条细而亮的压缩镜面环，内侧只留轻微放大的尾巴。
+ *  2. **方向换成 SDF 梯度**：原来用"从中心指向该点"的径向。对长条面（dock 340×62、
+ *     通栏预览条）这是错的 —— 长边中点的径向是斜的，折射会斜着拐向角落；
+ *     表面外法线才是物理正确的方向。圆角矩形 SDF 的解析梯度是现成的，直接用。
+ *  3. **采样区外扩（pad）**：向外折射意味着贴边像素要采到 footprint **外面**的内容。
+ *     原实现只读 footprint 本身，采样点一出界就被 clamp 到自身边界 —— 表现为边缘
+ *     一圈拖影。现在由调用方把读取区域外扩 pad 像素（[drawBackdrop] 负责），
+ *     本函数收 [ox]/[oy] 表示 footprint 在缓冲区里的偏移，出界仍 clamp 但那是真边界。
+ *
+ * 色散（RGB 三通道按不同半径取样）默认开启 0.10（参考两边项目的默认值）。
+ * 注意这偏离了 PRD §3.7 的"默认关"决定 —— 理由见 UiFlags.DISPERSION 的注释，可一键回退。
  */
 internal object GlassLens {
 
     /**
-     * @param src 纹理中该玻璃面对应的区域像素，尺寸 [sw] x [sh]
-     * @param dst 输出，同尺寸
+     * @param src 外扩后的背景区域像素，尺寸 [sw] x [sh]
+     * @param dst 输出，尺寸 [fw] x [fh]（= footprint 本身）
+     * @param ox/oy footprint 原点在 [src] 缓冲区里的坐标
      * @param cornerPx 玻璃圆角半径（纹理像素）
      * @param bandPx 透镜"厚度"：离边缘多远之内开始弯折（纹理像素）
      * @param strength 边缘向外位移的最大幅度（纹理像素）
      * @param magnify 中心放大倍率，1.0 = 不放大
-     * @param dispersion 色散强度（通道位移比例），0 = 关闭
+     * @param dispersion 色散强度（相对位移比例），0 = 关闭
      */
     fun warp(
         src: IntArray,
         dst: IntArray,
         sw: Int,
         sh: Int,
+        ox: Int,
+        oy: Int,
+        fw: Int,
+        fh: Int,
         cornerPx: Float,
         bandPx: Float,
         strength: Float,
         magnify: Float,
         dispersion: Float,
     ) {
-        val cx = (sw - 1) / 2f
-        val cy = (sh - 1) / 2f
-        // 圆角矩形的符号距离场：负值在内部，0 在边界上
-        val rx = (cornerPx.coerceAtMost(minOf(cx, cy))).toInt()
-        val band = bandPx.coerceAtMost(minOf(cx, cy)).coerceAtLeast(1f)
+        // footprint 几何（在 padded 缓冲区坐标系里）
+        val cx = ox + fw / 2f
+        val cy = oy + fh / 2f
+        val hw = fw / 2f
+        val hh = fh / 2f
+        val r = cornerPx.coerceAtMost(minOf(hw, hh)).coerceAtLeast(0f)
+        val band = bandPx.coerceAtMost(minOf(hw, hh)).coerceAtLeast(1f)
+        val kDisp = strength * dispersion
+
         var y = 0
-        while (y < sh) {
+        while (y < fh) {
             var x = 0
-            while (x < sw) {
+            while (x < fw) {
+                val px = ox + x
+                val py = oy + y
                 // 1) 中心放大：把取样坐标往中心收
-                var sx = cx + (x - cx) / magnify
-                var sy = cy + (y - cy) / magnify
-                // 2) 边缘折射：越靠近边界，越把采样点往**外**推
-                val ax = abs(sx - cx) - (cx - rx)
-                val ay = abs(sy - cy) - (cy - rx)
-                val outside = hypot(ax.coerceAtLeast(0f), ay.coerceAtLeast(0f))
-                val inside = min(max(ax, ay), 0f)
-                val sd = outside + inside - rx          // <0 在内部
-                val t = (-sd / band).coerceIn(0f, 1f)   // 0=贴边 1=深处
-                if (t < 1f) {
-                    val k = (1f - t) * (1f - t) * strength  // 二次衰减，边缘最弯
-                    val dx = sx - cx
-                    val dy = sy - cy
-                    val len = hypot(dx, dy)
-                    if (len > 0.5f) {
-                        val f = k / len
-                        sx += dx * f
-                        sy += dy * f
+                var sx = cx + (px - cx) / magnify
+                var sy = cy + (py - cy) / magnify
+
+                // 2) 圆角矩形 SDF（footprint 局部）：负值在内部，0 在边界上
+                val lx = sx - cx
+                val ly = sy - cy
+                val qx = abs(lx) - (hw - r)
+                val qy = abs(ly) - (hh - r)
+                val outX = qx.coerceAtLeast(0f)
+                val outY = qy.coerceAtLeast(0f)
+                val outside = hypot(outX, outY)
+                val inside = min(max(qx, qy), 0f)
+                val sd = outside + inside - r
+                val depth = -sd          // 0=贴边，越大越深
+
+                var k = 0f
+                var gx = 0f
+                var gy = 0f
+                if (depth < band) {
+                    // 位移剖面：circleMap（见类注释 1）
+                    val u = (1f - depth / band).coerceIn(0f, 1f)
+                    k = (1f - sqrt((1f - u * u).coerceAtLeast(0f))) * strength
+                    // 方向：SDF 解析梯度 = 表面外法线（见类注释 2）
+                    if (outX > 0f || outY > 0f) {
+                        if (outside > 0.0001f) {
+                            gx = (if (lx < 0f) -outX else outX) / outside
+                            gy = (if (ly < 0f) -outY else outY) / outside
+                        }
+                    } else if (qx >= qy) {
+                        gx = if (lx < 0f) -1f else 1f
+                    } else {
+                        gy = if (ly < 0f) -1f else 1f
                     }
+                    sx += gx * k
+                    sy += gy * k
                 }
-                val si = sx.roundToInt().coerceIn(0, sw - 1)
-                val ti = sy.roundToInt().coerceIn(0, sh - 1)
-                val p = src[ti * sw + si]
-                dst[y * sw + x] = if (dispersion > 0.001f && t < 1f) {
-                    // 三通道各自按不同半径取样：蓝的弯得最少、红的弯得最多
-                    val k = (1f - t) * (1f - t) * strength * dispersion
-                    val dx = sx - cx
-                    val dy = sy - cy
-                    val len = hypot(dx, dy).coerceAtLeast(0.5f)
-                    val ux = dx / len
-                    val uy = dy / len
-                    val r = sample(src, sw, sh, sx + ux * k, sy + uy * k)
-                    val b = sample(src, sw, sh, sx - ux * k, sy - uy * k)
-                    Color.rgb(Color.red(r), Color.green(p), Color.blue(b))
+
+                val p = sample(src, sw, sh, sx, sy)
+                dst[y * fw + x] = if (kDisp > 0.0001f && k > 0f) {
+                    // 三通道沿法线取不同折射量：红弯最多、蓝最少（正常色散）。
+                    // 采样点已经位移过 k，这里在此基础上再 ±kDisp。
+                    val rr = sample(src, sw, sh, sx + gx * kDisp, sy + gy * kDisp)
+                    val bb = sample(src, sw, sh, sx - gx * kDisp, sy - gy * kDisp)
+                    // `Color.argb` 保留原 alpha：纹理里有透明区域（被自我屏蔽的玻璃面、
+                    // 内容没铺满的空白），用 `Color.rgb` 会把它们钉成不透明色块。
+                    Color.argb(Color.alpha(p), Color.red(rr), Color.green(p), Color.blue(bb))
                 } else {
                     p
                 }

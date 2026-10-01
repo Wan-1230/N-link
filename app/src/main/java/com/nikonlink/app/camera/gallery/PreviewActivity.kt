@@ -113,6 +113,12 @@ class PreviewActivity : AppCompatActivity() {
     /** 整组照片（由 Intent 基本类型数组重建，format 用 classifyFormat 还原） */
     private lateinit var files: List<CameraFile>
 
+    /** 当前页的缩放视图（供返回键先复位缩放、翻页后重新指向） */
+    private var currentZoomView: PreviewZoomImageView? = null
+
+    /** 位置 → 该页的缩放视图。ViewPager2 不暴露 findViewHolder，翻页时靠它定位当前页 */
+    private val zoomViews = android.util.SparseArray<PreviewZoomImageView>()
+
     /** 当前展示的照片（随滑动更新，底部栏与信息均以它为准） */
     private var file: CameraFile = CameraFile(0, "", 0, 0, 0)
     private var currentPosition = 0
@@ -143,6 +149,16 @@ class PreviewActivity : AppCompatActivity() {
         setupViewPager()
 
         binding.btnBack.setOnClickListener { finish() }
+        // v2.6.4：已放大时返回键先复位缩放，再按才退出（与双击复位同一手感）
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : androidx.activity.OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    val zv = currentZoomView
+                    if (zv != null && zv.isZoomed) zv.resetZoom() else finish()
+                }
+            },
+        )
         binding.btnDownload.setOnClickListener { download() }
 
         binding.btnMark.pressEffect()
@@ -151,6 +167,10 @@ class PreviewActivity : AppCompatActivity() {
 
         binding.btnExif.setOnClickListener { showInfoSheet() }
         binding.btnShare.setOnClickListener { showSharePanel() }
+        // v2.6.4：大图页删除。相机源删卡上文件，本地源删手机里的那份；
+        // 与相册网格的删除走同一个确认话术与同一条 TransferManager 链路。
+        binding.btnDelete.pressEffect()
+        binding.btnDelete.setOnClickListener { deleteCurrent() }
 
         binding.btnMore.setOnClickListener {
             NlGlass.dialog(this)
@@ -282,6 +302,8 @@ class PreviewActivity : AppCompatActivity() {
             override fun onPageSelected(position: Int) {
                 currentPosition = position
                 file = files[position]
+                // ViewPager2 不直接暴露 findViewHolder，用绑定时登记的下标映射来取
+                currentZoomView = zoomViews.get(position)
                 updateTopBar()
                 // 换页 = 玻璃背后的整张图都变了，纹理必须作废重采
                 previewGlass?.invalidate()
@@ -354,22 +376,24 @@ class PreviewActivity : AppCompatActivity() {
             }
     }
 
+    /**
+     * v2.6.4：大图浏览页**不做液态玻璃**。
+     *
+     * 原实现把顶栏/底栏做成玻璃（背后采样 ViewPager 里的整张大图）。实测观感不协调：
+     * 玻璃要靠"背后有可透之物"才成立，而本页背后是**正在欣赏的那张照片本身** ——
+     * 糊掉的是内容不是装饰，照片被自己的 UI 压掉一层细节；同时大图每翻一页都要
+     * 作废重采纹理（`previewGlass?.invalidate()`），滚动/翻页时还要多背一份采集开销。
+     *
+     * 现在统一走与关玻璃时完全相同的那条路：不透明 scrim 底 + elevation 0 + 注销登记。
+     * 监看页（LiveView）的 HUD 玻璃保持不变 —— 那里背后是实时视频流，玻璃是成立的。
+     */
     private fun applyGlassBars() {
         val bars = listOf(binding.previewTopBar, binding.previewBottomBar)
-        if (!UiFlags.glassEnabled(this)) {
-            previewGlass = null
-            bars.forEach {
-                it.setBackgroundColor(ContextCompat.getColor(this, R.color.liveview_scrim))
-                it.elevation = 0f
-                GlassRegistry.unregister(it)
-            }
-            return
-        }
-        val coord = GlassCoordinator.attach(binding.vpPreview).also { previewGlass = it }
-        // 翻页时背景整张换掉，采集要跟上；静止时不必高频
-        coord.minRefreshMs = 120L
-        bars.forEach { bar ->
-            bar.applyGlass(coord) { GlassTokens.hud(it.context).copy(radiusPx = 0f) }
+        previewGlass = null
+        bars.forEach {
+            it.setBackgroundColor(ContextCompat.getColor(this, R.color.liveview_scrim))
+            it.elevation = 0f
+            GlassRegistry.unregister(it)
         }
     }
 
@@ -383,7 +407,8 @@ class PreviewActivity : AppCompatActivity() {
 
     private data class PageViews(
         val root: FrameLayout,
-        val iv: ImageView,
+        /** v2.6.4：换成可捏合缩放的 ImageView（双击放大、单指拖动、越界夹紧） */
+        val iv: PreviewZoomImageView,
         val progress: ProgressBar,
         val error: TextView
     )
@@ -392,12 +417,13 @@ class PreviewActivity : AppCompatActivity() {
         val root = FrameLayout(this).apply {
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
-        val iv = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            contentDescription = "影像预览"
+        val iv = PreviewZoomImageView(this).apply {
+            contentDescription = "影像预览（双指捏合缩放）"
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
             ).apply { gravity = Gravity.CENTER }
+            // 放大态必须关掉 ViewPager2 的横向滑动，否则"拖图"会变成"翻页"
+            onZoomChanged = { zoomed -> binding.vpPreview.isUserInputEnabled = !zoomed }
         }
         val progress = ProgressBar(this).apply {
             isIndeterminate = true
@@ -430,6 +456,8 @@ class PreviewActivity : AppCompatActivity() {
             holder.pv.error.visibility = View.GONE
             holder.pv.progress.visibility = View.VISIBLE
             holder.pv.iv.setImageBitmap(null)
+            zoomViews.put(position, holder.pv.iv)
+            if (position == currentPosition) currentZoomView = holder.pv.iv
             loadInto(f, holder, position)
         }
     }
@@ -734,6 +762,59 @@ class PreviewActivity : AppCompatActivity() {
         binding.progressDownload.isIndeterminate = true
         binding.tvDownloadLabel.text = "排队中"
         transferManager.enqueue(listOf(file))
+    }
+
+    /**
+     * v2.6.4：删除当前这张（相机卡上的原文件）。
+     *
+     * 走 [TransferManager.deleteFiles] —— 与相册网格多选删除同一条链路，
+     * 不新增删除实现。删掉后：① 从本页列表摘除并刷新 ViewPager2；
+     * ② 同步清掉这一张的标记，避免「已标记」栏留下指向已删文件的残影
+     * （与 F1 AC-6 同一条约定）；③ 列表空了就退出本页。
+     *
+     * **不删手机本地副本**：本页只承载相机源（见 `startPreview` 传的是 handle/name/size），
+     * 用户在相册里已经下载的那一副本由「本地照片」栏单独管理，删卡上原片不该顺手删本地。
+     */
+    private fun deleteCurrent() {
+        val pos = currentPosition
+        if (pos !in files.indices) return
+        val target = files[pos]
+        NlGlass.dialog(this)
+            .setTitle("删除照片")
+            .setMessage(
+                "将删除相机存储卡上的：${target.fileName}\n\n" +
+                    "此操作不可撤销；手机上已下载的副本不受影响。"
+            )
+            .setNegativeButton("取消", null)
+            .setPositiveButton("删除") { _, _ ->
+                if (!transferManager.hasActiveSession()) {
+                    NlFeedback.show(this, "相机未连接，无法删除")
+                    return@setPositiveButton
+                }
+                lifecycleScope.launch {
+                    val deleted = transferManager.deleteFiles(listOf(target))
+                    if (deleted.isEmpty()) {
+                        NlFeedback.show(this@PreviewActivity, "删除失败，相机可能不支持该操作")
+                        return@launch
+                    }
+                    photoMarkRepository.unmark(listOf(target))
+                    val remaining = files.toMutableList().also { it.removeAt(pos) }
+                    files = remaining
+                    binding.vpPreview.adapter?.notifyDataSetChanged()
+                    if (remaining.isEmpty()) {
+                        NlFeedback.show(this@PreviewActivity, "已删除")
+                        finish()
+                        return@launch
+                    }
+                    currentPosition = pos.coerceAtMost(remaining.lastIndex)
+                    file = remaining[currentPosition]
+                    binding.vpPreview.setCurrentItem(currentPosition, false)
+                    updateTopBar()
+                    refreshMarkState()
+                    NlFeedback.show(this@PreviewActivity, "已删除 ${target.fileName}")
+                }
+            }
+            .show()
     }
 
     /** 兼容旧逻辑：下载状态（当前页），主要由 downloadResults 维护 */

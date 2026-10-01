@@ -21,6 +21,12 @@
     <color name="glass_edge_lens">#33FFFFFF</color>
     <color name="glass_hairline_fitted">#33FFFFFF</color>
 
+    <!-- v2.6.2：夜间同样要有镜面亮线与内阴影，但对比度反过来压 ——
+         夜间底色本来就暗，亮线再给满就是一条白塑料边；内阴影则可以比白天重一点，
+         否则暗底上完全看不出厚度。 -->
+    <color name="glass_specular_line">#73FFFFFF</color>
+    <color name="glass_inner_shadow">#33000000</color>
+
     <!-- 阴影：夜间压到几乎不可见（层级交给 rim 高光承担） -->
     <color name="glass_shadow_key">#0A000000</color>
     <color name="glass_shadow_ambient">#0A000000</color>

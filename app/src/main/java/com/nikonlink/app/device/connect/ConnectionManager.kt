@@ -75,6 +75,16 @@ class ConnectionManager @Inject constructor(
         private const val SOURCE_AP_GATEWAY = "ap_gateway"
         private const val SOURCE_DEFAULT_FALLBACK = "default_fallback"
         private const val DEFAULT_FALLBACK_HOST = "192.168.1.1"
+
+        /**
+         * v2.6.4：兜底地址（[DEFAULT_FALLBACK_HOST]）**自动重试**的冷却时长。
+         *
+         * 取值理由：日志里每轮盲猜要烧掉 157s，两轮之间相隔约 2.6 分钟 ——
+         * 也就是说网络条件根本没变过，重试只是重复已知结论。取 180s 冷却，
+         * 让自动恢复把时间留给"等网络事件"（手机重新接上相机热点）而不是反复撞墙。
+         * 用户主动点击不受此限（见 [connectToWifiCamera] 的冷却分支）。
+         */
+        private const val FALLBACK_COOLDOWN_MS = 180_000L
     }
 
     private var scope: CoroutineScope? = null
@@ -95,6 +105,9 @@ class ConnectionManager @Inject constructor(
      * 一旦拿到过，后续重试优先用它，不再退回默认兜底地址——消除日志里"12:14 又打回 192.168.1.1"的回退。
      */
     private var realCameraIp: String? = null
+
+    /** v2.6.4：兜底地址上一次连接失败的时间戳（0 = 从未失败），供自动重连做冷却 */
+    private var lastFallbackFailAt = 0L
 
     private val _connectionMetrics = MutableStateFlow(ConnectionMetrics())
     val connectionMetrics: StateFlow<ConnectionMetrics> = _connectionMetrics.asStateFlow()
@@ -310,6 +323,25 @@ class ConnectionManager @Inject constructor(
             }
         }
 
+        // v2.6.4：**兜底地址的自动重试冷却**。
+        // 真机证据（2026-09-30 日志）：22:51 / 22:53 / 22:56 / 00:07 / 00:50 各有一轮
+        // `sta_fail reason=camera_unreachable host=192.168.1.1 fallback=true waited_ms≈157294`
+        // —— 每 2.6 分钟就用 157 秒去撞那个"没连上相机时纯属盲猜"的默认地址，
+        // 而相机其实一直在 10.184.219.14（手机热点上，`in_subnet=true` 那轮一次就成）。
+        // 盲猜地址对**用户主动点击**永远放行（他要试就该让他试），
+        // 只对自动恢复（restore_paired / 健康检查）做冷却，省下重复的 157 秒空转。
+        if (endpoint.host == DEFAULT_FALLBACK_HOST &&
+            caller != ConnFunnel.Caller.USER_TAP &&
+            System.currentTimeMillis() - lastFallbackFailAt < FALLBACK_COOLDOWN_MS
+        ) {
+            val waited = (System.currentTimeMillis() - lastFallbackFailAt) / 1000
+            eventLogger.event(
+                "connect_ignored", "host" to endpoint.host, "caller" to caller.code,
+                "reason" to "fallback_cooldown", "waited_s" to waited
+            )
+            return
+        }
+
         // v2.2（PRD §5.1 T-A2/T-A3）：AP 模式下相机自任网关，手机已连相机热点时
         // 「网关就是相机」——先学地址再发起配对，用户/历史给的地址（尤其是默认
         // 192.168.1.1）只在学不出来时作为兜底。学不到（如 STA 场景网关是路由器）
@@ -434,6 +466,11 @@ class ConnectionManager @Inject constructor(
             onFail = { reason ->
                 funnel.fail(mapConnectorReason(reason), reason)
                 _connectionHint.value = null
+                // v2.6.4：兜底地址（默认 192.168.1.1）失败的时间戳，供自动重连做冷却
+                // （见 [connectToWifiCamera] 的 fallback 冷却分支）。
+                if (endpoint.host == DEFAULT_FALLBACK_HOST) {
+                    lastFallbackFailAt = System.currentTimeMillis()
+                }
                 eventLogger.event(
                     "pair_fail",
                     "host" to endpoint.host, "port" to endpoint.port, "reason" to reason
@@ -650,6 +687,26 @@ class ConnectionManager @Inject constructor(
                 detail = "相机未连接。请先通过 WiFi 连上相机（AP 模式），再执行 STA 主机注册"
             )
         }
+        // v2.6.3 R2（ConnFlags.HOSTREG_PRECHECK）：发 0x952B 之前先看相机**当前模式**
+        // 有没有把它列进 OperationsSupported。尼康的 SnapBridge AP 与主机配置向导都在
+        // 192.168.1.1 提供 PTP/IP，但只有向导支持注册 —— 这是唯一能在**发命令之前**
+        // 分辨两者的信号，省掉一次注定失败的往返和一句含糊的报错。
+        // ops 为 null（没取到/解析失败）时不拦，按旧路径盲发。
+        if (connFlags.isEnabled(ConnFlags.HOSTREG_PRECHECK)) {
+            val ops = ptpSession.lastSupportedOperations
+            if (ops != null && !ops.contains(PtpConstants.OP_NIKON_HOST_REGISTRATION_PREPARE)) {
+                eventLogger.event("hostreg", "phase" to "precheck_blocked", "ops" to ops.size)
+                return HostRegistrationResult.Failure(
+                    phase = "precheck",
+                    detail = "相机当前模式不支持主机注册（0x952B 不在它声明的能力列表里）。\n" +
+                        "多数情况是相机没在 STA 主机配置向导里 —— 普通「连接至智能设备」的 " +
+                        "WiFi 热点也能连上，但它不接受注册。\n" +
+                        "请在相机上重新进入「Wi-Fi连接（STA mode）」或「连接至 PC」的网络设定向导，" +
+                        "停在「正在等待连接 / 等待计算机」的画面后再点注册。"
+                )
+            }
+        }
+
         val result = ptpSession.registerHost(onProgress)
         if (result is HostRegistrationResult.Success) {
             prefs.edit().putBoolean(PREFS_STA_HOST_REGISTERED, true).apply()
@@ -706,16 +763,46 @@ class ConnectionManager @Inject constructor(
     /**
      * 相机主动拒绝握手（InitFail）说明 STA 门控未解除 → 提示需要做主机注册。
      * 只在收到 InitFail 时触发，网络类失败（无 WiFi / 相机不可达）不误报。
+     *
+     * **v2.6.3 R1（`ConnFlags.HOSTREG_HINT_V2`）**：原来**所有** InitFail 都算"需要注册"，
+     * 但 PTP/IP 的三个 fail reason 语义完全不同 —— reason=1 是"机身唯一的客户端槽还被
+     * 上一代会话占着"（该等，不该去注册），reason=3 是"本机已在这个连接里"
+     * （已注册的证据）。一律当"需要注册"会把用户指向一个相机根本没在等待的向导，
+     * 随后的 0x952B 必然被 0x201F 拒（2026-09-30 日志实证）。
+     * 闸门关掉 = 回到"一律需要注册"的旧行为。
      */
     private fun observeHostRegistrationHint() {
         scope?.launch {
             ptpSession.lastInitFailReason.collect { reason ->
-                if (reason != null) {
-                    eventLogger.event("sta_hostreg_hint", "reason" to reason)
-                    _staRegisterNeeded.value = true
-                    revokeStaleHostClaim(reason)
-                    promoteAddressOnInitFail()
+                if (reason == null) return@collect
+                eventLogger.event("sta_hostreg_hint", "reason" to reason)
+                val graded = connFlags.isEnabled(ConnFlags.HOSTREG_HINT_V2)
+                when {
+                    graded && reason == PtpConstants.INIT_FAIL_HOST_ALREADY_CONNECTED -> {
+                        // 机身明确说"本机已连接" = 注册是生效的，把它记为已注册而不是待注册
+                        _staHostRegistered.value = true
+                        _staRegisterNeeded.value = false
+                        prefs.edit().putBoolean(PREFS_STA_HOST_REGISTERED, true).apply()
+                        eventLogger.event("sta_hostreg_grade", "grade" to "already_connected")
+                    }
+
+                    graded && reason == PtpConstants.INIT_FAIL_CONNECTION_IN_USE -> {
+                        // 单槽被占：不动注册标记，等机身把上一代收干净后自动重试
+                        _statusMessage.value =
+                            "相机正忙：上一次的连接还没被机身收干净，稍等十几秒会自动重试"
+                        eventLogger.event("sta_hostreg_grade", "grade" to "busy_wait")
+                    }
+
+                    else -> {
+                        // 含 graded=false 的全部情况：维持"需要注册"的旧行为
+                        _staRegisterNeeded.value = true
+                        if (graded) {
+                            eventLogger.event("sta_hostreg_grade", "grade" to "needs_register")
+                        }
+                        revokeStaleHostClaim(reason)
+                    }
                 }
+                promoteAddressOnInitFail()
             }
         }
     }

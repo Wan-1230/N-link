@@ -35,14 +35,16 @@
     <!-- 排版基类：NlText.* 子样式通过点号隐含继承本样式，不可删除 -->
     <style name="NlText" parent="TextAppearance.Material3.BodyMedium" />
 
-    <!-- 主按钮：黑底白字填充，8px 圆角。
-         elevation 2dp + 按 token 着色的软投影（PRD §15.6-4 遗留的按钮立体感）：
-         之前所有按钮都是 0dp 全平，卡片有 1.5dp、悬浮件有 8dp，按钮反而浮在纸面上，
-         三级层级读不出来。`stateListAnimator @null` **保留** —— 按压反馈归 PressEffect
-         统一管（0.95 缩放），不能让 Material 的抬升动画来抢（PRD §2.3 D1）。 -->
+    <!-- 主按钮：**尼康黄填充 + 黑字**（v2.6.5 品牌强调色的两处用途之一）。
+         黑白灰体系里主按钮原本是纯黑填充，与"对比卡片"（也是黑底白字）撞在同一层级，
+         屏幕上一个黑色大块到底是"可点的行动点"还是"一块信息卡"读不出来。
+         换成黄底之后行动点一眼可辨，且黄是全局唯一的彩色，不会与任何状态色混淆。
+         文字必须用黑（on_nikon_yellow）：白字在 #FFE100 上只有约 1.5:1 对比度。
+         `stateListAnimator @null` **保留** —— 按压反馈归 PressEffect 统一管（0.95 缩放），
+         不能让 Material 的抬升动画来抢（PRD §2.3 D1）。 -->
     <style name="NlButton.Primary" parent="Widget.Material3.Button">
-        <item name="android:textColor">@color/on_primary</item>
-        <item name="backgroundTint">@color/primary</item>
+        <item name="android:textColor">@color/on_nikon_yellow</item>
+        <item name="backgroundTint">@color/nikon_yellow</item>
         <item name="cornerRadius">8dp</item>
         <item name="android:textSize">15sp</item>
         <item name="android:textStyle">bold</item>

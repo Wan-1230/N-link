@@ -149,7 +149,11 @@ object NlGlass {
     private fun hookSheetPanel(dialog: BottomSheetDialog) {
         val context = dialog.context
         dialog.setOnShowListener {
-            applyBlurBehind(dialog.window, context)
+            // v2.6.2：这里原来调的是单参重载（animatePanel 默认 true）。
+            // 但 BottomSheet 自己有 slide-up 入场，再叠一层 decorView 的 alpha+缩放
+            // 就是两条时间线 —— 表现为"面板先缩着淡入、然后再滑上来"的错位。
+            // 注释里写的要求是 sheet 只要模糊与暗度跟上来，这里把参数显式补上。
+            applyBlurBehind(dialog.window, context, animatePanel = false)
             val panel = dialog.findViewById<View>(
                 com.google.android.material.R.id.design_bottom_sheet,
             ) ?: return@setOnShowListener

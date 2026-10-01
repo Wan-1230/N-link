@@ -60,7 +60,9 @@ class WifiDirectConnector @Inject constructor(
     private val stateMachine: ConnectionStateMachine,
     private val eventLogger: AppEventLogger,
     private val connFlags: ConnFlags,
-    private val funnel: com.nikonlink.app.device.connect.ConnFunnel
+    private val funnel: com.nikonlink.app.device.connect.ConnFunnel,
+    /** v2.6.3 R4 用：探测前的「是否在相机热点上」豁免（与预检同一判据，AP 链路不受影响） */
+    private val apGatewayResolver: com.nikonlink.app.device.wifi_ap.ApGatewayResolver,
 ) {
     companion object {
         private const val TAG = "WifiDirect"
@@ -121,6 +123,20 @@ class WifiDirectConnector @Inject constructor(
          * （v1.3.1 既无 `UNREACHABLE_GIVE_UP` 也无 `RETRY_BUDGET`，会跑满 10 次退避）。
          */
         private const val GIVEUP_FLOOR_MS = 120_000L
+
+        /**
+         * v2.6.4：单轮连接循环的总时长上限（硬闸）。
+         *
+         * 数值出处：[MAX_ATTEMPTS]=10 次尝试，退避合计 ≈ 90s（[BACKOFF_MS]），
+         * 每次尝试最坏再叠 30s 的 socket 超时与 [AWAIT_NETWORK_MS]=4s 的等网时间 ——
+         * 一轮理论上应在 4 分钟内出结论。取 240s 作为"再多等也不会有新信息"的界。
+         *
+         * 真机证据（2026-10-01 日志）：`sta_fail gen=4 reason=camera_unreachable …
+         * waited_ms=4216968`（约 **70 分钟**）。跑这么久的一轮拿不到新信息
+         * （期间网络条件早变了），还会让后续的用户点击被幂等守卫当成"已在连接中"拦掉，
+         * 表现为"点了没反应"。超过上限就收口，交给网络事件或用户的下一次点击重新发起。
+         */
+        private const val MAX_ROUND_MS = 240_000L
     }
 
     enum class Mode { PAIRING, RESUME }
@@ -299,6 +315,22 @@ class WifiDirectConnector @Inject constructor(
             while (attempt < MAX_ATTEMPTS) {
                 currentCoroutineContext().ensureActive()
                 if (gen != generation) return                    // RC-7: 过期令牌立即退
+
+                // v2.6.4：单轮总时长硬闸（见 [MAX_ROUND_MS]）。
+                // 只拦"一轮跑太久"，不改任何单次尝试的判据与退避策略。
+                val elapsed = System.currentTimeMillis() - loopStartedAt
+                if (elapsed > MAX_ROUND_MS) {
+                    eventLogger.event(
+                        "sta_fail",
+                        "gen" to gen,
+                        "reason" to "round_budget_exhausted",
+                        "attempt" to attempt,
+                        "host" to endpoint.host,
+                        "waited_ms" to elapsed
+                    )
+                    onFail(describeStaFailure("round_budget_exhausted", endpoint))
+                    return
+                }
                 attempt++
 
                 // RC-4: 每次尝试都等待并重新解析 Network，不用循环外缓存的旧句柄；
@@ -800,6 +832,25 @@ class WifiDirectConnector @Inject constructor(
         endpoint: WifiEndpoint,
         timeoutMs: Long
     ): PtpIpProbe.TcpScreen {
+        // v2.6.3 R4（ConnFlags.STA_SKIP_CELLULAR）：本机没有任何网卡落在相机所在网段时，
+        // 这次探测必然走默认路由 —— 现场几乎一定是蜂窝口。蜂窝上打私网地址是**黑洞**
+        // （既不回 RST 也不可达），只会把整个 30s 超时耗干。2026-09-30 日志实证：
+        // 手机已离开相机热点（`ifaces=ap0+ccmni4`，无 192.168.1.x），App 仍从
+        // /10.56.31.140 对 192.168.1.1 连了 53 秒。
+        //
+        // **AP 链路豁免**：已在相机热点上时不查这一条（与 PreflightGate 的豁免同源）——
+        // 相机热点刚接上、网卡还在 DHCP 的那一小段窗口里也必须继续探。
+        // 闸门默认关，关掉即与 v2.6.2 逐位等价。
+        if (connFlags.isEnabled(ConnFlags.STA_SKIP_CELLULAR)) {
+            val onCameraAp = runCatching { apGatewayResolver.isOnCameraAp() }.getOrDefault(false)
+            if (!onCameraAp && !localInterfaces.subnetsContain(endpoint.host)) {
+                eventLogger.event("sta_probe_skipped", "reason" to "no_local_subnet_match",
+                    "host" to endpoint.host)
+                return PtpIpProbe.TcpScreen(
+                    false, PtpIpProbe.ProbeResult.ERROR, "no_local_subnet_match"
+                )
+            }
+        }
         funnel.recordProbe()
         if (!connFlags.isEnabled(ConnFlags.PROBE_TCP_ONLY)) {
             val ok = runCatching {
@@ -870,6 +921,11 @@ class WifiDirectConnector @Inject constructor(
                     "请按一下快门/电源键唤醒相机，让屏幕停在等待连接的画面后重试"
             "camera_unreachable" ->
                 "未找到相机（${endpoint.host}）。请确认相机已开启 WiFi、且手机与相机在同一网络"
+            // v2.6.4：单轮跑满预算（见 MAX_ROUND_MS）。重点是"别干等"，
+            // 让人去做一件能改变现状的事（确认网络），而不是继续盯着转圈。
+            "round_budget_exhausted" ->
+                "连接超时（已尝试约 4 分钟仍未连上 ${endpoint.host}）。" +
+                    "请确认手机连的是相机所在的同一网络、相机停在等待连接的画面，然后重新点一次连接"
             "ptp_handshake_failed", StaFailureClass.DENIED -> when {
                 // InitFail 且 failReason==1（connection_in_use / 主机未认可）→ 引导做主机注册
                 initFailReason == PtpConstants.INIT_FAIL_CONNECTION_IN_USE ->
