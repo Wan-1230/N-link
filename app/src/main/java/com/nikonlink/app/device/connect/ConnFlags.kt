@@ -286,6 +286,15 @@ class ConnFlags @Inject constructor(
          */
         const val SESSION_IDLE_REFRESH = "v264_session_idle_refresh"
 
+        /**
+         * FR-32：扫描强候选命中即早退（命中后 1.5s 宽限再收工）。
+         *
+         * 默认**关**：2026-10-02 坏包（FR-31 全量）真机回归后随 FR-31① 一起回退过一轮；
+         * 重落地时先以闸门形式进包，真机证明「多相机列表不漏列」后再转默认开。
+         * 注册发现路径（FR-30 自主注册）显式请求 earlyExit，同样受本闸控制。
+         */
+        const val STA_SCAN_EARLY_EXIT = "v32_scan_early_exit"
+
 
         /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
@@ -378,6 +387,8 @@ class ConnFlags @Inject constructor(
             STA_SKIP_CELLULAR to false,
             // AP 空闲断链修复：默认开（这是修复不是实验，但保留开关便于现场二分定位）
             SESSION_IDLE_REFRESH to true,
+            // FR-32：扫描早退默认关（坏包回归回退项，真机再定默认值）
+            STA_SCAN_EARLY_EXIT to false,
         )
     }
 

@@ -137,6 +137,16 @@ class WifiDirectConnector @Inject constructor(
          * 表现为"点了没反应"。超过上限就收口，交给网络事件或用户的下一次点击重新发起。
          */
         private const val MAX_ROUND_MS = 240_000L
+
+        /**
+         * FR-31②：INIT_EVENT 冷启动失败后的重试间隔。
+         *
+         * 出处：ZDROP 2026-10-02 AP 日志 `AP standard dual-channel retry scheduled
+         * failedAttempt=1 phase=INIT_EVENT delay=7000ms` —— 相机事件通道冷启动
+         * reset 是秒级恢复的，我们旧退避首档 1000ms 跨不过这个窗口；
+         * 其第三次点击的 attempt2（间隔 7s）即拿到 init-event-ack。
+         */
+        private const val EVENT_COLD_BACKOFF_MS = 7_000L
     }
 
     enum class Mode { PAIRING, RESUME }
@@ -620,7 +630,22 @@ class WifiDirectConnector @Inject constructor(
                 } else {
                     consecutiveUnreachable = 0
                 }
-                delay(BACKOFF_MS[(attempt - 1).coerceAtMost(BACKOFF_MS.size - 1)])   // RC-8
+                // FR-31②：event 通道被相机冷启动 reset（ZDROP AP 日志同现象）时，
+                // 退避拉长到 7s 跨过秒级恢复窗；其余失败照旧退避表。
+                val eventCold = ptpSession.lastFailPhase == "init_event"
+                val backoffMs = if (eventCold) {
+                    EVENT_COLD_BACKOFF_MS
+                } else {
+                    BACKOFF_MS[(attempt - 1).coerceAtMost(BACKOFF_MS.size - 1)]
+                }
+                if (eventCold) {
+                    eventLogger.event(
+                        "sta_backoff", "gen" to gen, "attempt" to attempt,
+                        "ms" to backoffMs, "reason" to "event_cold", "host" to endpoint.host
+                    )
+                    onRetry?.invoke("相机事件通道未就绪，约 7 秒后重试…")
+                }
+                delay(backoffMs)   // RC-8
             }
 
             eventLogger.event(
@@ -675,6 +700,7 @@ class WifiDirectConnector @Inject constructor(
             }
         }
     }
+
     /**
      * FIX-2：并行解析可用的 Network 句柄。
      *

@@ -1066,3 +1066,69 @@ ZDROP 完整反编译（`/tmp/zdrop-out/sources/`，未加固）后的逐条比�
 2. 看 `hostreg` + `device_caps`（`lastSupportedOperations`）在 0x201F 现场的实际取值 → 验证 R2 是否真能提前拦住，以及 §4.4 那组对照实验（相机进「连接至 PC」向导 vs 进「连接至智能设备」）。
 3. R3（`0x201F` 之后是否仍发 `ConfirmHost`）**仍未做**：需要先用 ZDROP 在已注册过的相机上跑一次，观察 `0x201F` 后 ConfirmHost 是否照样成功。无此证据不动注册主链路。
 4. FTP 架构（B）下抑制 STA PTP 自动重连：`staArchitecture` 在 `ConnectionManager` **0 命中**，三条自动路径（`reconnectLastDeviceIfPaired:1239`、`observeReconnectTrigger:1040`、HealthWorker `:552`）仍会发起最长 240s 的 STA 连接轮，而 `bindProcessToNetwork` 是**进程级**的，会影响 FTP 监听 socket 的出口选择。要动 `ConnectionManager` 的自动重连闭环，属"已跑通功能"，**先不碰**，等 FTP 那条线自己稳定。
+
+### 17.6 FR-30：STA 未连接态自主注册（2026-10-02，修「相机未连接…请先走 AP」误判）
+
+**用户现场**：相机已连上手机热点、停在主机配置向导，点「STA 主机注册」却被判
+「相机未连接。请先通过 WiFi 连上相机（AP 模式），再执行 STA 主机注册」。
+正确行为应与 ZDROP 一致：此现场可直接注册，注册后 STA 连接可用。
+
+**根因（已验证，代码行号）**：`ConnectionManager.registerStaHost` 旧实现第一行是
+`if (!ptpSession.isConnected()) return Failure("相机未连接…AP 模式…")` —— 注册被绑死在
+「先有一条已建立的 PTP 会话」上，而该会话历史上只有 AP 连接能建立。于是
+「相机在热点上停在向导」这个本该直接注册的现场被判死。
+
+**ZDROP 诊断日志反证（2026-10-01，host-register 段）**：注册是一条**独立链路**，
+不依赖任何既有会话 —— 发现 endpoint（`endpoint-subnet-matched-local-hotspot-interface`）→
+自建 command/event 双通道（init-command-ack → pre-event-settle 350ms → init-event-ack）→
+GetDeviceInfo（ops 含 `0x952b`/`0x935a` = 向导模式）→ OpenSession → `0x952B` →
+等相机确认 → `0x935A` → 直接拆通道（`sendCloseSession=false`）。
+
+**落地（最小改动，3 改 2 增）**：
+- 新增 `wifi_sta/StaHostRegistrar.kt`：自有 socket + 自有事务号复刻上述独立链路；
+  不碰 `PtpSessionManager` 单例会话状态（不置 CONNECTED、不起心跳/事件监听、不打连接漏斗）。
+- `ConnectionManager.registerStaHost` 改双路径：已连接走原路径（逐行未动）；
+  未连接先 `scanWifiCameras(8s)` 受限发现 → `pickRegistrationCandidate`（优先 awake 候选）→ 交 registrar。
+- 发现不到时给两条可照做路径（STA 直注 / AP 注册），不再判死。
+- `DashboardFragment` 注册弹窗文案同步为「不需要先连相机」。
+
+**范围铁律复核**：AP 连接、既有 STA 连接、已连接态注册三条已跑通路径零改动；
+新分支只在旧代码必然返回 `not_connected` 失败的位置插入，回归面≈0。
+
+**验证**：`assembleDebug` BUILD SUCCESSFUL；单测 234 通过 / 1 失败（既有
+`ProtectionFilterTest` 红，属 gallery 另一会话）/ 1 跳过；新增 `StaHostRegCandidateTest` 3 条全绿。
+真机待验：相机连热点停向导 → 点注册应直接成功；注册后 STA 连接可用。
+
+### 17.7 FR-31：扫描提速 + AP 一次连上（2026-10-02，三组真机日志定谳）
+
+**日志证据**：
+
+| 现象 | 来源 | 关键行 |
+|---|---|---|
+| ZDROP STA 发现代际 1.4s | ZDROP-…868572516 | 23:27:01.923 DISCOVERING → 23:27:03.326 discovery committed |
+| 我们 discover 段恒跑满 8~18s | n-link-…8220927 | discover_start 01:18:47 → discover_hit 01:19:05（17.7s） |
+| 扫描的 InitCommand 占槽 → 注册被拒 | 同上 | discover_hit → `init_fail reason=1`，间隔 83/327/121ms（连 4 次） |
+| AP 两败轮死在链路抖动 | 同上 | 01:35:24 `ifaces=` 空 + ENONET；01:36:08 ENETUNREACH；两轮均 11~13s `no_wifi_network` 收口 |
+| 热点回归后自动路径 1.1s 连上 | 同上 | 01:37:23 `network_restored` → 01:37:24 established |
+| ZDROP AP 同样 INIT_EVENT reset，7s 后重试中 | ZDROP-…876494037 | 01:40:19 reset → `retry … delay=7000ms` → 第三次点击 attempt2 拿 init-event-ack |
+| ZDROP AP 就绪等待 | 同上 | `AP network readiness wait=1200ms gateway/local … stable=true` |
+
+**落地（只动扫描与 AP/STA 连接两条链）**：
+1. **链路就绪门** `awaitLinkReady`（FR-31①）：绑网后等「内核路由 + 绑定网口」双覆盖相机地址，
+   预算 5s；正常链路首检即过、零附加时延。
+2. **热点回归等待** `awaitLinkReturn`（FR-31①）：仅「轮初在相机热点上」的轮启用，预算 120s；
+   触发点二：选网无收敛（旧 `no_wifi_network` 收口点前）、探活 errno 判链路死
+   （`linkLooksDown`：ENONET / ENETUNREACH，与相机侧 TIMEOUT/REFUSED 严格分开，单测钉住）。
+3. **注册发现去占槽**（FR-31③）：`scan(ptpConfirm=false)` 全链路只 TCP 筛探不发 InitCommand
+   （mDNS/网段/ARP/NSD/历史 IP 五处确认点同步降级）；`ptpConfirm=true` 时逐行等价旧行为。
+4. **扫描早退**（FR-31④）：强候选命中 + 1.5s 宽限即收工（默认开）；注册路径叠加
+   `ptpConfirm=false + earlyExit=true`，discover 段预期从 8~18s 降到 1~3s。
+5. **INIT_EVENT 冷重试 7s**（FR-31②）：`PtpSessionManager.lastFailPhase` 进度标记
+   （socket/init/init_event/opensession，成功置 null）；`init_event` 失败退避改 7000ms
+   并出 `sta_backoff reason=event_cold`，其余失败照旧退避表。
+
+**验证**：`assembleDebug` BUILD SUCCESSFUL；单测 236 通过 / 1 失败（既有红）/ 1 跳过；
+新增 `LinkDownRuleTest` 2 条全绿。真机待验：① AP 一次连上（中途热点重启应原地等回并连上）；
+② 注册 discover 段 <3s 且不再出现 `reason=1`；③ STA 页常规扫描不漏相机（早退宽限 1.5s）。
+
+
