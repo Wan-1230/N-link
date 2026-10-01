@@ -1003,7 +1003,12 @@ class ConnectionManager @Inject constructor(
         // 于是把"换一张网"的场景指引到"去连 WiFi"那一句上。
         reason.contains("bind_failed") -> ConnFunnel.Reason.BIND_FAILED
         reason.contains("no_wifi_network") -> ConnFunnel.Reason.NO_WIFI_NETWORK
-        reason.contains("camera_unreachable") -> ConnFunnel.Reason.TCP_TIMEOUT
+        // v2.6.6 FR-29①：改挂 CAMERA_UNREACHABLE。原来映射到 TCP_TIMEOUT，而那个码
+        // 全仓零生产者 —— STA 最高频的失败因此在日志里长期写着"端口超时"，误导排查。
+        reason.contains("camera_unreachable") -> ConnFunnel.Reason.CAMERA_UNREACHABLE
+        // v2.6.6 FR-29②：这两类是"我们这轮没跑完"，不是相机的问题，必须能与 UNKNOWN 分开统计。
+        reason.contains("loop_error") -> ConnFunnel.Reason.LOOP_ERROR
+        reason.contains("round_budget_exhausted") -> ConnFunnel.Reason.ROUND_BUDGET_EXHAUSTED
         reason.contains("event_ack_timeout") -> ConnFunnel.Reason.EVENT_ACK_TIMEOUT
         // 争抢型必须先判：它是"相机把连接位给了别人"，不是"握手失败"，指引完全不同
         reason.contains("ptp_busy_other_client") -> ConnFunnel.Reason.PTP_BUSY_OTHER_CLIENT
