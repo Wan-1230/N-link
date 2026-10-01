@@ -1131,4 +1131,24 @@ GetDeviceInfo（ops 含 `0x952b`/`0x935a` = 向导模式）→ OpenSession → `
 新增 `LinkDownRuleTest` 2 条全绿。真机待验：① AP 一次连上（中途热点重启应原地等回并连上）；
 ② 注册 discover 段 <3s 且不再出现 `reason=1`；③ STA 页常规扫描不漏相机（早退宽限 1.5s）。
 
+### 17.8 FR-31 真机回归回退 + FR-32 重优化（2026-10-02 凌晨）
+
+**回归事实（n-link_logs_1790881032213）**：FR-31 全量包 3 轮 AP 全 `superseded` 零成功
+（ROUTE p50=90.7s，用户 4 次点击被 `loop_running` 拒）；FR-31① 的 120s 热点回归等待
+把旧包「快收口 → network_restored 自动轮 1.1s 接住」的胜利路径改成轮内死等。
+**同时证伪「响应内容致相机关热点」**：gen=1 的 `network_lost` 发生在 `net_bind` 后 0.2s、
+任何相机方向报文发出之前；后续每轮 drop 与 socket connect 同刻（0.2~0.8s）。
+触发点在手机链路层/相机 AP ~50s 自周期，不在报文内容（分析文档 §6）。
+
+**处置**：坏包快照 `backup/fr31-field-regression-20261002`(ba539ec) → 回退 `7517d65`
+（删 ① 与 linkLooksDown/LinkDownRuleTest；早退挂闸默认关）→ 重优化 `a34c380`（FR-32）：
+- R2：注册 reason=1 冷却 35s（`Failure.initFailReason` 新字段承载判据）；
+- R3：`net_bind` 带 ifaces、`net_unbind`、建链后 15s `sta_ifaces` 采样、`ptp_tx` opcode+响应码
+  —— 纯日志零行为，专答「谁杀了 wlan0」与「断热点前最后发了哪条包」两个悬案；
+- ④ 重落地：早退闸 `v32_scan_early_exit` 默认开（注册发现 8~18s → 1~3s）。
+**回退手段三层**：git 分支/提交；调试面板三闸（v32_scan_early_exit /
+v32_reg_reason1_cooldown / v32_link_diag）；dist 内 FR-30 旧包 APK 实物。
+AP 连接循环保持回退后行为（= 前一版），本轮不动。
+
+
 
