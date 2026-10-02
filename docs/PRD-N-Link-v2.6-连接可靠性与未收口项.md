@@ -1193,3 +1193,26 @@ C3 诊断、C4 ROM 指引兜底；C5 否决 setWifiEnabled 看门狗。
    ⑥ 空闲 >5s 发 GetDeviceInfo 心跳。P1：supplicant deauth 原因码落日志。
    P2 待拍板：有凭证走 specifier 免面板；接收缓冲/radio 诊断。
 5. 约束复述：不碰 STA 注册与 USB 链路；闸门关=现行为；回归=234 单测基线 + 开关=开一次成功路径不慢于现状。
+
+**2026-10-02 15:45 已落地（用户拍板「全做」）**：
+- 七条全部进包，各配独立闸门（默认开）：`v34_ap_one_tap` / `v34_ap_gw_fastpath` /
+  `v34_lane_timeout` / `v34_session_hold` / `v34_wlan_wait` / `v34_fast_idle_refresh` /
+  `v34_drop_reason`，「连接实验开关」面板逐条可关。
+- **两处与方案的偏差（如实记录）**：
+  ① P0-6 前提被代码证伪——v2.6.4 已有 8s Ping 心跳 + 60s 空闲刷新（DeviceReady），
+  故未新增 5s GetDeviceInfo 心跳，改为：空闲刷新 60s→10s 快档（`v34_fast_idle_refresh`）
+  + `markLinkError` 落 `link_state`（两通道静默时长/丢拍/批量态），配合 ⑦ 定谳分叉；
+  ② P1 的 LOCAL/REMOTE_DISCONNECTION_TYPE 常量经 android-35 jar + stubs 逐一核对
+  **均为 @SystemApi/@hide 且普通 App 可达性无法离线验证**，不硬编码凭记忆的键名，
+  改为自证式采集：掉线时枚举 extras 中键名含 reason/disconnect/error 的整数字段落
+  `wlan_drop fields=`，第一次真机掉线即可确认该 ROM 实际下发了什么。
+- 新发现（进包修复）：R5 的 defaultRouteFallback 之所以在 wlan0 缺席时仍开启，是因为
+  `rndis0`（USB 共享网络）被算成"类 WiFi"——已加入 NON_WIFI_PREFIXES（带真机行号证据）。
+- 验证：compileDebugKotlin ✅；单测 236/1红(画廊基线)/1跳 ✅（+2 为 WlanWaitRuleTest）；
+  测试包 `dist/N-Link-v2.6.1-debug-FR34.apk`（21,342,658B，SHA-256 前 8 `93d22233`），
+  dex 内 7 个闸门键 + panel action + gateway-fast/wlan_wait/link_state 标记全部命中。
+- 真机判据（下轮）：① AP 页点「连接相机」一步到位（不在热点→面板点选→自动起轮，
+  日志 `ap_panel armed→joined`）；② WLAN 在位时 tap→READY ≤2s（`ap_gateway source=gateway-fast`）；
+  ③ 蜂窝 lane 不再出现 >8s 的 `socket_try`；④ `net_req hold=true` 出现且回连后
+  `net_cb available` 不再被窗口错过；⑤ 静置 5min 会话存活，死亡时 `link_state`+`wlan_drop`
+  能读出死因；⑥ 全闸关 = 与 FR33 包行为逐位一致。
