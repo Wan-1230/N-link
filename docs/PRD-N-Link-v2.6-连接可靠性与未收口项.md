@@ -1152,3 +1152,14 @@ AP 连接循环保持回退后行为（= 前一版），本轮不动。
 
 
 
+
+### 17.9 FR-33 立项：非上网热点被系统回收（「WiFi 始终开启」开关定生死）
+
+群友 AP 反复失败、用户本机开关=关亦掉线（n-link_logs_1790911140153：会话 +8.3s/+92s 死亡，
+死时 wlan0 从 ifaces 消失）。根因链（详见 docs/非上网热点被系统回收-根因与修复方案-2026-10-02.md）：
+`StaNetworkRequester` 的请求默认含 `NET_CAPABILITY_INTERNET`，匹配不上验证失败的相机 AP →
+不构成持有；AP 快路径甚至不注册请求 → ConnectivityService 按「非默认且无持有」回收该网 →
+wlan0 被踢。「WiFi 始终开启」是系统侧掩码而非根因。竞品三家 dex 均命中
+`requestNetwork+removeCapability+createWifiLock`（local-only 请求标准写法）。
+修复 C1/C2 = 请求去 INTERNET capability + 快路径补注册持有（闸 `v33_local_only_request`）；
+C3 诊断、C4 ROM 指引兜底；C5 否决 setWifiEnabled 看门狗。本轮只出方案未动代码。
