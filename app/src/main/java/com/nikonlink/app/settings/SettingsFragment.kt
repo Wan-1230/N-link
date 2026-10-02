@@ -593,6 +593,12 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 { connFlags.setEnabled(ConnFlags.STA_LINK_DIAG, it) }
             ),
             LabFlag(
+                ConnFlags.STA_LOCAL_ONLY_REQUEST,
+                "网络请求去 INTERNET capability 并全程持有（FR-33；关=旧请求，无互联网热点会被系统回收）",
+                { connFlags.isEnabled(ConnFlags.STA_LOCAL_ONLY_REQUEST) },
+                { connFlags.setEnabled(ConnFlags.STA_LOCAL_ONLY_REQUEST, it) }
+            ),
+            LabFlag(
                 UiFlags.ALBUM_INCR, "相册增量首屏（FR-03）",
                 { UiFlags.albumIncrementalEnabled(c) },
                 { UiFlags.set(c, UiFlags.ALBUM_INCR, it) }

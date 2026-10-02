@@ -312,6 +312,18 @@ class ConnFlags @Inject constructor(
          */
         const val STA_LINK_DIAG = "v32_link_diag"
 
+        /**
+         * FR-33 C1/C2：STA/AP 的网络请求去掉 `NET_CAPABILITY_INTERNET`（local-only），
+         * 并把注册提前到快路径判定之前，让会话期间始终有一个 NetworkRequest 在册。
+         *
+         * 根因链（docs/非上网热点被系统回收-根因与修复方案-2026-10-02.md）：相机热点无互联网，
+         * 验证失败后系统剥掉 INTERNET capability → 默认请求匹配不上 → 不构成持有 →
+         * ConnectivityService 回收「非默认且无持有」的网络 → 链路被踢 → 相机显示「无法连接」
+         * 并关热点。竞品三家 dex 反编译均为 `removeCapability(12)`（§8 方法级实锤）。
+         * 关闸 = 回到旧请求构造与快路径零注册，逐位等价 v2.6.1。
+         */
+        const val STA_LOCAL_ONLY_REQUEST = "v33_local_only_request"
+
 
         /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
@@ -410,6 +422,9 @@ class ConnFlags @Inject constructor(
             // FR-32：reason=1 冷却与链路诊断默认开（前者修已验证的连拒链，后者纯日志）
             STA_REG_REASON1_COOLDOWN to true,
             STA_LINK_DIAG to true,
+            // FR-33：非上网热点被系统回收的修复，默认开（这是修复不是实验：
+            // 群友无「WiFi 始终开启」开关的设备不修则必掉；关闸=旧行为，现场可二分）
+            STA_LOCAL_ONLY_REQUEST to true,
         )
     }
 
