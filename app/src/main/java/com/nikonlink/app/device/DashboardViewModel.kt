@@ -148,6 +148,20 @@ class DashboardViewModel @Inject constructor(
         )
     }
 
+    // ── FR-34①：AP 一键连接的直通（闸门判定、兜底地址轮次、面板武装都在 ConnectionManager）──
+
+    fun apOneTapEnabled(): Boolean = connectionManager.isApOneTapEnabled()
+
+    fun onCameraAp(): Boolean = connectionManager.isOnCameraAp()
+
+    fun connectApDirect() = connectionManager.connectApDirect()
+
+    fun armApPanel() = connectionManager.armApPanelConnect()
+
+    fun apPanelArmed(): Boolean = connectionManager.isApPanelArmed()
+
+    fun tryStartArmedApConnect(): Boolean = connectionManager.tryStartArmedApConnect()
+
     /** 从最近连接列表快速重连 */
     fun connectToRecentDevice(device: PairedDevice) {
         val endpoint = WifiEndpoint.parse(device.address)
