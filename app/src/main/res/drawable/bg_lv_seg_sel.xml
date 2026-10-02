@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 分段控件选中段 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/lv_seg_sel" />
+    <corners android:radius="@dimen/lv_radius_sm" />
+</shape>

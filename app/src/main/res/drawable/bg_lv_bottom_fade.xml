@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 底部控制簇渐变衬底：下深上透（70% 黑向上渐隐）。
+     横屏时整条底簇（参数带 / 工具 / 快门）共用这一层渐变，
+     替代原先三段各自实心的面板，画面主体不再被底部整块切走 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="90"
+        android:startColor="#B3000000"
+        android:endColor="#00000000" />
+</shape>

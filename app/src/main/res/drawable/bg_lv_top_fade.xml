@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 顶栏渐变衬底：上深下透。全屏监看的顶栏不再用实心条/玻璃，
+     一层 60% 黑的向下渐隐足够托住白字，画面主体不被切走一整条 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="270"
+        android:startColor="#99000000"
+        android:endColor="#00000000" />
+</shape>

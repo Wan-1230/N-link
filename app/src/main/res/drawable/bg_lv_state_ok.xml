@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 监看进行中胶囊：琥珀微透底。这是全屏第 4 处也是最后一处强调色，
+     语义是「会话活跃」，与刻度尺游标/分段选中/跟焦轮同属「当前态」 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/lv_accent_soft" />
+    <corners android:radius="@dimen/lv_radius_md" />
+</shape>

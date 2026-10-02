@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 主行动按钮：纯白实底黑字。与项目 NlButton.Primary 的黑白反相一致，
+     不参与强调色竞争 —— 强调色只留给「当前值/激活态」 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/white" />
+    <corners android:radius="@dimen/lv_radius_md" />
+</shape>

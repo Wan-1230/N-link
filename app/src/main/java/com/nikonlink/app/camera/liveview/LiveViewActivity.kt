@@ -28,6 +28,10 @@ class LiveViewActivity : AppCompatActivity() {
         val binding = ActivityLiveviewBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        // 先让内容绘制到系统栏区域，再由 Fragment 用 insets 自己避让。
+        // 不打开这一项的话，insets 会被 DecorView 消费掉，Fragment 拿到的全是 0，
+        // 挖孔屏横屏时顶栏左侧的关闭按钮就会被切掉一块。
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
         insetsController.hide(WindowInsetsCompat.Type.systemBars())
         insetsController.systemBarsBehavior =

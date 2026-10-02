@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 工具栏条目（图标 + 标签 + 状态角标）自定义属性 -->
+    <declare-styleable name="ToolItemView">
+        <attr name="toolIcon" format="reference" />
+        <attr name="toolLabel" format="string" />
+    </declare-styleable>
+</resources>

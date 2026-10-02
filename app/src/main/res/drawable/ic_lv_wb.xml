@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 白平衡：太阳（圆 + 八向光线） -->
+    <path
+        android:pathData="M12 12m-4 0a4 4 0 1 0 8 0a4 4 0 1 0 -8 0"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.7"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M12 2.2v2.6M12 19.2v2.6M2.2 12h2.6M19.2 12h2.6M5.1 5.1l1.8 1.8M17.1 17.1l1.8 1.8M18.9 5.1l-1.8 1.8M6.9 17.1l-1.8 1.8"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.7"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+</vector>

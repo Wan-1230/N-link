@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 悬浮暗卡：直方图/波形/状态卡容器 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/lv_card" />
+    <corners android:radius="@dimen/lv_radius_md" />
+</shape>

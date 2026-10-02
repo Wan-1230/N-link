@@ -68,6 +68,34 @@
     <color name="black">#000000</color>
     <color name="liveview_text">#E6FFFFFF</color>
 
+    <!-- 全屏监看（飓风相机 / Blackmagic Cam 参考）：纯黑底 + 灰阶层级 + 单一琥珀强调色。
+         强调色只承担「当前值 / 激活态」语义，全屏可见处不超过 4 个：
+         刻度尺游标、分段选中段、跟焦轮驱动位、监看中状态点。
+         其余层级一律用灰度，避免多色堆叠。 -->
+    <!-- 全屏监看（飓风相机 / Blackmagic Cam 参考）：纯黑底 + 灰阶层级 + 单一强调色。
+         强调色只承担「当前值 / 激活态」语义，全屏可见处不超过 4 个：
+         刻度尺游标、分段选中段、跟焦轮驱动位、监看中状态点。
+         其余层级一律用灰度，避免多色堆叠。
+
+         色值直接引用品牌色 nikon_yellow（v2.6.5 规范）：监看页的取景画面亮度不可控，
+         选中态只用灰度会读不出来，因此这里是有意为之的例外（小万 2026-10-03 拍板）。
+         想让它彻底回归 §1.1 的「只两处」，把本行改成 @color/white 即可，无需动布局。 -->
+    <color name="lv_accent">@color/nikon_yellow</color>
+    <color name="lv_accent_soft">#26FFE100</color>
+    <!-- v2.7.2 玻璃下线：全部实体化。层次靠色阶（面板最暗 → 卡片居中 → 芯片最亮）
+         与 1dp 描边区分，不再靠透出画面 -->
+    <color name="lv_panel">#F5141416</color>
+    <color name="lv_card">#F21B1B1D</color>
+    <color name="lv_card_solid">#F21B1B1D</color>
+    <color name="lv_chip">#F2252527</color>
+    <color name="lv_chip_active">#33FFFFFF</color>
+    <color name="lv_text">#FFFFFFFF</color>
+    <color name="lv_text_dim">#8CFFFFFF</color>
+    <color name="lv_outline">#26FFFFFF</color>
+    <color name="lv_badge_red">#8A2B26</color>
+    <color name="lv_seg_track">#1FFFFFFF</color>
+    <color name="lv_seg_sel">#33FFFFFF</color>
+
     <!-- 底部导航：背景与页面底色一致 -->
     <color name="nav_background">#FFFFFF</color>
     <!-- 选中项背后的胶囊：玻璃 dock 上用轻微下沉的暗色，实体 dock 上同样成立 -->

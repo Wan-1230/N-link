@@ -42,6 +42,11 @@ class LiveViewViewModel @Inject constructor(
         viewModelScope.launch { liveViewManager.touchFocus(x, y) }
     }
 
+    /** MF 相对驱动（0x9204）：跟焦轮旋转换算成 direction + speed */
+    fun manualFocusDrive(direction: Int, speed: Int) {
+        viewModelScope.launch { liveViewManager.manualFocusDrive(direction, speed) }
+    }
+
     fun autoFocus() {
         viewModelScope.launch { liveViewManager.touchFocus(0.5f, 0.5f) }
     }

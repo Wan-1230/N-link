@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 参数面板：四周圆角深灰（lv_radius_lg 档）。
+     面板现在夹在「参数条」与「快门行」之间，不再是贴底 sheet —— 底部也要收圆角，
+     否则看起来像从屏幕外切进来的半张卡。
+     圆角从 28dp 收到 16dp：28dp 与项目 card_radius=12dp 的既有观感冲突。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/lv_panel" />
+    <stroke
+        android:width="1dp"
+        android:color="@color/lv_outline" />
+    <corners android:radius="@dimen/lv_radius_lg" />
+</shape>

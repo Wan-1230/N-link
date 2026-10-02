@@ -8,4 +8,25 @@
     <dimen name="group_gap_small">8dp</dimen>
     <dimen name="card_radius">12dp</dimen>
     <dimen name="divider_height">1dp</dimen>
+
+    <!-- 全屏监看 HUD 尺寸：三档圆角梯度 + 控件高度，取代原先散落在 layout 里的硬编码 -->
+    <dimen name="lv_radius_sm">8dp</dimen>
+    <dimen name="lv_radius_md">12dp</dimen>
+    <dimen name="lv_radius_lg">16dp</dimen>
+
+    <dimen name="lv_bar_h_padding">12dp</dimen>
+    <dimen name="lv_bar_v_padding">8dp</dimen>
+    <dimen name="lv_cell_gap">4dp</dimen>
+    <dimen name="lv_tool_h">58dp</dimen>
+    <dimen name="lv_tool_h_land">50dp</dimen>
+    <dimen name="lv_shutter">72dp</dimen>
+    <dimen name="lv_shutter_inner">54dp</dimen>
+    <dimen name="lv_icon_btn">36dp</dimen>
+    <dimen name="lv_icon_btn_land">32dp</dimen>
+    <dimen name="lv_graph_w">128dp</dimen>
+    <dimen name="lv_graph_h">56dp</dimen>
+    <dimen name="lv_card_pad">10dp</dimen>
+    <dimen name="lv_sheet_pad_h">18dp</dimen>
+    <dimen name="lv_sheet_pad_top">14dp</dimen>
+    <dimen name="lv_sheet_pad_bottom">18dp</dimen>
 </resources>
