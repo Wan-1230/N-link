@@ -1167,3 +1167,29 @@ C3 诊断、C4 ROM 指引兜底；C5 否决 setWifiEnabled 看门狗。
 `dist/N-Link-v2.6.1-debug-FR33.apk`（21,329,326B，SHA-256 前 8 `40a26aea`）。
 真机判据：开关=关时 AP 会话监看 5min 不掉（`sta_ifaces` 全程含 wlan0）、
 `net_req caps=local-only` 在册、`net_cb available validated=false` 出现。
+
+## 十八、FR-34 AP 一键连接与失败归因第二轮（2026-10-02，分析完成、待拍板）
+
+输入：本方 5 轮日志 `n-link_logs_1790922712079.txt`（FR33 包）、ZDROP 同机日志
+`ZDROP-diagnostics-1790923435788.txt`、`ZDROP_1.0.257.apk` 方法级逆向、截图两张。
+全文见 `docs/AP连接失败与ZDROP策略分析-2026-10-02.md`。要点：
+
+1. **FR-33 判据修订**：本机（vivo V2509A）相机热点 caps 为 `validated=true internet=true`，
+   且 R1/R3 掉线时 local-only 持有**在册且 bound** —— FR-33 的回收机制在本机不成立，
+   判据里「validated=false 出现」只适用于未验证 ROM；本机失败属另一机制（OEM WLAN 策略 /
+   相机 AP 复位，分叉待 P1 的 deauth 原因码定谳）。FR-33 对群友机型仍必要，不回退。
+2. **本轮失败主成本**：WLAN 闪断 5 次（RC-A）+ 蜂窝 lane 30s 超时 ×4 ≈103s（RC-B）+
+   net_req 4s 窗口错过回连 ×3（RC-C）+ 会话空闲无心跳（RC-D，R1 +14s 死）+
+   自动重连被自家 cooldown 吞（RC-E）。
+3. **ZDROP 策略（已验证）**：endpoint 硬编码 192.168.1.1 零扫描（dex `1c42aa`/`1a151a`）；
+   网关解析 `getLinkProperties().getRoutes()` + 本机地址 sanity + canonical fallback；
+   WLAN 加入靠 `Settings.Panel.ACTION_WIFI`（dex `1ca886`+NEW_TASK+startActivity，截图一底部面板），
+   全 dex 无 WifiNetworkSpecifier/addNetworkSuggestions；tap→complete 2.75s；
+   双通道 2 次重试 + INIT_EVENT 7s；FGS+wake lock+Wi-Fi lock lowLatency 握手前获取；keepAlive 心跳。
+4. **方案 P0（待拍板后落地，全闸门化）**：① AP 一键连接（无候选不弹手动 IP：在热点直接起轮次 /
+   不在则拉 WLAN 面板 + pendingAutoConnect 回连自动起轮）；② 网关快路径（在相机热点跳过双采样与
+   筛探，DISCOVER 2335→~1200ms）；③ 分 lane 套接字超时（非绑网 30s→8s）；④ 会话级持有请求
+   （窗口制→会话制，network_restored 补注册）；⑤ WLAN 新鲜度闸（陈旧不向蜂窝发长超时）；
+   ⑥ 空闲 >5s 发 GetDeviceInfo 心跳。P1：supplicant deauth 原因码落日志。
+   P2 待拍板：有凭证走 specifier 免面板；接收缓冲/radio 诊断。
+5. 约束复述：不碰 STA 注册与 USB 链路；闸门关=现行为；回归=234 单测基线 + 开关=开一次成功路径不慢于现状。
