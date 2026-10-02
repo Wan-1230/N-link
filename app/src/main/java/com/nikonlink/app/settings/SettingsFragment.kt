@@ -599,6 +599,48 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 { connFlags.setEnabled(ConnFlags.STA_LOCAL_ONLY_REQUEST, it) }
             ),
             LabFlag(
+                ConnFlags.AP_ONE_TAP,
+                "AP 免扫描一键连接 + 系统 WLAN 面板（FR-34①；关=无候选时弹手动 IP 框）",
+                { connFlags.isEnabled(ConnFlags.AP_ONE_TAP) },
+                { connFlags.setEnabled(ConnFlags.AP_ONE_TAP, it) }
+            ),
+            LabFlag(
+                ConnFlags.AP_GW_FASTPATH,
+                "在相机热点上网关单采样直采（FR-34②；关=双采样+TCP 筛探，DISCOVER ~2.3s）",
+                { connFlags.isEnabled(ConnFlags.AP_GW_FASTPATH) },
+                { connFlags.setEnabled(ConnFlags.AP_GW_FASTPATH, it) }
+            ),
+            LabFlag(
+                ConnFlags.STA_LANE_TIMEOUT,
+                "无 Network 句柄时 socket 超时 30s→8s（FR-34③；关=蜂窝黑洞也烧满 30s）",
+                { connFlags.isEnabled(ConnFlags.STA_LANE_TIMEOUT) },
+                { connFlags.setEnabled(ConnFlags.STA_LANE_TIMEOUT, it) }
+            ),
+            LabFlag(
+                ConnFlags.STA_SESSION_HOLD,
+                "连接轮次的持有请求改会话制（FR-34④；关=3~4s 窗口到期即撤，回连瞬间零持有）",
+                { connFlags.isEnabled(ConnFlags.STA_SESSION_HOLD) },
+                { connFlags.setEnabled(ConnFlags.STA_SESSION_HOLD, it) }
+            ),
+            LabFlag(
+                ConnFlags.STA_WLAN_WAIT,
+                "闪断轮次先等 ≤8s 回连再决定收口（FR-34⑤；关=wlan 缺席直接判死整轮）",
+                { connFlags.isEnabled(ConnFlags.STA_WLAN_WAIT) },
+                { connFlags.setEnabled(ConnFlags.STA_WLAN_WAIT, it) }
+            ),
+            LabFlag(
+                ConnFlags.STA_FAST_IDLE_REFRESH,
+                "空闲刷新 60s→10s 档（FR-34⑥；关=v2.6.4 的 60s 档）",
+                { connFlags.isEnabled(ConnFlags.STA_FAST_IDLE_REFRESH) },
+                { connFlags.setEnabled(ConnFlags.STA_FAST_IDLE_REFRESH, it) }
+            ),
+            LabFlag(
+                ConnFlags.WLAN_DROP_REASON,
+                "WLAN 掉线原因码落日志（FR-34⑦；纯日志，remote 有值=相机踢，local 有值=手机断）",
+                { connFlags.isEnabled(ConnFlags.WLAN_DROP_REASON) },
+                { connFlags.setEnabled(ConnFlags.WLAN_DROP_REASON, it) }
+            ),
+            LabFlag(
                 UiFlags.ALBUM_INCR, "相册增量首屏（FR-03）",
                 { UiFlags.albumIncrementalEnabled(c) },
                 { UiFlags.set(c, UiFlags.ALBUM_INCR, it) }
