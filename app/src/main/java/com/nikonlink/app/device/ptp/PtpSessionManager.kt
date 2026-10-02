@@ -40,6 +40,18 @@ class PtpSessionManager @Inject constructor(
         private const val CONNECT_TIMEOUT_MS = 30000
 
         /**
+         * FR-34③：没有 Network 句柄（默认路由 lane）时的连接超时。
+         *
+         * 30s 的原始依据（SnapBridge 对齐）是"相机 WiFi 模块从 DHCP 到 PTP 就绪
+         * 可能超过 10s"，而那发生在**绑网 lane**；默认路由 lane 上的 30s 只可能是
+         * 蜂窝黑洞 —— 真机 R5 三条 30s 级超时 ≈73s 全从 /10.115.218.201 打出，
+         * 没有一条换来过任何响应。ZDROP 全程 6000ms（其日志「after 6000ms」）。
+         * 取 8s：给热点拓扑（内核路由通、CM 无句柄，RC-6 的正路）留足余量，
+         * 把蜂窝空转砍掉 73%。绑网 lane 保持 30s 不动（FR-22 的慢成功都在那边）。
+         */
+        private const val UNBOUND_LANE_CONNECT_TIMEOUT_MS = 8000
+
+        /**
          * 连接重试次数。官方 SnapBridge 的策略（ConnectWifiAction 静态字段 l=5）：
          * 相机 WiFi 关联成功后，15740 端口不是立刻 listen 的，此时 connect 会
          * 立即返回 ECONNREFUSED（**不是超时**）。官方靠重试扛过这个就绪窗口，
@@ -194,13 +206,17 @@ class PtpSessionManager @Inject constructor(
         label: String,
         configure: Socket.() -> Unit
     ): Socket {
+        // FR-34③：默认路由 lane（network=null）用短超时，绑网 lane 保持 30s。
+        val timeoutMs = if (network == null &&
+            connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.STA_LANE_TIMEOUT)
+        ) UNBOUND_LANE_CONNECT_TIMEOUT_MS else CONNECT_TIMEOUT_MS
         var attempt = 0
         while (true) {
             val startedAt = System.currentTimeMillis()
             val socket = createSocket(network)
             try {
                 socket.configure()
-                socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+                socket.connect(InetSocketAddress(host, port), timeoutMs)
                 if (attempt > 0) {
                     Timber.tag(TAG).i("connect ok after $attempt retries -> $host:$port")
                     eventLogger.event(
@@ -996,6 +1012,16 @@ class PtpSessionManager @Inject constructor(
      */
     private val IDLE_REFRESH_AFTER_MS get() = 60_000L
 
+    /**
+     * FR-34⑥：快速档的空闲刷新间隔。
+     *
+     * 2026-10-02 R1：建立后命令通道零流量 **14s** 即 event_read_error —— 60s 档的
+     * 空闲刷新对这种速度的死亡完全够不着。10s 档让"连上没干活"的会话在机身
+     * 判空闲前至少拨一次表；若 14s 死因不是空闲（是掉线），本条无效但 link_state
+     * 诊断会把它钉死（见 [markLinkError]）。
+     */
+    private val IDLE_REFRESH_FAST_MS get() = 10_000L
+
     private fun startKeepAlive() {
         lastEventActivityAt = System.currentTimeMillis()
         // 建链瞬间算作"刚有过命令活动"：OpenSession / GetDeviceInfo 刚跑完，
@@ -1067,11 +1093,15 @@ class PtpSessionManager @Inject constructor(
                 // 而我们的保活历来只发传输层 Ping（type 13）以便把命令通道留给业务 ——
                 // 于是"连上了、什么都没干、过几分钟自己断了"（2026-10-01 日志实证）。
                 //
-                // 修法：命令通道空闲超过 60s 且不在批量传输中，补一条最轻量的 DeviceReady，
+                // 修法：命令通道空闲超过阈值且不在批量传输中，补一条最轻量的 DeviceReady，
                 // 把相机的空闲计时器拨回去。批量传输期间命令通道本来就在忙，不需要、也不该插队。
+                // FR-34⑥：阈值 60s → 10s（闸 STA_FAST_IDLE_REFRESH），对准 14s 型快速死亡。
+                val refreshAfterMs =
+                    if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.STA_FAST_IDLE_REFRESH))
+                        IDLE_REFRESH_FAST_MS else IDLE_REFRESH_AFTER_MS
                 if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.SESSION_IDLE_REFRESH) &&
                     bulkDepth.get() == 0 &&
-                    System.currentTimeMillis() - lastCommandAt > IDLE_REFRESH_AFTER_MS
+                    System.currentTimeMillis() - lastCommandAt > refreshAfterMs
                 ) {
                     runCatching { sendCommand(PtpConstants.OP_NIKON_DEVICE_READY) }
                         .onSuccess { Timber.tag(TAG).v("keepAlive: idle refresh sent") }
@@ -1090,6 +1120,19 @@ class PtpSessionManager @Inject constructor(
     private fun markLinkError(reason: String) {
         Timber.tag(TAG).w("link error: $reason")
         eventLogger.event("link_error", "reason" to reason)
+        // FR-34⑥（诊断）：判死瞬间把"两条通道各静默了多久、心跳丢了几拍、是否在批量传输"
+        // 一起落盘。2026-10-02 的分叉「+14s 死亡是相机空闲关会话，还是 wlan0 掉线的下游」
+        // 只有这组数能回答：空闲死亡应是 cmd_idle≈ev_silence≈14s 且 missed=0/1；
+        // 掉线死亡应伴随同刻的 wlan_drop / net_cb lost 事件。
+        if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.STA_LINK_DIAG)) {
+            val now = System.currentTimeMillis()
+            eventLogger.event(
+                "link_state", "reason" to reason,
+                "ev_silence_ms" to (now - lastEventActivityAt),
+                "cmd_idle_ms" to (now - lastCommandAt),
+                "missed" to missedBeats, "bulk" to bulkDepth.get()
+            )
+        }
         keepAliveJob?.cancel()
         eventListenerJob?.cancel()
         closeSockets()
