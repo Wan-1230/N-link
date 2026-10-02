@@ -20,7 +20,12 @@ class LocalInterfaceClassifyTest {
 
     @Test
     fun `蜂窝与 VPN 口按名字排除`() {
-        listOf("ccmni2", "ccmni4", "rmnet0", "rmnet_data1", "vgate0", "tun0", "tap1", "ppp0").forEach {
+        listOf(
+            "ccmni2", "ccmni4", "rmnet0", "rmnet_data1", "vgate0", "tun0", "tap1", "ppp0",
+            // FR-34：USB 共享网络。真机实证 rndis0 顶替 wlan0 让 defaultRouteFallback 误开，
+            // 3 条 30s socket 全从蜂窝打进黑洞（2026-10-02 R5，≈73s 空转）
+            "rndis0", "rndis1"
+        ).forEach {
             assertTrue("$it 应当被排除", LocalNetworkInterfaceResolver.matchesNonWifiPrefix(it))
         }
     }
@@ -42,7 +47,7 @@ class LocalInterfaceClassifyTest {
 
     @Test
     fun `前缀表内容锁定`() {
-        assertEquals(listOf("ccmni", "rmnet", "vgate", "tun", "tap", "ppp"), NON_WIFI_PREFIXES)
+        assertEquals(listOf("ccmni", "rmnet", "vgate", "tun", "tap", "ppp", "rndis"), NON_WIFI_PREFIXES)
     }
 
     private val NON_WIFI_PREFIXES get() = LocalNetworkInterfaceResolver.NON_WIFI_PREFIXES

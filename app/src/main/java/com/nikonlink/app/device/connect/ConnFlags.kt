@@ -324,6 +324,80 @@ class ConnFlags @Inject constructor(
          */
         const val STA_LOCAL_ONLY_REQUEST = "v33_local_only_request"
 
+        // ── FR-34 AP 一键连接与失败归因第二轮（docs/AP连接失败与ZDROP策略分析-2026-10-02.md）──
+
+        /**
+         * FR-34①：AP 模式点「连接相机」不再要求先扫描。
+         *
+         * 无候选时：已在相机热点 → 直接以兜底地址起轮次（learnFirst 会学网关）；
+         * 不在 → 拉起系统 WLAN 面板（`Settings.Panel.ACTION_WIFI`，ZDROP dex `1ca886`
+         * 同款标准化入口，绕开 OEM 全设置页深链），回连命中相机热点后自动起轮次。
+         * 关闸 = 回到「无候选弹手动 IP 框」。
+         */
+        const val AP_ONE_TAP = "v34_ap_one_tap"
+
+        /**
+         * FR-34②：已在相机热点上时网关学习走快路径。
+         *
+         * 「网关就是相机」是 AP 的定义，手机就在热点上时不需要第二次采样、
+         * 也不需要 TCP 筛探（筛探还会占机身唯一的 PTP/IP 槽，FR-21 实测收回要 ~35s）。
+         * DISCOVER 实测 2335ms → ~1200ms（对齐 ZDROP 的固定 1200ms readiness）。
+         * 关闸 = 双采样 + 筛探的 v2.6.1 行为。
+         */
+        const val AP_GW_FASTPATH = "v34_ap_gw_fastpath"
+
+        /**
+         * FR-34③：没有 Network 句柄（默认路由 lane）时套接字连接超时 30s → 8s。
+         *
+         * 真机日志（2026-10-02 R5）：wlan0 已掉，3 次 30s 级超时从蜂窝
+         * /10.115.218.201 打出 ≈73s 纯空转；绑网 lane 保持 30s 不动
+         * （FR-22 的教训：慢成功 26.4~181.3s 都发生在有句柄的路径上）。
+         * ZDROP 全程 6000ms（其日志「after 6000ms」）。
+         */
+        const val STA_LANE_TIMEOUT = "v34_lane_timeout"
+
+        /**
+         * FR-34④：连接轮次的持有请求改为「会话制」而非「4s 窗口制」。
+         *
+         * 真机日志：net_req 三次在回连发生**之前**过期（14:28:08 / 14:28:48 / 14:30:19），
+         * 回连瞬间没有任何 NetworkRequest 在册 → 系统对这张非默认网想拆就拆。
+         * 打开后：AP/STA 连接轮次的请求不带系统超时注册，超时出口不注销、
+         * 下一次 acquire 直接复用在册回调；会话 teardown 统一释放。
+         * 关闸 = v33 的窗口制（3~4s 到期即撤）。
+         */
+        const val STA_SESSION_HOLD = "v34_session_hold"
+
+        /**
+         * FR-34⑤：默认路由回落前，若本机已无任何类 WiFi 接口，先等回连而不是烧 socket。
+         *
+         * R5 的 73s 蜂窝空转 + R2 恢复轮的 30s 超时都是同一件事：wlan0 不在位时
+         * 私网地址的 socket 必然沉进蜂窝黑洞，等 8s 让系统自动回连是更便宜的动作。
+         * 关闸 = 直接走默认路由发 socket（v2.6.1 行为）。
+         */
+        const val STA_WLAN_WAIT = "v34_wlan_wait"
+
+        /**
+         * FR-34⑥：空闲刷新从 60s 收紧到 10s（沿用 v2.6.4 的 DeviceReady 通道）。
+         *
+         * 2026-10-02 R1：建立后命令通道零流量 14s 即 event_read_error —— 60s 档的
+         * 空闲刷新对这个速度死亡的会话完全够不着。10s 档让"连上没干活"的会话
+         * 在机身判空闲前至少拨表 1 次。批量传输期间照旧不发。
+         * 关闸 = v2.6.4 的 60s 档。
+         */
+        const val STA_FAST_IDLE_REFRESH = "v34_fast_idle_refresh"
+
+        /**
+         * FR-34⑦（P1 诊断）：WLAN 掉线时把系统广播实际携带的原因字段落进日志。
+         *
+         * 悬案「谁砍的 wlan0」的判别器。AOSP API 30+ 在 `NETWORK_STATE_CHANGED_ACTION`
+         * 上挂过 reason/disconnect-type 类 extras，但全部是 @SystemApi/@hide，
+         * 普通 App 实际能收到哪些**无法离线核实**（android-35 jar 已逐一核对）——
+         * 所以实现取"枚举键名含 reason/disconnect/error 的整数字段"的自证式采集，
+         * 第一次真机掉线即可定谳该 ROM 下发了什么。纯日志、零行为变化。
+         */
+        const val WLAN_DROP_REASON = "v34_drop_reason"
+
+
 
         /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
@@ -425,6 +499,16 @@ class ConnFlags @Inject constructor(
             // FR-33：非上网热点被系统回收的修复，默认开（这是修复不是实验：
             // 群友无「WiFi 始终开启」开关的设备不修则必掉；关闸=旧行为，现场可二分）
             STA_LOCAL_ONLY_REQUEST to true,
+            // FR-34：七条全部默认开——①②是流程与耗时收敛（ZDROP 同构），③⑤修本轮
+            // 日志实证的蜂窝空转（≈103s），④修「窗口过期错过回连」×3，⑥修 60s 档
+            // 够不着的 14s 快速死亡，⑦纯日志。逐条可独立关闸做现场二分。
+            AP_ONE_TAP to true,
+            AP_GW_FASTPATH to true,
+            STA_LANE_TIMEOUT to true,
+            STA_SESSION_HOLD to true,
+            STA_WLAN_WAIT to true,
+            STA_FAST_IDLE_REFRESH to true,
+            WLAN_DROP_REASON to true,
         )
     }
 
