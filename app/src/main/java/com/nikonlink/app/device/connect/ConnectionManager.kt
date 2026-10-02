@@ -102,6 +102,9 @@ class ConnectionManager @Inject constructor(
          * 2026-10-02 真机连轰 4 次 reason=1 期间相机向导进入失败态（用户目视「连接失败」）。
          */
         private const val REG_REASON1_COOLDOWN_MS = 35_000L
+
+        /** FR-33 C4：会话期重复掉线判定窗（3 分钟内 ≥2 次即出 ROM 指引） */
+        private const val WIFI_DROP_GUIDANCE_WINDOW_MS = 180_000L
     }
 
     private var scope: CoroutineScope? = null
@@ -129,6 +132,13 @@ class ConnectionManager @Inject constructor(
     /** FR-32：最近一次注册收到 InitFail reason=1 的时间戳（0 = 从未），供冷却窗判据 */
     @Volatile
     private var lastRegReason1At = 0L
+
+    /** FR-33 C4：会话期 WiFi 掉线时间戳（判定「系统反复踢相机热点」） */
+    private val sessionWifiDropAt = ArrayDeque<Long>()
+
+    /** FR-33 C4：指引每次启动只上屏一次，不长期占状态行 */
+    @Volatile
+    private var wlanGuidanceShown = false
 
     private val _connectionMetrics = MutableStateFlow(ConnectionMetrics())
     val connectionMetrics: StateFlow<ConnectionMetrics> = _connectionMetrics.asStateFlow()
@@ -676,10 +686,37 @@ class ConnectionManager @Inject constructor(
     }
 
     /**
+     * FR-33 C4：会话期重复掉线 → 一次性 ROM 指引（纯展示，不改任何连接行为）。
+     *
+     * 系统对「非默认且无持有」的无互联网热点做回收是 AP 模式「相机显示无法连接并关热点」
+     * 的根因（docs/非上网热点被系统回收-根因与修复方案-2026-10-02.md）。C1/C2 已从
+     * 根上持有，但仍存在「连持有也照杀」的 OEM 助理策略 —— 3 分钟内掉 2 次不是巧合，
+     * 把该 ROM 的开关指引送进状态行。每次启动只报一次。
+     */
+    private fun noteSessionWifiDrop() {
+        val now = System.currentTimeMillis()
+        val count: Int
+        synchronized(sessionWifiDropAt) {
+            sessionWifiDropAt.addLast(now)
+            while (sessionWifiDropAt.isNotEmpty() &&
+                now - sessionWifiDropAt.first() > WIFI_DROP_GUIDANCE_WINDOW_MS
+            ) {
+                sessionWifiDropAt.removeFirst()
+            }
+            if (sessionWifiDropAt.size < 2 || wlanGuidanceShown) return
+            wlanGuidanceShown = true
+            count = sessionWifiDropAt.size
+        }
+        eventLogger.event("wlan_guidance", "reason" to "repeat_drop", "n" to count)
+        _statusMessage.value = (preflight.wlanGuidanceText()
+            ?: "系统 3 分钟内两次断开相机热点：请在系统 WLAN 设置里关闭「智能切换/避开不良网络」类开关") +
+            "；关闭后仍掉线请导出日志反馈（包内已带链路层诊断）"
+    }
+
+    /**
      * 通过 BLE 通知相机恢复 WiFi AP，同时用已缓存凭证在手机侧重连。
      */
-    fun requestWifiReconnect() {
-        scope?.launch {
+    fun requestWifiReconnect() {        scope?.launch {
             delay(WIFI_UPGRADE_DELAY_MS)
             if (bleManager.isConnected()) {
                 bleManager.requestWifiReconnect()
@@ -842,6 +879,7 @@ class ConnectionManager @Inject constructor(
                     com.nikonlink.app.device.wifi_ap.WifiChannelState.DISCONNECTED -> {
                         if (stateMachine.state.value == ConnectionState.FULLY_CONNECTED ||
                             stateMachine.state.value == ConnectionState.WIFI_UPGRADING) {
+                            noteSessionWifiDrop()
                             stateMachine.dispatch(ConnectionEvent.WifiDisconnected)
                             // PRD 3.5: WiFi 断开，BLE 正常 → 通过 BLE 发送 WiFi 重连指令
                             if (bleManager.isConnected()) {
