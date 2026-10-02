@@ -46,7 +46,8 @@ import javax.inject.Singleton
 @Singleton
 class StaNetworkRequester @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val connFlags: ConnFlags
+    private val connFlags: ConnFlags,
+    private val eventLogger: com.nikonlink.app.shared.common.AppEventLogger
 ) {
     companion object {
         private const val TAG = "StaNetReq"
@@ -102,32 +103,55 @@ class StaNetworkRequester @Inject constructor(
         // 现在：任何出口都先清掉旧 callback，保证「held 有值 ⇔ 语义明确」。
         releaseCallbackOnly()
 
-        // 快路径：已经连着的 WiFi 里找同网段的
-        findMatchingWifi(target)?.let { network ->
-            Timber.tag(TAG).i("reuse existing wifi network $network for host=$host")
-            held = network
-            return network
-        }
+        val localOnly = connFlags.isEnabled(ConnFlags.STA_LOCAL_ONLY_REQUEST)
+        val diag = connFlags.isEnabled(ConnFlags.STA_LINK_DIAG)
 
-        synchronized(lock) { available.clear() }
+        // ── FR-33 C1：请求去掉 NET_CAPABILITY_INTERNET（local-only）────────────────
+        // 相机热点没有互联网，验证失败后系统会剥掉它的 INTERNET capability ——
+        // 默认请求（含该 capability）永远匹配不上它，就**不构成持有**；
+        // ConnectivityService 随后按「非默认网络且无 app 请求」回收这张网：
+        // wlan0 被踢 → 相机感知客户端丢失 → 显示「无法连接」并关热点。
+        // 竞品 ZDROP/影犀/ZRelay 的 dex 方法级反编译全部是 removeCapability(12)
+        // （12 = NET_CAPABILITY_INTERNET，见分析文档 §8）。
+        // ── FR-33 C2：注册提前到快路径判定之前 ─────────────────────────────────────
+        // 旧实现 AP 模式走 findMatchingWifi 命中即 return，会话期间零 NetworkRequest
+        // 在册（上面 FIX-3 的 releaseCallbackOnly 先跑、之后不再注册）——正是"零持有"
+        // 的另一半。现在命中后 callback/请求保持在册直到 release()。
+        // 不变式不破：held ⇔ 回调在册（超时/落选出口仍走 finally 的 releaseCallbackOnly）。
+        // 匹配集合变为**超集**（含无互联网网），但子网过滤 covers() 与 FR-20 的
+        // "不匹配就返回 null" 判据原样保留 —— 绑哪张网的决策语义不变，关闸即回旧行为。
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .apply {
+                if (localOnly) removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            }
             .build()
+        synchronized(lock) { available.clear() }
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 synchronized(lock) { available.add(network) }
                 Timber.tag(TAG).i("network available: $network")
+                if (diag) {
+                    val caps = runCatching { connectivityManager.getNetworkCapabilities(network) }.getOrNull()
+                    eventLogger.event(
+                        "net_cb", "phase" to "available",
+                        "validated" to caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+                        "internet" to caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    )
+                }
             }
 
             override fun onLost(network: Network) {
                 synchronized(lock) { available.remove(network) }
                 Timber.tag(TAG).w("network lost: $network")
                 if (held == network) held = null
+                if (diag) eventLogger.event("net_cb", "phase" to "lost")
                 _networkLost.tryEmit(network)
             }
 
             override fun onUnavailable() {
                 Timber.tag(TAG).w("requestNetwork unavailable (no wifi candidate)")
+                if (diag) eventLogger.event("net_cb", "phase" to "unavailable")
             }
         }
 
@@ -135,6 +159,7 @@ class StaNetworkRequester @Inject constructor(
         try {
             // FR-02：与 AP 侧同一手法（`requestNetwork(request, callback, timeout)`）——
             // 让系统侧也有一个截止点，别只靠我们自己的轮询兜底。
+            // 截止点只管"等不到网络"这一件事；一旦 onAvailable，请求继续在册（=持有）。
             val systemDeadline = StaTimeoutPolicy.systemRequestDeadline(
                 gateOn = connFlags.isEnabled(ConnFlags.STA_TIMEOUTS),
                 timeoutMs = timeoutMs
@@ -152,9 +177,25 @@ class StaNetworkRequester @Inject constructor(
             Timber.tag(TAG).w(e, "requestNetwork failed, falling back to existing wifi")
         }
         callback = if (registered) cb else null
+        // FR-33 C3：诊断 —— 请求以什么 capability 在册，是本轮真机要回答的第一问。
+        if (diag) {
+            eventLogger.event(
+                "net_req",
+                "caps" to if (localOnly) "local-only" else "internet",
+                "registered" to registered,
+                "timeout" to timeoutMs
+            )
+        }
 
-        val deadline = System.currentTimeMillis() + timeoutMs
+        // 快路径：已经连着的 WiFi 里找同网段的（C2 起：此时回调已在册，命中即构成持有）
+        findMatchingWifi(target)?.let { network ->
+            Timber.tag(TAG).i("reuse existing wifi network $network for host=$host")
+            held = network
+            return network
+        }
+
         var fallback: Network? = null
+        val deadline = System.currentTimeMillis() + timeoutMs
         try {
             while (System.currentTimeMillis() < deadline) {
                 val snapshot = synchronized(lock) { available.toList() }
