@@ -63,6 +63,8 @@ class WifiDirectConnector @Inject constructor(
     private val funnel: com.nikonlink.app.device.connect.ConnFunnel,
     /** v2.6.3 R4 用：探测前的「是否在相机热点上」豁免（与预检同一判据，AP 链路不受影响） */
     private val apGatewayResolver: com.nikonlink.app.device.wifi_ap.ApGatewayResolver,
+    /** FR-34⑦：WLAN 掉线原因码监听（纯日志），生命周期与本连接会话对齐 */
+    private val dropWatcher: WifiDropReasonWatcher,
 ) {
     companion object {
         private const val TAG = "WifiDirect"
@@ -147,6 +149,30 @@ class WifiDirectConnector @Inject constructor(
          * 其第三次点击的 attempt2（间隔 7s）即拿到 init-event-ack。
          */
         private const val EVENT_COLD_BACKOFF_MS = 7_000L
+
+        /**
+         * FR-34⑤：闪断轮次里等待「类 WiFi 接口」回连的单次窗口。
+         *
+         * 取值对齐 ZDROP 的 `bind requested timeout=8000ms`。真机 R5：wlan0 缺席期间
+         * 三条 30s socket 全从蜂窝 /10.115.218.201 打进黑洞 ≈73s；同样时间里
+         * 8s 一轮的等待只烧 8s，且回连瞬间下一轮 attempt 立刻抓住。
+         */
+        private const val WLAN_RETURN_WAIT_MS = 8_000L
+
+        /** FR-34⑤：回连等待的轮询间隔 */
+        private const val WLAN_RETURN_POLL_MS = 500L
+
+        /**
+         * FR-34⑤：是否私网地址 —— PTP/IP 只可能活在这些地址段（相机热点/路由器 LAN）。
+         * 公网/VPN 形态的地址走蜂窝是合法路径，不许拿回连等待去拦。
+         */
+        internal fun isPrivateLanIp(host: String): Boolean {
+            val parts = host.split('.')
+            if (parts.size != 4) return false
+            val a = parts[0].toIntOrNull() ?: return false
+            val b = parts[1].toIntOrNull() ?: return false
+            return a == 10 || (a == 192 && b == 168) || (a == 172 && b in 16..31)
+        }
     }
 
     enum class Mode { PAIRING, RESUME }
@@ -204,6 +230,7 @@ class WifiDirectConnector @Inject constructor(
         sessionBound = false
         networkMonitor.releaseRetained()
         networkMonitor.bindProcessTo(null)
+        dropWatcher.stop()   // FR-34⑦：会话结束，掉线原因码监听与 start 对称归还
         networkRequester.release()
         Timber.tag(TAG).i("STA session resources released")
     }
@@ -313,6 +340,14 @@ class WifiDirectConnector @Inject constructor(
         var rejectedBySubnetCheck = false
         // RC-5: 连接生命周期内持有 WifiLock/MulticastLock，finally 保证释放
         networkMonitor.acquireLocks()
+        // FR-34⑤：轮次开始时存在类 WiFi 接口 = 「链路刚才还在」的闪断型轮次。
+        // 这种轮次里遇到 wlan 掉走，值得在轮内等回连（R5 的 77s 回连就被 10×12s 的
+        // 尝试预算覆盖）；从未连上的轮次维持 v1.3.2 的"立刻收口给指引"，不空烧 90s。
+        val flickerMode = connFlags.isEnabled(ConnFlags.STA_WLAN_WAIT) &&
+            localInterfaces.hasLocalWifiLikeInterface()
+        // FR-34⑦：从这一代尝试起就盯着系统的掉线原因码；成功路径由会话持有，
+        // 直到 teardownSession / 失败收口才停。
+        dropWatcher.start()
         try {
             eventLogger.event(
                 "sta_try",
@@ -446,6 +481,13 @@ class WifiDirectConnector @Inject constructor(
                 }
 
                 if (usable == null && !defaultRouteFallback) {
+                    // FR-34⑤：闪断型轮次先等回连，等不到再走下面的收口。
+                    // 没有这一段时，attempt 2 直接判死整轮（R3 的 no_wifi_network），
+                    // 而 wlan0 在 31s 后就自己回来了 —— 一次 8s 的等待就能接住。
+                    if (flickerMode && !rejectedBySubnetCheck && isPrivateLanIp(endpoint.host)) {
+                        val back = waitWifiLikeReturn(gen, attempt, onRetry)
+                        if (back) continue   // 接口回来了：下一次 attempt 重新解析网络
+                    }
                     // FR-20④：「压根没连 WiFi」与「连了 WiFi 但没有一张能到相机 IP」是两件事，
                     // 处置也不同 —— 前者去连网，后者要的是换一张网 / 关掉蜂窝与 VPN。
                     // 合并成一句"手机未连接 WiFi"会把人指引到错误的设置页上。
@@ -723,6 +765,7 @@ class WifiDirectConnector @Inject constructor(
             // 连上后必须保持，否则数据通道会被系统默认路由抢走（STA 断流根因）
             if (!sessionBound) {
                 networkMonitor.bindProcessTo(null)
+                dropWatcher.stop()   // FR-34⑦：失败收口与 start 对称
                 if (connFlags.isEnabled(ConnFlags.STA_LINK_DIAG)) {
                     eventLogger.event(
                         "net_unbind", "gen" to gen, "attempt" to attempt,
@@ -779,6 +822,38 @@ class WifiDirectConnector @Inject constructor(
         )
     }
 
+    /**
+     * FR-34⑤：等待「类 WiFi 接口」回连，最多 [WLAN_RETURN_WAIT_MS]。
+     *
+     * 只在闪断型轮次（[flickerMode]）里调用：判据是内核网卡（FR-23 的
+     * [LocalNetworkInterfaceResolver.hasLocalWifiLikeInterface]），
+     * 不是 ConnectivityManager —— 后者在热点拓扑下恒看不见承载相机的接口（RC-0）。
+     * @return true = 窗口内接口回来了
+     */
+    private suspend fun waitWifiLikeReturn(
+        gen: Int,
+        attempt: Int,
+        onRetry: ((String?) -> Unit)?
+    ): Boolean {
+        val startedAt = System.currentTimeMillis()
+        var hintAt = 0L
+        while (System.currentTimeMillis() - startedAt < WLAN_RETURN_WAIT_MS) {
+            if (localInterfaces.hasLocalWifiLikeInterface()) break
+            delay(WLAN_RETURN_POLL_MS)
+            val waited = System.currentTimeMillis() - startedAt
+            if (waited - hintAt >= 2000L) {
+                hintAt = waited
+                onRetry?.invoke("手机 WiFi 刚掉线，正在等待自动回连…")
+            }
+        }
+        val back = localInterfaces.hasLocalWifiLikeInterface()
+        eventLogger.event(
+            "wlan_wait", "gen" to gen, "attempt" to attempt, "back" to back,
+            "ms" to (System.currentTimeMillis() - startedAt)
+        )
+        return back
+    }
+
     private suspend fun resolveNetwork(
         host: String,
         onProgress: ((String) -> Unit)? = null
@@ -809,7 +884,12 @@ class WifiDirectConnector @Inject constructor(
             // 跨协程写，用 AtomicReference 保证可见性。
             val requesterPick = java.util.concurrent.atomic.AtomicReference<android.net.Network?>(null)
             val requester = async(Dispatchers.IO) {
-                runCatching { networkRequester.acquire(host, AWAIT_NETWORK_MS) }
+                // FR-34④：连接轮次的持有请求改为会话制（闸在 requester 内部判）——
+                // 注册不带系统超时、超时不注销、跨 attempt 复用，轮次结束由
+                // finally(!sessionBound)/teardownSession 统一 release。
+                runCatching {
+                    networkRequester.acquire(host, AWAIT_NETWORK_MS, holdUntilRelease = true)
+                }
                     .onFailure { logResolveFailure("requester", it) }
                     .getOrNull()?.let { n -> requesterPick.set(n); winner.trySend(n) }
             }

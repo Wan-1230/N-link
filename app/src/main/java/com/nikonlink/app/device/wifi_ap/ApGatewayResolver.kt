@@ -150,14 +150,25 @@ class ApGatewayResolver @Inject constructor(
 
         delay(READINESS_MS)
         val first = gatewayOf(target)
-        val second = if (first == null) null else {
+        // FR-34②：手机就在相机热点上、首采样又拿到了有效 IPv4 网关 —— 直接采信。
+        // 「网关即相机」是 AP 的定义，不需要第二采样确认，更不该再花 800ms+400ms
+        // 去 TCP 筛探（那还会占机身唯一的 PTP/IP 槽，FR-21 实测收回要 ~35s）。
+        // 真机 DISCOVER p50=2335ms → ~1200ms，对齐 ZDROP 的固定 1200ms readiness。
+        val fast = connFlags.isEnabled(ConnFlags.AP_GW_FASTPATH) &&
+            first != null && isOnCameraAp()
+        val second = if (first == null || fast) null else {
             delay(RESAMPLE_MS)
             gatewayOf(target)
         }
         val host = second ?: first
-        val stable = first != null && second != null && first == second
+        val stable = fast || (first != null && second != null && first == second)
 
         if (host != null) {
+            if (fast) {
+                Timber.tag(TAG).i("gateway fast-path host=$host (on camera AP, single sample)")
+                eventLogger.event("ap_gateway", "host" to host, "stable" to true, "source" to "gateway-fast")
+                return Result(host, stable = true, source = "gateway-fast")
+            }
             val open = screenCameraPort(host, target)
             // 稳定网关 + 手机就在相机热点上：网关即相机是 AP 的定义，不需要额外证据。
             // 此时机身可能还没起监听（唤醒/刚关联），交给真实连接自己的重试去等，
