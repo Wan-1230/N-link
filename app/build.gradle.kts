@@ -21,8 +21,8 @@ android {
         applicationId = "com.nikonlink.app"
         minSdk = 29 // Android 10 - PRD requirement: BLE 5.0 full support
         targetSdk = 35
-        versionCode = 26
-        versionName = "2.6.1"
+        versionCode = 27
+        versionName = "3.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
