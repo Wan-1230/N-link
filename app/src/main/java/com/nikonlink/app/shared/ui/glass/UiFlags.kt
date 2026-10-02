@@ -32,8 +32,16 @@ object UiFlags {
     const val LENS = "ui_lens"
 
     /**
-     * 边缘色散（RGB 分离）。iOS 玻璃棱边有细微色散，但那是彩色，
-     * 与 `colors.xml:39` 的灰阶规范冲突 → **默认关**，等 PRD §14 Q1 定了再开。
+     * 边缘色散（RGB 分离）。
+     *
+     * **v2.6.3 默认改为开**（强度 0.10）。原来默认关，理由是"色散是彩色，
+     * 与 `colors.xml:39` 的灰阶规范冲突"（PRD §3.7 / Q1）。重新核对后这个理由站不住：
+     * 灰阶规范管的是 **UI 状态色**（图标、文字、指示器不许带颜色），而色散是**光学伪影**，
+     * 颜色来自被透射的内容本身 —— 与"彩色只允许从被透射的内容里来"并不冲突，
+     * 反而是"真实玻璃质感"不可缺少的一笔（两个参考项目的默认值都是开的）。
+     *
+     * 强度压在 0.10：棱边有一点光谱分离，不读作彩虹。不想要的话关掉这个 pref 即可，
+     * 或把 [DEFAULTS] 里这一项改回 false。
      */
     const val DISPERSION = "ui_dispersion"
 
@@ -55,11 +63,15 @@ object UiFlags {
     const val SHUTTER_XCHECK = "v25_shutter_crosscheck"
 
     /**
-     * v2.5 FR-16：相册增「已保护」筛选，把机内保护键当传输清单用。
+     * v2.5 FR-16 / v2.6.4：相册增「已筛选」筛选 —— 只显示相机端已保护或已评级照片。
      *
-     * **默认关**。开着也只是多一个筛选标签——保护状态全程只读，
-     * 本 App 不写 `0x101A SetObjectProtectionStatus`（尼康机型支持面未验证，
-     * 竞品分析把它标在 ❓）。关掉 = 相册与 v2.3.2 完全一致。
+     * **v2.6.4 起默认开**（原为默认关）：这是影速传那类"机内粗选、手机上只处理筛过的"
+     * 工作方式，列表加载与传图都直接受益；且保护/评级状态全程**只读**（本 App 不写
+     * `0x101A SetObjectProtectionStatus`，尼康机型支持面未验证、竞品分析标在 ❓），
+     * 开着不会动到卡里任何东西。关掉 = 相册与 v2.3.2 完全一致。
+     *
+     * 诚实边界：评级列能否从 PTP 拿到随机型/固件而定（尼康机内评级主要写在文件元数据里）。
+     * 拿不到时这一档等价于"仅已保护"，界面上的标签与计数都按"已筛选"呈现，不假装支持。
      */
     const val PROTECT_SELECT = "v25_protect_select"
 
@@ -88,10 +100,10 @@ object UiFlags {
         BLUR to true,
         MOTION to true,
         LENS to true,
-        DISPERSION to false,
+        DISPERSION to true,
         ALBUM_INCR to true,
         SHUTTER_XCHECK to true,
-        PROTECT_SELECT to false,
+        PROTECT_SELECT to true,
         TONE_TOOLS to false,
         RAW_PAIR to true,
     )
@@ -169,26 +181,43 @@ object UiFlags {
     }
 
     /**
-     * 监听系统高对比度开关：变了就作废缓存并广播重涂。
+     * 监听系统「高对比度文字」与「动画缩放」两个设置项：变了就作废缓存并广播重涂。
      * 在 MainActivity.onCreate 调一次即可（用 applicationContext，重复调用安全）。
      */
     fun watchSystemHighContrast(c: Context) {
-        if (highContrastObserver != null) return
         val app = c.applicationContext
-        val o = object : android.database.ContentObserver(
-            android.os.Handler(android.os.Looper.getMainLooper())
-        ) {
-            override fun onChange(selfChanging: Boolean) {
-                highContrastCache = -1
-                notifyChanged()
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+
+        if (highContrastObserver == null) {
+            val o = object : android.database.ContentObserver(handler) {
+                override fun onChange(selfChanging: Boolean) {
+                    highContrastCache = -1
+                    notifyChanged()
+                }
             }
+            runCatching {
+                app.contentResolver.registerContentObserver(
+                    android.provider.Settings.Secure.getUriFor(HIGH_CONTRAST_KEY), false, o,
+                )
+            }.onSuccess { highContrastObserver = o }
+            highContrastCache = -1   // 注册后重读一次，别用注册前的旧值
         }
-        runCatching {
-            app.contentResolver.registerContentObserver(
-                android.provider.Settings.Secure.getUriFor(HIGH_CONTRAST_KEY), false, o,
-            )
-        }.onSuccess { highContrastObserver = o }
-        highContrastCache = -1   // 注册后重读一次，别用注册前的旧值
+
+        // v2.6.2：动画缩放同样要跟着变，否则用户中途打开「移除动画」不生效
+        if (animObserver == null) {
+            val o = object : android.database.ContentObserver(handler) {
+                override fun onChange(selfChanging: Boolean) {
+                    animOffCache = -1
+                    notifyChanged()
+                }
+            }
+            runCatching {
+                app.contentResolver.registerContentObserver(
+                    android.provider.Settings.Global.getUriFor(ANIM_SCALE_KEY), false, o,
+                )
+            }.onSuccess { animObserver = o }
+            animOffCache = -1
+        }
     }
 
     /**
@@ -201,7 +230,37 @@ object UiFlags {
     fun blurEnabled(c: Context): Boolean =
         glassEnabled(c) && get(c, BLUR) && !reduceTransparency(c) && !isPowerSave(c)
 
-    fun motionEnabled(c: Context): Boolean = glassEnabled(c) && get(c, MOTION)
+    /**
+     * 动态效果开关。
+     *
+     * v2.6.2：Android 的「移除动画」（开发者选项 / 无障碍里把动画程序时长缩放调成 0）
+     * 与 iOS 的 Reduce Motion 是同一件事，但原来只看 App 自己的开关 —— 用户在系统层面
+     * 关了动画，玻璃的按压过渡、胶囊液态位移、弹窗模糊建立照旧在跑，等于
+     * 无障碍设置被这套 UI 无视了。这里补读 `animator_duration_scale`。
+     */
+    fun motionEnabled(c: Context): Boolean =
+        glassEnabled(c) && get(c, MOTION) && !systemAnimationsOff(c)
+
+    /** 系统「动画程序时长缩放」设置项；0 = 用户关闭了动画 */
+    private const val ANIM_SCALE_KEY = "animator_duration_scale"
+
+    /** -1 = 未读；0/1 = 缓存值。绘制 / 动画路径只读这个字段，不打 Settings */
+    @Volatile private var animOffCache = -1
+    private var animObserver: android.database.ContentObserver? = null
+
+    fun systemAnimationsOff(c: Context): Boolean {
+        if (animOffCache < 0) {
+            animOffCache = try {
+                val v = android.provider.Settings.Global.getFloat(
+                    c.applicationContext.contentResolver, ANIM_SCALE_KEY, 1f,
+                )
+                if (v == 0f) 1 else 0
+            } catch (e: Exception) {
+                0   // ROM 没有这个设置项 / 读不到 = 动画正常，不是错误
+            }
+        }
+        return animOffCache == 1
+    }
 
     /** 相册增量分页开关（与玻璃无关，见 [ALBUM_INCR]） */
     fun albumIncrementalEnabled(c: Context): Boolean = get(c, ALBUM_INCR)

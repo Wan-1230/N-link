@@ -46,7 +46,8 @@ import javax.inject.Singleton
 @Singleton
 class StaNetworkRequester @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val connFlags: ConnFlags
+    private val connFlags: ConnFlags,
+    private val eventLogger: com.nikonlink.app.shared.common.AppEventLogger
 ) {
     companion object {
         private const val TAG = "StaNetReq"
@@ -61,6 +62,12 @@ class StaNetworkRequester @Inject constructor(
 
     private val lock = Any()
     private var callback: ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * FR-34④：带系统超时的注册在 onUnavailable 后已被框架自行注销，
+     * 复用时必须把它当成"死注册"重新申请，否则会话持有会静默失效。
+     */
+    private var callbackExpired = false
 
     /** 回调期间出现过的 WiFi 网络（含已丢失的，用于超时兜底）。 */
     private val available = LinkedHashSet<Network>()
@@ -88,10 +95,18 @@ class StaNetworkRequester @Inject constructor(
      *  - FR-20 关 → 退回 v2.3.2 行为，返回任意 WiFi 网络。
      *
      * @param host 相机 IP，用于子网匹配；为 null 时只做"任意 WiFi 网络"。
+     * @param holdUntilRelease FR-34④：连接轮次传 true（闸 [ConnFlags.STA_SESSION_HOLD]）——
+     *   注册不带系统超时、超时出口不注销、下一次调用直接复用在册回调，
+     *   直到调用方 `release()`。修「4s 窗口在回连发生前过期、回连瞬间零持有」。
      * @return 申请到的网络；超时或（FR-20 开时）无子网匹配则返回 null。
      */
-    suspend fun acquire(host: String?, timeoutMs: Long = 6000L): Network? {
+    suspend fun acquire(
+        host: String?,
+        timeoutMs: Long = 6000L,
+        holdUntilRelease: Boolean = false
+    ): Network? {
         val target = host?.let { ipToInt(it) }
+        val sessionHold = holdUntilRelease && connFlags.isEnabled(ConnFlags.STA_SESSION_HOLD)
 
         // ── FIX-3 关键：快路径命中前必须先释放上一次的 callback ──────────────
         // 旧实现在这里直接 `return network`，**从不注册 callback 却把 held 设上**：
@@ -100,61 +115,131 @@ class StaNetworkRequester @Inject constructor(
         // 真机日志铁证：netId 递增 127→129→130→131，且 network=131 一次性连发
         // 6 条 sta_net_lost —— 就是回调堆积后集中触发。
         // 现在：任何出口都先清掉旧 callback，保证「held 有值 ⇔ 语义明确」。
-        releaseCallbackOnly()
-
-        // 快路径：已经连着的 WiFi 里找同网段的
-        findMatchingWifi(target)?.let { network ->
-            Timber.tag(TAG).i("reuse existing wifi network $network for host=$host")
-            held = network
-            return network
+        // FR-34④ 例外：会话持有模式下若上一枚回调仍在册（未过期），**复用**而不是
+        // 拆掉重注册 —— release→register 之间的毫秒级缝隙恰好可能盖住回连瞬间。
+        // 请求形状（transport WIFI ± local-only）在同一会话内不变，复用是等价的；
+        // 调试面板中途翻 STA_LOCAL_ONLY_REQUEST 属现场二分，下一轮自然重建。
+        val reuse = synchronized(lock) {
+            sessionHold && callback != null && !callbackExpired
         }
+        if (!reuse) releaseCallbackOnly()
 
-        synchronized(lock) { available.clear() }
+        val localOnly = connFlags.isEnabled(ConnFlags.STA_LOCAL_ONLY_REQUEST)
+        val diag = connFlags.isEnabled(ConnFlags.STA_LINK_DIAG)
+
+        // ── FR-33 C1：请求去掉 NET_CAPABILITY_INTERNET（local-only）────────────────
+        // 相机热点没有互联网，验证失败后系统会剥掉它的 INTERNET capability ——
+        // 默认请求（含该 capability）永远匹配不上它，就**不构成持有**；
+        // ConnectivityService 随后按「非默认网络且无 app 请求」回收这张网：
+        // wlan0 被踢 → 相机感知客户端丢失 → 显示「无法连接」并关热点。
+        // 竞品 ZDROP/影犀/ZRelay 的 dex 方法级反编译全部是 removeCapability(12)
+        // （12 = NET_CAPABILITY_INTERNET，见分析文档 §8）。
+        // ── FR-33 C2：注册提前到快路径判定之前 ─────────────────────────────────────
+        // 旧实现 AP 模式走 findMatchingWifi 命中即 return，会话期间零 NetworkRequest
+        // 在册（上面 FIX-3 的 releaseCallbackOnly 先跑、之后不再注册）——正是"零持有"
+        // 的另一半。现在命中后 callback/请求保持在册直到 release()。
+        // 不变式不破：held ⇔ 回调在册（超时/落选出口仍走 finally 的 releaseCallbackOnly）。
+        // 匹配集合变为**超集**（含无互联网网），但子网过滤 covers() 与 FR-20 的
+        // "不匹配就返回 null" 判据原样保留 —— 绑哪张网的决策语义不变，关闸即回旧行为。
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .apply {
+                if (localOnly) removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            }
             .build()
+        if (!reuse) synchronized(lock) { available.clear() }
+        // 竞态钉子：onUnavailable 可能在 `callback` 字段写回**之前**就被派发
+        // （radio 关着时系统秒回），只靠 `callback === this` 判身份会漏。
+        // 给这枚 cb 配一个专属死旗，写回字段时把已发生的不可用性一并带上。
+        val deadFlag = java.util.concurrent.atomic.AtomicBoolean(false)
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 synchronized(lock) { available.add(network) }
                 Timber.tag(TAG).i("network available: $network")
+                if (diag) {
+                    val caps = runCatching { connectivityManager.getNetworkCapabilities(network) }.getOrNull()
+                    eventLogger.event(
+                        "net_cb", "phase" to "available",
+                        "validated" to caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+                        "internet" to caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    )
+                }
             }
 
             override fun onLost(network: Network) {
                 synchronized(lock) { available.remove(network) }
                 Timber.tag(TAG).w("network lost: $network")
                 if (held == network) held = null
+                if (diag) eventLogger.event("net_cb", "phase" to "lost")
                 _networkLost.tryEmit(network)
             }
 
             override fun onUnavailable() {
                 Timber.tag(TAG).w("requestNetwork unavailable (no wifi candidate)")
+                // FR-34④：三参重载到期后框架已自行注销这枚请求 —— 标记为死注册，
+                // 下一次带 holdUntilRelease 的 acquire 不能复用它。
+                // 两参注册（会话持有）系统不会回调本方法，此分支天然不触发。
+                deadFlag.set(true)
+                synchronized(lock) {
+                    if (callback === this) callbackExpired = true
+                }
+                if (diag) eventLogger.event("net_cb", "phase" to "unavailable")
             }
         }
 
-        var registered = false
+        var registered = reuse
         try {
-            // FR-02：与 AP 侧同一手法（`requestNetwork(request, callback, timeout)`）——
-            // 让系统侧也有一个截止点，别只靠我们自己的轮询兜底。
-            val systemDeadline = StaTimeoutPolicy.systemRequestDeadline(
-                gateOn = connFlags.isEnabled(ConnFlags.STA_TIMEOUTS),
-                timeoutMs = timeoutMs
-            )
-            if (systemDeadline != null) {
-                connectivityManager.requestNetwork(request, cb, systemDeadline)
-            } else {
-                connectivityManager.requestNetwork(request, cb)
+            if (!reuse) {
+                // FR-02：与 AP 侧同一手法（`requestNetwork(request, callback, timeout)`）——
+                // 让系统侧也有一个截止点，别只靠我们自己的轮询兜底。
+                // 截止点只管"等不到网络"这一件事；一旦 onAvailable，请求继续在册（=持有）。
+                // FR-34④：会话持有模式**不给系统截止点**（两参版），持有活到显式 release。
+                val systemDeadline = if (sessionHold) null else StaTimeoutPolicy.systemRequestDeadline(
+                    gateOn = connFlags.isEnabled(ConnFlags.STA_TIMEOUTS),
+                    timeoutMs = timeoutMs
+                )
+                if (systemDeadline != null) {
+                    connectivityManager.requestNetwork(request, cb, systemDeadline)
+                } else {
+                    connectivityManager.requestNetwork(request, cb)
+                }
+                registered = true
             }
-            registered = true
         } catch (e: Exception) {
             // FIX-3：注册失败必须保证 cb 不会被"半个注册"地留在系统里。
             // requestNetwork 抛异常（如超过每 UID 100 个未释放回调的上限）时
             // 该请求并未生效，直接放弃引用即可，但不能写进 callback 字段。
             Timber.tag(TAG).w(e, "requestNetwork failed, falling back to existing wifi")
         }
-        callback = if (registered) cb else null
+        if (!reuse && registered) {
+            // 写回与"死旗"同锁完成：若 onUnavailable 在 requestNetwork 返回前后
+            // 立刻到达（deadFlag 已置），这里落的就是 expired=true，复用判定不会被骗。
+            synchronized(lock) {
+                callback = cb
+                callbackExpired = deadFlag.get()
+            }
+        }
+        // FR-33 C3：诊断 —— 请求以什么 capability 在册，是本轮真机要回答的第一问。
+        if (diag) {
+            eventLogger.event(
+                "net_req",
+                "caps" to if (localOnly) "local-only" else "internet",
+                "registered" to registered,
+                "timeout" to timeoutMs,
+                "hold" to sessionHold,
+                "reuse" to reuse
+            )
+        }
 
-        val deadline = System.currentTimeMillis() + timeoutMs
+        // 快路径：已经连着的 WiFi 里找同网段的（C2 起：此时回调已在册，命中即构成持有）
+        findMatchingWifi(target)?.let { network ->
+            Timber.tag(TAG).i("reuse existing wifi network $network for host=$host")
+            held = network
+            return network
+        }
+
         var fallback: Network? = null
+        val deadline = System.currentTimeMillis() + timeoutMs
         try {
             while (System.currentTimeMillis() < deadline) {
                 val snapshot = synchronized(lock) { available.toList() }
@@ -198,7 +283,15 @@ class StaNetworkRequester @Inject constructor(
             // FIX-3：只要本次没把网络"交出去"（返回给调用方长期持有），
             // 就必须把 callback 释放掉 —— 旧实现在超时/异常出口漏了 release()，
             // 是回调堆积的第二条路径。
-            if (held == null) releaseCallbackOnly()
+            //
+            // v2.6.6 注：**取消窗口不在这里修**。曾考虑"finally 里发现协程已取消就无条件释放"，
+            // 但 `held = fallback; return fallback` 与取消观测之间无法区分
+            // "调用方拿到了这个网络" 和 "调用方因超时把结果丢了" —— 前者若被注销 callback，
+            // `networkLost` 就再也收不到，等于打断 STA 的断链检测（那是跑通的路）。
+            // 正确位置在**知道自己丢了结果**的调用方：`WifiDirectConnector` 的竞争落选分支。
+            // FR-34④：会话持有模式下超时/未匹配出口**不注销** —— 持有必须跨过回连瞬间，
+            // 由调用方在轮次结束的 finally 里统一 release()。
+            if (held == null && !sessionHold) releaseCallbackOnly()
         }
         Timber.tag(TAG).w("acquire wifi network timeout (host=$host, ${timeoutMs}ms)")
         return null
@@ -221,6 +314,7 @@ class StaNetworkRequester @Inject constructor(
         val cb = synchronized(lock) {
             val c = callback
             callback = null
+            callbackExpired = false
             available.clear()
             c
         }

@@ -40,6 +40,18 @@ class PtpSessionManager @Inject constructor(
         private const val CONNECT_TIMEOUT_MS = 30000
 
         /**
+         * FR-34③：没有 Network 句柄（默认路由 lane）时的连接超时。
+         *
+         * 30s 的原始依据（SnapBridge 对齐）是"相机 WiFi 模块从 DHCP 到 PTP 就绪
+         * 可能超过 10s"，而那发生在**绑网 lane**；默认路由 lane 上的 30s 只可能是
+         * 蜂窝黑洞 —— 真机 R5 三条 30s 级超时 ≈73s 全从 /10.115.218.201 打出，
+         * 没有一条换来过任何响应。ZDROP 全程 6000ms（其日志「after 6000ms」）。
+         * 取 8s：给热点拓扑（内核路由通、CM 无句柄，RC-6 的正路）留足余量，
+         * 把蜂窝空转砍掉 73%。绑网 lane 保持 30s 不动（FR-22 的慢成功都在那边）。
+         */
+        private const val UNBOUND_LANE_CONNECT_TIMEOUT_MS = 8000
+
+        /**
          * 连接重试次数。官方 SnapBridge 的策略（ConnectWifiAction 静态字段 l=5）：
          * 相机 WiFi 关联成功后，15740 端口不是立刻 listen 的，此时 connect 会
          * 立即返回 ECONNREFUSED（**不是超时**）。官方靠重试扛过这个就绪窗口，
@@ -108,9 +120,32 @@ class PtpSessionManager @Inject constructor(
     private val _lastInitFailReason = MutableStateFlow<Int?>(null)
     val lastInitFailReason: StateFlow<Int?> = _lastInitFailReason.asStateFlow()
 
+    /**
+     * 最近一次 `GetDeviceInfo` 里相机声明的支持的 Operation 集合（v2.6.3 R2）。
+     *
+     * `null` = 没取到 / 解析失败。**约定：null 一律当"不知道"，调用方不得据此拦截** ——
+     * 解析器有问题时宁可按旧路径盲发一次，也不能把本来能成的注册挡在门外。
+     */
+    @Volatile
+    var lastSupportedOperations: Set<Int>? = null
+        private set
+
     /** 本次连接是否卡在「相机不回 InitEventAck」上（FR-02：让上层能给出区分性的原因码）。 */
     @Volatile
     var lastEventAckTimedOut = false
+        private set
+
+    /**
+     * 最近一次 connect() 失败时**正处在**的阶段（FR-31②）：
+     * `socket` / `init` / `init_event` / `opensession`，连接成功置 null。
+     *
+     * 实现是"进度标记"：connect() 随阶段推进更新它，异常/失败返回时标记自然停在
+     * 出事的那一段 —— 调用方无需解析异常文案就能区分「event 通道被冷启动 reset」
+     * （相机 PTP/IP 事件服务还没就绪，秒级恢复，值得拉长退避再试）与其它失败。
+     * 2026-10-02 ZDROP AP 日志同源现象：INIT_EVENT Connection reset 后 delay=7000ms 重试即中。
+     */
+    @Volatile
+    var lastFailPhase: String? = null
         private set
 
     fun start(scope: CoroutineScope) {
@@ -171,13 +206,17 @@ class PtpSessionManager @Inject constructor(
         label: String,
         configure: Socket.() -> Unit
     ): Socket {
+        // FR-34③：默认路由 lane（network=null）用短超时，绑网 lane 保持 30s。
+        val timeoutMs = if (network == null &&
+            connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.STA_LANE_TIMEOUT)
+        ) UNBOUND_LANE_CONNECT_TIMEOUT_MS else CONNECT_TIMEOUT_MS
         var attempt = 0
         while (true) {
             val startedAt = System.currentTimeMillis()
             val socket = createSocket(network)
             try {
                 socket.configure()
-                socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+                socket.connect(InetSocketAddress(host, port), timeoutMs)
                 if (attempt > 0) {
                     Timber.tag(TAG).i("connect ok after $attempt retries -> $host:$port")
                     eventLogger.event(
@@ -229,6 +268,7 @@ class PtpSessionManager @Inject constructor(
         try {
             closeSession()
             lastEventAckTimedOut = false
+            lastFailPhase = "socket"
             _sessionState.value = PtpSessionState.CONNECTING
             Timber.tag(TAG).i("Connecting to $host:$port")
 
@@ -259,6 +299,7 @@ class PtpSessionManager @Inject constructor(
 
             // 发送初始化命令
             Timber.tag(TAG).i("phase=init sending InitCommand")
+            lastFailPhase = "init"
             val initPacket = InitCommandPacket(
                 clientGuid = clientGuid,
                 clientName = clientName
@@ -291,6 +332,7 @@ class PtpSessionManager @Inject constructor(
             eventLogger.event("connect", "phase" to "init", "ok" to true, "session" to response.sessionId)
             // 握手成功 → 清除「被拒」标记（相机已接受本机）
             _lastInitFailReason.value = null
+            lastFailPhase = "init_event"
 
             // 建立 Event 通道
             Timber.tag(TAG).i("phase=event connecting")
@@ -340,6 +382,7 @@ class PtpSessionManager @Inject constructor(
             }
             Timber.tag(TAG).i("phase=event OK (InitEventAck)")
             eventLogger.event("connect", "phase" to "event", "ok" to true)
+            lastFailPhase = "opensession"
 
             // EventAck 后客户端主动发送 PING，收到 PONG 才继续。
             // 部分相机在缺少这一握手时会把连接判定为失败，并在数秒后断开。
@@ -363,7 +406,17 @@ class PtpSessionManager @Inject constructor(
             val deviceInfo = sendCommandWithData(PtpConstants.OP_GET_DEVICE_INFO)
             if (deviceInfo is PtpDataResult.Success) {
                 Timber.tag(TAG).i("GetDeviceInfo OK (${deviceInfo.data.size} bytes) before OpenSession")
+                // v2.6.3 R2：解析 OperationsSupported —— 注册前置检查要在发 0x952B 之前
+                // 就知道相机当前模式支不支持它。解析失败保持 null（= 不知道，不拦）。
+                val ops = PtpDeviceInfo.parseOperations(deviceInfo.data)
+                lastSupportedOperations = ops
+                eventLogger.event(
+                    "device_caps",
+                    "ops" to (ops?.size ?: -1),
+                    "host_reg_0x952b" to ops?.contains(PtpConstants.OP_NIKON_HOST_REGISTRATION_PREPARE),
+                )
             } else {
+                lastSupportedOperations = null
                 Timber.tag(TAG).w("GetDeviceInfo before OpenSession not OK (non-fatal)")
             }
 
@@ -381,6 +434,7 @@ class PtpSessionManager @Inject constructor(
                 return@withContext false
             }
             sessionId = response.sessionId
+            lastFailPhase = null
 
             // OpenSession 后用 Nikon CheckEvent (0x90C7) 排空一次，
             // 清除相机缓存的旧事件，避免干扰后续异步事件监听。
@@ -424,6 +478,9 @@ class PtpSessionManager @Inject constructor(
 
         return withContext(Dispatchers.IO) {
             commandMutex.withLock {
+                // v2.6.4：记录"最后一次真实 PTP 命令"的时间。保活据此判断相机侧的会话
+                // 空闲计时器还有多久到期（见 startKeepAlive 的空闲刷新分支）。
+                lastCommandAt = System.currentTimeMillis()
                 try {
                     // 回退说明: 上一版在此加了 sessionState != CONNECTED 拦截，
                     // 但 connect() 握手阶段状态还是 CONNECTING，导致 OpenSession 被拦截、无法连接。
@@ -445,8 +502,18 @@ class PtpSessionManager @Inject constructor(
                         }
                     } while (response != null && response !is CommandResponsePacket)
 
-                    (response as? CommandResponsePacket)
+                    val finalResp = (response as? CommandResponsePacket)
                         ?: CommandResponsePacket(txId, PtpConstants.RESPONSE_GENERAL_ERROR)
+                    // FR-32 R3：opcode 级收发诊断（不含 payload）。2026-10-02 的悬案
+                    // 「相机断热点前我们最后发出去的是哪条包」只有这个字段能回答 ——
+                    // 导出环此前只记 connect/hostreg 阶段，常规命令一律无痕。
+                    if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.STA_LINK_DIAG)) {
+                        eventLogger.event(
+                            "ptp_tx", "op" to "0x${operationCode.toString(16)}",
+                            "tx" to txId, "code" to "0x${finalResp.responseCode.toString(16)}"
+                        )
+                    }
+                    finalResp
                 } catch (e: Exception) {
                     Timber.tag(TAG).e(e, "Command failed: op=0x${operationCode.toString(16)}")
                     CommandResponsePacket(txId, PtpConstants.RESPONSE_GENERAL_ERROR)
@@ -478,10 +545,19 @@ class PtpSessionManager @Inject constructor(
             val code = "0x${prepare.responseCode.toString(16)}"
             Timber.tag(TAG).e("hostreg prepare failed: $code")
             eventLogger.event("hostreg", "phase" to "prepare_fail", "code" to code)
-            return@withContext HostRegistrationResult.Failure(
-                phase = "prepare",
-                detail = "相机未接受预备注册（$code）。请确认相机屏幕处于可接受连接的画面后重试"
-            )
+            // v2.6.3 R0：0x201F(TransactionCancelled) 单独给一句能照着做的诊断。
+            // 根因分析实证：它表示相机**当前不在主机配置向导**（SnapBridge AP 与向导
+            // 都在 192.168.1.1 提供 PTP/IP，但只有向导受理注册事务），
+            // 而不是"我们发错了包"。原来的"请确认相机屏幕处于可接受连接的画面"太笼统。
+            val detail = if (prepare.responseCode == PtpConstants.RESPONSE_TRANSACTION_CANCELLED) {
+                "相机拒绝了注册事务（$code，事务被取消）：它现在不在主机配置向导。\n" +
+                    "请在相机上重新进入「Wi-Fi连接（STA mode）」或「连接至 PC」的网络设定向导，" +
+                    "停在「正在等待连接 / 等待计算机」的画面后再点注册。\n" +
+                    "注意：普通的「连接至智能设备」WiFi 热点也能连上相机，但它不接受注册。"
+            } else {
+                "相机未接受预备注册（$code）。请确认相机停在主机配置向导的等待画面后重试"
+            }
+            return@withContext HostRegistrationResult.Failure(phase = "prepare", detail = detail)
         }
         Timber.tag(TAG).i("hostreg prepare ok")
         eventLogger.event("hostreg", "phase" to "prepare_ok")
@@ -917,8 +993,40 @@ class PtpSessionManager @Inject constructor(
     @Volatile
     private var lastEventActivityAt = 0L
 
+    /**
+     * 最后一次**真实 PTP 命令**的时间（v2.6.4）。
+     *
+     * 相机侧判定"这个客户端还在不在用"看的是 PTP 命令，不是 PTP/IP 传输层的 Ping。
+     * 保活因此要分开看两个数：Ping 用来发现半开连接（TCP 已死），
+     * [lastCommandAt] 用来判断相机的会话空闲计时器还剩多久。
+     */
+    @Volatile
+    private var lastCommandAt = 0L
+
+    /**
+     * v2.6.4：命令通道空闲超过这个时长，就补一条轻量 PTP 命令刷新相机的空闲计时器。
+     *
+     * 取值理由：代码里已实测"相机侧空闲约 3.5 分钟会主动断链"，
+     * 这里按 60s 补一次，留出 2 分钟以上的余量 —— 既不会频繁占用命令通道，
+     * 也不会因为某一次重试失败就直接撞上相机的断链点。
+     */
+    private val IDLE_REFRESH_AFTER_MS get() = 60_000L
+
+    /**
+     * FR-34⑥：快速档的空闲刷新间隔。
+     *
+     * 2026-10-02 R1：建立后命令通道零流量 **14s** 即 event_read_error —— 60s 档的
+     * 空闲刷新对这种速度的死亡完全够不着。10s 档让"连上没干活"的会话在机身
+     * 判空闲前至少拨一次表；若 14s 死因不是空闲（是掉线），本条无效但 link_state
+     * 诊断会把它钉死（见 [markLinkError]）。
+     */
+    private val IDLE_REFRESH_FAST_MS get() = 10_000L
+
     private fun startKeepAlive() {
         lastEventActivityAt = System.currentTimeMillis()
+        // 建链瞬间算作"刚有过命令活动"：OpenSession / GetDeviceInfo 刚跑完，
+        // 相机侧的空闲计时器是满的，不用立刻补 DeviceReady。
+        lastCommandAt = System.currentTimeMillis()
         missedBeats = 0
         keepAliveJob = scope?.launch(Dispatchers.IO) {
             while (isActive) {
@@ -979,6 +1087,28 @@ class PtpSessionManager @Inject constructor(
                     markLinkError("idle_timeout")
                     break
                 }
+
+                // v2.6.4：上面的 Ping 只解决"TCP 还活着吗"，解决不了"相机还认这个会话吗"。
+                // 相机侧的会话空闲计时器只认 **PTP 命令**：它空闲约 3.5 分钟就主动断链，
+                // 而我们的保活历来只发传输层 Ping（type 13）以便把命令通道留给业务 ——
+                // 于是"连上了、什么都没干、过几分钟自己断了"（2026-10-01 日志实证）。
+                //
+                // 修法：命令通道空闲超过阈值且不在批量传输中，补一条最轻量的 DeviceReady，
+                // 把相机的空闲计时器拨回去。批量传输期间命令通道本来就在忙，不需要、也不该插队。
+                // FR-34⑥：阈值 60s → 10s（闸 STA_FAST_IDLE_REFRESH），对准 14s 型快速死亡。
+                val refreshAfterMs =
+                    if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.STA_FAST_IDLE_REFRESH))
+                        IDLE_REFRESH_FAST_MS else IDLE_REFRESH_AFTER_MS
+                if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.SESSION_IDLE_REFRESH) &&
+                    bulkDepth.get() == 0 &&
+                    System.currentTimeMillis() - lastCommandAt > refreshAfterMs
+                ) {
+                    runCatching { sendCommand(PtpConstants.OP_NIKON_DEVICE_READY) }
+                        .onSuccess { Timber.tag(TAG).v("keepAlive: idle refresh sent") }
+                        .onFailure {
+                            Timber.tag(TAG).w("keepAlive idle refresh failed: ${it.message}")
+                        }
+                }
             }
         }
     }
@@ -990,6 +1120,19 @@ class PtpSessionManager @Inject constructor(
     private fun markLinkError(reason: String) {
         Timber.tag(TAG).w("link error: $reason")
         eventLogger.event("link_error", "reason" to reason)
+        // FR-34⑥（诊断）：判死瞬间把"两条通道各静默了多久、心跳丢了几拍、是否在批量传输"
+        // 一起落盘。2026-10-02 的分叉「+14s 死亡是相机空闲关会话，还是 wlan0 掉线的下游」
+        // 只有这组数能回答：空闲死亡应是 cmd_idle≈ev_silence≈14s 且 missed=0/1；
+        // 掉线死亡应伴随同刻的 wlan_drop / net_cb lost 事件。
+        if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.STA_LINK_DIAG)) {
+            val now = System.currentTimeMillis()
+            eventLogger.event(
+                "link_state", "reason" to reason,
+                "ev_silence_ms" to (now - lastEventActivityAt),
+                "cmd_idle_ms" to (now - lastCommandAt),
+                "missed" to missedBeats, "bulk" to bulkDepth.get()
+            )
+        }
         keepAliveJob?.cancel()
         eventListenerJob?.cancel()
         closeSockets()
@@ -1145,6 +1288,7 @@ sealed class HostRegistrationResult {
     /** 注册成功：相机已记住本机 GUID，切 STA 模式后可正常连接 */
     data object Success : HostRegistrationResult()
 
-    /** 注册失败：[phase] 为失败的阶段（prepare/confirm），[detail] 为用户可读的说明 */
-    data class Failure(val phase: String, val detail: String) : HostRegistrationResult()
+    /** 注册失败：[phase] 为失败的阶段（prepare/confirm），[detail] 为用户可读的说明；
+     *  [initFailReason] 仅握手被 InitFail 拒绝时非空（FR-32：reason=1 冷却判据）。 */
+    data class Failure(val phase: String, val detail: String, val initFailReason: Int? = null) : HostRegistrationResult()
 }

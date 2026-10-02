@@ -60,7 +60,11 @@ class WifiDirectConnector @Inject constructor(
     private val stateMachine: ConnectionStateMachine,
     private val eventLogger: AppEventLogger,
     private val connFlags: ConnFlags,
-    private val funnel: com.nikonlink.app.device.connect.ConnFunnel
+    private val funnel: com.nikonlink.app.device.connect.ConnFunnel,
+    /** v2.6.3 R4 用：探测前的「是否在相机热点上」豁免（与预检同一判据，AP 链路不受影响） */
+    private val apGatewayResolver: com.nikonlink.app.device.wifi_ap.ApGatewayResolver,
+    /** FR-34⑦：WLAN 掉线原因码监听（纯日志），生命周期与本连接会话对齐 */
+    private val dropWatcher: WifiDropReasonWatcher,
 ) {
     companion object {
         private const val TAG = "WifiDirect"
@@ -121,6 +125,54 @@ class WifiDirectConnector @Inject constructor(
          * （v1.3.1 既无 `UNREACHABLE_GIVE_UP` 也无 `RETRY_BUDGET`，会跑满 10 次退避）。
          */
         private const val GIVEUP_FLOOR_MS = 120_000L
+
+        /**
+         * v2.6.4：单轮连接循环的总时长上限（硬闸）。
+         *
+         * 数值出处：[MAX_ATTEMPTS]=10 次尝试，退避合计 ≈ 90s（[BACKOFF_MS]），
+         * 每次尝试最坏再叠 30s 的 socket 超时与 [AWAIT_NETWORK_MS]=4s 的等网时间 ——
+         * 一轮理论上应在 4 分钟内出结论。取 240s 作为"再多等也不会有新信息"的界。
+         *
+         * 真机证据（2026-10-01 日志）：`sta_fail gen=4 reason=camera_unreachable …
+         * waited_ms=4216968`（约 **70 分钟**）。跑这么久的一轮拿不到新信息
+         * （期间网络条件早变了），还会让后续的用户点击被幂等守卫当成"已在连接中"拦掉，
+         * 表现为"点了没反应"。超过上限就收口，交给网络事件或用户的下一次点击重新发起。
+         */
+        private const val MAX_ROUND_MS = 240_000L
+
+        /**
+         * FR-31②：INIT_EVENT 冷启动失败后的重试间隔。
+         *
+         * 出处：ZDROP 2026-10-02 AP 日志 `AP standard dual-channel retry scheduled
+         * failedAttempt=1 phase=INIT_EVENT delay=7000ms` —— 相机事件通道冷启动
+         * reset 是秒级恢复的，我们旧退避首档 1000ms 跨不过这个窗口；
+         * 其第三次点击的 attempt2（间隔 7s）即拿到 init-event-ack。
+         */
+        private const val EVENT_COLD_BACKOFF_MS = 7_000L
+
+        /**
+         * FR-34⑤：闪断轮次里等待「类 WiFi 接口」回连的单次窗口。
+         *
+         * 取值对齐 ZDROP 的 `bind requested timeout=8000ms`。真机 R5：wlan0 缺席期间
+         * 三条 30s socket 全从蜂窝 /10.115.218.201 打进黑洞 ≈73s；同样时间里
+         * 8s 一轮的等待只烧 8s，且回连瞬间下一轮 attempt 立刻抓住。
+         */
+        private const val WLAN_RETURN_WAIT_MS = 8_000L
+
+        /** FR-34⑤：回连等待的轮询间隔 */
+        private const val WLAN_RETURN_POLL_MS = 500L
+
+        /**
+         * FR-34⑤：是否私网地址 —— PTP/IP 只可能活在这些地址段（相机热点/路由器 LAN）。
+         * 公网/VPN 形态的地址走蜂窝是合法路径，不许拿回连等待去拦。
+         */
+        internal fun isPrivateLanIp(host: String): Boolean {
+            val parts = host.split('.')
+            if (parts.size != 4) return false
+            val a = parts[0].toIntOrNull() ?: return false
+            val b = parts[1].toIntOrNull() ?: return false
+            return a == 10 || (a == 192 && b == 168) || (a == 172 && b in 16..31)
+        }
     }
 
     enum class Mode { PAIRING, RESUME }
@@ -178,6 +230,7 @@ class WifiDirectConnector @Inject constructor(
         sessionBound = false
         networkMonitor.releaseRetained()
         networkMonitor.bindProcessTo(null)
+        dropWatcher.stop()   // FR-34⑦：会话结束，掉线原因码监听与 start 对称归还
         networkRequester.release()
         Timber.tag(TAG).i("STA session resources released")
     }
@@ -287,6 +340,14 @@ class WifiDirectConnector @Inject constructor(
         var rejectedBySubnetCheck = false
         // RC-5: 连接生命周期内持有 WifiLock/MulticastLock，finally 保证释放
         networkMonitor.acquireLocks()
+        // FR-34⑤：轮次开始时存在类 WiFi 接口 = 「链路刚才还在」的闪断型轮次。
+        // 这种轮次里遇到 wlan 掉走，值得在轮内等回连（R5 的 77s 回连就被 10×12s 的
+        // 尝试预算覆盖）；从未连上的轮次维持 v1.3.2 的"立刻收口给指引"，不空烧 90s。
+        val flickerMode = connFlags.isEnabled(ConnFlags.STA_WLAN_WAIT) &&
+            localInterfaces.hasLocalWifiLikeInterface()
+        // FR-34⑦：从这一代尝试起就盯着系统的掉线原因码；成功路径由会话持有，
+        // 直到 teardownSession / 失败收口才停。
+        dropWatcher.start()
         try {
             eventLogger.event(
                 "sta_try",
@@ -299,6 +360,32 @@ class WifiDirectConnector @Inject constructor(
             while (attempt < MAX_ATTEMPTS) {
                 currentCoroutineContext().ensureActive()
                 if (gen != generation) return                    // RC-7: 过期令牌立即退
+
+                // v2.6.4：单轮总时长硬闸（见 [MAX_ROUND_MS]）。
+                // 只拦"一轮跑太久"，不改任何单次尝试的判据与退避策略。
+                val elapsed = System.currentTimeMillis() - loopStartedAt
+                if (elapsed > MAX_ROUND_MS) {
+                    eventLogger.event(
+                        "sta_fail",
+                        "gen" to gen,
+                        "reason" to "round_budget_exhausted",
+                        "attempt" to attempt,
+                        "host" to endpoint.host,
+                        "waited_ms" to elapsed
+                    )
+                    // v2.6.6 FR-29②：这里原来把 describeStaFailure() 的**中文文案**当机器码
+                    // 传给 onFail，于是 mapConnectorReason 落到 else → UNKNOWN，
+                    // "跑满 4 分钟硬闸"这一整类失败在漏斗里完全不可归因。
+                    // 改成与 :622-628 同一个范式：文案走 dispatch，机器码走 onFail。
+                    stateMachine.dispatch(
+                        ConnectionEvent.ErrorOccurred(
+                            describeStaFailure("round_budget_exhausted", endpoint),
+                            recoverable = true
+                        )
+                    )
+                    onFail("round_budget_exhausted")
+                    return
+                }
                 attempt++
 
                 // RC-4: 每次尝试都等待并重新解析 Network，不用循环外缓存的旧句柄；
@@ -385,9 +472,22 @@ class WifiDirectConnector @Inject constructor(
                     // 明确回到默认路由：清掉可能残留的进程级绑网，
                     // 让 socket 完全交给内核按路由表选择出口。
                     networkMonitor.bindProcessTo(null)
+                    if (connFlags.isEnabled(ConnFlags.STA_LINK_DIAG)) {
+                        eventLogger.event(
+                            "net_unbind", "gen" to gen, "attempt" to attempt,
+                            "reason" to "default_route_fallback", "host" to endpoint.host
+                        )
+                    }
                 }
 
                 if (usable == null && !defaultRouteFallback) {
+                    // FR-34⑤：闪断型轮次先等回连，等不到再走下面的收口。
+                    // 没有这一段时，attempt 2 直接判死整轮（R3 的 no_wifi_network），
+                    // 而 wlan0 在 31s 后就自己回来了 —— 一次 8s 的等待就能接住。
+                    if (flickerMode && !rejectedBySubnetCheck && isPrivateLanIp(endpoint.host)) {
+                        val back = waitWifiLikeReturn(gen, attempt, onRetry)
+                        if (back) continue   // 接口回来了：下一次 attempt 重新解析网络
+                    }
                     // FR-20④：「压根没连 WiFi」与「连了 WiFi 但没有一张能到相机 IP」是两件事，
                     // 处置也不同 —— 前者去连网，后者要的是换一张网 / 关掉蜂窝与 VPN。
                     // 合并成一句"手机未连接 WiFi"会把人指引到错误的设置页上。
@@ -432,7 +532,15 @@ class WifiDirectConnector @Inject constructor(
                     val bound = networkMonitor.bindProcessTo(it)
                     eventLogger.event(
                         "net_bind", "gen" to gen, "attempt" to attempt, "bound" to bound,
-                        "covers" to true, "host" to endpoint.host, "route" to "process"
+                        "covers" to true, "host" to endpoint.host, "route" to "process",
+                        // FR-32 R3：绑网时刻的本机网卡快照。2026-10-02 悬案「谁杀了 wlan0」
+                        // 需要把 bind 时刻与 network_lost 时刻的 ifaces 对齐才能答。
+                        "ifaces" to if (connFlags.isEnabled(ConnFlags.STA_LINK_DIAG)) {
+                            runCatching { localInterfaces.localAddresses() }.getOrDefault(emptyList())
+                                .joinToString(",") { a -> a.display }
+                        } else {
+                            ""
+                        }
                     )
                 }
                 // FR-18g：DISCOVER → ROUTE → TCP 的分界卡。
@@ -491,6 +599,23 @@ class WifiDirectConnector @Inject constructor(
                         "gen" to gen, "attempt" to attempt,
                         "host" to endpoint.host, "port" to endpoint.port
                     )
+                    // FR-32 R3：建链后 15s 的网卡采样。旧日志里 AP 会话总在 +7~10s 死亡，
+                    // 却没有任何一行能回答"死的那一刻 wlan0 还在不在"——补上这段就能
+                    // 区分手机侧掉线（ifaces 里 wlan0 消失）与相机侧关服务（ifaces 不变）。
+                    if (connFlags.isEnabled(ConnFlags.STA_LINK_DIAG)) {
+                        scope?.launch(Dispatchers.IO) {
+                            repeat(15) { i ->
+                                delay(1000L)
+                                runCatching {
+                                    eventLogger.event(
+                                        "sta_ifaces", "gen" to gen, "s" to (i + 1),
+                                        "ifaces" to localInterfaces.localAddresses()
+                                            .joinToString(",") { a -> a.display }
+                                    )
+                                }
+                            }
+                        }
+                    }
                     stateMachine.dispatch(ConnectionEvent.WifiConnected)
                     onSuccess()
                     return
@@ -578,7 +703,22 @@ class WifiDirectConnector @Inject constructor(
                 } else {
                     consecutiveUnreachable = 0
                 }
-                delay(BACKOFF_MS[(attempt - 1).coerceAtMost(BACKOFF_MS.size - 1)])   // RC-8
+                // FR-31②：event 通道被相机冷启动 reset（ZDROP AP 日志同现象）时，
+                // 退避拉长到 7s 跨过秒级恢复窗；其余失败照旧退避表。
+                val eventCold = ptpSession.lastFailPhase == "init_event"
+                val backoffMs = if (eventCold) {
+                    EVENT_COLD_BACKOFF_MS
+                } else {
+                    BACKOFF_MS[(attempt - 1).coerceAtMost(BACKOFF_MS.size - 1)]
+                }
+                if (eventCold) {
+                    eventLogger.event(
+                        "sta_backoff", "gen" to gen, "attempt" to attempt,
+                        "ms" to backoffMs, "reason" to "event_cold", "host" to endpoint.host
+                    )
+                    onRetry?.invoke("相机事件通道未就绪，约 7 秒后重试…")
+                }
+                delay(backoffMs)   // RC-8
             }
 
             eventLogger.event(
@@ -625,6 +765,13 @@ class WifiDirectConnector @Inject constructor(
             // 连上后必须保持，否则数据通道会被系统默认路由抢走（STA 断流根因）
             if (!sessionBound) {
                 networkMonitor.bindProcessTo(null)
+                dropWatcher.stop()   // FR-34⑦：失败收口与 start 对称
+                if (connFlags.isEnabled(ConnFlags.STA_LINK_DIAG)) {
+                    eventLogger.event(
+                        "net_unbind", "gen" to gen, "attempt" to attempt,
+                        "reason" to "teardown", "host" to endpoint.host
+                    )
+                }
                 networkRequester.release()
             }
             // 任何异常出口都保证会话被清干净，不残留半开 socket
@@ -633,6 +780,7 @@ class WifiDirectConnector @Inject constructor(
             }
         }
     }
+
     /**
      * FIX-2：并行解析可用的 Network 句柄。
      *
@@ -674,6 +822,38 @@ class WifiDirectConnector @Inject constructor(
         )
     }
 
+    /**
+     * FR-34⑤：等待「类 WiFi 接口」回连，最多 [WLAN_RETURN_WAIT_MS]。
+     *
+     * 只在闪断型轮次（[flickerMode]）里调用：判据是内核网卡（FR-23 的
+     * [LocalNetworkInterfaceResolver.hasLocalWifiLikeInterface]），
+     * 不是 ConnectivityManager —— 后者在热点拓扑下恒看不见承载相机的接口（RC-0）。
+     * @return true = 窗口内接口回来了
+     */
+    private suspend fun waitWifiLikeReturn(
+        gen: Int,
+        attempt: Int,
+        onRetry: ((String?) -> Unit)?
+    ): Boolean {
+        val startedAt = System.currentTimeMillis()
+        var hintAt = 0L
+        while (System.currentTimeMillis() - startedAt < WLAN_RETURN_WAIT_MS) {
+            if (localInterfaces.hasLocalWifiLikeInterface()) break
+            delay(WLAN_RETURN_POLL_MS)
+            val waited = System.currentTimeMillis() - startedAt
+            if (waited - hintAt >= 2000L) {
+                hintAt = waited
+                onRetry?.invoke("手机 WiFi 刚掉线，正在等待自动回连…")
+            }
+        }
+        val back = localInterfaces.hasLocalWifiLikeInterface()
+        eventLogger.event(
+            "wlan_wait", "gen" to gen, "attempt" to attempt, "back" to back,
+            "ms" to (System.currentTimeMillis() - startedAt)
+        )
+        return back
+    }
+
     private suspend fun resolveNetwork(
         host: String,
         onProgress: ((String) -> Unit)? = null
@@ -696,10 +876,22 @@ class WifiDirectConnector @Inject constructor(
             // "上一轮失败分类之后 1~2.5 秒"，正是下一轮 resolveNetwork 刚跑起来的位置；
             // 且死后 53 秒内没有任何新 `sta_try` —— 若是被新连接顶掉，
             // `connect()` 会立刻打出下一条 `sta_try`，所以只能是这一代自己没了。
+            // v2.6.6 FR-29④：记下 requester 这一路交出来的是哪张网。
+            // 三路里只有它会注册 NetworkCallback 并在 StaNetworkRequester 内部留下 `held`；
+            // 竞争落选时那张网没人认领，而**成功路径**（sessionBound=true）永远不会调
+            // `networkRequester.release()`，callback 就此长期泄漏 —— 形态与
+            // `StaNetworkRequester:96-101` 记的 netId 127→131、一次连发 6 条 sta_net_lost 同型。
+            // 跨协程写，用 AtomicReference 保证可见性。
+            val requesterPick = java.util.concurrent.atomic.AtomicReference<android.net.Network?>(null)
             val requester = async(Dispatchers.IO) {
-                runCatching { networkRequester.acquire(host, AWAIT_NETWORK_MS) }
+                // FR-34④：连接轮次的持有请求改为会话制（闸在 requester 内部判）——
+                // 注册不带系统超时、超时不注销、跨 attempt 复用，轮次结束由
+                // finally(!sessionBound)/teardownSession 统一 release。
+                runCatching {
+                    networkRequester.acquire(host, AWAIT_NETWORK_MS, holdUntilRelease = true)
+                }
                     .onFailure { logResolveFailure("requester", it) }
-                    .getOrNull()?.let { winner.trySend(it) }
+                    .getOrNull()?.let { n -> requesterPick.set(n); winner.trySend(n) }
             }
             val monitor = async(Dispatchers.IO) {
                 runCatching { networkMonitor.awaitWifiNetworkFor(host, AWAIT_NETWORK_MS) }
@@ -736,6 +928,17 @@ class WifiDirectConnector @Inject constructor(
             ticker.cancel()
             // 未被选中的分支取消掉，避免占着网络请求不做事的协程继续跑
             listOf(requester, monitor, fallback).forEach { if (it.isActive) it.cancel() }
+            // FR-29④：胜出者不是 requester 那一路时，把它申请到的网络归还掉。
+            // 判据用**引用相等**：只有同一张网被交出去且被采用，held 才算有人认领。
+            // release() 是幂等的（`releaseCallbackOnly` 已 synchronized + 置空），
+            // requester 什么都没申请到时调它也无害。
+            val picked = requesterPick.get()
+            if (picked != null && resolved !== picked) {
+                Timber.tag(TAG).w(
+                    "requester 申请到的网络未被采用（winner=${resolved?.let { it.toString() } ?: "none"}），归还以免 callback 泄漏"
+                )
+                networkRequester.release()
+            }
             resolved
         }.also { network ->
             if (network != null) {
@@ -800,6 +1003,55 @@ class WifiDirectConnector @Inject constructor(
         endpoint: WifiEndpoint,
         timeoutMs: Long
     ): PtpIpProbe.TcpScreen {
+        // v2.6.6 FR-29⑦：**双记判据，不改行为**。
+        // R4（STA_SKIP_CELLULAR）该不该开，卡在"哪个判据可信"上，而这件事推理不出来 ——
+        // PRD §13.3 那次成功连接发生时，网卡枚举说 in_subnet=false，默认路由又确实在蜂窝，
+        // 两个来源看着都指向"该拦"，可它就是连上了。所以这里把两个判据并排记下来：
+        // `nic_covers` = 网卡枚举（旧 R4 的依据，已知在 vivo 上假阴性），
+        // `cm_cellular_hole` = ConnectivityManager（FR-29⑤ 的新依据）。
+        // 只在**两者不一致**或**新判据会拦**时记，健康路径不打 —— 探测次数本来就受
+        // FR-21 预算约束，日志环只有 3×512KB，不能每次探测都写一条。
+        // 拿到一轮真机数据后：若 `cm_cellular_hole=true` 的那些轮次里有连接成功的，
+        // R4 就永久不能开；若全部失败，才可以开。
+        runCatching {
+            val nicCovers = localInterfaces.subnetsContain(endpoint.host)
+            val cellularHole = networkMonitor.probeWouldUseCellular(endpoint.host)
+            if (cellularHole || !nicCovers) {
+                eventLogger.event(
+                    "sta_probe_ctx", "host" to endpoint.host,
+                    "nic_covers" to nicCovers, "cm_cellular_hole" to cellularHole,
+                    "ifaces" to localInterfaces.localAddresses().joinToString(",") { it.display }
+                )
+            }
+        }.onFailure { Timber.tag(TAG).w(it, "sta_probe_ctx 采集失败（不影响连接）") }
+
+        // v2.6.3 R4（ConnFlags.STA_SKIP_CELLULAR）：本机没有任何网卡落在相机所在网段时，
+        // 这次探测必然走默认路由 —— 现场几乎一定是蜂窝口。蜂窝上打私网地址是**黑洞**
+        // （既不回 RST 也不可达），只会把整个 30s 超时耗干。2026-09-30 日志实证：
+        // 手机已离开相机热点（`ifaces=ap0+ccmni4`，无 192.168.1.x），App 仍从
+        // /10.56.31.140 对 192.168.1.1 连了 53 秒。
+        //
+        // **AP 链路豁免**：已在相机热点上时不查这一条（与 PreflightGate 的豁免同源）——
+        // 相机热点刚接上、网卡还在 DHCP 的那一小段窗口里也必须继续探。
+        // 闸门默认关，关掉即与 v2.6.2 逐位等价。
+        //
+        // v2.6.6 FR-29⑤：**判据换掉了**。原来用 `localInterfaces.subnetsContain(host)`，
+        // 而 PRD §13.3 已用真机数据证明这个来源在本项目主力机（vivo V2509A）上是**假阴性**：
+        // `localAddresses()` 看不见实际承载相机流量的接口，同一次连接在 `in_subnet=false`
+        // 的情况下于 12:39:56 成功。以它为据做硬拦截 = 把能连上的场景判死，
+        // 这正是 §13.3 撤销 S3 的同一个理由。现改走 ConnectivityManager（FR-23 已确立为主判据，
+        // 且同一份日志里 `net_bind covers=true` 判定正确）：只有"默认路由在蜂窝 **且**
+        // 没有任何 WiFi 覆盖相机地址"才算黑洞。见 [WifiNetworkMonitor.probeWouldUseCellular]。
+        if (connFlags.isEnabled(ConnFlags.STA_SKIP_CELLULAR)) {
+            val onCameraAp = runCatching { apGatewayResolver.isOnCameraAp() }.getOrDefault(false)
+            if (!onCameraAp && networkMonitor.probeWouldUseCellular(endpoint.host)) {
+                eventLogger.event("sta_probe_skipped", "reason" to "cellular_blackhole",
+                    "host" to endpoint.host)
+                return PtpIpProbe.TcpScreen(
+                    false, PtpIpProbe.ProbeResult.ERROR, "cellular_blackhole"
+                )
+            }
+        }
         funnel.recordProbe()
         if (!connFlags.isEnabled(ConnFlags.PROBE_TCP_ONLY)) {
             val ok = runCatching {
@@ -870,6 +1122,11 @@ class WifiDirectConnector @Inject constructor(
                     "请按一下快门/电源键唤醒相机，让屏幕停在等待连接的画面后重试"
             "camera_unreachable" ->
                 "未找到相机（${endpoint.host}）。请确认相机已开启 WiFi、且手机与相机在同一网络"
+            // v2.6.4：单轮跑满预算（见 MAX_ROUND_MS）。重点是"别干等"，
+            // 让人去做一件能改变现状的事（确认网络），而不是继续盯着转圈。
+            "round_budget_exhausted" ->
+                "连接超时（已尝试约 4 分钟仍未连上 ${endpoint.host}）。" +
+                    "请确认手机连的是相机所在的同一网络、相机停在等待连接的画面，然后重新点一次连接"
             "ptp_handshake_failed", StaFailureClass.DENIED -> when {
                 // InitFail 且 failReason==1（connection_in_use / 主机未认可）→ 引导做主机注册
                 initFailReason == PtpConstants.INIT_FAIL_CONNECTION_IN_USE ->

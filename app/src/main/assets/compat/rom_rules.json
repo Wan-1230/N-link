@@ -1,7 +1,7 @@
 {
   "_comment": "逐 ROM 后台/权限策略矩阵（PRD v2.2 §6.1 / §6.2，落地路线 10.1 第 7 条）。改这个文件不需要改代码：匹配、深链、文案全部由 CompatRules 解析。component 只做「候选入口」，运行时一律 resolveActivity() 校验，拿不到就退回纯文案，所以写错或系统 OTA 后失效都不会崩。lastVerified=null 表示尚未真机验证。",
   "version": 1,
-  "updatedAt": "2026-09-20",
+  "updatedAt": "2026-10-02",
   "sources": {
     "killRating": "https://dontkillmyapp.com/api/v1/output.json（2026-09-20 快照；0=原生行为，5=查杀最重）",
     "components": "PRD v2.2 §6.2.3 与业界公开的同名入口，均未经本机逐一验证"
@@ -99,8 +99,8 @@
         },
         {
           "id": "wlan_plus",
-          "text": "vivo/iQOO：设置 → WLAN → 高级选项 → 关闭「WLAN+」与「自动切换数据网络」，否则无网络的相机热点会被断开",
-          "lastVerified": null
+          "text": "vivo/iQOO：设置 → WLAN → 高级设置/更多 → 打开「WLAN 始终开启」（部分机型在 开发者选项 或 i 管家 内，名为「休眠时保持 WLAN」），并关闭「智能切换数据网络/WLAN+」——否则没有网络的相机热点会被系统断开（2026-10-02 真机对照：此开关直接决定 AP 会话是否存活）",
+          "lastVerified": "2026-10-02"
         }
       ]
     },
@@ -126,6 +126,11 @@
           "id": "otg",
           "text": "OPPO/一加/realme：设置 → 系统设置（或「其他设置」）→ OTG 连接 → 开启（长时间不用会自动关闭）",
           "lastVerified": "2026-09-19"
+        },
+        {
+          "id": "wlan_plus",
+          "text": "OPPO/一加/realme：设置 → Wi-Fi（WLAN）→ 高级设置 → 关闭「智能切换网络」与「WLAN+」（如有），否则无互联网的相机热点会被自动断开",
+          "lastVerified": null
         }
       ]
     },
@@ -144,6 +149,11 @@
           "id": "battery",
           "text": "三星：设置 → 常规管理 → 电池 → 后台使用限制 → 确认 N-Link 不在「休眠应用 / 深度休眠应用」里，并关闭「新放到休眠列表的应用」",
           "component": "com.samsung.android.lool/com.samsung.android.sm.ui.battery.BatteryActivity",
+          "lastVerified": null
+        },
+        {
+          "id": "wlan_plus",
+          "text": "三星：设置 → 连接 → Wi-Fi → 高级 → 智能 Wi-Fi → 关闭「切换到移动数据」与「自动连接到推荐网络」，无互联网的相机热点会被这套策略断开",
           "lastVerified": null
         }
       ]

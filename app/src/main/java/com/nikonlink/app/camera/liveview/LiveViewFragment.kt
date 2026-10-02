@@ -121,6 +121,13 @@ class LiveViewFragment : Fragment() {
         }
         // 模块 2：全屏监看页可见期间开启 0x500E 快轮询（机身拨盘切模式 ≤500ms 同步）
         paramsViewModel.startModeWatch()
+
+        // v2.6.5：Activity 声明了 configChanges（旋转不重建），所以横竖屏切换拿不到
+        // onConfigurationChanged —— 挂在根布局的 layout 变化上判定，代价可忽略。
+        binding.root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            applyOrientationChrome()
+        }
+        applyOrientationChrome()
     }
 
     override fun onResume() {
@@ -147,29 +154,27 @@ class LiveViewFragment : Fragment() {
      * 用圆角矩形材质画出来会变成"圆角方块"，所以保持原样。
      * 对焦框 `bg_focus_box` 是取景辅助、不是容器，同样不动（PRD 附录 B）。
      */
+    /**
+     * 监看 HUD 的外观（v2.6.5：**去掉液态玻璃**）。
+     *
+     * 原实现给参数条与三枚胶囊套了玻璃（背后采样 `ivLiveView`，minRefreshMs=250ms）。
+     * 全屏监看下这套材质反而让画面更差：
+     *  · 玻璃背后是**正在看的取景画面本身**，糊掉的正是用户在意的内容；
+     *  · 每一帧采集都和解码抢 CPU/带宽（注释自己写着"监看已经在吃视频解码"）；
+     *  · 半透明白胶囊压在明亮的取景画面上，对比度反而比纯黑遮罩低，参数读不清。
+     *
+     * 现在统一走"关玻璃"那条路：60% 黑遮罩 + 原胶囊 drawable + 不注册采集。
+     * 观感更干净，也顺手省掉一路采集负载。**遥控页/相册页的玻璃不受影响。**
+     */
     private fun applyGlassHud() {
         val ctx = requireContext()
         val pills = listOf(binding.tvModeTag, binding.btnAfMode, binding.tvPerformance)
-        if (!UiFlags.glassEnabled(ctx)) {
-            // 回到 v2.2：参数条用原来的 60% 黑遮罩，胶囊用原 drawable
-            binding.paramsBar.setBackgroundColor(ContextCompat.getColor(ctx, R.color.liveview_scrim))
-            GlassRegistry.unregister(binding.paramsBar)
-            pills.forEach {
-                it.setBackgroundResource(R.drawable.bg_lv_pill)
-                it.elevation = 0f
-                GlassRegistry.unregister(it)
-            }
-            return
-        }
-        val coord = GlassCoordinator.attach(binding.ivLiveView)
-        // 监看已经在吃视频解码，纹理采集降到 ~4fps（PRD §8.4 的三重负载场景）
-        coord.minRefreshMs = 250L
-        val stripRadius = ctx.resources.getDimension(R.dimen.glass_radius_m)
-        binding.paramsBar.applyGlass(coord) {
-            GlassTokens.hud(it.context).copy(radiusPx = stripRadius)
-        }
-        pills.forEach { pill ->
-            pill.applyGlass(coord) { GlassTokens.hud(pill.context) }
+        binding.paramsBar.setBackgroundColor(ContextCompat.getColor(ctx, R.color.liveview_scrim))
+        GlassRegistry.unregister(binding.paramsBar)
+        pills.forEach {
+            it.setBackgroundResource(R.drawable.bg_lv_pill)
+            it.elevation = 0f
+            GlassRegistry.unregister(it)
         }
     }
 
@@ -674,6 +679,57 @@ class LiveViewFragment : Fragment() {
 
     // ---------------- DISP 纯净模式 ----------------
 
+    /**
+     * 横屏下"次要控件"的目标不透明度（v2.6.5）。
+     *
+     * 横屏时取景画面铺满整屏，一套不透明的顶栏 + 右栏 + 读数会把画面两侧压住。
+     * 这里不删除功能，只把它压到半透明：仍可点，但不再抢画面。
+     * 主操作（关闭 / 模式 / AF / 快门 / 参数条）不在此列。
+     */
+    private val SECONDARY_LANDSCAPE_ALPHA = 0.45f
+
+    /** 参数条横屏下单独一档：它承载曝光三要素，压太淡会读不清 */
+    private val PARAMS_LANDSCAPE_ALPHA = 0.72f
+
+    private var landscapeChrome = false
+
+    private val secondaryChrome: List<View>
+        get() = listOfNotNull(
+            binding.btnHistogram,
+            binding.btnPseudoColor,
+            binding.btnWaveform,
+            binding.btnMore,
+            binding.tvPerformance,
+            binding.rightControls,
+        )
+
+    private fun isLandscapeNow(): Boolean =
+        resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    /**
+     * 横屏呈现（v2.6.5 需求 5）。
+     *
+     * 两件事：
+     * 1. **首次进入横屏自动收起控件** —— 先给一个不被遮挡的画面；
+     * 2. **次要控件压成半透明** —— 控件显示时也不至于糊住取景。
+     *
+     * 恢复方式：点画面任意空白处即唤醒控件（既有逻辑，见 [setupTouchAndScale] 的单击回调），
+     * 或点 DISP 按钮手动切换。竖屏完全不受影响（alpha 回 1，控件常显）。
+     */
+    private fun applyOrientationChrome() {
+        if (_binding == null) return
+        val landscape = isLandscapeNow()
+        // 首次进入横屏：收起控件（只在状态翻转的那一次做，避免 layout 回调里反复 toggle）
+        if (landscape && !landscapeChrome && controlsVisible) {
+            toggleControls()
+        }
+        landscapeChrome = landscape
+
+        val alpha = if (landscape) SECONDARY_LANDSCAPE_ALPHA else 1f
+        secondaryChrome.forEach { v -> if (v.visibility == View.VISIBLE) v.alpha = alpha }
+        binding.paramsBar.alpha = if (landscape) PARAMS_LANDSCAPE_ALPHA else 1f
+    }
+
     private fun toggleControls() {
         if (controlsVisible) {
             controlsVisible = false
@@ -688,17 +744,28 @@ class LiveViewFragment : Fragment() {
 
     private fun showControls() {
         controlsVisible = true
-        fadeIn(binding.topBarScroll, binding.paramsBar, binding.bottomControls)
-        fadeIn(binding.btnDisp, binding.rightControls, binding.tvPerformance)
+        val landscape = isLandscapeNow()
+        fadeIn(binding.topBarScroll, binding.bottomControls)
+        fadeInTo(
+            if (landscape) SECONDARY_LANDSCAPE_ALPHA else 1f,
+            binding.btnDisp, binding.rightControls, binding.tvPerformance,
+            binding.btnHistogram, binding.btnPseudoColor, binding.btnWaveform, binding.btnMore,
+        )
+        fadeInTo(
+            if (landscape) PARAMS_LANDSCAPE_ALPHA else 1f,
+            binding.paramsBar,
+        )
         binding.viewGridOverlay.visibility =
             if (gridVisible || toneOn) View.VISIBLE else View.GONE
     }
 
-    private fun fadeIn(vararg views: View) {
+    private fun fadeIn(vararg views: View) = fadeInTo(1f, *views)
+
+    private fun fadeInTo(targetAlpha: Float, vararg views: View) {
         views.forEach { view ->
             view.visibility = View.VISIBLE
             view.alpha = 0f
-            view.animate().alpha(1f).setDuration(150).start()
+            view.animate().alpha(targetAlpha).setDuration(150).start()
         }
     }
 
@@ -795,7 +862,11 @@ class LiveViewFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             paramsViewModel.exposureProgram.collect { param ->
                 // 常驻显示当前模式（用 describeExposureProgram 的显示名，与选择器同口径）
-                binding.tvModeTag.text = param.currentValue.ifBlank { "P" }
+                // v2.6.5：显示成"模式 P ▾"而不是光秃秃一个字母 ——
+                // 原来的单字母胶囊看上去就是个状态标签，没人会去点它，
+                // 于是"拍摄模式（远程切换）"等于不存在。带「模式」二字 + 下拉箭头
+                // 之后可点性一眼可见（与遥控页「联动画面 ▾」同一套读法）。
+                binding.tvModeTag.text = "模式 ${param.currentValue.ifBlank { "P" }} ▾"
             }
         }
     }

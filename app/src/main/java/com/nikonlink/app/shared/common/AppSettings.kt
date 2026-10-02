@@ -47,6 +47,12 @@ class AppSettings @Inject constructor(
 
         /** WiFi STA 子模式：相机连接手机热点（ZDROP 的 PHONE_HOTSPOT 模式） */
         const val STA_MODE_PHONE_HOTSPOT = "phone_hotspot"
+
+        /** STA 架构 A：PTP/IP 直连（原实现，需要一次性 STA 主机注册） */
+        const val STA_ARCH_PTP = "ptp"
+
+        /** STA 架构 B：FTP 推送收图（PRD §4.5 备选；相机主动推给本机，无需注册） */
+        const val STA_ARCH_FTP = "ftp"
     }
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -203,4 +209,19 @@ class AppSettings @Inject constructor(
     var staSubMode: String
         get() = prefs.getString("sta_sub_mode", STA_MODE_SAME_WIFI) ?: STA_MODE_SAME_WIFI
         set(value) = prefs.edit().putString("sta_sub_mode", value).apply()
+
+    /**
+     * WiFi STA 的**连接架构**选择（v2.6.3）。
+     *
+     * 两种架构共用同一个 STA 页面，靠顶部药丸分段控件切换 —— 不新增页面、不新增路由：
+     *  · [STA_ARCH_PTP]：PTP/IP 直连，走主机注册；能看相册、遥控、监看，功能全
+     *  · [STA_ARCH_FTP]：手机起 FTP 服务器，相机把照片推过来；**无需注册**，
+     *    但只有"收图"这一件事（拿不到相册浏览/遥控）
+     *
+     * 选择持久化：用户上次用哪个架构，下次进来还是哪个。
+     * 注意它**只影响 STA 分支**，AP / USB 两条链路完全不读这个值。
+     */
+    var staArchitecture: String
+        get() = prefs.getString("sta_arch", STA_ARCH_PTP) ?: STA_ARCH_PTP
+        set(value) = prefs.edit().putString("sta_arch", value).apply()
 }

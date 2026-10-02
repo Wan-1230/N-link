@@ -20,6 +20,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.updatePadding
 import com.nikonlink.app.R
 import java.lang.ref.WeakReference
+import kotlin.math.roundToInt
 
 /**
  * 一面玻璃的绘制器（PRD §3.1–§3.4、§3.6-A）。
@@ -47,7 +48,25 @@ class GlassSurfaceDrawable(
             lensGen = -1L
             guardKey = Long.MIN_VALUE
             guardAlpha = -1
+            // 材质换了（开关重涂 / 深浅色切换）旧的亮度惯性没有意义，重新收敛
+            lumEma = -1f
         }
+
+    /**
+     * 释放本面私有的像素缓存（透镜输入/输出缓冲与输出位图）。
+     *
+     * v2.6.2：这些缓冲原来是"只增不减"的 —— [applyGlass] 每次调用都会 new 一个
+     * drawable，而开关切换、切页、旋转都会反复调用它，旧 drawable 虽然可被 GC，
+     * 但它抱着的那张 `lensOut` 位图要等 GC 才归还。显式回收让内存立刻可用。
+     */
+    fun release() {
+        lensOut?.takeUnless { it.isRecycled }?.recycle()
+        lensOut = null
+        lensSrc = IntArray(0)
+        lensDst = IntArray(0)
+        lensGen = -1L
+        lensRect.setEmpty()
+    }
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
@@ -57,9 +76,29 @@ class GlassSurfaceDrawable(
     private val boundsRect = RectF()
     private val srcRect = Rect()
 
+    /** 折射用的**外扩**读取区域（footprint ± pad），见 [drawBackdrop] */
+    private val texRect = Rect()
+
     private var rimShader: LinearGradient? = null
     private var rimH = 0f
     private var onePx = 1f
+
+    /** 屏幕密度；[onBoundsChange] 里也要用（算高光带上限），所以单独存一份 */
+    private var density = 1f
+
+    /** v2.6.2：上沿镜面亮线的厚度（px）与底边内阴影带的高度（px） */
+    private var specH = 0f
+    private var innerH = 0f
+    private var innerShader: LinearGradient? = null
+
+    /**
+     * 本面区域亮度的指数平滑值（-1 = 还没取到）。
+     *
+     * 区域亮度每次重采都会变（内容从底下划过），直接喂给 [guardedTint] 会让 tint 档位
+     * 随每一张纹理抖动 —— 这就是"玻璃在呼吸"的观感来源。先做 EMA 再自适应，
+     * 配合 [guardedTint] 的档位粘滞，同一段滚动里底色才稳得住。
+     */
+    private var lumEma = -1f
 
     /** 0=静止 1=按下：驱动 rim 削弱 + tint 提浓 */
     private var press = 0f
@@ -83,15 +122,44 @@ class GlassSurfaceDrawable(
 
     override fun onBoundsChange(bounds: android.graphics.Rect) {
         super.onBoundsChange(bounds)
+        val res = hostRef.get()?.resources
+        density = res?.displayMetrics?.density?.coerceAtLeast(1f) ?: 1f
         val h = bounds.height().toFloat()
-        rimH = (h * 0.5f).coerceAtLeast(1f)
+
+        // v2.6.2：高光带原来恒取面高的一半 —— 62dp 的 dock 就是 31dp 的白色渐变铺在上
+        // 半张面上，读作磨砂塑料而不是玻璃。苹果那条高光是**贴着上沿、快速衰减**的：
+        // 这里改成"面高的 35% 与 16dp 取小"，小胶囊不吃亏、大面板不再白掉半张。
+        val rimMax = num(R.dimen.glass_rim_band_max_dp, 16f) * density
+        rimH = (h * 0.35f).coerceAtMost(rimMax).coerceAtLeast(1f)
         rimShader = LinearGradient(
             0f, 0f, 0f, rimH,
-            Color.WHITE, Color.TRANSPARENT, Shader.TileMode.CLAMP,
+            intArrayOf(Color.WHITE, Color.argb(120, 255, 255, 255), Color.TRANSPARENT),
+            floatArrayOf(0f, 0.28f, 1f),
+            Shader.TileMode.CLAMP,
         )
+
+        // 上沿镜面亮线：1.2dp，是整块玻璃最亮的一条
+        specH = (num(R.dimen.glass_specular_h_dp, 1.2f) * density).coerceAtMost(h * 0.25f)
+
+        // 底边内阴影：从底边向上衰减的短暗带，亮线之下的"厚度"
+        val innerMax = num(R.dimen.glass_inner_band_max_dp, 8f) * density
+        innerH = (h * 0.35f).coerceAtMost(innerMax).coerceAtLeast(1f)
+        innerShader = LinearGradient(
+            0f, h, 0f, h - innerH,
+            // 停点：底边最暗 → 1/4 处已淡掉大半 → 归零。峰值压在边上才有"内侧"的感觉，
+            // 均匀铺开会变成半张面的灰。
+            intArrayOf(Color.BLACK, Color.argb(90, 0, 0, 0), Color.TRANSPARENT),
+            floatArrayOf(0f, 0.25f, 1f),
+            Shader.TileMode.CLAMP,
+        )
+
         // 尺寸变了（旋转 / 分屏 / 首次布局）纹理坐标要重算
         coordinator?.invalidate()
     }
+
+    /** 读无量纲 token（写成 `format=float` 的 item）；宿主已回收时退回 [fallback] */
+    private fun num(id: Int, fallback: Float): Float =
+        hostRef.get()?.context?.let { GlassTokens.num(it, id) } ?: fallback
 
     override fun onStateChange(state: IntArray): Boolean {
         val now = material.glass && state.any { it == android.R.attr.state_pressed }
@@ -160,9 +228,12 @@ class GlassSurfaceDrawable(
         if (!m.glass) {
             fill.shader = null
             fill.style = Paint.Style.FILL
-            fill.color = m.opaqueTint
+            // v2.6.2：用 [GlassMaterial.solid] 而不是 [GlassMaterial.opaqueTint]。
+            // opaqueTint 是"把半透明 tint 的 alpha 钉成 255"，暗面 HUD 的 tint 是
+            // #99000000，钉完就是纯黑 —— 比 v2.2 的 60% 黑更黑一截。
+            fill.color = m.solid
             canvas.drawPath(clipPath, fill)
-            stroke.strokeWidth = m.strokeWidthPx.coerceAtLeast(onePx)
+            stroke.strokeWidth = m.strokeWidthPx.coerceAtLeast(MIN_STROKE_PX)
             stroke.color = ContextCompat.getColor(host.context, R.color.outline)
             canvas.drawPath(clipPath, stroke)
             return
@@ -183,9 +254,22 @@ class GlassSurfaceDrawable(
         }
 
         // ---- ② 染色 tint（含对比度自适应） ----
+        // v2.6.2：亮度取自**本面在纹理里的那块区域**，不是整屏平均（见 [GlassCoordinator.regionLuminance]）。
+        // 只有真的压了文字的面（onColor != 0）才需要算，纯装饰面跳过这次采样。
+        val lum = if (backdropUsed && coord != null && m.onColor != 0) {
+            val raw = coord.regionLuminance(srcRect)
+            if (raw < 0f) {
+                lumEma
+            } else {
+                lumEma = if (lumEma < 0f) raw else lumEma * LUM_SMOOTH + raw * (1f - LUM_SMOOTH)
+                lumEma
+            }
+        } else {
+            -1f
+        }
         fill.shader = null
         fill.style = Paint.Style.FILL
-        fill.color = guardedTint(host, m, if (backdropUsed) coord?.avgLuminance ?: -1f else -1f)
+        fill.color = guardedTint(host, m, lum)
         canvas.drawRect(boundsRect, fill)
 
         // 按下：提浓，"玻璃变厚了"
@@ -209,6 +293,27 @@ class GlassSurfaceDrawable(
             }
         }
 
+        // ---- ③b 上沿镜面亮线（v2.6.2 新增）----
+        // 苹果玻璃最像玻璃的一笔：上沿那条比周围亮得多的细线。原来的四层里只有一条
+        // 铺满半张面的白色渐变，缺了这条"峰"，所以整体读作磨砂亚克力而不是玻璃。
+        if (m.specularColor != 0 && rimKeep > 0.02f && specH > 0f) {
+            fill.color = scaleAlpha(m.specularColor, rimKeep)
+            canvas.drawRect(0f, 0f, w, specH, fill)
+        }
+
+        // ---- ③c 底边内阴影（v2.6.2 新增）----
+        // 只在玻璃**内侧**、紧贴底边的一小段压暗。没有它，玻璃就是一张贴在内容上的
+        // 半透明片；有了它才有"这块东西有厚度、光是从上面来的"这个读数。
+        innerShader?.let { shader ->
+            if (m.innerShadowColor != 0 && rimKeep > 0.02f) {
+                fill.shader = shader
+                fill.alpha = (Color.alpha(m.innerShadowColor) * rimKeep).toInt().coerceIn(0, 255)
+                canvas.drawRect(0f, h - innerH, w, h, fill)
+                fill.shader = null
+                fill.alpha = 255
+            }
+        }
+
         // ---- ④ 内底反光：均匀的细亮线 ----
         fill.color = scaleAlpha(m.rimBottomColor, rimKeep)
         canvas.drawRect(0f, h - onePx, w, h, fill)
@@ -216,7 +321,10 @@ class GlassSurfaceDrawable(
         canvas.restoreToCount(sc)
 
         // ---- ⑤ 外描边 + 四角透镜亮线（折射假象的主要来源）----
-        stroke.strokeWidth = m.strokeWidthPx.coerceAtLeast(onePx)
+        // v2.6.2：下限原来是 onePx（= density）。3x 屏上会把 0.5dp 的设计值顶成 3px，
+        // 也就是 1dp —— 边框比设计粗一倍，正是"塑料边框"的观感来源。Android 支持亚像素
+        // 描边（会抗锯齿成发丝线），这里只保一个 0.5px 的物理下限防止彻底消失。
+        stroke.strokeWidth = m.strokeWidthPx.coerceAtLeast(MIN_STROKE_PX)
         stroke.color = scaleAlpha(m.strokeColor, rimKeep)
         canvas.drawPath(clipPath, stroke)
 
@@ -262,9 +370,27 @@ class GlassSurfaceDrawable(
             return true
         }
 
-        val regionMoved = lensRect != srcRect
+        val ctx = hostRef.get()?.context ?: return false
+        val scale = coord.textureScale
+        val strength = GlassTokens.dp(ctx, m.lensStrengthDp) * scale
+        // 折射是**向外**采样的：贴边像素要拿到 footprint 外面的内容。
+        // 只读 footprint 本身的话，出界一律 clamp 到自身边界 → 边缘一圈拖影。
+        // 所以把读取区域往外扩 pad，warp 用 (ox,oy) 知道 footprint 在缓冲区里的位置；
+        // 出界仍 clamp，但那已经是纹理的真边界（比如贴底的 dock 下面本来就没有内容）。
+        val pad = strength.roundToInt().coerceAtLeast(2)
+        texRect.set(
+            (srcRect.left - pad).coerceAtLeast(0),
+            (srcRect.top - pad).coerceAtLeast(0),
+            (srcRect.right + pad).coerceAtMost(tex.width),
+            (srcRect.bottom + pad).coerceAtMost(tex.height),
+        )
+        val bw = texRect.width()
+        val bh = texRect.height()
+        if (bw < 2 || bh < 2) return false
+
+        val regionMoved = lensRect != texRect
         if (coord.generation != lensGen || sw != lensOut?.width || sh != lensOut?.height || regionMoved) {
-            val need = sw * sh
+            val need = bw * bh
             if (lensSrc.size < need) {
                 lensSrc = IntArray(need)
                 lensDst = IntArray(need)
@@ -275,22 +401,23 @@ class GlassSurfaceDrawable(
                 out = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
                 lensOut = out
             }
-            if (coord.readRegion(srcRect, lensSrc)) {
-                val scale = coord.textureScale
-                val strength = GlassTokens.dp(
-                    hostRef.get()?.context ?: return false, m.lensStrengthDp,
-                ) * scale
+            if (coord.readRegion(texRect, lensSrc)) {
                 GlassLens.warp(
-                    src = lensSrc, dst = lensDst, sw = sw, sh = sh,
+                    src = lensSrc, dst = lensDst, sw = bw, sh = bh,
+                    ox = srcRect.left - texRect.left,
+                    oy = srcRect.top - texRect.top,
+                    fw = sw, fh = sh,
                     cornerPx = m.radiusPx * scale,
-                    bandPx = (m.radiusPx * scale + strength * 1.5f).coerceAtMost(minOf(sw, sh) / 2f).coerceAtLeast(1f),
+                    // 带高取 3 倍最大位移：circleMap 剖面下，深度到 1 个 strength 处位移
+                    // 已经掉到 25%，再深贡献趋近于零，带再宽只是白算
+                    bandPx = (strength * 3f).coerceAtLeast(1f),
                     strength = strength,
                     magnify = m.magnify,
                     dispersion = m.dispersion,
                 )
                 out.setPixels(lensDst, 0, sw, 0, 0, sw, sh)
                 lensGen = coord.generation
-                lensRect.set(srcRect)
+                lensRect.set(texRect)
             } else {
                 // 读不到区域（纹理刚被重建）：这帧先用未折射的模糊底，不阻塞
                 canvas.drawBitmap(tex, srcRect, boundsRect, bitmapPaint)
@@ -377,6 +504,12 @@ class GlassSurfaceDrawable(
 
         /** 粘滞容差：已选档位只要还差得远才换档（见 [guardedTint]） */
         private const val HYST = 0.3
+
+        /** 描边宽度的物理下限（px）。见 draw() ⑤ 的说明 */
+        private const val MIN_STROKE_PX = 0.5f
+
+        /** 本面亮度 EMA 的惯性（越大越稳、跟随越慢） */
+        private const val LUM_SMOOTH = 0.8f
     }
 }
 
@@ -481,6 +614,9 @@ fun View.applyGlass(
     provider: GlassMaterialProvider,
 ): View {
     val material = provider.get(this)
+    // 换掉旧玻璃面之前先归还它的像素缓存（见 [GlassSurfaceDrawable.release]）。
+    // 开关切换 / 切页 / 旋转都会重复走这里，不回收就是每张纹理攒一批等 GC。
+    (background as? GlassSurfaceDrawable)?.release()
     val surface = GlassSurfaceDrawable(WeakReference(this), material, coordinator)
     background = surface
     elevation = material.elevationPx

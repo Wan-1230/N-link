@@ -94,7 +94,8 @@ object AppModule {
         apGatewayResolver: com.nikonlink.app.device.wifi_ap.ApGatewayResolver,
         connFlags: com.nikonlink.app.device.connect.ConnFlags,
         funnel: com.nikonlink.app.device.connect.ConnFunnel,
-        preflight: com.nikonlink.app.device.connect.PreflightGate
+        preflight: com.nikonlink.app.device.connect.PreflightGate,
+        staHostRegistrar: com.nikonlink.app.device.wifi_sta.StaHostRegistrar
     ): ConnectionManager = ConnectionManager(
         context,
         bleManager,
@@ -110,7 +111,8 @@ object AppModule {
         apGatewayResolver,
         connFlags,
         funnel,
-        preflight
+        preflight,
+        staHostRegistrar
     )
 
     @Provides

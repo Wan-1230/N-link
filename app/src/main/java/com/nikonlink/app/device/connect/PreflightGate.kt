@@ -97,6 +97,17 @@ class PreflightGate @Inject constructor(
     fun warnings(channel: String): List<Item> =
         checkAll(channel).filter { !it.ok && !it.blocking }
 
+    /**
+     * FR-33 C4：「系统因无互联网踢掉相机热点」的逐 ROM 指引文案。
+     *
+     * 预检里的 `smartSwitchAvoid` 只在系统全局项 `network_avoid_bad_wifi=1` 时才报，
+     * 而 vivo/OPPO 等的助理行为并不反映在这个全局项上 —— 所以会话期重复掉线的
+     * 运行时触发（ConnectionManager.noteSessionWifiDrop）需要一条不依赖全局项、
+     * 按 ROM 取 `wlan_plus` 条目的文案。表里没有时返回 null，由调用方给通用文案。
+     */
+    fun wlanGuidanceText(): String? =
+        compatRules.hint(TRICK_WLAN_PLUS)?.let { it + compatRules.staleSuffix(TRICK_WLAN_PLUS) }
+
     // ── 各项检查 ────────────────────────────────────────────────────────────
 
     private fun wifiSwitchOn(): Item {

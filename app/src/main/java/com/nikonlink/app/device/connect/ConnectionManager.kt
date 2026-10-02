@@ -20,6 +20,8 @@ import com.nikonlink.app.device.wifi_ap.WifiManager
 import com.nikonlink.app.device.wifi_sta.WifiCameraCandidate
 import com.nikonlink.app.device.wifi_sta.WifiDirectConnector
 import com.nikonlink.app.device.wifi_sta.WifiScanner
+import com.nikonlink.app.device.wifi_sta.StaHostRegistrar
+import com.nikonlink.app.device.wifi_sta.pickRegistrationCandidate
 import com.nikonlink.app.device.data.DeviceRepository
 import com.nikonlink.app.camera.gallery.TransferManager
 import com.nikonlink.app.shared.common.AppEventLogger
@@ -59,7 +61,8 @@ class ConnectionManager @Inject constructor(
     private val apGatewayResolver: com.nikonlink.app.device.wifi_ap.ApGatewayResolver,
     private val connFlags: ConnFlags,
     private val funnel: ConnFunnel,
-    private val preflight: PreflightGate
+    private val preflight: PreflightGate,
+    private val staHostRegistrar: StaHostRegistrar
 ) {
     companion object {
         private const val TAG = "ConnectionMgr"
@@ -75,6 +78,39 @@ class ConnectionManager @Inject constructor(
         private const val SOURCE_AP_GATEWAY = "ap_gateway"
         private const val SOURCE_DEFAULT_FALLBACK = "default_fallback"
         private const val DEFAULT_FALLBACK_HOST = "192.168.1.1"
+
+        /**
+         * FR-34①：AP 一键连接里「已拉起 WLAN 面板、等待用户点选热点回连」的有效期。
+         * 超过它就忘掉武装状态 —— 用户可能根本没点、或去连了别的网络。
+         */
+        private const val AP_PANEL_ARM_TTL_MS = 120_000L
+
+        /**
+         * v2.6.4：兜底地址（[DEFAULT_FALLBACK_HOST]）**自动重试**的冷却时长。
+         *
+         * 取值理由：日志里每轮盲猜要烧掉 157s，两轮之间相隔约 2.6 分钟 ——
+         * 也就是说网络条件根本没变过，重试只是重复已知结论。取 180s 冷却，
+         * 让自动恢复把时间留给"等网络事件"（手机重新接上相机热点）而不是反复撞墙。
+         * 用户主动点击不受此限（见 [connectToWifiCamera] 的冷却分支）。
+         */
+        private const val FALLBACK_COOLDOWN_MS = 180_000L
+
+        /**
+         * FR-30：未连接态自主注册的发现预算。
+         * 8s 够 mDNS 一轮应答 + 网段短超时补扫（ZDROP 的发现代际实测 6s 收口）；
+         * 注册是用户手动点的动作，超过这个数还不如让用户先看一眼相机屏幕。
+         */
+        private const val REG_DISCOVERY_TIMEOUT_MS = 8_000L
+
+        /**
+         * FR-32：注册收到 InitFail reason=1（槽位被占）后的冷却窗。
+         * 数值出处：FR-21 实测机身收回半开会话要几十秒（ZDROP 对照同量级）；
+         * 2026-10-02 真机连轰 4 次 reason=1 期间相机向导进入失败态（用户目视「连接失败」）。
+         */
+        private const val REG_REASON1_COOLDOWN_MS = 35_000L
+
+        /** FR-33 C4：会话期重复掉线判定窗（3 分钟内 ≥2 次即出 ROM 指引） */
+        private const val WIFI_DROP_GUIDANCE_WINDOW_MS = 180_000L
     }
 
     private var scope: CoroutineScope? = null
@@ -95,6 +131,20 @@ class ConnectionManager @Inject constructor(
      * 一旦拿到过，后续重试优先用它，不再退回默认兜底地址——消除日志里"12:14 又打回 192.168.1.1"的回退。
      */
     private var realCameraIp: String? = null
+
+    /** v2.6.4：兜底地址上一次连接失败的时间戳（0 = 从未失败），供自动重连做冷却 */
+    private var lastFallbackFailAt = 0L
+
+    /** FR-32：最近一次注册收到 InitFail reason=1 的时间戳（0 = 从未），供冷却窗判据 */
+    @Volatile
+    private var lastRegReason1At = 0L
+
+    /** FR-33 C4：会话期 WiFi 掉线时间戳（判定「系统反复踢相机热点」） */
+    private val sessionWifiDropAt = ArrayDeque<Long>()
+
+    /** FR-33 C4：指引每次启动只上屏一次，不长期占状态行 */
+    @Volatile
+    private var wlanGuidanceShown = false
 
     private val _connectionMetrics = MutableStateFlow(ConnectionMetrics())
     val connectionMetrics: StateFlow<ConnectionMetrics> = _connectionMetrics.asStateFlow()
@@ -154,6 +204,7 @@ class ConnectionManager @Inject constructor(
         observeReconnectTrigger()
         observeStaRecovery()
         observeHostRegistrationHint()
+        observeApPanelJoin()
         startMetricsUpdater()
         scope.launch { reconnectLastDeviceIfPaired() }
 
@@ -310,6 +361,25 @@ class ConnectionManager @Inject constructor(
             }
         }
 
+        // v2.6.4：**兜底地址的自动重试冷却**。
+        // 真机证据（2026-09-30 日志）：22:51 / 22:53 / 22:56 / 00:07 / 00:50 各有一轮
+        // `sta_fail reason=camera_unreachable host=192.168.1.1 fallback=true waited_ms≈157294`
+        // —— 每 2.6 分钟就用 157 秒去撞那个"没连上相机时纯属盲猜"的默认地址，
+        // 而相机其实一直在 10.184.219.14（手机热点上，`in_subnet=true` 那轮一次就成）。
+        // 盲猜地址对**用户主动点击**永远放行（他要试就该让他试），
+        // 只对自动恢复（restore_paired / 健康检查）做冷却，省下重复的 157 秒空转。
+        if (endpoint.host == DEFAULT_FALLBACK_HOST &&
+            caller != ConnFunnel.Caller.USER_TAP &&
+            System.currentTimeMillis() - lastFallbackFailAt < FALLBACK_COOLDOWN_MS
+        ) {
+            val waited = (System.currentTimeMillis() - lastFallbackFailAt) / 1000
+            eventLogger.event(
+                "connect_ignored", "host" to endpoint.host, "caller" to caller.code,
+                "reason" to "fallback_cooldown", "waited_s" to waited
+            )
+            return
+        }
+
         // v2.2（PRD §5.1 T-A2/T-A3）：AP 模式下相机自任网关，手机已连相机热点时
         // 「网关就是相机」——先学地址再发起配对，用户/历史给的地址（尤其是默认
         // 192.168.1.1）只在学不出来时作为兜底。学不到（如 STA 场景网关是路由器）
@@ -434,6 +504,11 @@ class ConnectionManager @Inject constructor(
             onFail = { reason ->
                 funnel.fail(mapConnectorReason(reason), reason)
                 _connectionHint.value = null
+                // v2.6.4：兜底地址（默认 192.168.1.1）失败的时间戳，供自动重连做冷却
+                // （见 [connectToWifiCamera] 的 fallback 冷却分支）。
+                if (endpoint.host == DEFAULT_FALLBACK_HOST) {
+                    lastFallbackFailAt = System.currentTimeMillis()
+                }
                 eventLogger.event(
                     "pair_fail",
                     "host" to endpoint.host, "port" to endpoint.port, "reason" to reason
@@ -468,15 +543,21 @@ class ConnectionManager @Inject constructor(
 
     /**
      * 扫描当前 WiFi 网络中的尼康相机（UDP 5353 + TCP 15740 探测）。
+     *
+     * @param ptpConfirm 透传 [WifiScanner.scan]：false 时全链路只 TCP 筛探（FR-31③），
+     *   供"扫完立刻开注册链路"的场景使用，避免 InitCommand 占住相机唯一槽位。
+     * @param earlyExit 透传 [WifiScanner.scan]：强候选命中即提前收工（FR-31④）。
      */
     suspend fun scanWifiCameras(
         timeoutMs: Long = 18_000L,
-        hotspotMode: Boolean = false
+        hotspotMode: Boolean = false,
+        ptpConfirm: Boolean = true,
+        earlyExit: Boolean = false
     ): List<WifiCameraCandidate> {
         // STA: 显式拿到 WiFi Network，让 scan() 内部的 mDNS/探测 Socket 绑定到 WiFi，
         // 避免手机蜂窝数据等其它网络抢走默认路由导致扫描失败。
         val network = wifiManager.currentWifiNetwork()
-        val candidates = wifiScanner.scan(timeoutMs, network, hotspotMode).toMutableList()
+        val candidates = wifiScanner.scan(timeoutMs, network, hotspotMode, ptpConfirm, earlyExit).toMutableList()
         // 扫描失败时直接复用历史 IP 发起 PTP/IP，避免每次都全段盲扫。
         // RC-3：地址统一走 WifiEndpoint 归一化（前导零校正、非法段拦截）
         val last = runCatching { deviceRepository.getLastAutoConnectDevice() }.getOrNull()
@@ -484,8 +565,15 @@ class ConnectionManager @Inject constructor(
         if (lastEndpoint != null &&
             candidates.none { it.ipAddress == lastEndpoint.host }
         ) {
-            // 历史 IP 需要先通过 PTP/IP Init Ack 确认，避免把已失效地址展示给用户。
-            if (PtpIpProbe.probe(lastEndpoint, timeoutMs = 1000L, network = network)) {
+            // 历史 IP 需要先确认可达，避免把已失效地址展示给用户。
+            // FR-31③：ptpConfirm=false 时只做 TCP 确认 —— 历史 IP 若就是即将注册的相机，
+            // 一次 InitCommand 探测就足以让紧随其后的注册握手被 reason=1 拒掉。
+            val alive = if (ptpConfirm) {
+                PtpIpProbe.probe(lastEndpoint, timeoutMs = 1000L, network = network)
+            } else {
+                PtpIpProbe.tcpConnectOnly(lastEndpoint.host, lastEndpoint.port, 1000L, network)
+            }
+            if (alive) {
                 candidates.add(
                     WifiCameraCandidate(
                         lastEndpoint.host,
@@ -605,10 +693,37 @@ class ConnectionManager @Inject constructor(
     }
 
     /**
+     * FR-33 C4：会话期重复掉线 → 一次性 ROM 指引（纯展示，不改任何连接行为）。
+     *
+     * 系统对「非默认且无持有」的无互联网热点做回收是 AP 模式「相机显示无法连接并关热点」
+     * 的根因（docs/非上网热点被系统回收-根因与修复方案-2026-10-02.md）。C1/C2 已从
+     * 根上持有，但仍存在「连持有也照杀」的 OEM 助理策略 —— 3 分钟内掉 2 次不是巧合，
+     * 把该 ROM 的开关指引送进状态行。每次启动只报一次。
+     */
+    private fun noteSessionWifiDrop() {
+        val now = System.currentTimeMillis()
+        val count: Int
+        synchronized(sessionWifiDropAt) {
+            sessionWifiDropAt.addLast(now)
+            while (sessionWifiDropAt.isNotEmpty() &&
+                now - sessionWifiDropAt.first() > WIFI_DROP_GUIDANCE_WINDOW_MS
+            ) {
+                sessionWifiDropAt.removeFirst()
+            }
+            if (sessionWifiDropAt.size < 2 || wlanGuidanceShown) return
+            wlanGuidanceShown = true
+            count = sessionWifiDropAt.size
+        }
+        eventLogger.event("wlan_guidance", "reason" to "repeat_drop", "n" to count)
+        _statusMessage.value = (preflight.wlanGuidanceText()
+            ?: "系统 3 分钟内两次断开相机热点：请在系统 WLAN 设置里关闭「智能切换/避开不良网络」类开关") +
+            "；关闭后仍掉线请导出日志反馈（包内已带链路层诊断）"
+    }
+
+    /**
      * 通过 BLE 通知相机恢复 WiFi AP，同时用已缓存凭证在手机侧重连。
      */
-    fun requestWifiReconnect() {
-        scope?.launch {
+    fun requestWifiReconnect() {        scope?.launch {
             delay(WIFI_UPGRADE_DELAY_MS)
             if (bleManager.isConnected()) {
                 bleManager.requestWifiReconnect()
@@ -634,23 +749,119 @@ class ConnectionManager @Inject constructor(
     }
 
     /**
-     * STA 主机注册（ZDROP 式）：在已建立的 PTP 会话内发送
-     * PrepareHost(0x952B) / ConfirmHost(0x935A)，把本机 GUID 注册为相机信任主机。
+     * STA 主机注册（ZDROP 式）：发送 PrepareHost(0x952B) / ConfirmHost(0x935A)，
+     * 把本机 GUID 注册为相机信任主机。
      * 注册成功后，相机切 STA 模式才会放行 InitCommandRequest（否则会 InitFail 拒绝）。
      *
-     * 前置校验：PTP 会话已连接（AP 模式连上相机后调用，由 UI 引导相机进入
-     * 「连接至 PC」首次配置向导）。
+     * 两条路径：
+     * - **已连接**（AP 模式连上、或 STA 已连）：在当前活会话内注册，v2.6.3 以来的原路径，逻辑不变；
+     * - **未连接**（v2.6.6 FR-30）：相机已连上本机热点/同一路由器并停在向导时，
+     *   先做一轮受限发现拿到 endpoint，再交 [StaHostRegistrar] 开临时通道完成注册 ——
+     *   不再要求「先通过 AP 连上相机」。ZDROP 2026-10-01 诊断日志的 host-register 段
+     *   证明注册本就是一条不依赖既有会话的独立链路。
      */
     suspend fun registerStaHost(
         onProgress: ((String) -> Unit)? = null
     ): HostRegistrationResult {
         if (!ptpSession.isConnected()) {
-            return HostRegistrationResult.Failure(
-                phase = "not_connected",
-                detail = "相机未连接。请先通过 WiFi 连上相机（AP 模式），再执行 STA 主机注册"
+            return registerStaHostStandalone(onProgress)
+        }
+        // v2.6.3 R2（ConnFlags.HOSTREG_PRECHECK）：发 0x952B 之前先看相机**当前模式**
+        // 有没有把它列进 OperationsSupported。尼康的 SnapBridge AP 与主机配置向导都在
+        // 192.168.1.1 提供 PTP/IP，但只有向导支持注册 —— 这是唯一能在**发命令之前**
+        // 分辨两者的信号，省掉一次注定失败的往返和一句含糊的报错。
+        // ops 为 null（没取到/解析失败）时不拦，按旧路径盲发。
+        if (connFlags.isEnabled(ConnFlags.HOSTREG_PRECHECK)) {
+            val ops = ptpSession.lastSupportedOperations
+            if (ops != null && !ops.contains(PtpConstants.OP_NIKON_HOST_REGISTRATION_PREPARE)) {
+                eventLogger.event("hostreg", "phase" to "precheck_blocked", "ops" to ops.size)
+                return HostRegistrationResult.Failure(
+                    phase = "precheck",
+                    detail = "相机当前模式不支持主机注册（0x952B 不在它声明的能力列表里）。\n" +
+                        "多数情况是相机没在 STA 主机配置向导里 —— 普通「连接至智能设备」的 " +
+                        "WiFi 热点也能连上，但它不接受注册。\n" +
+                        "请在相机上重新进入「Wi-Fi连接（STA mode）」或「连接至 PC」的网络设定向导，" +
+                        "停在「正在等待连接 / 等待计算机」的画面后再点注册。"
+                )
+            }
+        }
+
+        val result = ptpSession.registerHost(onProgress)
+        if (result is HostRegistrationResult.Success) {
+            prefs.edit().putBoolean(PREFS_STA_HOST_REGISTERED, true).apply()
+            _staHostRegistered.value = true
+            _staRegisterNeeded.value = false
+        }
+        return result
+    }
+
+    /**
+     * FR-30：未连接态自主注册。发现不到相机时给出两条可照做的路径，
+     * 而不是旧版那句把 STA 现场判死的「请先通过 WiFi 连上相机（AP 模式）」。
+     */
+    private suspend fun registerStaHostStandalone(
+        onProgress: ((String) -> Unit)?
+    ): HostRegistrationResult {
+        // FR-32：reason=1 冷却。机身收回半开会话要几十秒，冷却窗内重发只会
+        // 重复已知结论，并把向导态往失败态上推（2026-10-02 真机连拒 4 次）。
+        if (connFlags.isEnabled(ConnFlags.STA_REG_REASON1_COOLDOWN)) {
+            val since = System.currentTimeMillis() - lastRegReason1At
+            if (lastRegReason1At != 0L && since < REG_REASON1_COOLDOWN_MS) {
+                val remain = ((REG_REASON1_COOLDOWN_MS - since) / 1000L).coerceAtLeast(1L)
+                eventLogger.event(
+                    "hostreg", "phase" to "cooldown", "transport" to "standalone", "remain_s" to remain
+                )
+                return HostRegistrationResult.Failure(
+                    phase = "cooldown",
+                    detail = "相机刚报过「槽位被占」（reason=1），机身收回旧会话还要几十秒。\n" +
+                        "请约 $remain 秒后再点注册；连点只会重复被拒，还会把相机向导推入失败态。"
+                )
+            }
+        }
+        onProgress?.invoke("正在本地网络寻找相机…")
+        eventLogger.event("hostreg", "phase" to "discover_start", "transport" to "standalone")
+        // FR-31③④：注册发现**不发 InitCommand**（会占住相机唯一槽位，把紧随其后的
+        // 注册握手挤成 reason=1；2026-10-02 真机连拒 4 次），且强候选命中即收，
+        // 不再跑满扫描预算（旧实测 discover 段 8~18s，ZDROP 发现代际 1.4s）。
+        val candidates = runCatching {
+            scanWifiCameras(
+                timeoutMs = REG_DISCOVERY_TIMEOUT_MS,
+                ptpConfirm = false,
+                earlyExit = true
             )
         }
-        val result = ptpSession.registerHost(onProgress)
+            .onFailure {
+                eventLogger.event(
+                    "hostreg", "phase" to "discover_error",
+                    "transport" to "standalone", "err" to it.javaClass.simpleName
+                )
+            }
+            .getOrDefault(emptyList())
+        val candidate = pickRegistrationCandidate(candidates)
+        if (candidate == null) {
+            eventLogger.event(
+                "hostreg", "phase" to "discover_empty",
+                "transport" to "standalone", "n" to candidates.size
+            )
+            return HostRegistrationResult.Failure(
+                phase = "not_connected",
+                detail = "相机未连接，本地网络里也没找到可注册的相机。\n" +
+                    "两条可用路径（任选其一）：\n" +
+                    "  · STA 直接注册：让相机连上本机热点（或与手机同一路由器），停在" +
+                    "「Wi-Fi连接（STA mode）」/「连接至 PC」向导的等待画面，再点注册，本端会自动找到它；\n" +
+                    "  · AP 注册：先在「WiFi-AP」标签连上相机热点，再回到这里执行注册。"
+            )
+        }
+        eventLogger.event(
+            "hostreg", "phase" to "discover_hit", "transport" to "standalone",
+            "host" to candidate.ipAddress, "source" to candidate.source
+        )
+        val result = staHostRegistrar.register(WifiEndpoint(candidate.ipAddress, candidate.port), onProgress)
+        if (result is HostRegistrationResult.Failure &&
+            result.initFailReason == PtpConstants.INIT_FAIL_CONNECTION_IN_USE
+        ) {
+            lastRegReason1At = System.currentTimeMillis()
+        }
         if (result is HostRegistrationResult.Success) {
             prefs.edit().putBoolean(PREFS_STA_HOST_REGISTERED, true).apply()
             _staHostRegistered.value = true
@@ -675,6 +886,7 @@ class ConnectionManager @Inject constructor(
                     com.nikonlink.app.device.wifi_ap.WifiChannelState.DISCONNECTED -> {
                         if (stateMachine.state.value == ConnectionState.FULLY_CONNECTED ||
                             stateMachine.state.value == ConnectionState.WIFI_UPGRADING) {
+                            noteSessionWifiDrop()
                             stateMachine.dispatch(ConnectionEvent.WifiDisconnected)
                             // PRD 3.5: WiFi 断开，BLE 正常 → 通过 BLE 发送 WiFi 重连指令
                             if (bleManager.isConnected()) {
@@ -706,16 +918,46 @@ class ConnectionManager @Inject constructor(
     /**
      * 相机主动拒绝握手（InitFail）说明 STA 门控未解除 → 提示需要做主机注册。
      * 只在收到 InitFail 时触发，网络类失败（无 WiFi / 相机不可达）不误报。
+     *
+     * **v2.6.3 R1（`ConnFlags.HOSTREG_HINT_V2`）**：原来**所有** InitFail 都算"需要注册"，
+     * 但 PTP/IP 的三个 fail reason 语义完全不同 —— reason=1 是"机身唯一的客户端槽还被
+     * 上一代会话占着"（该等，不该去注册），reason=3 是"本机已在这个连接里"
+     * （已注册的证据）。一律当"需要注册"会把用户指向一个相机根本没在等待的向导，
+     * 随后的 0x952B 必然被 0x201F 拒（2026-09-30 日志实证）。
+     * 闸门关掉 = 回到"一律需要注册"的旧行为。
      */
     private fun observeHostRegistrationHint() {
         scope?.launch {
             ptpSession.lastInitFailReason.collect { reason ->
-                if (reason != null) {
-                    eventLogger.event("sta_hostreg_hint", "reason" to reason)
-                    _staRegisterNeeded.value = true
-                    revokeStaleHostClaim(reason)
-                    promoteAddressOnInitFail()
+                if (reason == null) return@collect
+                eventLogger.event("sta_hostreg_hint", "reason" to reason)
+                val graded = connFlags.isEnabled(ConnFlags.HOSTREG_HINT_V2)
+                when {
+                    graded && reason == PtpConstants.INIT_FAIL_HOST_ALREADY_CONNECTED -> {
+                        // 机身明确说"本机已连接" = 注册是生效的，把它记为已注册而不是待注册
+                        _staHostRegistered.value = true
+                        _staRegisterNeeded.value = false
+                        prefs.edit().putBoolean(PREFS_STA_HOST_REGISTERED, true).apply()
+                        eventLogger.event("sta_hostreg_grade", "grade" to "already_connected")
+                    }
+
+                    graded && reason == PtpConstants.INIT_FAIL_CONNECTION_IN_USE -> {
+                        // 单槽被占：不动注册标记，等机身把上一代收干净后自动重试
+                        _statusMessage.value =
+                            "相机正忙：上一次的连接还没被机身收干净，稍等十几秒会自动重试"
+                        eventLogger.event("sta_hostreg_grade", "grade" to "busy_wait")
+                    }
+
+                    else -> {
+                        // 含 graded=false 的全部情况：维持"需要注册"的旧行为
+                        _staRegisterNeeded.value = true
+                        if (graded) {
+                            eventLogger.event("sta_hostreg_grade", "grade" to "needs_register")
+                        }
+                        revokeStaleHostClaim(reason)
+                    }
                 }
+                promoteAddressOnInitFail()
             }
         }
     }
@@ -777,6 +1019,66 @@ class ConnectionManager @Inject constructor(
                     Timber.tag(TAG).i("STA WiFi network restored, rebuilding PTP session over $network")
                     recoverWifiSession(network)
                 }
+            }
+        }
+    }
+
+    // ── FR-34①：AP 一键连接（免扫描 + 系统 WLAN 面板）──────────────────────────
+    //
+    // ZDROP 的两条简化在同机同相机上被日志与 dex 双重证实（分析文档 §4/§5）：
+    // ① AP endpoint 硬编码 192.168.1.1，零扫描；② 热点加入用
+    // `android.settings.panel.action.WIFI`（AOSP 标准化面板，各家 ROM 必须实现，
+    // 绕开 OEM 全设置页深链失效问题）。这里把这两条接进现有 learnFirst 通路：
+    // 兜底地址起轮次后由 ApGatewayResolver 学真网关，扫描一步都不需要。
+
+    /** >0 = 面板已拉起、等待用户在面板里点相机热点；值为武装时刻。 */
+    @Volatile
+    private var apPanelArmedAt = 0L
+
+    fun isApOneTapEnabled(): Boolean = connFlags.isEnabled(ConnFlags.AP_ONE_TAP)
+
+    /** 手机当前是否挂在相机热点上（UI 分流用）。 */
+    fun isOnCameraAp(): Boolean = apGatewayResolver.isOnCameraAp()
+
+    /** UI 拉起 WLAN 面板前调用：登记武装状态。 */
+    fun armApPanelConnect() {
+        apPanelArmedAt = System.currentTimeMillis()
+        eventLogger.event("ap_panel", "phase" to "armed")
+    }
+
+    fun isApPanelArmed(): Boolean =
+        apPanelArmedAt > 0 && System.currentTimeMillis() - apPanelArmedAt < AP_PANEL_ARM_TTL_MS
+
+    /**
+     * FR-34①：AP 模式无扫描候选时直接以兜底地址起轮次。
+     * `learnFirst` 分支会用 ApGatewayResolver 学出真网关，扫描一步都不需要 ——
+     * ZDROP 同款语义（其 dex 里 endpoint 默认就是 192.168.1.1，零扫描）。
+     */
+    fun connectApDirect() {
+        connectToWifiCamera(DEFAULT_FALLBACK_HOST, caller = ConnFunnel.Caller.USER_TAP)
+    }
+
+    /**
+     * 武装状态下尝试起一轮 AP 连接（面板回连检测、onResume 兜底都调这里）。
+     * @return true = 已消费武装标记并发起连接
+     */
+    fun tryStartArmedApConnect(): Boolean {
+        if (!isApPanelArmed()) return false
+        if (!apGatewayResolver.isOnCameraAp()) return false
+        apPanelArmedAt = 0L
+        eventLogger.event("ap_panel", "phase" to "joined", "host" to DEFAULT_FALLBACK_HOST)
+        connectApDirect()
+        return true
+    }
+
+    /** 用户没走面板而是回到 App 时，onResume 的同步检查也走这个观察者的逻辑。 */
+    private fun observeApPanelJoin() {
+        scope?.launch(Dispatchers.IO) {
+            wifiManager.networkAvailable.collect {
+                if (!isApPanelArmed()) return@collect
+                // connectionInfo 的 SSID 比 onAvailable 晚就绪零点几秒，等一下再判
+                delay(1000)
+                tryStartArmedApConnect()
             }
         }
     }
@@ -916,7 +1218,12 @@ class ConnectionManager @Inject constructor(
         // 于是把"换一张网"的场景指引到"去连 WiFi"那一句上。
         reason.contains("bind_failed") -> ConnFunnel.Reason.BIND_FAILED
         reason.contains("no_wifi_network") -> ConnFunnel.Reason.NO_WIFI_NETWORK
-        reason.contains("camera_unreachable") -> ConnFunnel.Reason.TCP_TIMEOUT
+        // v2.6.6 FR-29①：改挂 CAMERA_UNREACHABLE。原来映射到 TCP_TIMEOUT，而那个码
+        // 全仓零生产者 —— STA 最高频的失败因此在日志里长期写着"端口超时"，误导排查。
+        reason.contains("camera_unreachable") -> ConnFunnel.Reason.CAMERA_UNREACHABLE
+        // v2.6.6 FR-29②：这两类是"我们这轮没跑完"，不是相机的问题，必须能与 UNKNOWN 分开统计。
+        reason.contains("loop_error") -> ConnFunnel.Reason.LOOP_ERROR
+        reason.contains("round_budget_exhausted") -> ConnFunnel.Reason.ROUND_BUDGET_EXHAUSTED
         reason.contains("event_ack_timeout") -> ConnFunnel.Reason.EVENT_ACK_TIMEOUT
         // 争抢型必须先判：它是"相机把连接位给了别人"，不是"握手失败"，指引完全不同
         reason.contains("ptp_busy_other_client") -> ConnFunnel.Reason.PTP_BUSY_OTHER_CLIENT

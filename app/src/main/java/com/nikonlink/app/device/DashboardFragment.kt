@@ -2,8 +2,10 @@ package com.nikonlink.app.device
 
 import com.nikonlink.app.shared.ui.NlFeedback
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.result.contract.ActivityResultContracts
 import android.graphics.Typeface
 import android.os.Bundle
@@ -43,6 +45,8 @@ import com.nikonlink.app.databinding.ItemRecentDeviceBinding
 import com.nikonlink.app.databinding.ItemWifiCandidateBinding
 import timber.log.Timber
 import com.nikonlink.app.databinding.FragmentDashboardBinding
+import com.nikonlink.app.device.ftp.FtpPushServer
+import com.nikonlink.app.shared.common.AppSettings
 import com.nikonlink.app.camera.params.CameraParamsViewModel
 import com.nikonlink.app.camera.params.ShutterCountSource
 import com.nikonlink.app.camera.params.ShutterCountState
@@ -78,6 +82,18 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     private var cameraInfoRequested = false
     private var currentMode = ConnectMode.WIFI_AP
     private var modeTabWidth = 0
+
+    /**
+     * v2.6.3：STA 页当前的**连接架构**。
+     *
+     * 两种架构（PTP/IP 直连 / FTP 推送收图）共用同一个 STA 页签，靠顶部药丸分段控件切换，
+     * 不新增页面、不新增路由。选择持久化在 [AppSettings.staArchitecture]。
+     * AP / USB 两条链路完全不读这个字段。
+     */
+    private var staArch = AppSettings.STA_ARCH_PTP
+
+    /** 首帧落位不平移（同相册页 tabIndicatorInitialized 的用意） */
+    private var staArchInitialized = false
     /** USB 链路激活标记：USB 模式下卡片展示 USB 信息而非 WiFi 频段 */
     private var usbActive = false
 
@@ -103,6 +119,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         setupInteractions()
         setupModeTabs()
         setupModeActions()
+        setupStaArch()
         paramsViewModel.readAll()
     }
 
@@ -173,7 +190,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             viewModel.connectionState.collect { state ->
                 val (text, colorRes, loading) = when (state) {
                     ConnectionState.FULLY_CONNECTED ->
-                        Triple("已连接", R.color.on_dark_card, false)
+                        Triple("已连接", R.color.status_connected, false)
                     ConnectionState.WIFI_UPGRADING ->
                         Triple("建立高速通道", R.color.on_dark_card_variant, true)
                     ConnectionState.BLE_CONNECTED ->
@@ -437,7 +454,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                         binding.tvConnectionStatus.text = "USB 已连接"
                         binding.tvUsbDevice.text = "USB 相机已连接，可直接传输照片"
                         binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
-                            ContextCompat.getColor(requireContext(), R.color.on_dark_card)
+                            ContextCompat.getColor(requireContext(), R.color.status_connected)
                         )
                         binding.btnConnect.visibility = View.GONE
                         binding.btnDisconnect.visibility = View.VISIBLE
@@ -540,13 +557,17 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             !needed -> tv.visibility = View.GONE
             !registered -> {
                 tv.visibility = View.VISIBLE
-                tv.text = "相机没有记住本机（从未注册，或最近拒绝了我们的握手）：" +
-                        "切到「WiFi-AP」模式连上相机，再点上方按钮，按相机屏幕提示确认。"
+                tv.text = "相机没有记住本机 —— 需要先做一次主机注册（全程只需一次）：\n" +
+                        "相机菜单进入「Wi-Fi连接（STA mode）」创建配置文件，" +
+                        "停在「正在等待连接」画面；\n" +
+                        "手机与相机同网后，点上方「STA 主机注册」，相机屏幕按 OK。\n" +
+                        "注意：普通的「连接至智能设备」热点不接受注册（会回 0x201F）。"
             }
             else -> {
                 tv.visibility = View.VISIBLE
-                tv.text = "相机未接受本次连接。请在相机菜单进入「WiFi 连接（STA mode）」" +
-                        "并停在等待画面，再点「扫描相机」→「连接相机」。"
+                tv.text = "相机未接受本次连接：注册已经通过，多半是相机还没停在 STA 等待画面。\n" +
+                        "请在相机菜单进入「WiFi 连接（STA mode）」，连上网络后停在等待画面，" +
+                        "再点「扫描相机」→「连接相机」。"
             }
         }
     }
@@ -639,9 +660,20 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             NlGlass.dialog(requireContext())
                 .setTitle("STA 主机注册")
                 .setMessage(
-                    "注册只需做一次，完成后相机才会允许 N-Link 以 STA 方式连接。\n\n" +
-                            "首次使用请先切到「WiFi-AP」模式连上相机，再点「开始注册」，" +
-                            "按相机屏幕提示确认（约 10 秒）。"
+                    "作用：把本机登记进相机的「信任主机」列表。\n" +
+                        "尼康相机在 STA 模式下只接受已注册的主机，没注册过的连接会被相机直接拒绝。\n\n" +
+                        "前提：相机必须停在主机配置向导的等待画面\n" +
+                        "  · 相机菜单 →「Wi-Fi连接（STA mode）」创建配置文件" +
+                        "（旧固件在「连接至 PC」→ 网络设定里）\n" +
+                        "  · 连上网后相机停在「正在等待连接」，这时才受理注册\n" +
+                        "  · 中途退出向导、或只开了普通的「连接至智能设备」热点，" +
+                        "注册会失败并回 0x201F\n\n" +
+                        "操作（全程只需一次）：\n" +
+                        " ① 让相机连上本机热点（或与手机同一路由器），停在向导等待画面；" +
+                        "不需要先连相机，点注册后本端会自动找到它\n" +
+                        " ② 点「开始注册」，相机屏幕出现确认提示时按 OK，约 10 秒完成\n" +
+                        " ③ 相机只会开自己热点的机型，也可先在「WiFi-AP」标签连上 AP 再回来注册\n\n" +
+                        "注册成功后，日常用 STA 连接不需要再做这一步。"
                 )
                 .setPositiveButton("开始注册") { _, _ -> viewModel.registerStaHost() }
                 .setNegativeButton("取消", null)
@@ -745,15 +777,27 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 ContextCompat.getColor(requireContext(), if (hotspot) R.color.on_primary else R.color.text_primary)
             )
             binding.tvStaGuide.text = if (hotspot) {
-                "① 首次使用需注册：切到「WiFi-AP」模式连上相机 → 点下方「STA 主机注册」" +
-                        "（按相机屏幕提示确认，约 10 秒）\n" +
-                        "② 相机菜单进入「WiFi 连接（STA mode）」，加入手机热点并停在等待画面\n" +
-                        "③ 手机开启个人热点，点「扫描相机」自动发现 → 点「连接相机」完成连接"
+                "首次使用先注册一次（之后不再需要）：\n" +
+                    "  相机菜单 →「Wi-Fi连接（STA mode）」创建配置文件（旧固件在「连接至 PC」→ 网络设定里）。\n" +
+                    "  向导连上网后会停在「正在等待连接」的画面 —— 注册必须在这一步做：\n" +
+                    "  让手机与相机处于同一网络，回到本页点「STA 主机注册」，相机屏幕按 OK（约 10 秒）。\n" +
+                    "  ⚠ 普通的「连接至智能设备」热点也能连上相机，但它不接受注册，点了报 0x201F。\n\n" +
+                    "日常连接：\n" +
+                    "  ① 手机开启个人热点\n" +
+                    "  ② 相机菜单进入「WiFi 连接（STA mode）」，加入手机热点，停在等待画面\n" +
+                    "  ③ 点「扫描相机」自动发现 → 点「连接相机」\n" +
+                    "搜不到相机时：确认相机停在等待画面、热点没有设为隐藏、手机没开 VPN"
             } else {
-                "① 首次使用需注册：切到「WiFi-AP」模式连上相机 → 点下方「STA 主机注册」" +
-                        "（按相机屏幕提示确认，约 10 秒）\n" +
-                        "② 相机与手机连接同一路由器，并在相机菜单进入「WiFi 连接（STA mode）」\n" +
-                        "③ 点「扫描相机」自动发现 → 点「连接相机」完成连接"
+                "首次使用先注册一次（之后不再需要）：\n" +
+                    "  相机菜单 →「Wi-Fi连接（STA mode）」创建配置文件（旧固件在「连接至 PC」→ 网络设定里）。\n" +
+                    "  向导连上网后会停在「正在等待连接」的画面 —— 注册必须在这一步做：\n" +
+                    "  让手机与相机处于同一网络，回到本页点「STA 主机注册」，相机屏幕按 OK（约 10 秒）。\n" +
+                    "  ⚠ 普通的「连接至智能设备」热点也能连上相机，但它不接受注册，点了报 0x201F。\n\n" +
+                    "日常连接：\n" +
+                    "  ① 手机与相机连接同一个路由器\n" +
+                    "  ② 相机菜单进入「WiFi 连接（STA mode）」，选择该路由器，停在等待画面\n" +
+                    "  ③ 点「扫描相机」自动发现 → 点「连接相机」\n" +
+                    "搜不到相机时：确认手机没开 VPN、路由器没开 AP 隔离（两者都会挡掉设备发现）"
             }
         }
 
@@ -767,6 +811,211 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         }
         render()
     }
+
+    // ─────────────── v2.6.3：STA 双架构（PTP/IP 直连 · FTP 推送收图）───────────────
+    //
+    // 需求要点与实现对应：
+    //  · 入口统一 → 同一个 WiFi STA 页签，顶部药丸分段控件切架构，不新增页面/路由
+    //  · 切换控件 → staArchPill（FrameLayout + 指示器 View + 等宽 TextView 行），
+    //    原型与相册页 albumTabPill 一致：选中 = 黑底白字加粗 + 指示器滑动
+    //  · 教程随动 → tvStaGuide（架构 A）与 tvFtpGuide（架构 B）各一份，切换即换
+    //  · 状态隔离 → 架构 B 的状态全在 FtpPushServer 自己的 StateFlow 里；
+    //    切走时停服务器 + 停扫描，不留"看不见却在跑"的中间态
+    //  · 规范一致 → 复用 bg_chip / bg_chip_selected / GlassMotion.slidePill /
+    //    NlButton.* 与 page_margin，不引入新框架
+
+    private fun setupStaArch() {
+        staArch = viewModel.settings.staArchitecture
+
+        binding.tabStaArchPtp.pressEffect()
+        binding.tabStaArchFtp.pressEffect()
+        binding.tabStaArchPtp.setOnClickListener { selectStaArch(AppSettings.STA_ARCH_PTP) }
+        binding.tabStaArchFtp.setOnClickListener { selectStaArch(AppSettings.STA_ARCH_FTP) }
+
+        binding.btnFtpToggle.pressEffect()
+        binding.btnFtpToggle.setOnClickListener {
+            if (viewModel.ftpState.value is FtpPushServer.State.Listening) {
+                viewModel.stopFtpServer()
+            } else {
+                viewModel.startFtpServer()
+            }
+            renderFtpUi()
+        }
+
+        // 两个流各自订阅、都只重绘 FTP 那一块；PTP 侧的状态由既有 observer 管，互不引用
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.ftpState.collect { renderFtpUi() }
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.ftpClients.collect { renderFtpUi() }
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.ftpReceived.collect { renderFtpUi() }
+        }
+
+        renderStaArch(animate = false)
+    }
+
+    private fun selectStaArch(arch: String) {
+        if (staArch == arch) return
+        val leavingFtp = staArch == AppSettings.STA_ARCH_FTP
+        staArch = arch
+        viewModel.settings.staArchitecture = arch
+
+        if (arch == AppSettings.STA_ARCH_FTP) {
+            // 进 FTP 架构：把架构 A 独有的在途状态收干净（扫描结果与轮询不属于这里）
+            viewModel.stopScan()
+        } else if (leavingFtp) {
+            // 离开 FTP 架构：停服务器、释放端口。这是**显式**的用户动作，
+            // 所以在途推送会被中断 —— 教程里写明了这一点，不做静默保留。
+            viewModel.stopFtpServer()
+        }
+        renderStaArch(animate = true)
+    }
+
+    private fun renderStaArch(animate: Boolean) {
+        if (_binding == null) return
+        val isFtp = staArch == AppSettings.STA_ARCH_FTP
+
+        // 指示器宽度 = 行宽 / 段数。Fragment 初始 hidden（GONE 不参与布局）时宽度为 0，
+        // 所以做有限次重试（同相册页 applyIndicator 的处理）。
+        val row = binding.staArchPill
+        fun applyIndicator(retries: Int) {
+            if (_binding == null) return
+            val rowWidth = row.width - row.paddingLeft - row.paddingRight
+            if (rowWidth <= 0) {
+                if (retries > 0) {
+                    binding.staArchIndicator.postDelayed({ applyIndicator(retries - 1) }, 64)
+                }
+                return
+            }
+            val segWidth = rowWidth / 2
+            if (binding.staArchIndicator.layoutParams.width != segWidth) {
+                binding.staArchIndicator.layoutParams.width = segWidth
+                binding.staArchIndicator.requestLayout()
+            }
+            GlassMotion.slidePill(
+                binding.staArchIndicator,
+                (if (isFtp) 1 else 0) * segWidth.toFloat(),
+                animated = staArchInitialized && animate,
+            )
+            staArchInitialized = true
+        }
+        applyIndicator(8)
+
+        fun styleTab(tab: android.widget.TextView, selected: Boolean) {
+            tab.setTextColor(
+                ContextCompat.getColor(
+                    requireContext(),
+                    if (selected) R.color.on_primary else R.color.text_primary
+                )
+            )
+            tab.typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        }
+        styleTab(binding.tabStaArchPtp, !isFtp)
+        styleTab(binding.tabStaArchFtp, isFtp)
+
+        binding.layoutStaPtp.visibility = if (isFtp) View.GONE else View.VISIBLE
+        binding.layoutStaFtp.visibility = if (isFtp) View.VISIBLE else View.GONE
+        binding.tvFtpGuide.text = FTP_GUIDE
+        applyActionRowVisibility()
+        renderFtpUi()
+    }
+
+    /**
+     * 架构 B 的状态渲染。数据全部来自 [FtpPushServer] 的单例状态，
+     * 所以页面重建（旋转 / 切页回来）时能直接反映"服务器还在跑"的真实情况，
+     * 不需要在 Fragment 里留副本。
+     */
+    private fun renderFtpUi() {
+        if (_binding == null) return
+        val ctx = requireContext()
+        val clients = viewModel.ftpClients.value
+
+        binding.tvFtpUser.text = FtpPushServer.USER
+        binding.tvFtpPass.text = viewModel.ftpPassword
+
+        when (val state = viewModel.ftpState.value) {
+            is FtpPushServer.State.Listening -> {
+                binding.tvFtpState.text =
+                    if (clients > 0) "正在接收：$clients 个连接" else "正在监听，等待相机连上来"
+                binding.tvFtpEndpoint.text = "${state.host} : ${state.port}"
+                binding.btnFtpToggle.text = "停止 FTP 服务器"
+                binding.tvFtpHint.visibility = View.VISIBLE
+                binding.tvFtpHint.text =
+                    "把上面的地址和端口填进相机的 FTP 配置，登录方式选「被动（PASV）」。"
+            }
+
+            is FtpPushServer.State.Failed -> {
+                binding.tvFtpState.text = "启动失败：${state.message}"
+                binding.tvFtpEndpoint.text = "—"
+                binding.btnFtpToggle.text = "重试启动"
+                binding.tvFtpHint.visibility = View.VISIBLE
+                binding.tvFtpHint.text =
+                    "端口被占用时重启应用再试；也确认没有别的 FTP 服务占着 ${FtpPushServer.DEFAULT_PORT}。"
+            }
+
+            FtpPushServer.State.Stopped -> {
+                binding.tvFtpState.text = "未启动"
+                val ips = viewModel.ftpCandidateAddresses()
+                binding.tvFtpEndpoint.text = if (ips.isEmpty()) {
+                    "未获取到局域网地址（手机先连上 WiFi 或开热点）"
+                } else {
+                    "相机侧填：${ips.first()} : ${FtpPushServer.DEFAULT_PORT}"
+                }
+                binding.btnFtpToggle.text = "启动 FTP 服务器"
+                binding.tvFtpHint.visibility = View.GONE
+            }
+        }
+
+        val list = viewModel.ftpReceived.value
+        binding.tvFtpStats.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
+        binding.tvFtpStats.text =
+            "已接收 ${list.size} 个文件 · ${viewModel.formatFtpBytes(list.sumOf { it.bytes })}"
+
+        // 接收记录：代码建行，不新增 XML 布局文件（与预览页的做法一致）
+        val container = binding.ftpLogList
+        container.removeAllViews()
+        list.take(6).forEach { item ->
+            val ok = item.savedPath != null
+            val tv = android.widget.TextView(ctx).apply {
+                text = buildString {
+                    append(viewModel.formatFtpTime(item.at)).append("  ")
+                    append(item.name).append("  ")
+                    append(viewModel.formatFtpBytes(item.bytes))
+                    if (!ok) append("（保存失败）")
+                }
+                textSize = 12f
+                setTextColor(
+                    ContextCompat.getColor(ctx, if (ok) R.color.text_secondary else R.color.text_tertiary)
+                )
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            }
+            container.addView(tv)
+        }
+    }
+
+    /**
+     * 架构 B 的教程。内容与 `FtpPushServer` 的真实行为逐条对应：
+     * 端口取 [FtpPushServer.DEFAULT_PORT]（非 21，因为绑定 <1024 端口在 Android 上要 root），
+     * 保存位置与 `AppSettings.savePath` 一致，架构切换会停服务器。
+     */
+    private val FTP_GUIDE: String
+        get() = buildString {
+            append("原理：相机主动把照片推给本机，全程不做主机注册 —— ")
+            append("这是尼康官方菜单里的另一条路，绕开了 STA 模式对未注册主机的门控。\n\n")
+            append("【相机侧】菜单 →「连接到 FTP 服务器」→ 网络设定 → 创建配置文件 → 连接向导\n")
+            append("  · 服务器地址 / 端口 / 用户名 / 密码：按下方的值填，一个都不能错\n")
+            append("  · 登录方式：被动（PASV）\n")
+            append("  · 连接方式：与手机同一路由器，或相机开热点、手机连上去\n\n")
+            append("【手机侧】点「启动 FTP 服务器」，保持本页开着即可。\n")
+            append("  · 收到的照片按「设置 → 传输设置 → 默认保存路径」存进 ")
+            append("DCIM/N-Link 或 Download/N-Link，和相册页下载的照片在同一处\n")
+            append("  · 点「PTP/IP 直连」标签会自动停止服务器（在途推送会中断）\n\n")
+            append("【收不到照片】① 相机里的地址 / 端口 / 密码与本页是否完全一致；")
+            append("② 手机不要开 VPN（会让相机连不上本机）；③ 看下方「接收记录」有没有动静")
+        }
 
     private fun selectMode(mode: ConnectMode) {
         if (currentMode == mode) return
@@ -812,6 +1061,26 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 panel.visibility = View.GONE
             }
         }
+        applyActionRowVisibility()
+        // v2.6.3：STA 面板初始是 GONE，GONE 不参与布局 → 那一刻 staArchPill.width == 0，
+        // 指示器量不出段宽（首帧只落一个 0 宽的胶囊）。所以**每次进入 STA 页签**都重算一次，
+        // 而不是只在 onViewCreated 里算一次 —— 后者会让指示器一直停在全宽/零宽。
+        if (currentMode == ConnectMode.WIFI_STA) renderStaArch(animate = false)
+    }
+
+    /**
+     * 扫描 / 连接按钮行的显隐（v2.6.3）。
+     *
+     * 只有「STA + FTP 推送收图」这一种组合要隐藏：FTP 架构下相机是**主动推送方**，
+     * 手机侧没有可发现、可连接的对象，留着两个按钮只会让人以为还要点。
+     * 判据里显式带上 `currentMode`，所以：
+     *  · AP / USB 两个页签**恒为 VISIBLE**（硬约束：这两条链路的界面不受影响）
+     *  · 从 STA 的 FTP 架构切到别的页签，一定恢复
+     */
+    private fun applyActionRowVisibility() {
+        if (_binding == null) return
+        val hide = currentMode == ConnectMode.WIFI_STA && staArch == AppSettings.STA_ARCH_FTP
+        binding.actionContainer.visibility = if (hide) View.GONE else View.VISIBLE
     }
 
     private fun panelFor(mode: ConnectMode): View {
@@ -858,6 +1127,9 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 val target = wifiDevices.firstOrNull()
                 if (target != null) {
                     connectWifiCandidate(target)
+                } else if (currentMode == ConnectMode.WIFI_AP && viewModel.apOneTapEnabled()) {
+                    // FR-34①：AP 模式免扫描一键连接（ZDROP 同构）
+                    apOneTapConnect()
                 } else {
                     showManualIpDialog(currentMode)
                 }
@@ -877,6 +1149,56 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     private fun connectWifiCandidate(candidate: WifiCameraCandidate) {
         binding.tvStatusMessage.text = "连接: ${candidate.name} (${candidate.ipAddress})"
         viewModel.connectToWifiCamera(candidate)
+    }
+
+    /**
+     * FR-34①：AP 免扫描一键连接。
+     *
+     * 已在相机热点 → 直接以兜底地址起轮次（learnFirst 会学真网关）；
+     * 不在 → 拉起系统 WLAN 面板让用户点选热点。面板是 AOSP 的
+     * `Settings.Panel.ACTION_WIFI`（ZDROP dex `1ca886` 同款）：以应用内底部面板
+     * 渲染，绕开各家 ROM 全设置页的深链失效问题；回连命中后由
+     * ConnectionManager 的观察者（或下面的 onResume 兜底）自动起轮次。
+     */
+    private fun apOneTapConnect() {
+        if (viewModel.onCameraAp()) {
+            binding.tvStatusMessage.text = "正在连接相机热点网关…"
+            viewModel.connectApDirect()
+            return
+        }
+        viewModel.armApPanel()
+        if (!launchWifiPanel()) {
+            // 面板与全设置页都拉不起来（理论上不会）：退回旧入口，不白武装
+            showManualIpDialog(ConnectMode.WIFI_AP)
+        } else {
+            binding.tvStatusMessage.text =
+                "请在弹出面板里点相机热点（NIKON_…），连上后会自动开始连接"
+        }
+    }
+
+    /** 拉起系统 WLAN 面板；API<29 或面板不可用时退回 WiFi 设置页。@return 是否成功离开本 App */
+    private fun launchWifiPanel(): Boolean {
+        val intents = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Settings.Panel.ACTION_WIFI 的字符串值；不直接用常量是为了 API<29 分支同表
+                add(Intent("android.settings.panel.action.WIFI"))
+            }
+            add(Intent(Settings.ACTION_WIFI_SETTINGS))
+        }
+        for (intent in intents) {
+            val ok = runCatching {
+                startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }.isSuccess
+            if (ok) return true
+        }
+        return false
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // FR-34①：从 WLAN 面板回到 App 的兜底 —— 用户在面板里点热点时
+        // networkAvailable 可能早于本页可见，或 SSID 当时还没就绪，这里补一次判定。
+        if (viewModel.apPanelArmed()) viewModel.tryStartArmedApConnect()
     }
 
     private fun connectRecentDevice(device: PairedDevice) {
