@@ -80,6 +80,12 @@ class ConnectionManager @Inject constructor(
         private const val DEFAULT_FALLBACK_HOST = "192.168.1.1"
 
         /**
+         * FR-34①：AP 一键连接里「已拉起 WLAN 面板、等待用户点选热点回连」的有效期。
+         * 超过它就忘掉武装状态 —— 用户可能根本没点、或去连了别的网络。
+         */
+        private const val AP_PANEL_ARM_TTL_MS = 120_000L
+
+        /**
          * v2.6.4：兜底地址（[DEFAULT_FALLBACK_HOST]）**自动重试**的冷却时长。
          *
          * 取值理由：日志里每轮盲猜要烧掉 157s，两轮之间相隔约 2.6 分钟 ——
@@ -198,6 +204,7 @@ class ConnectionManager @Inject constructor(
         observeReconnectTrigger()
         observeStaRecovery()
         observeHostRegistrationHint()
+        observeApPanelJoin()
         startMetricsUpdater()
         scope.launch { reconnectLastDeviceIfPaired() }
 
@@ -1012,6 +1019,66 @@ class ConnectionManager @Inject constructor(
                     Timber.tag(TAG).i("STA WiFi network restored, rebuilding PTP session over $network")
                     recoverWifiSession(network)
                 }
+            }
+        }
+    }
+
+    // ── FR-34①：AP 一键连接（免扫描 + 系统 WLAN 面板）──────────────────────────
+    //
+    // ZDROP 的两条简化在同机同相机上被日志与 dex 双重证实（分析文档 §4/§5）：
+    // ① AP endpoint 硬编码 192.168.1.1，零扫描；② 热点加入用
+    // `android.settings.panel.action.WIFI`（AOSP 标准化面板，各家 ROM 必须实现，
+    // 绕开 OEM 全设置页深链失效问题）。这里把这两条接进现有 learnFirst 通路：
+    // 兜底地址起轮次后由 ApGatewayResolver 学真网关，扫描一步都不需要。
+
+    /** >0 = 面板已拉起、等待用户在面板里点相机热点；值为武装时刻。 */
+    @Volatile
+    private var apPanelArmedAt = 0L
+
+    fun isApOneTapEnabled(): Boolean = connFlags.isEnabled(ConnFlags.AP_ONE_TAP)
+
+    /** 手机当前是否挂在相机热点上（UI 分流用）。 */
+    fun isOnCameraAp(): Boolean = apGatewayResolver.isOnCameraAp()
+
+    /** UI 拉起 WLAN 面板前调用：登记武装状态。 */
+    fun armApPanelConnect() {
+        apPanelArmedAt = System.currentTimeMillis()
+        eventLogger.event("ap_panel", "phase" to "armed")
+    }
+
+    fun isApPanelArmed(): Boolean =
+        apPanelArmedAt > 0 && System.currentTimeMillis() - apPanelArmedAt < AP_PANEL_ARM_TTL_MS
+
+    /**
+     * FR-34①：AP 模式无扫描候选时直接以兜底地址起轮次。
+     * `learnFirst` 分支会用 ApGatewayResolver 学出真网关，扫描一步都不需要 ——
+     * ZDROP 同款语义（其 dex 里 endpoint 默认就是 192.168.1.1，零扫描）。
+     */
+    fun connectApDirect() {
+        connectToWifiCamera(DEFAULT_FALLBACK_HOST, caller = ConnFunnel.Caller.USER_TAP)
+    }
+
+    /**
+     * 武装状态下尝试起一轮 AP 连接（面板回连检测、onResume 兜底都调这里）。
+     * @return true = 已消费武装标记并发起连接
+     */
+    fun tryStartArmedApConnect(): Boolean {
+        if (!isApPanelArmed()) return false
+        if (!apGatewayResolver.isOnCameraAp()) return false
+        apPanelArmedAt = 0L
+        eventLogger.event("ap_panel", "phase" to "joined", "host" to DEFAULT_FALLBACK_HOST)
+        connectApDirect()
+        return true
+    }
+
+    /** 用户没走面板而是回到 App 时，onResume 的同步检查也走这个观察者的逻辑。 */
+    private fun observeApPanelJoin() {
+        scope?.launch(Dispatchers.IO) {
+            wifiManager.networkAvailable.collect {
+                if (!isApPanelArmed()) return@collect
+                // connectionInfo 的 SSID 比 onAvailable 晚就绪零点几秒，等一下再判
+                delay(1000)
+                tryStartArmedApConnect()
             }
         }
     }

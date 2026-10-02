@@ -2,8 +2,10 @@ package com.nikonlink.app.device
 
 import com.nikonlink.app.shared.ui.NlFeedback
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.result.contract.ActivityResultContracts
 import android.graphics.Typeface
 import android.os.Bundle
@@ -1125,6 +1127,9 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 val target = wifiDevices.firstOrNull()
                 if (target != null) {
                     connectWifiCandidate(target)
+                } else if (currentMode == ConnectMode.WIFI_AP && viewModel.apOneTapEnabled()) {
+                    // FR-34①：AP 模式免扫描一键连接（ZDROP 同构）
+                    apOneTapConnect()
                 } else {
                     showManualIpDialog(currentMode)
                 }
@@ -1144,6 +1149,56 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     private fun connectWifiCandidate(candidate: WifiCameraCandidate) {
         binding.tvStatusMessage.text = "连接: ${candidate.name} (${candidate.ipAddress})"
         viewModel.connectToWifiCamera(candidate)
+    }
+
+    /**
+     * FR-34①：AP 免扫描一键连接。
+     *
+     * 已在相机热点 → 直接以兜底地址起轮次（learnFirst 会学真网关）；
+     * 不在 → 拉起系统 WLAN 面板让用户点选热点。面板是 AOSP 的
+     * `Settings.Panel.ACTION_WIFI`（ZDROP dex `1ca886` 同款）：以应用内底部面板
+     * 渲染，绕开各家 ROM 全设置页的深链失效问题；回连命中后由
+     * ConnectionManager 的观察者（或下面的 onResume 兜底）自动起轮次。
+     */
+    private fun apOneTapConnect() {
+        if (viewModel.onCameraAp()) {
+            binding.tvStatusMessage.text = "正在连接相机热点网关…"
+            viewModel.connectApDirect()
+            return
+        }
+        viewModel.armApPanel()
+        if (!launchWifiPanel()) {
+            // 面板与全设置页都拉不起来（理论上不会）：退回旧入口，不白武装
+            showManualIpDialog(ConnectMode.WIFI_AP)
+        } else {
+            binding.tvStatusMessage.text =
+                "请在弹出面板里点相机热点（NIKON_…），连上后会自动开始连接"
+        }
+    }
+
+    /** 拉起系统 WLAN 面板；API<29 或面板不可用时退回 WiFi 设置页。@return 是否成功离开本 App */
+    private fun launchWifiPanel(): Boolean {
+        val intents = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Settings.Panel.ACTION_WIFI 的字符串值；不直接用常量是为了 API<29 分支同表
+                add(Intent("android.settings.panel.action.WIFI"))
+            }
+            add(Intent(Settings.ACTION_WIFI_SETTINGS))
+        }
+        for (intent in intents) {
+            val ok = runCatching {
+                startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }.isSuccess
+            if (ok) return true
+        }
+        return false
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // FR-34①：从 WLAN 面板回到 App 的兜底 —— 用户在面板里点热点时
+        // networkAvailable 可能早于本页可见，或 SSID 当时还没就绪，这里补一次判定。
+        if (viewModel.apPanelArmed()) viewModel.tryStartArmedApConnect()
     }
 
     private fun connectRecentDevice(device: PairedDevice) {
