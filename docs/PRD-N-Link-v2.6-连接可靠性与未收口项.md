@@ -1162,4 +1162,8 @@ AP 连接循环保持回退后行为（= 前一版），本轮不动。
 wlan0 被踢。「WiFi 始终开启」是系统侧掩码而非根因。竞品三家 dex 均命中
 `requestNetwork+removeCapability+createWifiLock`（local-only 请求标准写法）。
 修复 C1/C2 = 请求去 INTERNET capability + 快路径补注册持有（闸 `v33_local_only_request`）；
-C3 诊断、C4 ROM 指引兜底；C5 否决 setWifiEnabled 看门狗。本轮只出方案未动代码。
+C3 诊断、C4 ROM 指引兜底；C5 否决 setWifiEnabled 看门狗。
+**2026-10-02 12:28 已落地**：C1/C2/C3 = `3efb7ca`，C4 = 本次提交；测试包
+`dist/N-Link-v2.6.1-debug-FR33.apk`（21,329,326B，SHA-256 前 8 `40a26aea`）。
+真机判据：开关=关时 AP 会话监看 5min 不掉（`sta_ifaces` 全程含 wlan0）、
+`net_req caps=local-only` 在册、`net_cb available validated=false` 出现。
