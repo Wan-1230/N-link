@@ -1,0 +1,990 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 全屏监看 HUD · 横屏变体（v2.7.2 重构）
+
+     横屏可用高度只有 360dp 上下，旧版「参数条 + 工具栏 + 快门行」三段各自实心面板
+     吃掉一半以上画面。这一版按成熟监看产品重排：
+
+     1. 顶栏 / 底簇都改成**渐变浮层**（bg_lv_top_fade / bg_lv_bottom_fade），
+        下面压着什么画面都还能看见，不再是切走一整条的实心板。
+     2. 参数带与工具图标**并成一行**，参数格去掉芯片背景、只留文字，
+        「关键参数快速查看」的信息层级不变，但高度从 40+50 压到 55dp 一行搞定。
+     3. 帧率/延迟这类非必要信息在横屏直接不显示（代码里 applyCompactWidthPolicy 兜底）。
+     4. 配合 Fragment 的横屏自动隐藏：监看中 3.5s 无触摸即收起顶栏 + 底簇，
+        画面回到 100%，碰一下取景唤回。
+     5. 参数面板改用渐变变体 bg_lv_sheet_fade，「沉」进画面而不是浮一块实心板。
+
+     ID 集合必须与 res/layout/fragment_liveview.xml 保持一致（ViewBinding 多变体合并）。 -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <ImageView
+        android:id="@+id/ivLiveView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="实时取景画面"
+        android:scaleType="fitCenter" />
+
+    <com.nikonlink.app.camera.liveview.ViewfinderOverlayView
+        android:id="@+id/viewGridOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="visible" />
+
+    <View
+        android:id="@+id/viewFocusIndicator"
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:background="@drawable/bg_focus_box"
+        android:visibility="gone" />
+
+    <View
+        android:id="@+id/viewFlash"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:alpha="0"
+        android:background="@color/white"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/infoCards"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:orientation="vertical"
+        android:paddingTop="52dp"
+        android:paddingEnd="@dimen/lv_bar_h_padding">
+
+        <LinearLayout
+            android:id="@+id/cardHistogram"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_lv_card"
+            android:orientation="vertical"
+            android:padding="@dimen/lv_card_pad"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="亮度直方图"
+                android:textColor="@color/lv_text_dim"
+                android:textSize="10sp" />
+
+            <com.nikonlink.app.camera.liveview.HistogramView
+                android:id="@+id/viewHistogram"
+                android:layout_width="@dimen/lv_graph_w"
+                android:layout_height="48dp"
+                android:layout_marginTop="4dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/cardWaveform"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/group_gap_small"
+            android:background="@drawable/bg_lv_card"
+            android:orientation="vertical"
+            android:padding="@dimen/lv_card_pad"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="RGB 波形"
+                android:textColor="@color/lv_text_dim"
+                android:textSize="10sp" />
+
+            <com.nikonlink.app.camera.liveview.WaveformView
+                android:id="@+id/viewWaveform"
+                android:layout_width="@dimen/lv_graph_w"
+                android:layout_height="48dp"
+                android:layout_marginTop="4dp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- 顶栏渐变浮层：关闭 | 模式 · AF | 监看状态 · 显示辅助 -->
+    <LinearLayout
+        android:id="@+id/topBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:background="@drawable/bg_lv_top_fade"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="@dimen/lv_bar_h_padding"
+        android:paddingTop="6dp"
+        android:paddingBottom="10dp">
+
+        <ImageView
+            android:id="@+id/btnClose"
+            android:layout_width="@dimen/lv_icon_btn_land"
+            android:layout_height="@dimen/lv_icon_btn_land"
+            android:background="@drawable/bg_lv_chip"
+            android:contentDescription="关闭"
+            android:padding="8dp"
+            android:src="@drawable/ic_close"
+            app:tint="@color/white" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <TextView
+            android:id="@+id/tvModeTag"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_lv_chip"
+            android:gravity="center"
+            android:minWidth="34dp"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="5dp"
+            android:singleLine="true"
+            android:text="P"
+            android:textColor="@color/lv_text"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btnAfMode"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:background="@drawable/bg_lv_chip"
+            android:gravity="center"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="5dp"
+            android:singleLine="true"
+            android:text="AF-C"
+            android:textColor="@color/lv_text"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <!-- 帧率/延迟在横屏不显示：空间全留给画面（代码里也会再兜一层） -->
+        <TextView
+            android:id="@+id/tvPerformance"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxEms="9"
+            android:singleLine="true"
+            android:text="0 FPS · 0 ms"
+            android:textColor="@color/lv_text_dim"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/tvLvState"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/lv_cell_gap"
+            android:background="@drawable/bg_lv_state_bad"
+            android:ellipsize="end"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="5dp"
+            android:singleLine="true"
+            android:text="未监看"
+            android:textColor="@color/lv_text"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+
+        <ImageView
+            android:id="@+id/btnOverlays"
+            android:layout_width="@dimen/lv_icon_btn_land"
+            android:layout_height="@dimen/lv_icon_btn_land"
+            android:layout_marginStart="@dimen/lv_cell_gap"
+            android:background="@drawable/bg_lv_chip"
+            android:contentDescription="显示辅助"
+            android:padding="8dp"
+            android:src="@drawable/ic_lv_disp"
+            app:tint="@color/white" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/cardLvState"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="@drawable/bg_lv_card"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:paddingHorizontal="28dp"
+        android:paddingVertical="16dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/tvStateTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="未开始监看"
+            android:textColor="@color/lv_text"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvStateDesc"
+            android:layout_width="220dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:gravity="center"
+            android:text="开始后可用触摸对焦、缩放与参数回读"
+            android:textColor="@color/lv_text_dim"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/btnStateAction"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_lv_action"
+            android:paddingHorizontal="24dp"
+            android:paddingVertical="8dp"
+            android:text="开始监看"
+            android:textColor="#000000"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- 底部控制簇：整条共用一层向上渐隐的深色渐变，内部三段都不再各自实心 -->
+    <LinearLayout
+        android:id="@+id/bottomCluster"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="@drawable/bg_lv_bottom_fade"
+        android:orientation="vertical">
+
+        <!-- 参数带 + 工具图标并成一行（旧版是上下两行，各带一片实心面板） -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingTop="2dp">
+
+            <LinearLayout
+                android:id="@+id/paramsBar"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:id="@+id/cellShutter"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:paddingVertical="2dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="S"
+                        android:textColor="@color/lv_text_dim"
+                        android:textSize="10sp" />
+
+                    <TextView
+                        android:id="@+id/tvShutterValue"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:singleLine="true"
+                        android:text="--"
+                        android:textColor="@color/lv_text"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/cellAperture"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:paddingVertical="2dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="A"
+                        android:textColor="@color/lv_text_dim"
+                        android:textSize="10sp" />
+
+                    <TextView
+                        android:id="@+id/tvApertureValue"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:singleLine="true"
+                        android:text="--"
+                        android:textColor="@color/lv_text"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/cellIso"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:paddingVertical="2dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="ISO"
+                        android:textColor="@color/lv_text_dim"
+                        android:textSize="10sp" />
+
+                    <TextView
+                        android:id="@+id/tvIsoValue"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:singleLine="true"
+                        android:text="--"
+                        android:textColor="@color/lv_text"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/cellEv"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:paddingVertical="2dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="EV"
+                        android:textColor="@color/lv_text_dim"
+                        android:textSize="10sp" />
+
+                    <TextView
+                        android:id="@+id/tvEvValue"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:singleLine="true"
+                        android:text="--"
+                        android:textColor="@color/lv_text"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/cellWb"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:paddingVertical="2dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="WB"
+                        android:textColor="@color/lv_text_dim"
+                        android:textSize="10sp" />
+
+                    <TextView
+                        android:id="@+id/tvWbValue"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:singleLine="true"
+                        android:text="--"
+                        android:textColor="@color/lv_text"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <View
+                android:layout_width="1dp"
+                android:layout_height="26dp"
+                android:layout_marginHorizontal="10dp"
+                android:background="@color/lv_outline" />
+
+            <LinearLayout
+                android:id="@+id/toolbarArea"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <com.nikonlink.app.shared.ui.widget.ToolItemView
+                    android:id="@+id/toolFocus"
+                    android:layout_width="52dp"
+                    android:layout_height="wrap_content"
+                    app:toolIcon="@drawable/ic_focus"
+                    app:toolLabel="对焦" />
+
+                <com.nikonlink.app.shared.ui.widget.ToolItemView
+                    android:id="@+id/toolExposure"
+                    android:layout_width="52dp"
+                    android:layout_height="wrap_content"
+                    app:toolIcon="@drawable/ic_lv_exposure"
+                    app:toolLabel="曝光" />
+
+                <com.nikonlink.app.shared.ui.widget.ToolItemView
+                    android:id="@+id/toolWb"
+                    android:layout_width="52dp"
+                    android:layout_height="wrap_content"
+                    app:toolIcon="@drawable/ic_lv_wb"
+                    app:toolLabel="白平衡" />
+
+                <com.nikonlink.app.shared.ui.widget.ToolItemView
+                    android:id="@+id/toolMetering"
+                    android:layout_width="52dp"
+                    android:layout_height="wrap_content"
+                    app:toolIcon="@drawable/ic_lv_metering"
+                    app:toolLabel="测光" />
+
+                <com.nikonlink.app.shared.ui.widget.ToolItemView
+                    android:id="@+id/toolMore"
+                    android:layout_width="52dp"
+                    android:layout_height="wrap_content"
+                    app:toolIcon="@drawable/ic_lv_more"
+                    app:toolLabel="画面" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- 参数面板：与工具栏互斥，顶替它所在的位置展开 -->
+        <FrameLayout
+            android:id="@+id/panelHost"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingHorizontal="@dimen/lv_cell_gap"
+            android:paddingTop="2dp">
+
+            <LinearLayout
+                android:id="@+id/panelFocus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_lv_sheet_fade"
+                android:orientation="vertical"
+                android:paddingHorizontal="@dimen/lv_sheet_pad_h"
+                android:paddingTop="10dp"
+                android:paddingBottom="12dp"
+                android:visibility="gone">
+
+                <com.nikonlink.app.shared.ui.widget.SegmentBar
+                    android:id="@+id/segAf"
+                    android:layout_width="match_parent"
+                    android:layout_height="36dp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:orientation="horizontal">
+
+                    <com.nikonlink.app.shared.ui.widget.ArcDialView
+                        android:id="@+id/dialFocus"
+                        android:layout_width="0dp"
+                        android:layout_height="120dp"
+                        android:layout_weight="1" />
+
+                    <TextView
+                        android:id="@+id/tvDialValue"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="center_vertical"
+                        android:layout_marginStart="10dp"
+                        android:background="@drawable/bg_lv_value_box"
+                        android:gravity="center"
+                        android:paddingHorizontal="14dp"
+                        android:paddingVertical="6dp"
+                        android:text="0.50"
+                        android:textColor="@color/lv_accent"
+                        android:textSize="18sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tvFocusHint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="点按屏幕触摸对焦；MF 模式下旋转跟焦轮驱动对焦（相对指令）"
+                    android:textColor="@color/lv_text_dim"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/panelExposure"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_lv_sheet_fade"
+                android:orientation="vertical"
+                android:paddingHorizontal="@dimen/lv_sheet_pad_h"
+                android:paddingTop="10dp"
+                android:paddingBottom="12dp"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="快门速度"
+                        android:textColor="@color/lv_text_dim"
+                        android:textSize="12sp" />
+
+                    <TextView
+                        android:id="@+id/tvShutterCur"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:singleLine="true"
+                        android:text="--"
+                        android:textColor="@color/lv_text"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <com.nikonlink.app.shared.ui.widget.TickRulerView
+                    android:id="@+id/rulerShutter"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="光圈"
+                        android:textColor="@color/lv_text_dim"
+                        android:textSize="12sp" />
+
+                    <TextView
+                        android:id="@+id/tvApertureCur"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:singleLine="true"
+                        android:text="--"
+                        android:textColor="@color/lv_text"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <com.nikonlink.app.shared.ui.widget.TickRulerView
+                    android:id="@+id/rulerAperture"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="ISO"
+                        android:textColor="@color/lv_text_dim"
+                        android:textSize="12sp" />
+
+                    <TextView
+                        android:id="@+id/tvIsoCur"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:singleLine="true"
+                        android:text="--"
+                        android:textColor="@color/lv_text"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <com.nikonlink.app.shared.ui.widget.TickRulerView
+                    android:id="@+id/rulerIso"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="曝光补偿 EV"
+                        android:textColor="@color/lv_text_dim"
+                        android:textSize="12sp" />
+
+                    <TextView
+                        android:id="@+id/tvEvCur"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:singleLine="true"
+                        android:text="--"
+                        android:textColor="@color/lv_text"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:text="请通过相机机内拨盘调整"
+                        android:textColor="@color/lv_text_dim"
+                        android:textSize="10sp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/panelWb"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_lv_sheet_fade"
+                android:orientation="vertical"
+                android:paddingHorizontal="@dimen/lv_sheet_pad_h"
+                android:paddingTop="10dp"
+                android:paddingBottom="12dp"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="白平衡"
+                        android:textColor="@color/lv_text_dim"
+                        android:textSize="12sp" />
+
+                    <TextView
+                        android:id="@+id/tvWbCur"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:ellipsize="end"
+                        android:singleLine="true"
+                        android:text="--"
+                        android:textColor="@color/lv_text"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <com.nikonlink.app.shared.ui.widget.TickRulerView
+                    android:id="@+id/rulerWb"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/panelMetering"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_lv_sheet_fade"
+                android:orientation="vertical"
+                android:paddingHorizontal="@dimen/lv_sheet_pad_h"
+                android:paddingTop="10dp"
+                android:paddingBottom="12dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="8dp"
+                    android:text="测光模式"
+                    android:textColor="@color/lv_text_dim"
+                    android:textSize="12sp" />
+
+                <com.nikonlink.app.shared.ui.widget.SegmentBar
+                    android:id="@+id/segMetering"
+                    android:layout_width="match_parent"
+                    android:layout_height="40dp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/panelOverlays"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_lv_sheet_fade"
+                android:orientation="vertical"
+                android:paddingHorizontal="@dimen/lv_sheet_pad_h"
+                android:paddingTop="10dp"
+                android:paddingBottom="12dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="显示辅助"
+                    android:textColor="@color/lv_text_dim"
+                    android:textSize="12sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <com.nikonlink.app.shared.ui.widget.ToolItemView
+                        android:id="@+id/toolGrid"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        app:toolIcon="@drawable/ic_grid_toggle"
+                        app:toolLabel="网格" />
+
+                    <com.nikonlink.app.shared.ui.widget.ToolItemView
+                        android:id="@+id/toolLevel"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        app:toolIcon="@drawable/ic_level_lv"
+                        app:toolLabel="水平仪" />
+
+                    <com.nikonlink.app.shared.ui.widget.ToolItemView
+                        android:id="@+id/toolHistogram"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        app:toolIcon="@drawable/ic_histogram"
+                        app:toolLabel="直方图" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <com.nikonlink.app.shared.ui.widget.ToolItemView
+                        android:id="@+id/toolPseudo"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        app:toolIcon="@drawable/ic_pseudo_color"
+                        app:toolLabel="伪彩" />
+
+                    <com.nikonlink.app.shared.ui.widget.ToolItemView
+                        android:id="@+id/toolWaveform"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        app:toolIcon="@drawable/ic_waveform"
+                        app:toolLabel="波形" />
+
+                    <com.nikonlink.app.shared.ui.widget.ToolItemView
+                        android:id="@+id/toolDisp"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        app:toolIcon="@drawable/ic_lv_disp"
+                        app:toolLabel="DISP" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/panelMore"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_lv_sheet_fade"
+                android:orientation="vertical"
+                android:paddingHorizontal="@dimen/lv_sheet_pad_h"
+                android:paddingTop="10dp"
+                android:paddingBottom="12dp"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:id="@+id/rowLvToggle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginVertical="3dp"
+                    android:background="@drawable/bg_lv_chip"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:padding="10dp">
+
+                    <ImageView
+                        android:id="@+id/ivLvToggleIcon"
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:src="@drawable/ic_lv_play"
+                        app:tint="@color/white" />
+
+                    <TextView
+                        android:id="@+id/tvLvToggleLabel"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:text="开始监看"
+                        android:textColor="@color/lv_text"
+                        android:textSize="13sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/rowZoomIn"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginVertical="3dp"
+                    android:background="@drawable/bg_lv_chip"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:padding="10dp">
+
+                    <ImageView
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:src="@drawable/ic_lv_zoom_in"
+                        app:tint="@color/white" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:text="画面放大"
+                        android:textColor="@color/lv_text"
+                        android:textSize="13sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/rowZoomOut"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginVertical="3dp"
+                    android:background="@drawable/bg_lv_chip"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:padding="10dp">
+
+                    <ImageView
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:src="@drawable/ic_lv_zoom_out"
+                        app:tint="@color/white" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:text="画面缩小"
+                        android:textColor="@color/lv_text"
+                        android:textSize="13sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/rowZoomReset"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginVertical="3dp"
+                    android:background="@drawable/bg_lv_chip"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:padding="10dp">
+
+                    <ImageView
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:src="@drawable/ic_lv_reset"
+                        app:tint="@color/white" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:text="重置缩放"
+                        android:textColor="@color/lv_text"
+                        android:textSize="13sp" />
+                </LinearLayout>
+            </LinearLayout>
+        </FrameLayout>
+
+        <!-- 快门行：不再自带背景，压在同一层渐变上 -->
+        <LinearLayout
+            android:id="@+id/shutterRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="16dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="8dp">
+
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+
+                <ImageView
+                    android:id="@+id/btnAlbum"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/bg_lv_thumb"
+                    android:contentDescription="相册"
+                    android:padding="8dp"
+                    android:src="@drawable/ic_nav_album"
+                    app:tint="@color/white" />
+            </FrameLayout>
+
+            <FrameLayout
+                android:id="@+id/btnShutter"
+                android:layout_width="60dp"
+                android:layout_height="60dp"
+                android:background="@drawable/bg_lv_shutter_ring"
+                android:contentDescription="拍照">
+
+                <View
+                    android:id="@+id/shutterInner"
+                    android:layout_width="46dp"
+                    android:layout_height="46dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/bg_lv_shutter_inner" />
+            </FrameLayout>
+
+            <FrameLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1">
+
+                <ImageView
+                    android:id="@+id/btnRotate"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/bg_lv_chip"
+                    android:contentDescription="切换横竖屏"
+                    android:padding="7dp"
+                    android:src="@drawable/ic_rotate_lv"
+                    app:tint="@color/white" />
+            </FrameLayout>
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

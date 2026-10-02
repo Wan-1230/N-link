@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 监看会话异常/未启动胶囊：参考图存储徽章的暗红底 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/lv_badge_red" />
+    <corners android:radius="@dimen/lv_radius_md" />
+</shape>
