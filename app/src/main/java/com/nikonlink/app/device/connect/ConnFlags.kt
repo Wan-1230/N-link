@@ -179,7 +179,6 @@ class ConnFlags @Inject constructor(
          * 关掉 = 回到"返回值丢掉"的旧写法（v1.3.1~v2.6.0 的实际行为）。
          */
         const val USB_CLAIM_CHECK = "v28_usb_claim_check"
-
         /**
          * FR-28②：命令阶段的 bulkTransfer 要按**写全长度**判成败，不是只判 `< 0`。
          *
@@ -217,6 +216,187 @@ class ConnFlags @Inject constructor(
          * 关掉 = 拆链路不发 CloseSession（v2.6.0 行为）。
          */
         const val USB_CLOSE_SESSION_ON_TEARDOWN = "v28_usb_close_session"
+
+        // ── v2.6.3 STA 注册链路加固（见 docs/STA注册失败-根因分析与优化方案.md §4）──
+        //
+        // 三条**默认关**：它们改的是"失败之后如何解释与如何少走弯路"，不解决注册本身
+        // 成功与否。默认关 = 与 v2.6.2 逐位等价，真机验证过再逐个打开。
+
+        /**
+         * R1：按 InitFail **原因**决定怎么引导，而不是一律"需要注册"。
+         *
+         * 原实现把所有 InitFail 都当作"相机不认本机"→ 置 `staRegisterNeeded`。
+         * 但 reason=1 是 `connection_in_use`（机身唯一的 PTP/IP 客户端槽还被上一代
+         * 会话的尸体占着），正确动作是**等十几秒重试**，不是让用户去点注册 ——
+         * 2026-09-30 那份日志里 15:50:24 的 `fail_reason=1` 正是这种，用户被引导去
+         * 注册，而相机当时根本不在配置向导，注册必然被 0x201F 拒。
+         *
+         * 打开后：reason=1 → 只提示"相机正忙"；reason=2 → 才置需要注册；
+         * reason=3 → 直接视为已注册。
+         */
+        const val HOSTREG_HINT_V2 = "v263_hostreg_hint_v2"
+
+        /**
+         * R2：注册前先用 `GetDeviceInfo` 的 `OperationsSupported` 检查相机**当前模式**
+         * 支不支持主机注册（0x952B）。
+         *
+         * 尼康的 SnapBridge AP（连接至智能设备）与主机配置向导**都在 192.168.1.1
+         * 提供 PTP/IP**，但只有向导接受 0x952B。原实现不看这个，直接盲发 → 拿到
+         * 0x201F 之后只能给一句笼统的"请确认相机屏幕处于可接受连接的画面"。
+         * 打开后：不支持就**不发**，直接给出"相机不在主机配置向导"的明确结论，
+         * 并把 SupportedOperations 摘要写进 I/O 日志。
+         */
+        const val HOSTREG_PRECHECK = "v263_hostreg_precheck"
+
+        /**
+         * R4：STA 预连接探测会掉进**蜂窝黑洞**时直接判不可达，不再发 socket。
+         *
+         * 2026-09-30 日志：手机已离开相机热点（`ifaces=ap0+ccmni4`，无 192.168.1.x），
+         * App 仍对 192.168.1.1 从 `/10.56.31.140`（ccmni4 蜂窝）发起连接，
+         * 15:50:45 空转到 15:51:38（约 53s）才等到手机回连相机热点。
+         * 蜂窝口上打私网地址是纯浪费 —— 它是黑洞，既不 RST 也不可达。
+         *
+         * **v2.6.6 FR-29⑤：判据换过，原来那版不能开。**
+         * v2.6.3 用 `localInterfaces.subnetsContain(host)`，而 PRD §13.3 已用真机数据证明
+         * 这个来源在本项目主力机（vivo V2509A）上是**假阴性**：`localAddresses()` 看不见
+         * 实际承载相机流量的接口（只列出 `ap0` + `ccmni4`），同一次连接在 `in_subnet=false`
+         * 的情况下于 12:39:56 成功。以它为据硬拦截 = 把能连上的场景判死（§13.3 撤销 S3 同理）。
+         * 现改走 `ConnectivityManager`（FR-23 已确立为主判据；同一份日志里 `net_bind covers=true`
+         * 判定正确）：只有"默认路由在蜂窝 **且** 没有任何 WiFi 覆盖相机地址"才算黑洞。
+         * 见 `WifiNetworkMonitor.probeWouldUseCellular` / 纯函数 `cellularBlackhole`。
+         */
+        const val STA_SKIP_CELLULAR = "v263_sta_skip_cellular"
+
+        /**
+         * v2.6.4 **AP 空闲断链修复**（修复项，默认开）。
+         *
+         * 现象：AP 连上后静置 2~7 分钟，相机自己把 PTP/IP 会话关掉
+         * （2026-10-01 日志：01:09:00 最后一次下载 → 01:15:27 `ping_write_failed`
+         * + `event_read_error` → `network_lost`）。
+         *
+         * 原因：相机侧的会话空闲计时器看的是 **PTP 命令**活动，不是 PTP/IP 传输层的
+         * Ping（type 13）。我们的保活为了"把命令通道完全留给业务"，只发 Ping，
+         * 于是相机认为这个客户端一直在空转，到点就断。Ping 只能发现 TCP 半开，
+         * 刷新不了相机的计时器 —— 两件事不能互相替代。
+         *
+         * 打开后：命令通道空闲超过 60s 且不在批量传输中，补一条最轻量的
+         * `DeviceReady`，把相机的空闲计时器拨回去。**批量传输期间一律不发**
+         * （那时命令通道本来就在忙，相机也不会判空闲）。
+         * 关掉 = 回到 v2.6.3 的"只发 Ping"（会在数分钟后断链）。
+         */
+        const val SESSION_IDLE_REFRESH = "v264_session_idle_refresh"
+
+        /**
+         * FR-32：扫描强候选命中即早退（命中后 1.5s 宽限再收工）。
+         *
+         * 默认**关**：2026-10-02 坏包（FR-31 全量）真机回归后随 FR-31① 一起回退过一轮；
+         * 重落地时先以闸门形式进包，真机证明「多相机列表不漏列」后再转默认开。
+         * 注册发现路径（FR-30 自主注册）显式请求 earlyExit，同样受本闸控制。
+         */
+        const val STA_SCAN_EARLY_EXIT = "v32_scan_early_exit"
+
+        /**
+         * FR-32：注册收到 InitFail reason=1（槽位被占）后冷却 35s 才允许再次发现+注册。
+         *
+         * 机身收回半开会话要几十秒（FR-21 实测）；2026-10-02 真机连轰 4 次 reason=1
+         * 期间相机向导进入失败态（用户目视「连接失败」并关热点）。冷却把"连点重复
+         * 已知结论"换成一次明确等待。
+         */
+        const val STA_REG_REASON1_COOLDOWN = "v32_reg_reason1_cooldown"
+
+        /**
+         * FR-32：链路层/opcode 诊断（net_bind 带 ifaces、net_unbind、建链后 15s
+         * `sta_ifaces` 采样、`ptp_tx` opcode+响应码）。**纯日志、零行为变化**：
+         * 2026-10-02 的悬案「谁杀了 wlan0（我们的 bind / vivo / 相机 AP 周期）」
+         * 与「相机断热点前我们最后发了哪条包」只有这组字段能回答。
+         */
+        const val STA_LINK_DIAG = "v32_link_diag"
+
+        /**
+         * FR-33 C1/C2：STA/AP 的网络请求去掉 `NET_CAPABILITY_INTERNET`（local-only），
+         * 并把注册提前到快路径判定之前，让会话期间始终有一个 NetworkRequest 在册。
+         *
+         * 根因链（docs/非上网热点被系统回收-根因与修复方案-2026-10-02.md）：相机热点无互联网，
+         * 验证失败后系统剥掉 INTERNET capability → 默认请求匹配不上 → 不构成持有 →
+         * ConnectivityService 回收「非默认且无持有」的网络 → 链路被踢 → 相机显示「无法连接」
+         * 并关热点。竞品三家 dex 反编译均为 `removeCapability(12)`（§8 方法级实锤）。
+         * 关闸 = 回到旧请求构造与快路径零注册，逐位等价 v2.6.1。
+         */
+        const val STA_LOCAL_ONLY_REQUEST = "v33_local_only_request"
+
+        // ── FR-34 AP 一键连接与失败归因第二轮（docs/AP连接失败与ZDROP策略分析-2026-10-02.md）──
+
+        /**
+         * FR-34①：AP 模式点「连接相机」不再要求先扫描。
+         *
+         * 无候选时：已在相机热点 → 直接以兜底地址起轮次（learnFirst 会学网关）；
+         * 不在 → 拉起系统 WLAN 面板（`Settings.Panel.ACTION_WIFI`，ZDROP dex `1ca886`
+         * 同款标准化入口，绕开 OEM 全设置页深链），回连命中相机热点后自动起轮次。
+         * 关闸 = 回到「无候选弹手动 IP 框」。
+         */
+        const val AP_ONE_TAP = "v34_ap_one_tap"
+
+        /**
+         * FR-34②：已在相机热点上时网关学习走快路径。
+         *
+         * 「网关就是相机」是 AP 的定义，手机就在热点上时不需要第二次采样、
+         * 也不需要 TCP 筛探（筛探还会占机身唯一的 PTP/IP 槽，FR-21 实测收回要 ~35s）。
+         * DISCOVER 实测 2335ms → ~1200ms（对齐 ZDROP 的固定 1200ms readiness）。
+         * 关闸 = 双采样 + 筛探的 v2.6.1 行为。
+         */
+        const val AP_GW_FASTPATH = "v34_ap_gw_fastpath"
+
+        /**
+         * FR-34③：没有 Network 句柄（默认路由 lane）时套接字连接超时 30s → 8s。
+         *
+         * 真机日志（2026-10-02 R5）：wlan0 已掉，3 次 30s 级超时从蜂窝
+         * /10.115.218.201 打出 ≈73s 纯空转；绑网 lane 保持 30s 不动
+         * （FR-22 的教训：慢成功 26.4~181.3s 都发生在有句柄的路径上）。
+         * ZDROP 全程 6000ms（其日志「after 6000ms」）。
+         */
+        const val STA_LANE_TIMEOUT = "v34_lane_timeout"
+
+        /**
+         * FR-34④：连接轮次的持有请求改为「会话制」而非「4s 窗口制」。
+         *
+         * 真机日志：net_req 三次在回连发生**之前**过期（14:28:08 / 14:28:48 / 14:30:19），
+         * 回连瞬间没有任何 NetworkRequest 在册 → 系统对这张非默认网想拆就拆。
+         * 打开后：AP/STA 连接轮次的请求不带系统超时注册，超时出口不注销、
+         * 下一次 acquire 直接复用在册回调；会话 teardown 统一释放。
+         * 关闸 = v33 的窗口制（3~4s 到期即撤）。
+         */
+        const val STA_SESSION_HOLD = "v34_session_hold"
+
+        /**
+         * FR-34⑤：默认路由回落前，若本机已无任何类 WiFi 接口，先等回连而不是烧 socket。
+         *
+         * R5 的 73s 蜂窝空转 + R2 恢复轮的 30s 超时都是同一件事：wlan0 不在位时
+         * 私网地址的 socket 必然沉进蜂窝黑洞，等 8s 让系统自动回连是更便宜的动作。
+         * 关闸 = 直接走默认路由发 socket（v2.6.1 行为）。
+         */
+        const val STA_WLAN_WAIT = "v34_wlan_wait"
+
+        /**
+         * FR-34⑥：空闲刷新从 60s 收紧到 10s（沿用 v2.6.4 的 DeviceReady 通道）。
+         *
+         * 2026-10-02 R1：建立后命令通道零流量 14s 即 event_read_error —— 60s 档的
+         * 空闲刷新对这个速度死亡的会话完全够不着。10s 档让"连上没干活"的会话
+         * 在机身判空闲前至少拨表 1 次。批量传输期间照旧不发。
+         * 关闸 = v2.6.4 的 60s 档。
+         */
+        const val STA_FAST_IDLE_REFRESH = "v34_fast_idle_refresh"
+
+        /**
+         * FR-34⑦（P1 诊断）：WLAN 掉线时把系统广播实际携带的原因字段落进日志。
+         *
+         * 悬案「谁砍的 wlan0」的判别器。AOSP API 30+ 在 `NETWORK_STATE_CHANGED_ACTION`
+         * 上挂过 reason/disconnect-type 类 extras，但全部是 @SystemApi/@hide，
+         * 普通 App 实际能收到哪些**无法离线核实**（android-35 jar 已逐一核对）——
+         * 所以实现取"枚举键名含 reason/disconnect/error 的整数字段"的自证式采集，
+         * 第一次真机掉线即可定谳该 ROM 下发了什么。纯日志、零行为变化。
+         */
+        const val WLAN_DROP_REASON = "v34_drop_reason"
+
 
 
         /**
@@ -288,6 +468,47 @@ class ConnFlags @Inject constructor(
             USB_WRITE_STRICT to true,
             USB_OPENSESSION_RETRY to true,
             USB_CLOSE_SESSION_ON_TEARDOWN to true,
+            // v2.6.3 STA 注册链路加固：三条默认关（与 v2.6.2 逐位等价，真机验证后再开）
+            // v2.6.6 FR-29⑥：R1/R2 转默认开。理由不是"觉得该开了"，是三条：
+            // ①「开发选项」面板是 debug-only（`SettingsFragment.setupLabFlags` 首行
+            //    `if (!BuildConfig.DEBUG) return`）—— 默认关等于**正式包里永远不生效**，
+            //    这两条的价值到 v2.6.5 为止一直是 0；
+            // ② 两条都只影响"怎么解释失败"和"要不要盲发一次注册"，不改任何已跑通的建链路径：
+            //    R1 是 InitFail 的 reason 分级（1=机身忙→等待重试，2=门控拒绝→才提示注册，
+            //    3=已注册→直接置位），修的是"把 connection_in_use 误报成需要注册"；
+            //    R2 是发 0x952B 前先看 GetDeviceInfo 的 OperationsSupported 里有没有它，
+            //    没有就直接说"相机不在主机配置向导"，而**不是**等相机回 0x201F 再猜。
+            //    这正是本轮真机故障（`prepare_fail code=0x201f` 10ms 秒拒）最对症的一条；
+            // ③ R2 的解析失败语义是"不知道就不拦"（`lastSupportedOperations == null` 放行），
+            //    所以解析不出来时行为与关闸门一致，不会误伤。
+            HOSTREG_HINT_V2 to true,
+            HOSTREG_PRECHECK to true,
+            // R4 仍默认关：判据已在 FR-29⑤ 换成 ConnectivityManager，但**真机数据还没站它这边**。
+            // PRD §13.3 那次成功连接发生时，默认路由确实在蜂窝（socket 从 /10.56.31.140 出），
+            // 也没有任何 WiFi 覆盖 192.168.1.1 —— 按新判据同样会被拦，而它实际连上了。
+            // 唯一能分清"新判据对不对"的办法是双记一轮：见 FR-29⑦ 的 `sta_probe_ctx`。
+            STA_SKIP_CELLULAR to false,
+            // AP 空闲断链修复：默认开（这是修复不是实验，但保留开关便于现场二分定位）
+            SESSION_IDLE_REFRESH to true,
+            // FR-32：扫描早退默认开（注册发现 8~18s → 1~3s 已验证；常规扫描有 1.5s 宽限，
+            // 多相机漏列可重扫兜底；现场二分可关）。
+            STA_SCAN_EARLY_EXIT to true,
+            // FR-32：reason=1 冷却与链路诊断默认开（前者修已验证的连拒链，后者纯日志）
+            STA_REG_REASON1_COOLDOWN to true,
+            STA_LINK_DIAG to true,
+            // FR-33：非上网热点被系统回收的修复，默认开（这是修复不是实验：
+            // 群友无「WiFi 始终开启」开关的设备不修则必掉；关闸=旧行为，现场可二分）
+            STA_LOCAL_ONLY_REQUEST to true,
+            // FR-34：七条全部默认开——①②是流程与耗时收敛（ZDROP 同构），③⑤修本轮
+            // 日志实证的蜂窝空转（≈103s），④修「窗口过期错过回连」×3，⑥修 60s 档
+            // 够不着的 14s 快速死亡，⑦纯日志。逐条可独立关闸做现场二分。
+            AP_ONE_TAP to true,
+            AP_GW_FASTPATH to true,
+            STA_LANE_TIMEOUT to true,
+            STA_SESSION_HOLD to true,
+            STA_WLAN_WAIT to true,
+            STA_FAST_IDLE_REFRESH to true,
+            WLAN_DROP_REASON to true,
         )
     }
 

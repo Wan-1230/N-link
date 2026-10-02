@@ -37,7 +37,8 @@ class DashboardViewModel @Inject constructor(
     private val connectionManager: ConnectionManager,
     private val usbPtpManager: UsbPtpManager,
     private val deviceRepository: DeviceRepository,
-    val settings: com.nikonlink.app.shared.common.AppSettings
+    val settings: com.nikonlink.app.shared.common.AppSettings,
+    private val ftpServer: com.nikonlink.app.device.ftp.FtpPushServer,
 ) : ViewModel() {
 
     val connectionState: StateFlow<ConnectionState> = connectionManager.connectionState
@@ -147,6 +148,20 @@ class DashboardViewModel @Inject constructor(
         )
     }
 
+    // ── FR-34①：AP 一键连接的直通（闸门判定、兜底地址轮次、面板武装都在 ConnectionManager）──
+
+    fun apOneTapEnabled(): Boolean = connectionManager.isApOneTapEnabled()
+
+    fun onCameraAp(): Boolean = connectionManager.isOnCameraAp()
+
+    fun connectApDirect() = connectionManager.connectApDirect()
+
+    fun armApPanel() = connectionManager.armApPanelConnect()
+
+    fun apPanelArmed(): Boolean = connectionManager.isApPanelArmed()
+
+    fun tryStartArmedApConnect(): Boolean = connectionManager.tryStartArmedApConnect()
+
     /** 从最近连接列表快速重连 */
     fun connectToRecentDevice(device: PairedDevice) {
         val endpoint = WifiEndpoint.parse(device.address)
@@ -201,6 +216,39 @@ class DashboardViewModel @Inject constructor(
     fun clearHostReg() {
         if (_hostReg.value !is HostRegUiState.Running) _hostReg.value = null
     }
+
+    // ─────────── STA 架构 B：FTP 推送收图（PRD §4.5）───────────
+    //
+    // 这一组状态与上面 PTP 直连那一组**完全平行、互不引用**：
+    // 架构切换时 UI 只换显隐，不会把一方的进度/错误带进另一方
+    // （要求 4 的状态隔离）。服务器本身持有独立 scope，不挂在 viewModelScope 上，
+    // 所以切页/后台不会中断正在进行的推送。
+
+    /** FTP 服务器状态：Stopped / Listening(host, port, user, pass) / Failed(message) */
+    val ftpState: StateFlow<com.nikonlink.app.device.ftp.FtpPushServer.State> = ftpServer.state
+
+    /** 已接收文件（倒序，最多 20 条） */
+    val ftpReceived: StateFlow<List<com.nikonlink.app.device.ftp.FtpPushServer.Received>> =
+        ftpServer.received
+
+    /** 当前连着的 FTP 客户端数（相机连接时为 1） */
+    val ftpClients: StateFlow<Int> = ftpServer.clients
+
+    /** 相机侧要填的登录凭据（密码持久化，避免每次开机去相机里重填） */
+    val ftpPassword: String get() = ftpServer.password
+
+    /** 手机当前的局域网地址候选（未启动服务器时给用户看"该填哪个"） */
+    fun ftpCandidateAddresses(): List<String> = ftpServer.candidateAddresses()
+
+    fun startFtpServer() = ftpServer.start()
+
+    fun stopFtpServer() = ftpServer.stop()
+
+    fun clearFtpHistory() = ftpServer.clearHistory()
+
+    fun formatFtpBytes(bytes: Long): String = ftpServer.formatBytes(bytes)
+
+    fun formatFtpTime(at: Long): String = ftpServer.formatTime(at)
 
     fun confirmPairingComplete() {
         connectionManager.confirmPairingComplete()

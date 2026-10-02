@@ -996,3 +996,224 @@ public int     bulkTransfer(android.hardware.usb.UsbEndpoint, byte[], int, int);
 | R6a | USB **配置枚举与选择**（`getConfigurationCount`/`setConfiguration`） | 公开 API 已证实存在，但没有任何一家的证据说它们需要切配置；在已跑通的通道上盲切配置，风险 > 收益。需要一次真机 `bConfigurationValue` + 全描述符 dump 才能立项（`getRawDescriptors()` 也是公开的） |
 | R6b | **USB ↔ WiFi 通道互斥**：开 USB 前把 PTP/IP 会话关干净 | 会动 WiFi 那条跑通链路，属 §8.1 铁律保护面。先取一轮日志看 `usb_session` 失败与 WiFi 会话存续的时间相关性再定 |
 | R6c | 监看帧与命令共用 `commandMutex`，单帧最长持锁 8s | 属监看面，用户要求不动 |
+
+---
+
+## 十七、FR-29 STA 专项（2026-10-01，基线 = 远端 `51795fa`「v2.6.5」）
+
+> 触发：用户要求对 STA 做专项优化，授权解包 ZDROP 1.0.257 / ZRelay 3.0.46，硬约束
+> **只动 STA、已跑通功能零改动**。分支 `sta-hardening`，提交 `f306568` / `58c1474` / `f4e69e8`。
+>
+> ⚠ 基线须知：`51795fa` 的提交名写「v2.6.5」，但 `build.gradle.kts` 仍是
+> `versionCode 26 / versionName 2.6.1`，tag 与 GitHub Release 也停在 `v2.6.1` ——
+> **2.6.2~2.6.5 是内部迭代记号，没有发布过**。另：该提交带一个红灯测试
+> （`ProtectionFilterTest.kt:65` 期望 `"已保护"`，而 `51795fa` 把 `TransferViewModel.kt:1587`
+> 改成了 `PROTECTED("已筛选")` 未同步测试）。属相册模块，按范围约束**未在此修**，
+> 本轮回归基线定义为「1 个既有失败（相册）+ 0 个新增失败」。
+
+### 17.1 竞品对照的结论：**大部分做法我们已经有**
+
+ZDROP 完整反编译（`/tmp/zdrop-out/sources/`，未加固）后的逐条比对：
+
+| ZDROP 的做法 | 证据 | 我们的状态 |
+|---|---|---|
+| 绑到「相机 IP 落在其 LinkAddress 子网内」的 WiFi，socket 全走 `Network.getSocketFactory()` | `A.java:180`、`C0528y.java:47-62`、`B6.java:51` | **已有**：FR-20 `BIND_SUBNET_CHECK` + `networkCoversHost` + `ptpSession.connect(network = usable)` |
+| `requestNetwork` 显式 `removeCapability(NET_CAPABILITY_INTERNET)` | `A.java:180` | **等价、无需改**：移除该能力位是因为相机热点无公网；我们从未 `addCapability(INTERNET)`，请求同样不要求公网 |
+| host GUID 持久化复用（`host_guid`，一次生成长期用） | `o7.java:477-495` | **已有**：`PtpIdentityStore`，`KEY_GUID = "ptp_ip_client_guid"`，注释里就写着随机会被机身当新设备 |
+| mDNS 发现 `_nikon._tcp.` + `_ptp._tcp.`，TXT 取端口、缺省 15740 | `C0492t3.java:104`、`C0484s3.java:52` | **已有**：`WifiScanner.kt:89-90` 两个类型都订，`:678` 一起用 |
+| 注册重试 ≤4 次、间隔 `{0,2000,4000,6000}`，且**只对 socket/INIT 阶段重试**；`PrepareHost` 被拒视为终态 | `o7.java:3936`、`:3889` | **方向一致**：我们也是 prepare 失败即 `return`（`PtpSessionManager:516`），不原地重试 |
+| 单飞闸 + 2000ms 冷却（`elapsedRealtime()+2000`） | `o7.y0():6025-6055`、`:2809` | **已有**：FR-19 `CONN_SERIALIZE`（`ConnectionManager:271`）、`FALLBACK_COOLDOWN_MS = 180_000` |
+| INIT_COMMAND → event socket 之间 settle **首次 350ms / 重试 650ms** | `o7.java:3889` | 我们是常量 `PROBE_SETTLE_MS = 400`，落在两者之间。**不动**：§14 R2d 已说明 settle 治不了探测密度问题（机身回收半开会话要 ~35s，差两个数量级） |
+
+**竞品也没有的东西（扫遍未命中，别当成"对手有秘诀"）**：注册前读设备属性判断向导态（ZDROP 全类无 `0x1014/0x1015`，也无 `0x9435/0x90C2/0x90C8`）、注册前发 CloseSession 清场、`PrepareHost` 返回 `0x201F` 的专用处置、`InitFail reason=1` 的独立分类、相机休眠检测与唤醒。**ZRelay 3.0.46 的 dump 里 `0x952B/0x935A` 计数为 0 —— 它根本不实现主机注册**，无从对比。
+
+→ 结论：`docs/STA注册失败-根因分析与优化方案.md` §1.4 的判断成立，**0x201F 是相机侧状态问题，不是我们协议实现的缺陷**。竞品能"成功"是因为它们同样要求相机停在向导页，且它们把这件事写进了文案（ZDROP：「请让相机停留在 STA 主机配置向导，并等待相机完成保存」）。
+
+### 17.2 本轮落地的 7 项
+
+| # | 项 | 性质 |
+|---|---|---|
+| ① | `camera_unreachable` 改挂自己的 Reason，不再映射到 `TCP_TIMEOUT`（该码**全仓零生产者**） | 可归因。`ConnFunnel` 只增不改，`TCP_TIMEOUT` 保留 |
+| ② | `loop_error` / `round_budget_exhausted` 各自成码；硬闸出口原来把**中文文案当机器码**传给 `onFail`，整类失败在漏斗里全是 `unknown` | 可归因 |
+| ③ | `WifiNetworkMonitor` 三个 binder 调用不再裸调（按"单张网卡查不到就跳过"的粒度兜） | 加固。代码注释自己记着真机曾有 4 个 generation 全死在此，但修法只在调用方包 `runCatching` |
+| ④ | 三路选网竞争落选时归还 `requester` 申请的网络 | 修泄漏。只有它注册 NetworkCallback 并留 `held`；胜出者不是它时无人认领，而**成功路径永不 `release()`** |
+| ⑤ | R4 蜂窝黑洞判据从网卡枚举改为 `ConnectivityManager`，规则收紧为"默认路由在蜂窝 **且** 无任何 WiFi 覆盖相机"两条同时成立 | 修判据（闸门仍默认关，本轮对现网零影响） |
+| ⑥ | `HOSTREG_HINT_V2` / `HOSTREG_PRECHECK` 转**默认开** | 让 v2.6.3 已写好的两条真正生效（面板是 debug-only，默认关 = 正式包永远不生效） |
+| ⑦ | 新增 `sta_probe_ctx` 事件，把新旧两个蜂窝判据并排记录，**不改行为** | 取证据。判定规则：`cm_cellular_hole=true` 的轮次里只要有成功的，R4 永久不能开 |
+
+### 17.3 三条**否决**的改动（都有反证，别再提）
+
+| 提议 | 否决依据 |
+|---|---|
+| 学 ZDROP 把 connect 超时从 30000ms 缩到 6000ms | §1.1 记着真机**成功**建链耗时 9.80 / 15.05 / 29.87 / 84.75 / **97.74** 秒。缩到 6 秒会把本来能连上的判死 |
+| 学 ZDROP 做连接前路由预检、拿不到同网地址就中止 | 与 §13.3 撤销 S3 同一个理由：判据来源在主力机上是假阴性，硬中止会杀掉能连上的场景 |
+| 用户清单里的「多 STA 并发调度与连接池管理」 | 机身同时只接受 **1 个 PTP/IP 客户端**，全程 1 台相机 1 条会话。连接池是没人调用的机器，还会给已跑通的传输链路增加并发风险 |
+
+另有一条**我自己中途撤回**的写法：原想在 `StaNetworkRequester.acquire` 的 `finally` 里"发现协程已取消就无条件释放 callback"，但 `held = fallback; return fallback` 与取消观测之间无法区分"调用方拿到了"和"调用方超时丢了"——前者被注销 callback 会**打断 STA 的断链检测**（`networkLost` 收不到），那是改一条跑通的路。④ 因此改到真正知道自己丢了结果的调用方去修。
+
+### 17.4 验证与范围
+
+| 项 | 结果 |
+|---|---|
+| 单测 | **231 / 1 failed / 0 errors / 1 skipped**（基线 224，新增 7 例全绿：`ConnFunnelReasonContractTest` 4 例 + `CellularBlackholeRuleTest` 3 例）。唯一失败 = `ProtectionFilterTest:65`，先于本轮存在，属相册 |
+| 构建 | `compileDebugKotlin` / `assembleDebug` 均 BUILD SUCCESSFUL；调试包 21,268,954 字节，`sta_probe_ctx`/`cm_cellular_hole`/`cellular_blackhole`/`round_budget_exhausted` 均已验入 dex（该包 17 个 dex） |
+| 改动面 | `ConnFunnel`（只增枚举）、`ConnectionManager`（映射表 5 行）、`wifi_sta/` 三个文件、`ConnFlags`（文档+2 个默认值）、2 个新测试文件 |
+| **零改动** | AP 通道、USB 通道、传输/相册/监看业务、UI 布局、`build.gradle.kts`、启动流程；**无新增第三方依赖** |
+| 未验证 | 全部真机行为。⑥ 转默认开的两条、⑤ 的新判据、⑦ 的双记，都要一轮真机日志才算数 |
+
+### 17.5 下一步（按证据强度排）
+
+1. **拿一轮真机日志**，看 `sta_probe_ctx` 的 `nic_covers` 与 `cm_cellular_hole` 在成功/失败轮次里的分布 → 定 R4 生死（⑦ 就是为这件事装的）。
+2. 看 `hostreg` + `device_caps`（`lastSupportedOperations`）在 0x201F 现场的实际取值 → 验证 R2 是否真能提前拦住，以及 §4.4 那组对照实验（相机进「连接至 PC」向导 vs 进「连接至智能设备」）。
+3. R3（`0x201F` 之后是否仍发 `ConfirmHost`）**仍未做**：需要先用 ZDROP 在已注册过的相机上跑一次，观察 `0x201F` 后 ConfirmHost 是否照样成功。无此证据不动注册主链路。
+4. FTP 架构（B）下抑制 STA PTP 自动重连：`staArchitecture` 在 `ConnectionManager` **0 命中**，三条自动路径（`reconnectLastDeviceIfPaired:1239`、`observeReconnectTrigger:1040`、HealthWorker `:552`）仍会发起最长 240s 的 STA 连接轮，而 `bindProcessToNetwork` 是**进程级**的，会影响 FTP 监听 socket 的出口选择。要动 `ConnectionManager` 的自动重连闭环，属"已跑通功能"，**先不碰**，等 FTP 那条线自己稳定。
+
+### 17.6 FR-30：STA 未连接态自主注册（2026-10-02，修「相机未连接…请先走 AP」误判）
+
+**用户现场**：相机已连上手机热点、停在主机配置向导，点「STA 主机注册」却被判
+「相机未连接。请先通过 WiFi 连上相机（AP 模式），再执行 STA 主机注册」。
+正确行为应与 ZDROP 一致：此现场可直接注册，注册后 STA 连接可用。
+
+**根因（已验证，代码行号）**：`ConnectionManager.registerStaHost` 旧实现第一行是
+`if (!ptpSession.isConnected()) return Failure("相机未连接…AP 模式…")` —— 注册被绑死在
+「先有一条已建立的 PTP 会话」上，而该会话历史上只有 AP 连接能建立。于是
+「相机在热点上停在向导」这个本该直接注册的现场被判死。
+
+**ZDROP 诊断日志反证（2026-10-01，host-register 段）**：注册是一条**独立链路**，
+不依赖任何既有会话 —— 发现 endpoint（`endpoint-subnet-matched-local-hotspot-interface`）→
+自建 command/event 双通道（init-command-ack → pre-event-settle 350ms → init-event-ack）→
+GetDeviceInfo（ops 含 `0x952b`/`0x935a` = 向导模式）→ OpenSession → `0x952B` →
+等相机确认 → `0x935A` → 直接拆通道（`sendCloseSession=false`）。
+
+**落地（最小改动，3 改 2 增）**：
+- 新增 `wifi_sta/StaHostRegistrar.kt`：自有 socket + 自有事务号复刻上述独立链路；
+  不碰 `PtpSessionManager` 单例会话状态（不置 CONNECTED、不起心跳/事件监听、不打连接漏斗）。
+- `ConnectionManager.registerStaHost` 改双路径：已连接走原路径（逐行未动）；
+  未连接先 `scanWifiCameras(8s)` 受限发现 → `pickRegistrationCandidate`（优先 awake 候选）→ 交 registrar。
+- 发现不到时给两条可照做路径（STA 直注 / AP 注册），不再判死。
+- `DashboardFragment` 注册弹窗文案同步为「不需要先连相机」。
+
+**范围铁律复核**：AP 连接、既有 STA 连接、已连接态注册三条已跑通路径零改动；
+新分支只在旧代码必然返回 `not_connected` 失败的位置插入，回归面≈0。
+
+**验证**：`assembleDebug` BUILD SUCCESSFUL；单测 234 通过 / 1 失败（既有
+`ProtectionFilterTest` 红，属 gallery 另一会话）/ 1 跳过；新增 `StaHostRegCandidateTest` 3 条全绿。
+真机待验：相机连热点停向导 → 点注册应直接成功；注册后 STA 连接可用。
+
+### 17.7 FR-31：扫描提速 + AP 一次连上（2026-10-02，三组真机日志定谳）
+
+**日志证据**：
+
+| 现象 | 来源 | 关键行 |
+|---|---|---|
+| ZDROP STA 发现代际 1.4s | ZDROP-…868572516 | 23:27:01.923 DISCOVERING → 23:27:03.326 discovery committed |
+| 我们 discover 段恒跑满 8~18s | n-link-…8220927 | discover_start 01:18:47 → discover_hit 01:19:05（17.7s） |
+| 扫描的 InitCommand 占槽 → 注册被拒 | 同上 | discover_hit → `init_fail reason=1`，间隔 83/327/121ms（连 4 次） |
+| AP 两败轮死在链路抖动 | 同上 | 01:35:24 `ifaces=` 空 + ENONET；01:36:08 ENETUNREACH；两轮均 11~13s `no_wifi_network` 收口 |
+| 热点回归后自动路径 1.1s 连上 | 同上 | 01:37:23 `network_restored` → 01:37:24 established |
+| ZDROP AP 同样 INIT_EVENT reset，7s 后重试中 | ZDROP-…876494037 | 01:40:19 reset → `retry … delay=7000ms` → 第三次点击 attempt2 拿 init-event-ack |
+| ZDROP AP 就绪等待 | 同上 | `AP network readiness wait=1200ms gateway/local … stable=true` |
+
+**落地（只动扫描与 AP/STA 连接两条链）**：
+1. **链路就绪门** `awaitLinkReady`（FR-31①）：绑网后等「内核路由 + 绑定网口」双覆盖相机地址，
+   预算 5s；正常链路首检即过、零附加时延。
+2. **热点回归等待** `awaitLinkReturn`（FR-31①）：仅「轮初在相机热点上」的轮启用，预算 120s；
+   触发点二：选网无收敛（旧 `no_wifi_network` 收口点前）、探活 errno 判链路死
+   （`linkLooksDown`：ENONET / ENETUNREACH，与相机侧 TIMEOUT/REFUSED 严格分开，单测钉住）。
+3. **注册发现去占槽**（FR-31③）：`scan(ptpConfirm=false)` 全链路只 TCP 筛探不发 InitCommand
+   （mDNS/网段/ARP/NSD/历史 IP 五处确认点同步降级）；`ptpConfirm=true` 时逐行等价旧行为。
+4. **扫描早退**（FR-31④）：强候选命中 + 1.5s 宽限即收工（默认开）；注册路径叠加
+   `ptpConfirm=false + earlyExit=true`，discover 段预期从 8~18s 降到 1~3s。
+5. **INIT_EVENT 冷重试 7s**（FR-31②）：`PtpSessionManager.lastFailPhase` 进度标记
+   （socket/init/init_event/opensession，成功置 null）；`init_event` 失败退避改 7000ms
+   并出 `sta_backoff reason=event_cold`，其余失败照旧退避表。
+
+**验证**：`assembleDebug` BUILD SUCCESSFUL；单测 236 通过 / 1 失败（既有红）/ 1 跳过；
+新增 `LinkDownRuleTest` 2 条全绿。真机待验：① AP 一次连上（中途热点重启应原地等回并连上）；
+② 注册 discover 段 <3s 且不再出现 `reason=1`；③ STA 页常规扫描不漏相机（早退宽限 1.5s）。
+
+### 17.8 FR-31 真机回归回退 + FR-32 重优化（2026-10-02 凌晨）
+
+**回归事实（n-link_logs_1790881032213）**：FR-31 全量包 3 轮 AP 全 `superseded` 零成功
+（ROUTE p50=90.7s，用户 4 次点击被 `loop_running` 拒）；FR-31① 的 120s 热点回归等待
+把旧包「快收口 → network_restored 自动轮 1.1s 接住」的胜利路径改成轮内死等。
+**同时证伪「响应内容致相机关热点」**：gen=1 的 `network_lost` 发生在 `net_bind` 后 0.2s、
+任何相机方向报文发出之前；后续每轮 drop 与 socket connect 同刻（0.2~0.8s）。
+触发点在手机链路层/相机 AP ~50s 自周期，不在报文内容（分析文档 §6）。
+
+**处置**：坏包快照 `backup/fr31-field-regression-20261002`(ba539ec) → 回退 `7517d65`
+（删 ① 与 linkLooksDown/LinkDownRuleTest；早退挂闸默认关）→ 重优化 `a34c380`（FR-32）：
+- R2：注册 reason=1 冷却 35s（`Failure.initFailReason` 新字段承载判据）；
+- R3：`net_bind` 带 ifaces、`net_unbind`、建链后 15s `sta_ifaces` 采样、`ptp_tx` opcode+响应码
+  —— 纯日志零行为，专答「谁杀了 wlan0」与「断热点前最后发了哪条包」两个悬案；
+- ④ 重落地：早退闸 `v32_scan_early_exit` 默认开（注册发现 8~18s → 1~3s）。
+**回退手段三层**：git 分支/提交；调试面板三闸（v32_scan_early_exit /
+v32_reg_reason1_cooldown / v32_link_diag）；dist 内 FR-30 旧包 APK 实物。
+AP 连接循环保持回退后行为（= 前一版），本轮不动。
+
+
+
+
+### 17.9 FR-33 立项：非上网热点被系统回收（「WiFi 始终开启」开关定生死）
+
+群友 AP 反复失败、用户本机开关=关亦掉线（n-link_logs_1790911140153：会话 +8.3s/+92s 死亡，
+死时 wlan0 从 ifaces 消失）。根因链（详见 docs/非上网热点被系统回收-根因与修复方案-2026-10-02.md）：
+`StaNetworkRequester` 的请求默认含 `NET_CAPABILITY_INTERNET`，匹配不上验证失败的相机 AP →
+不构成持有；AP 快路径甚至不注册请求 → ConnectivityService 按「非默认且无持有」回收该网 →
+wlan0 被踢。「WiFi 始终开启」是系统侧掩码而非根因。竞品三家 dex 均命中
+`requestNetwork+removeCapability+createWifiLock`（local-only 请求标准写法）。
+修复 C1/C2 = 请求去 INTERNET capability + 快路径补注册持有（闸 `v33_local_only_request`）；
+C3 诊断、C4 ROM 指引兜底；C5 否决 setWifiEnabled 看门狗。
+**2026-10-02 12:28 已落地**：C1/C2/C3 = `3efb7ca`，C4 = 本次提交；测试包
+`dist/N-Link-v2.6.1-debug-FR33.apk`（21,329,326B，SHA-256 前 8 `40a26aea`）。
+真机判据：开关=关时 AP 会话监看 5min 不掉（`sta_ifaces` 全程含 wlan0）、
+`net_req caps=local-only` 在册、`net_cb available validated=false` 出现。
+
+## 十八、FR-34 AP 一键连接与失败归因第二轮（2026-10-02，分析完成、待拍板）
+
+输入：本方 5 轮日志 `n-link_logs_1790922712079.txt`（FR33 包）、ZDROP 同机日志
+`ZDROP-diagnostics-1790923435788.txt`、`ZDROP_1.0.257.apk` 方法级逆向、截图两张。
+全文见 `docs/AP连接失败与ZDROP策略分析-2026-10-02.md`。要点：
+
+1. **FR-33 判据修订**：本机（vivo V2509A）相机热点 caps 为 `validated=true internet=true`，
+   且 R1/R3 掉线时 local-only 持有**在册且 bound** —— FR-33 的回收机制在本机不成立，
+   判据里「validated=false 出现」只适用于未验证 ROM；本机失败属另一机制（OEM WLAN 策略 /
+   相机 AP 复位，分叉待 P1 的 deauth 原因码定谳）。FR-33 对群友机型仍必要，不回退。
+2. **本轮失败主成本**：WLAN 闪断 5 次（RC-A）+ 蜂窝 lane 30s 超时 ×4 ≈103s（RC-B）+
+   net_req 4s 窗口错过回连 ×3（RC-C）+ 会话空闲无心跳（RC-D，R1 +14s 死）+
+   自动重连被自家 cooldown 吞（RC-E）。
+3. **ZDROP 策略（已验证）**：endpoint 硬编码 192.168.1.1 零扫描（dex `1c42aa`/`1a151a`）；
+   网关解析 `getLinkProperties().getRoutes()` + 本机地址 sanity + canonical fallback；
+   WLAN 加入靠 `Settings.Panel.ACTION_WIFI`（dex `1ca886`+NEW_TASK+startActivity，截图一底部面板），
+   全 dex 无 WifiNetworkSpecifier/addNetworkSuggestions；tap→complete 2.75s；
+   双通道 2 次重试 + INIT_EVENT 7s；FGS+wake lock+Wi-Fi lock lowLatency 握手前获取；keepAlive 心跳。
+4. **方案 P0（待拍板后落地，全闸门化）**：① AP 一键连接（无候选不弹手动 IP：在热点直接起轮次 /
+   不在则拉 WLAN 面板 + pendingAutoConnect 回连自动起轮）；② 网关快路径（在相机热点跳过双采样与
+   筛探，DISCOVER 2335→~1200ms）；③ 分 lane 套接字超时（非绑网 30s→8s）；④ 会话级持有请求
+   （窗口制→会话制，network_restored 补注册）；⑤ WLAN 新鲜度闸（陈旧不向蜂窝发长超时）；
+   ⑥ 空闲 >5s 发 GetDeviceInfo 心跳。P1：supplicant deauth 原因码落日志。
+   P2 待拍板：有凭证走 specifier 免面板；接收缓冲/radio 诊断。
+5. 约束复述：不碰 STA 注册与 USB 链路；闸门关=现行为；回归=234 单测基线 + 开关=开一次成功路径不慢于现状。
+
+**2026-10-02 15:45 已落地（用户拍板「全做」）**：
+- 七条全部进包，各配独立闸门（默认开）：`v34_ap_one_tap` / `v34_ap_gw_fastpath` /
+  `v34_lane_timeout` / `v34_session_hold` / `v34_wlan_wait` / `v34_fast_idle_refresh` /
+  `v34_drop_reason`，「连接实验开关」面板逐条可关。
+- **两处与方案的偏差（如实记录）**：
+  ① P0-6 前提被代码证伪——v2.6.4 已有 8s Ping 心跳 + 60s 空闲刷新（DeviceReady），
+  故未新增 5s GetDeviceInfo 心跳，改为：空闲刷新 60s→10s 快档（`v34_fast_idle_refresh`）
+  + `markLinkError` 落 `link_state`（两通道静默时长/丢拍/批量态），配合 ⑦ 定谳分叉；
+  ② P1 的 LOCAL/REMOTE_DISCONNECTION_TYPE 常量经 android-35 jar + stubs 逐一核对
+  **均为 @SystemApi/@hide 且普通 App 可达性无法离线验证**，不硬编码凭记忆的键名，
+  改为自证式采集：掉线时枚举 extras 中键名含 reason/disconnect/error 的整数字段落
+  `wlan_drop fields=`，第一次真机掉线即可确认该 ROM 实际下发了什么。
+- 新发现（进包修复）：R5 的 defaultRouteFallback 之所以在 wlan0 缺席时仍开启，是因为
+  `rndis0`（USB 共享网络）被算成"类 WiFi"——已加入 NON_WIFI_PREFIXES（带真机行号证据）。
+- 验证：compileDebugKotlin ✅；单测 236/1红(画廊基线)/1跳 ✅（+2 为 WlanWaitRuleTest）；
+  测试包 `dist/N-Link-v2.6.1-debug-FR34.apk`（21,342,658B，SHA-256 前 8 `93d22233`），
+  dex 内 7 个闸门键 + panel action + gateway-fast/wlan_wait/link_state 标记全部命中。
+- 真机判据（下轮）：① AP 页点「连接相机」一步到位（不在热点→面板点选→自动起轮，
+  日志 `ap_panel armed→joined`）；② WLAN 在位时 tap→READY ≤2s（`ap_gateway source=gateway-fast`）；
+  ③ 蜂窝 lane 不再出现 >8s 的 `socket_try`；④ `net_req hold=true` 出现且回连后
+  `net_cb available` 不再被窗口错过；⑤ 静置 5min 会话存活，死亡时 `link_state`+`wlan_drop`
+  能读出死因；⑥ 全闸关 = 与 FR33 包行为逐位一致。

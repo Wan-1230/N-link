@@ -404,9 +404,22 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         binding.rowTutorial.setOnClickListener {
             NlGlass.dialog(requireContext()).setTitle("使用教程")
                 .setMessage(
-                    "1. 在「设备」页连接相机（WiFi / USB）\n" +
-                        "2. 在「相册」页浏览并下载照片\n" +
-                        "3. 在「拍摄」页遥控快门与监看"
+                    "【设备】连接相机\n" +
+                        " · WiFi AP：相机开启热点 → 手机连上该热点 → 点「扫描相机」→「连接相机」，" +
+                        "在相机配对画面按 OK\n" +
+                        " · WiFi STA：相机连上路由器或手机热点 → 点「扫描相机」→「连接相机」\n" +
+                        "   首次使用要先做一次「STA 主机注册」（在 WiFi-AP 模式下完成，" +
+                        "详见设备页 STA 连接教程）\n" +
+                        " · USB：用支持数据的 C to C 线连接，相机 USB 模式设为 MTP/PTP，" +
+                        "在系统弹窗里允许访问\n\n" +
+                        "【相册】浏览与下载\n" +
+                        " · 底部标签切换 相机照片 / 已标记 / 本地照片\n" +
+                        " · 长按照片进入多选，可批量下载 / 标记 / 分享 / 删除\n" +
+                        " · 下载画质、保存路径在「设置 → 传输设置」里改\n\n" +
+                        "【拍摄】遥控与监看\n" +
+                        " · 点「开始监看」进入实时取景，可调光圈 / 快门 / ISO / 白平衡\n" +
+                        " · B 门长曝光与间隔拍摄在「更多动作」里\n\n" +
+                        "连接遇到问题时，设备页每个连接模式卡片里都有对应的排查提示。"
                 )
                 .setPositiveButton("确定", null)
                 .show()
@@ -415,10 +428,27 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         binding.rowFaq.setOnClickListener {
             NlGlass.dialog(requireContext()).setTitle("常见问题")
                 .setMessage(
-                    "Q: 连接后相机无反应？\n" +
-                        "A: 请确认相机 WiFi 模式为「连接至智能设备」，且手机与相机在同一网络。\n\n" +
-                        "Q: USB 连接失败？\n" +
-                        "A: 请将相机 USB 模式设为 MTP/PTP，并授权 App 的 USB 访问权限。"
+                    "Q: WiFi 搜不到相机？\n" +
+                        "A: ① 相机是否停在 WiFi 等待画面（AP 是热点已开启，STA 是「正在等待连接」）；\n" +
+                        "   ② 手机和相机是否在同一网络（AP 连相机热点，STA 连同一路由器或同一热点）；\n" +
+                        "   ③ 手机是否开了 VPN、路由器是否开了 AP 隔离 —— 两者都会挡掉设备发现。\n\n" +
+                        "Q: STA 连接被相机拒绝（提示「相机未接受本次连接」）？\n" +
+                        "A: 相机只接受已注册的主机。切到「WiFi-AP」标签连上相机，点「STA 主机注册」" +
+                        "完成一次注册（相机屏幕按 OK，约 10 秒），再回 STA 连接。\n\n" +
+                        "Q: 连接成功但相机没反应 / 操作不生效？\n" +
+                        "A: AP 直连要在相机配对画面按 OK 确认；USB 要在系统弹窗里允许访问。" +
+                        "遥控拍摄需要相机处于联机状态，回放或熄屏时操作不会生效。\n\n" +
+                        "Q: USB 连接失败 / 完全没反应？\n" +
+                        "A: ① 相机 USB 模式设为 MTP / PTP；\n" +
+                        "   ② 换一根确认能传数据的 C to C 线（很多充电线不传数据）；\n" +
+                        "   ③ 系统弹窗里允许 N-Link 访问 USB 设备。\n\n" +
+                        "Q: 下载的照片保存在哪？\n" +
+                        "A: 看「设置 → 传输设置 → 默认保存路径」：系统相册（DCIM/N-Link）" +
+                        "或 Download 目录（Download/N-Link）。\n\n" +
+                        "Q: NEF（RAW）照片打不开？\n" +
+                        "A: 手机自带相册对 NEF 的支持有限。需要 RAW 时可在" +
+                        "「设置 → 传输设置 → RAW+JPEG 下载方式」选择成对下载：" +
+                        "JPEG 用来看，NEF 用来存。"
                 )
                 .setPositiveButton("确定", null)
                 .show()
@@ -543,6 +573,72 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 "拆 USB 链路前先发 CloseSession（FR-28④；关=只 releaseInterface+close，会话留在机身）",
                 { connFlags.isEnabled(ConnFlags.USB_CLOSE_SESSION_ON_TEARDOWN) },
                 { connFlags.setEnabled(ConnFlags.USB_CLOSE_SESSION_ON_TEARDOWN, it) }
+            ),
+            LabFlag(
+                ConnFlags.STA_SCAN_EARLY_EXIT,
+                "扫描强候选命中即早退（FR-32；关=跑满扫描预算，多相机列表最全）",
+                { connFlags.isEnabled(ConnFlags.STA_SCAN_EARLY_EXIT) },
+                { connFlags.setEnabled(ConnFlags.STA_SCAN_EARLY_EXIT, it) }
+            ),
+            LabFlag(
+                ConnFlags.STA_REG_REASON1_COOLDOWN,
+                "注册 reason=1 后冷却 35s（FR-32；关=立即允许重试，旧行为）",
+                { connFlags.isEnabled(ConnFlags.STA_REG_REASON1_COOLDOWN) },
+                { connFlags.setEnabled(ConnFlags.STA_REG_REASON1_COOLDOWN, it) }
+            ),
+            LabFlag(
+                ConnFlags.STA_LINK_DIAG,
+                "链路层/opcode 诊断日志（FR-32；纯日志零行为，排查期建议保持开）",
+                { connFlags.isEnabled(ConnFlags.STA_LINK_DIAG) },
+                { connFlags.setEnabled(ConnFlags.STA_LINK_DIAG, it) }
+            ),
+            LabFlag(
+                ConnFlags.STA_LOCAL_ONLY_REQUEST,
+                "网络请求去 INTERNET capability 并全程持有（FR-33；关=旧请求，无互联网热点会被系统回收）",
+                { connFlags.isEnabled(ConnFlags.STA_LOCAL_ONLY_REQUEST) },
+                { connFlags.setEnabled(ConnFlags.STA_LOCAL_ONLY_REQUEST, it) }
+            ),
+            LabFlag(
+                ConnFlags.AP_ONE_TAP,
+                "AP 免扫描一键连接 + 系统 WLAN 面板（FR-34①；关=无候选时弹手动 IP 框）",
+                { connFlags.isEnabled(ConnFlags.AP_ONE_TAP) },
+                { connFlags.setEnabled(ConnFlags.AP_ONE_TAP, it) }
+            ),
+            LabFlag(
+                ConnFlags.AP_GW_FASTPATH,
+                "在相机热点上网关单采样直采（FR-34②；关=双采样+TCP 筛探，DISCOVER ~2.3s）",
+                { connFlags.isEnabled(ConnFlags.AP_GW_FASTPATH) },
+                { connFlags.setEnabled(ConnFlags.AP_GW_FASTPATH, it) }
+            ),
+            LabFlag(
+                ConnFlags.STA_LANE_TIMEOUT,
+                "无 Network 句柄时 socket 超时 30s→8s（FR-34③；关=蜂窝黑洞也烧满 30s）",
+                { connFlags.isEnabled(ConnFlags.STA_LANE_TIMEOUT) },
+                { connFlags.setEnabled(ConnFlags.STA_LANE_TIMEOUT, it) }
+            ),
+            LabFlag(
+                ConnFlags.STA_SESSION_HOLD,
+                "连接轮次的持有请求改会话制（FR-34④；关=3~4s 窗口到期即撤，回连瞬间零持有）",
+                { connFlags.isEnabled(ConnFlags.STA_SESSION_HOLD) },
+                { connFlags.setEnabled(ConnFlags.STA_SESSION_HOLD, it) }
+            ),
+            LabFlag(
+                ConnFlags.STA_WLAN_WAIT,
+                "闪断轮次先等 ≤8s 回连再决定收口（FR-34⑤；关=wlan 缺席直接判死整轮）",
+                { connFlags.isEnabled(ConnFlags.STA_WLAN_WAIT) },
+                { connFlags.setEnabled(ConnFlags.STA_WLAN_WAIT, it) }
+            ),
+            LabFlag(
+                ConnFlags.STA_FAST_IDLE_REFRESH,
+                "空闲刷新 60s→10s 档（FR-34⑥；关=v2.6.4 的 60s 档）",
+                { connFlags.isEnabled(ConnFlags.STA_FAST_IDLE_REFRESH) },
+                { connFlags.setEnabled(ConnFlags.STA_FAST_IDLE_REFRESH, it) }
+            ),
+            LabFlag(
+                ConnFlags.WLAN_DROP_REASON,
+                "WLAN 掉线原因码落日志（FR-34⑦；纯日志，remote 有值=相机踢，local 有值=手机断）",
+                { connFlags.isEnabled(ConnFlags.WLAN_DROP_REASON) },
+                { connFlags.setEnabled(ConnFlags.WLAN_DROP_REASON, it) }
             ),
             LabFlag(
                 UiFlags.ALBUM_INCR, "相册增量首屏（FR-03）",

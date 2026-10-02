@@ -62,12 +62,19 @@ class LocalNetworkInterfaceResolver @Inject constructor(
          *  - `rmnet` —— 高通平台蜂窝数据口的通用命名
          *  - `tun` / `tap` —— 通用 VPN 虚拟网卡命名
          *  - `ppp` —— 3GPPP 拨号与部分 VPN 的点对点命名（蜂窝/VPN 两侧都可能用到，两边都排）
+         *  - `rndis` —— USB 共享网络（手机把蜂窝经 USB 分给电脑）。FR-34 真机实证：
+         *    vivo V2509A 挂 PC 调试时 `rndis0 10.32.72.202/24` 被算成"类 WiFi"，
+         *    wlan0 已掉时 `hasLocalWifiLikeInterface()` 仍为 true →
+         *    defaultRouteFallback 误判"有本地网络"→ 3 条 30s socket 全从蜂窝
+         *    /10.115.218.201 打进黑洞（2026-10-02 14:30:13→14:31:31，≈73s 空转）。
+         *    相机永远不会出现在 USB 共享网络上，排除它不影响 RC-0 的热点拓扑
+         *    （WiFi 热点接口是 `ap0`/`swlan0`/`wlan1`，不在此表）。
          *
          * **不排**的东西：`ap0` / `swlan0` / `softap0` / `wlan1` 等热点与第二 WiFi 接口
          * —— 它们正是"手机自己开热点、相机连上来"那条拓扑的唯一出口，误排就会退回
          * RC-0 那个"能发现但恒判 no_wifi_network"的老坑（见本类头注释）。
          */
-        internal val NON_WIFI_PREFIXES = listOf("ccmni", "rmnet", "vgate", "tun", "tap", "ppp")
+        internal val NON_WIFI_PREFIXES = listOf("ccmni", "rmnet", "vgate", "tun", "tap", "ppp", "rndis")
 
         /**
          * 名字前缀判据（抽成纯函数只为可测）。

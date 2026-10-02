@@ -1324,7 +1324,10 @@ class TransferViewModel @Inject constructor(
             return 0
         }
         pendingClearCandidates = candidates.mapTo(mutableSetOf()) { it.handle }
-        enqueuePairs(candidates)
+        // v2.6.4：标记是**按格式**打的（可以只标这一张的 JPG、不标它的 NEF），
+        // 所以「已标记」栏的全选下载必须严格照标记的句柄下，**不能**套 FR-17 的成对扩展 ——
+        // 那会把"只标了 JPG"扩散成 JPG+RAW 双份，等于替用户决定他要什么。
+        transferManager.enqueue(candidates)
         _message.value = "已加入队列: ${candidates.size} 个文件"
         return candidates.size
     }
@@ -1436,6 +1439,32 @@ class TransferViewModel @Inject constructor(
     /**
      * 从相机存储卡删除选中的文件。
      */
+    /**
+     * 删除目标扩展：把成对显示的另一格式也纳入（v2.6.4）。
+     *
+     * 合并显示时界面上一格 = 一次拍摄，被隐藏的那一格用户**选不到**，
+     * 所以选中集天然只有可见那一张的句柄。这里按 [RawJpegPairing.Plan] 把配对的
+     * 另一张补进来：RAW→JPG、JPG→RAW 双向都补，保证"删一格 = 删这一拍的两个文件"。
+     *
+     * 只按**严格 1:1** 的配对结果补（[RawJpegPairing] 对歧义一律不合并），
+     * 所以不会出现"顺手删掉了不该删的第三张"。未开启成对时原样返回。
+     */
+    private fun expandForDelete(selected: List<CameraFile>): List<CameraFile> {
+        if (!rawPairOn || selected.isEmpty()) return selected
+        val all = _photoList.value
+        val byHandle = all.associateBy { it.handle }
+        val plan = RawJpegPairing.plan(all)
+        val out = LinkedHashMap<Int, CameraFile>()
+        for (f in selected) {
+            out[f.handle] = f
+            plan.jpegOfRaw[f.handle]?.let { byHandle[it]?.let { p -> out[it] = p } }
+            plan.rawOfJpeg[f.handle]?.let { byHandle[it]?.let { p -> out[it] = p } }
+            // 列表本身带上的配对字段（批量属性路径可能直接给出）也一并覆盖
+            f.pairedJpegHandle?.let { byHandle[it]?.let { p -> out[it] = p } }
+        }
+        return out.values.toList()
+    }
+
     fun deleteSelected() {
         // F1：已标记栏的删除目标取「标记 ∩ 相机列表」，不落到本地相册
         val selected = selectedCameraFiles()
@@ -1451,8 +1480,13 @@ class TransferViewModel @Inject constructor(
             _message.value = "相机未连接，无法删除"
             return
         }
+        // v2.6.4：JPEG+RAW 合并显示模式下，一格代表**一次拍摄**，配对的那一格在界面上是
+        // 隐藏的（见 RawJpegPairing），所以选中集里只有 RAW 的句柄。只删 RAW 会留下
+        // "删了却在卡里还剩一张"的半吊子结果 —— 用户以为删干净了，下次连上又看到它。
+        // 删除目标必须把成对的两种格式都带上；未开启成对显示时行为不变。
+        val targets = expandForDelete(selected)
         viewModelScope.launch {
-            val deleted = transferManager.deleteFiles(selected)
+            val deleted = transferManager.deleteFiles(targets)
             if (deleted.isEmpty()) {
                 _message.value = "删除失败，相机可能不支持该操作"
                 return@launch
@@ -1545,7 +1579,12 @@ enum class PhotoFilter(val label: String) {
     VIDEO("视频"),
     RAW("RAW"),
     JPEG("JPG"),
-    PROTECTED("已保护");
+    /**
+     * v2.6.4：机内已筛选 = 保护键 或 评级，任一即算（见 [CameraFile.isScreenedInCamera]）。
+     * 标签用「已筛选」而不是「已保护」：这一档现在覆盖两种机内标记方式，
+     * 写「已保护」会让打了星却没按保护键的照片出现得莫名其妙。
+     */
+    PROTECTED("已筛选");
 
     fun matches(file: CameraFile): Boolean {
         return when (this) {
@@ -1554,9 +1593,9 @@ enum class PhotoFilter(val label: String) {
             VIDEO -> file.format == CameraFileFormat.VIDEO
             JPEG -> file.format == CameraFileFormat.JPEG
             RAW -> file.format == CameraFileFormat.RAW
-            // 未报告保护状态的文件按「不是已保护」处理：宁缺毋滥，
-            // 筛出来少几张可以解释，混进一堆没保护的让下载的人自己挑是更坏的结果。
-            PROTECTED -> file.isProtected
+            // 未报告（保护列与评级列都没报）的文件按「未筛选」处理：宁缺毋滥，
+            // 筛出来少几张可以解释，混进一堆没筛过的让下载的人自己挑是更坏的结果。
+            PROTECTED -> file.isScreenedInCamera
         }
     }
 }

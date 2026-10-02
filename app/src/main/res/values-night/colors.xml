@@ -41,6 +41,13 @@
     <color name="ble_indicator">#ADADAD</color>
     <color name="wifi_indicator">#FFFFFF</color>
 
+    <!-- v2.6.5 品牌强调色（尼康黄）。夜间用同一支黄：它在纯黑底上的对比度 ≥ 15:1，
+         不必为深色另调一支 —— 两支黄会让"品牌色"在明暗主题之间漂移。
+         使用范围同样只限「连接状态指示灯」与「主功能按钮」。 -->
+    <color name="nikon_yellow">#FFE100</color>
+    <color name="on_nikon_yellow">#000000</color>
+    <color name="status_connected">#FFE100</color>
+
     <!-- 点击反馈 / 遮罩 -->
     <color name="chip_unselected">#1A1A1A</color>
 

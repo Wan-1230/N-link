@@ -11,7 +11,11 @@ import androidx.core.view.updatePadding
 import com.nikonlink.app.R
 
 /**
- * 玻璃材质档位（PRD §3.1）。只有四层，归不进去的面就不该做玻璃。
+ * 玻璃材质档位（PRD §3.1）。
+ *
+ * v2.6.2：原文注释写的"只有四层"，但枚举实际只有三层（L4 那一档从未落地）。
+ * 注释与代码不一致会让人以为漏了一档、照着去补，这里改成与实际一致的三层。
+ * 真要加档位时先想清楚 §8.2 的帧预算 —— 每多一层"吃实时模糊"的档，同屏面数就多一批。
  */
 enum class GlassLevel {
     /** 贴合玻璃：与内容同滚动的信息面 */
@@ -54,6 +58,20 @@ data class GlassMaterial(
     val magnify: Float = 1f,
     /** 色散强度（相对位移比例）。默认 0：见 PRD §3.7 与 Q1 的灰阶冲突 */
     val dispersion: Float = 0f,
+    /**
+     * 「关玻璃 / 降低透明度」时该面应当呈现的 **v2.2 原始实色**。0 = 用 [opaqueTint]。
+     *
+     * v2.6.2 修复：关闭玻璃时画的是 `opaqueTint`，也就是"把半透明 tint 的 alpha 钉成
+     * 255"。对绝大多数面这碰巧等于 v2.2 的实色（dock 的 `#8FFFFFFF` → 不透明白），
+     * 但暗面 HUD 不是：`glass_tint_scrim` 是 `#99000000`（60% 黑），钉成 255 就成了
+     * **纯黑**，而 v2.2 的 `liveview_scrim` 正是 60% 黑。于是"经典外观"这一档下
+     * 监看/预览的参数条比 v2.2 更黑一截 —— 违反回退闸门要求的逐像素相等（AC-12）。
+     */
+    val solidColor: Int = 0,
+    /** 上沿镜面亮线：苹果玻璃"上沿高光"的主峰，比 rim 更亮更窄 */
+    val specularColor: Int = 0,
+    /** 底边内侧的短暗渐变（内阴影），给玻璃厚度 */
+    val innerShadowColor: Int = 0,
 ) {
     /** 不透明实底（降低透明度 / 经典外观） */
     val opaqueTint: Int
@@ -63,6 +81,9 @@ data class GlassMaterial(
             Color.green(tintColor),
             Color.blue(tintColor),
         )
+
+    /** 实际用于实体表面的颜色：[solidColor] 优先，未指定时退 [opaqueTint] */
+    val solid: Int get() = if (solidColor != 0) solidColor else opaqueTint
 }
 
 /**
@@ -327,6 +348,8 @@ object GlassTokens {
         blurRes: Int,
         tintRes: Int,
         onColorRes: Int,
+        /** v2.2 原始实色；0 = 退回 [GlassMaterial.opaqueTint] */
+        solidColorRes: Int = 0,
     ): GlassMaterial {
         val r = c.resources.getDimension(radiusRes)
         val glass = UiFlags.glassEnabled(c)
@@ -353,6 +376,9 @@ object GlassTokens {
             rimPressKeep = if (UiFlags.motionEnabled(c)) 0.45f else 1f,
             glass = glass && !reduce,
             onColor = color(c, onColorRes),
+            solidColor = if (solidColorRes != 0) color(c, solidColorRes) else 0,
+            specularColor = color(c, R.color.glass_specular_line),
+            innerShadowColor = color(c, R.color.glass_inner_shadow),
         )
     }
 
@@ -365,7 +391,9 @@ object GlassTokens {
         else m.copy(
             lensStrengthDp = strengthDp,
             magnify = magnify,
-            dispersion = if (UiFlags.dispersionEnabled(c)) 0.35f else 0f,
+            // 0.35 → 0.10：参考两边项目的默认值。0.35 在灰阶底上读作彩色噪点，
+            // 0.10 才是"棱边有一点光学色散"的那个量级（QWEA0 默认 0.10）。
+            dispersion = if (UiFlags.dispersionEnabled(c)) 0.10f else 0f,
         )
 
     /**
@@ -377,7 +405,9 @@ object GlassTokens {
         c,
         base(c, GlassLevel.L3_FLOATING, R.dimen.glass_radius_xl, R.dimen.glass_blur_m,
             R.color.glass_tint_floating, R.color.text_primary),
-        6f, 1.06f,
+        // 6dp → 10dp：换成 circleMap 剖面后位移集中在贴边 1~2px，6dp 在真机上几乎读不出
+        // "透镜"；10dp 才有那条压缩镜面环。dock 距屏幕边 12dp，外扩采样区拿得到真实内容。
+        10f, 1.06f,
     )
 
     /** 选择操作坞（L3，与 dock 同材质同半径，天然一致） */
@@ -385,7 +415,7 @@ object GlassTokens {
         c,
         base(c, GlassLevel.L3_FLOATING, R.dimen.glass_radius_xl, R.dimen.glass_blur_m,
             R.color.glass_tint_floating, R.color.text_primary),
-        6f, 1.06f,
+        10f, 1.06f,
     )
 
     /**
@@ -397,14 +427,19 @@ object GlassTokens {
         base(c, GlassLevel.L3_FLOATING, R.dimen.glass_radius_xl, R.dimen.glass_blur_m,
             R.color.glass_tint_floating, R.color.text_primary)
             .copy(radiusPx = dp(c, 20f)),
-        5f, 1.05f,
+        8f, 1.05f,
     )
 
-    /** 监看 / 预览 HUD（L3，60dp 模糊，背后是视频流所以 tint 用暗面参数） */
+    /**
+     * 监看 / 预览 HUD（L3，60dp 模糊，背后是视频流所以 tint 用暗面参数）。
+     *
+     * `solidColor` 显式指向 `liveview_scrim`：关玻璃时这块必须回到 v2.2 的 60% 黑，
+     * 而不是把 `glass_tint_scrim` 钉成不透明后的纯黑（见 [GlassMaterial.solidColor]）。
+     */
     fun hud(c: Context): GlassMaterial = lens(
         c,
         base(c, GlassLevel.L3_FLOATING, R.dimen.glass_radius_m, R.dimen.glass_blur_xl,
-            R.color.glass_tint_scrim, R.color.liveview_text,
+            R.color.glass_tint_scrim, R.color.liveview_text, R.color.liveview_scrim,
         ).let {
             // 暗面 HUD：半径沿用现值 14dp，描边用半透明白
             it.copy(
@@ -413,7 +448,8 @@ object GlassTokens {
                 strokeWidthPx = dp(c, 1f),
             )
         },
-        5f, 1.04f,
+        // 暗面 HUD 压在视频流上：暗底里的亮边折射比浅底更显眼，8dp 足够
+        8f, 1.04f,
     )
 
     /** 行内小控件玻璃（chip / 分段槽）。L2 不吃实时模糊，只吃 tint + rim */
