@@ -397,7 +397,33 @@ class ConnFlags @Inject constructor(
          */
         const val WLAN_DROP_REASON = "v34_drop_reason"
 
+        /**
+         * FR-35①：面板/specifier 回连后的「手机已挂上热点」判定放宽，不再只认 SSID。
+         *
+         * FR-34① 的自动起轮要求 `isOnCameraAp()`（SSID 以 NIKON 开头），两处必然落空：
+         * Android 13+ 未授予「附近的设备」→ SSID 读回 `<unknown ssid>`；机身热点名被用户
+         * 改过 → 不匹配规则。结果是「拉起面板→用户点了热点→回 App 什么都不发生」，
+         * 而且武装标记不消费、再点还是弹面板，用户只能退回扫描（核查 2026-10-03）。
+         * 打开后只在**武装状态下**放宽为「有 WiFi 网络且其网关是私网 IPv4」——
+         * 那一下用户点的就是他要连的热点；误判代价是多起一轮打向私网的 AP 连接，
+         * 由漏斗结论收口，不会挂死。首次点按的分流仍用严格的 SSID 判定。
+         * 关闸 = FR-34 的纯 SSID 判定。
+         */
+        const val AP_JOINED_LOOSE = "v35_ap_joined_loose"
 
+        /**
+         * FR-35②：手上有 BLE 下发的 WiFi 凭证时，点「连接相机」直接免面板一键连。
+         *
+         * 复用 v2.2 就实现的 [android.net.wifi.WifiNetworkSpecifier] 通路
+         * （`wifi-ap/WifiManager.kt` 的 `buildCameraApRequest`）：系统只弹一次
+         * 「允许连接该网络」确认框，用户不必再进 WLAN 列表翻 NIKON_xxx。
+         * 与面板路径的差别是它不依赖 SSID 可读、也不受热点改名影响（凭证自带名字与密码）。
+         * 失败/超时/无凭证 → 回落 FR-34 的系统面板，不会白点。
+         * 注：ZDROP 全 dex 里 specifier / addNetworkSuggestions 匹配数为 0，
+         * 即竞品**没走**这条路（免确认自动连网），本条是超出 ZDROP 的增量，故单独设闸。
+         * 关闸 = 一律走面板。
+         */
+        const val AP_CRED_SPECIFIER = "v35_ap_cred_specifier"
 
         /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
@@ -509,6 +535,10 @@ class ConnFlags @Inject constructor(
             STA_WLAN_WAIT to true,
             STA_FAST_IDLE_REFRESH to true,
             WLAN_DROP_REASON to true,
+            // FR-35：①修 FR-34① 的 SSID 死角（不改判定就永远起不了轮），②是超出 ZDROP 的
+            // 增量通路，失败自动回落面板，所以同样默认开、可独立关闸二分。
+            AP_JOINED_LOOSE to true,
+            AP_CRED_SPECIFIER to true,
         )
     }
 

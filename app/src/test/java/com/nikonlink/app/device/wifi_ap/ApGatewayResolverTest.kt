@@ -8,10 +8,11 @@ import org.junit.Test
 /**
  * v2.2（PRD §5.1 T-A2/T-A3）AP 地址学习与热点识别的纯规则回归测试。
  *
- * 这里只覆盖不依赖 Android framework 判定的两件事：
+ * 这里只覆盖不依赖 Android framework 判定的三件事：
  * 1. 「这个 SSID 是不是相机热点」——决定 AP 能不能不走蓝牙直接连；
  * 2. 「网关地址是不是可用的相机地址」——决定学习结果会不会把手机自己/广播地址
- *    当成相机（ZDROP 的 `AP gateway ignored because it matches handset address`）。
+ *    当成相机（ZDROP 的 `AP gateway ignored because it matches handset address`）；
+ * 3. FR-35③「武装状态下算不算已挂上热点」——SSID 不可读时靠私网网关兜底。
  * 实际的路由读取与 PTP 探测需要真机，列在 PRD §12 的 V-8。
  */
 class ApGatewayResolverTest {
@@ -78,5 +79,35 @@ class ApGatewayResolverTest {
         assertFalse(ApGatewayResolver.isCameraGateway("192.168.1.256", own))
         assertFalse(ApGatewayResolver.isCameraGateway("192.168.1", own))
         assertFalse(ApGatewayResolver.isCameraGateway("1.2.3.4.5", own))
+    }
+
+    /**
+     * FR-35③（核查 2026-10-03 的死角回归）：FR-34① 的自动起轮只认 SSID，
+     * 而真机上 SSID 有两种拿不到的情况 —— Android 13+ 没给「附近的设备」权限时是
+     * `<unknown ssid>`，机身热点被用户改过名时不匹配 NIKON 规则。两种都必须靠
+     * 「有 WiFi 且网关是私网」兜住，否则点了面板回来什么都不发生。
+     */
+    @Test
+    fun `SSID 不可读或热点改名时靠私网网关认定已挂上热点`() {
+        // ① SSID 命中规则：不需要网关就能判定
+        assertTrue(ApGatewayResolver.looksJoinedAp("NIKON_9431ABCD", null, hasWifiNetwork = true))
+        // ② SSID 不可读（无权限）+ 私网网关：必须放行，这正是死角的现场
+        assertTrue(ApGatewayResolver.looksJoinedAp("<unknown ssid>", "192.168.1.1", true))
+        assertTrue(ApGatewayResolver.looksJoinedAp(null, "10.0.0.1", true))
+        // ③ 热点改了名：同上
+        assertTrue(ApGatewayResolver.looksJoinedAp("Studio-Cam-01", "192.168.3.1", true))
+    }
+
+    @Test
+    fun `没有 WiFi 网络或网关不属私网时不得误判为已挂上热点`() {
+        // 武装状态下手机其实还没连上任何 WiFi
+        assertFalse(ApGatewayResolver.looksJoinedAp("<unknown ssid>", null, hasWifiNetwork = false))
+        assertFalse(ApGatewayResolver.looksJoinedAp(null, "192.168.1.1", hasWifiNetwork = false))
+        // 公网网关（蜂窝/公网热点形态）不算挂在相机网络上
+        assertFalse(ApGatewayResolver.looksJoinedAp(null, "8.147.1.1", hasWifiNetwork = true))
+        assertFalse(ApGatewayResolver.looksJoinedAp("", "169.254.1.1", true))
+        // 路由器不是相机热点，但用户确实在私网 WiFi 上：武装状态按「先试一轮」处理，
+        // 由漏斗给出 camera_unreachable 结论，代价可控（见 ConnFlags.AP_JOINED_LOOSE）
+        assertTrue(ApGatewayResolver.looksJoinedAp("TP-LINK_5G_88A1", "192.168.1.1", true))
     }
 }
