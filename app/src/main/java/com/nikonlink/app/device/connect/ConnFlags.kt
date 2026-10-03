@@ -426,6 +426,22 @@ class ConnFlags @Inject constructor(
         const val AP_CRED_SPECIFIER = "v35_ap_cred_specifier"
 
         /**
+         * FR-37：让设备页选的 STA 架构（PTP/IP 直连 / FTP 推送收图）真的决定连接行为。
+         *
+         * 现状是 `AppSettings.staArchitecture` **全仓只有 UI 读**（切换页签显隐），
+         * 连接层从来不看它：选了「FTP 推送」之后，重连触发、状态机闭环、配对恢复、
+         * 健康探针仍然会自动发 PTP/IP InitCommand 敲机身 —— 而机身只有一个 PTP/IP 客户端槽，
+         * 被敲门时正在 FTP 向导里等推送的相机会被打断（本仓 FR-21/FR-30 反复实测的单槽行为）。
+         * 用户侧观感就是「切了模式没切，App 还是直接连相机」。
+         *
+         * 打开后：**自动**发起的 WiFi 连接（caller ≠ USER_TAP）在 FTP 架构下直接跳过并记
+         * `arch_skip` 事件；用户明确点「连接」的仍放行 —— 监看与相册只有 PTP 能做，
+         * 不能因为选了 FTP 架构就把它们关掉。
+         * 关闸 = 架构选择继续只影响界面（v3.0.0 行为）。
+         */
+        const val STA_ARCH_GATE = "v37_sta_arch_gate"
+
+        /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
          *
          * 尼康机身同时只接受一个 PTP/IP 客户端：我们自己发出的探测握手会占住这个槽，
@@ -539,6 +555,8 @@ class ConnFlags @Inject constructor(
             // 增量通路，失败自动回落面板，所以同样默认开、可独立关闸二分。
             AP_JOINED_LOOSE to true,
             AP_CRED_SPECIFIER to true,
+            // FR-37：架构选择此前只影响界面，连接层无视 → 用户报「切了没切」。默认开。
+            STA_ARCH_GATE to true,
         )
     }
 

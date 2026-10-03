@@ -5,6 +5,7 @@ import com.nikonlink.app.device.ble.BleConnectionState
 import com.nikonlink.app.device.ble.BleManager
 import com.nikonlink.app.device.ble.WifiCredential
 import com.nikonlink.app.device.model.ConnectionMetrics
+import com.nikonlink.app.device.model.CameraModelCatalog
 import com.nikonlink.app.device.model.ChannelType
 import com.nikonlink.app.device.model.ConnectionState
 import com.nikonlink.app.device.model.ConnectionEvent
@@ -62,13 +63,17 @@ class ConnectionManager @Inject constructor(
     private val connFlags: ConnFlags,
     private val funnel: ConnFunnel,
     private val preflight: PreflightGate,
-    private val staHostRegistrar: StaHostRegistrar
+    private val staHostRegistrar: StaHostRegistrar,
+    /** FR-36①：AP 面板等待期也要盯掉线原因——这条窗口里 WifiDirectConnector 还没跑起来，它自己的注册覆盖不到。 */
+    private val wifiDropWatcher: com.nikonlink.app.device.wifi_sta.WifiDropReasonWatcher
 ) {
     companion object {
         private const val TAG = "ConnectionMgr"
         private const val WIFI_UPGRADE_DELAY_MS = 1000L
         private const val PREFS_NAME = "nl_settings"
         private const val PREFS_WIFI_5G_PREFER = "wifi_band_5g_prefer"
+        /** FR-37：设备页 STA 架构选择的键（写侧是 `AppSettings.staArchitecture`，同一个 prefs 文件）。 */
+        private const val PREFS_STA_ARCH = "sta_arch"
         /** STA 主机注册标记：相机已记住本机 GUID（门控解除） */
         private const val PREFS_STA_HOST_REGISTERED = "sta_host_registered"
 
@@ -320,6 +325,27 @@ class ConnectionManager @Inject constructor(
             return
         }
 
+        // FR-37：设备页选了「FTP 推送收图」时，不让**自动**发起的连接去敲 PTP/IP 门。
+        // 机身只有一个 PTP/IP 客户端槽（FR-21 实测收回要 ~35s），而相机在 FTP 向导里等推送时
+        // 被 InitCommand 敲门就会中断推送——用户观感就是「切了 FTP 还是直接连相机」。
+        // 两条边界：① 用户明确点「连接」（USER_TAP）照旧放行，监看与相册只有 PTP 能做；
+        // ② 手机挂在相机自己的热点上（AP 场景）不拦，因为 FTP 架构是 STA 页签的选择，
+        //    不该顺手管住 AP 链路。
+        if (caller != ConnFunnel.Caller.USER_TAP &&
+            connFlags.isEnabled(ConnFlags.STA_ARCH_GATE) &&
+            isFtpPushArchitecture() && !apGatewayResolver.isOnCameraAp()
+        ) {
+            eventLogger.event(
+                "arch_skip", "host" to endpoint.host, "caller" to caller.code,
+                "arch" to "ftp_push"
+            )
+            _connectionHint.value = ConnectionHint(
+                "当前是 FTP 推送架构：手机只接收相机推送，后台自动 PTP 直连已停用。" +
+                    "要做监看/相册就在设备页点「连接相机」临时直连。"
+            )
+            return
+        }
+
         // v2.2（G11/G12）：先预检再连接 —— 权限/位置开关/OTG 这类硬阻断不该靠重试去碰运气
         val mode = if (endpoint.host == DEFAULT_FALLBACK_HOST) "AP-fallback" else "host"
         funnel.begin("WIFI", mode, caller.code)
@@ -491,10 +517,15 @@ class ConnectionManager @Inject constructor(
                 // 回调非挂起上下文，持久化是 fire-and-forget，放独立协程（与旧实现语义一致）
                 scope?.launch(Dispatchers.IO) {
                     try {
+                        // FR-36：这次调用的第三参是 `model`，旧代码传的是 `endpoint.host`
+                        // （IP 地址）——配对记录里那一列从建立起就是错的，「最近连接」卡片
+                        // 只能显示 `尼康相机`。现在把机身自报 Model 归一化成官方全称写进
+                        // deviceName，型号原文写进 model；取不到时保留旧的行为（扫描名）。
+                        val officialName = CameraModelCatalog.official(ptpSession.lastDeviceModel)
                         deviceRepository.savePairedDevice(
                             endpoint.address,
-                            deviceName ?: "尼康相机",
-                            endpoint.host
+                            officialName ?: deviceName ?: "尼康相机",
+                            ptpSession.lastDeviceModel.orEmpty()
                         )
                     } catch (e: Exception) {
                         Timber.tag(TAG).w(e, "Failed to persist WiFi camera")
@@ -1047,11 +1078,44 @@ class ConnectionManager @Inject constructor(
     /** 手机当前是否挂在相机热点上（UI 分流用）。 */
     fun isOnCameraAp(): Boolean = apGatewayResolver.isOnCameraAp()
 
+    /**
+     * FR-36：本次 PTP/IP 会话里机身自报的 `Model` 原文（未取到为 null）。
+     * 设备页的相机全称拿它做第二顺位来源——比参数轮询早，连上瞬间就有。
+     */
+    fun sessionCameraModel(): String? = ptpSession.lastDeviceModel
+
+    /**
+     * FR-37：设备页当前的 STA 架构是不是「FTP 推送收图」。
+     *
+     * 键与 `AppSettings.staArchitecture` 同一个 prefs 文件（`nl_settings` / `sta_arch`）——
+     * 这里直接读而不注入 AppSettings，是因为本类已经用同样方式读 `wifi_band_5g_prefer`，
+     * 且 ConnectionManager 的构造参数有 12 个，为一个布尔不加依赖。
+     */
+    private fun isFtpPushArchitecture(): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(
+                PREFS_STA_ARCH,
+                com.nikonlink.app.shared.common.AppSettings.STA_ARCH_PTP
+            ) == com.nikonlink.app.shared.common.AppSettings.STA_ARCH_FTP
+
     /** UI 拉起 WLAN 面板（或发起 specifier 一键连）前调用：登记武装状态。 */
     fun armApPanelConnect(path: String = "panel") {
         apPanelArmedAt = System.currentTimeMillis()
         apPanelArmedPath = path
-        eventLogger.event("ap_panel", "phase" to "armed", "path" to path)
+        // FR-35①：把「离开 App 那一刻」的 WLAN 状态一起落日志。没有这一行，
+        // 「面板里点了热点、回来没连上」就分不清是手机没 join 上、相机 AP 没放行、
+        // 还是我们没看见回连（ap_panel 原先只有 phase/path，看不出当时有没有 WiFi 网络）。
+        eventLogger.event(
+            "ap_panel", "phase" to "armed", "path" to path,
+            "wlan_on" to runCatching { wifiManager.isWifiEnabled() }.getOrDefault(false),
+            "has_wifi_net" to apGatewayResolver.isOnCameraAp(),
+            "ssid_len" to (apGatewayResolver.connectedSsid()?.length ?: 0)
+        )
+        // 用户回连这段时间正是「谁砍的 wlan0」的现场（FR-31 RC-A）：面板点完热点后手机
+        // 若立刻报 disconnected，才能证明是手机/系统侧先断，而不是相机侧。
+        // 监听器本来就由 WifiDirectConnector 起止，但那条链路此刻还没跑起来，所以这里补一次
+        // 注册（start/stop 均幂等，且受 WLAN_DROP_REASON 闸门管）。
+        wifiDropWatcher.start()
     }
 
     fun isApPanelArmed(): Boolean =

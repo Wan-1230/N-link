@@ -22,6 +22,7 @@
 | 0.5 | Z8+小米 15 Pro 组合零实测；报障者未给版本号的问题回访 | v2.6 §十三·七 |
 | 0.6 | 监看 HUD 新 UI（`07e2b9e`）真机走查：横屏布局、快门行不再被面板盖住、状态卡让位 | 并行会话产出，本仓未验 |
 | 0.7 | FR-35 五条真机判据（含**改名热点专项**，这是 FR-34① 没达成「一键」的靶心） | 本文 M6 |
+| 0.8 | FR-36/FR-37 四条真机判据：三模式相机全称都是 `Nikon Z xxx`、断开不残留、会话名早于参数轮询、FTP 架构下 `arch_skip` 出现且 AP 自动重连不受影响 | 本文 M7 |
 
 ## M1 证据基建（先把"怎么算好了"定下来）
 
@@ -111,8 +112,60 @@ FR-34① 的代码链路是通的，但**真机上大概率走不到**，另有�
 **产物**：`N-Link-v3.0.0-debug-FR35.apk`（debug，未混淆，Lab 面板可逐条关闸二分）。
 单测 238/1 红/1 跳：唯一红仍是画廊 `ProtectionFilterTest`（并行会话既有基线，非本批引入）。
 
-## 已否决 / 已撤回（防复活清单）
+## M7 FR-36 相机官方名称 + FR-37 架构真的决定连接（2026-10-03 已落地，`[机]` 待真机）
 
+用户追加两条：①设备页要么不显示相机名、要么显示的不是官方名称；②STA 切换连接模式后
+没按新模式连接，还是直接连相机。
+
+### FR-36 设备页相机全称（三条已验证成因，逐条对治）
+
+| 成因（`已验证`，代码级） | 对治 |
+|---|---|
+| 设备页直接写机身自报原文：PTP `GetDeviceInfo.Model` 形如 `NIKON Z 50II`（`UsbPtpProtocol:232` 注释实证），全大写带品牌前缀，不是官方写法；未知 USB PID 显示 `Nikon Camera (0x0FFF)` | 新增 `device/model/CameraModelCatalog`：`NIKON Z 6_III → Nikon Z 6III`、`Z6III_12345678 → Nikon Z 6III`（广播名剥序列号）；**认不出机型返回 null，绝不猜**（IP/MAC/路由器名/热点 SSID 一律不装成型号） |
+| 布局默认写死 `Nikon`（`fragment_dashboard.xml:607`），而两处赋值都只在拿到值时才写 → GetDeviceInfo 未回来就永久停在 "Nikon" | 相机全称收敛为唯一出口 `DashboardFragment.renderCameraName()`，五级来源链：参数 Model → 会话 Model → USB → BLE 广播机型 → 配对记录 |
+| 参数管理器从不清 `modelName`，而 `readFirmwareAndModel` 又「取到空就保留旧值」→ 换机身时 B 显示 A 的名字 | `readAllParameters()` 与 `resetModeSwitchSupport()` 同处按「新会话」复位 `modelName/firmwareVersion` |
+| 配对记录那列历史上存的是 **IP**（`savePairedDevice(address, name, endpoint.host)` 第三参是 `model`） | 改存机身 Model 原文，deviceName 存归一化后的官方全称；取不到保留旧行为。「最近连接」卡片优先显示型号，旧行（IP）自动退回原显示 |
+
+新增提前量：`PtpDeviceInfo.parseModel()` 解规范 §13.2 的 Model 字段（跳过 5 个 AUINT16 + Manufacturer），
+`PtpSessionManager.lastDeviceModel` 在 **OpenSession 前那次** GetDeviceInfo 就记下型号（v2.6.3 只解析了
+OperationsSupported，Model 被丢掉了）→ 连上瞬间就有名字，不必等参数轮询那一整轮；同时落 `device_model` 事件。
+
+不加闸门（纯显示归一化 + 身份复位，零连接行为变化），决定记录在此：闸门体系是用来做现场二分的，
+名称串没有值得二分的现场失败模式。
+
+### FR-37 架构选择必须真的决定连接
+
+`已验证`：`AppSettings.staArchitecture` 在 v3.0.0 全仓**只被 DashboardFragment 读**（切面板显隐、
+起停 FTP 服务器），连接层四个入口（`connectToWifiCamera`、重连触发、状态机重试闭环、配对恢复）
+一处都不看它。于是选了「FTP 推送收图」之后，后台仍然会自动发 PTP/IP InitCommand 敲机身——
+而机身只有一个 PTP/IP 客户端槽（FR-21 实测收回要 ~35s），推送就被打断。用户侧就是「切了没切」。
+
+新闸 `STA_ARCH_GATE = "v37_sta_arch_gate"`（默认开）：`caller != USER_TAP` 且架构=FTP 且手机**不在**相机
+热点上（AP 链路不受任何影响）→ 跳过该轮并记 `arch_skip`，同时给出可操作提示。用户主动点「连接相机」
+照旧放行，因为监看/相册只有 PTP 能做。FTP 教程补一条说明，免得被当成 App 卡住。
+关闸 = v3.0.0 行为（架构只管界面）。
+
+**并行会话事实（2026-10-03 22:0x 核查）**：另一个会话曾在主副本实现「连接模式」下拉菜单
+（`widget/NlDropdown.kt` + `drawable/dropdown_menu_bg.xml` + `MenuAnchor` 包装，并改 `StaArch.kt`
+构造签名为 `(id, displayName, subtitle, note)`），**现已整体回退**：主副本工作树干净，
+`git log --all` 里没有任何分支含这些文件。所以「下拉列表」这个控件当前不在代码树中；
+FR-37 的门读的是持久化的架构值，将来无论用药丸还是下拉列表都照样生效。
+
+### 真机判据（并入 M0 出门测）
+
+1. AP / STA-PTP / USB 三种模式各连一次，相机全称都显示成 `Nikon Z xxx`（不是 `NIKON Z 6_III`、
+   不是 `Nikon`、不是 IP）；
+2. 断开后不残留上一台的名字；换机身连一次，名字跟着换；
+3. 会话名先到：连上瞬间就有名字（`device_model name=` 事件应早于参数轮询）；
+4. FR-37：选 FTP 推送架构 + 手机与相机在同一路由器 → 日志应出现 `arch_skip caller=...`，
+   且机身 FTP 推送不再被 PTP 敲门打断；切回 PTP/IP 架构后 `arch_skip` 消失；
+   AP 热点模式下自动重连**必须仍然工作**（这是这条闸门的硬边界）。
+
+**产物**：`N-Link-v3.0.0-debug-FR36.apk`。单测 248/1 红/1 跳（新增 10 条全绿；
+唯一红仍是 `ProtectionFilterTest`）。
+
+
+## 已否决 / 已撤回（防复活清单）
 - 已否决：去 8.5s 盲等、InitFail 快收口、in_subnet 快失败、6s 超时、STA 连接池、64 位续传、热更、帧率阶梯（v2.6 §11.1/§13/§17.3/R5）
 - 已撤回：ZTransfer 速度威胁、影控台评分增速、iOS 不能直连、影像馆硬日期锚点、GAP-05 原判断（竞品分析 §7.1/§7.3/§8）
 - 判据修订：FR-33「validated=false 出现」仅适用未验证 ROM；P0-6「无心跳」前提被证伪（已有 8s Ping+60s 刷新，改 10s 快档）
