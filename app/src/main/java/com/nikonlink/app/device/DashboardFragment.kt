@@ -1081,6 +1081,25 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         if (_binding == null) return
         val hide = currentMode == ConnectMode.WIFI_STA && staArch == AppSettings.STA_ARCH_FTP
         binding.actionContainer.visibility = if (hide) View.GONE else View.VISIBLE
+        applyActionEmphasis()
+    }
+
+    /**
+     * FR-35②：AP 页签把「扫描相机」降成次按钮。
+     *
+     * 免扫描（FR-34①）之后扫描只是「多台相机里挑一台」的可选工具，但它在界面上与
+     * 「连接相机」等宽、同样描边，用户按老习惯仍然先点它 —— 这是「一键连接没落地」
+     * 的另一半成因。这里只改**主次表达**（文案 + 宽度权重），不动任何行为：
+     * STA 页签扫描仍是必经步骤，维持等宽与原文案。
+     */
+    private fun applyActionEmphasis() {
+        if (_binding == null) return
+        val ap = currentMode == ConnectMode.WIFI_AP
+        binding.btnModeScan.text = if (ap) "扫描（可选）" else "扫描相机"
+        (binding.btnModeConnect.layoutParams as? LinearLayout.LayoutParams)?.let {
+            it.weight = if (ap) 1.6f else 1f
+            binding.btnModeConnect.layoutParams = it
+        }
     }
 
     private fun panelFor(mode: ConnectMode): View {
@@ -1152,13 +1171,17 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     }
 
     /**
-     * FR-34①：AP 免扫描一键连接。
+     * FR-34① + FR-35：AP 免扫描一键连接，三条路按「用户还要点几下」排序。
      *
-     * 已在相机热点 → 直接以兜底地址起轮次（learnFirst 会学真网关）；
-     * 不在 → 拉起系统 WLAN 面板让用户点选热点。面板是 AOSP 的
-     * `Settings.Panel.ACTION_WIFI`（ZDROP dex `1ca886` 同款）：以应用内底部面板
-     * 渲染，绕开各家 ROM 全设置页的深链失效问题；回连命中后由
-     * ConnectionManager 的观察者（或下面的 onResume 兜底）自动起轮次。
+     * ① 已在相机热点（SSID 命中 NIKON 规则）→ 直接以兜底地址起轮次，learnFirst 学真网关；
+     * ② 本会话有 BLE 下发的 WiFi 凭证 → specifier 免面板一键连（FR-35④，系统只弹一次
+     *    「允许连接该网络」），失败自动补拉 ③；
+     * ③ 其余 → 拉起系统 WLAN 面板让用户点热点，回连命中后由 ConnectionManager 的观察者
+     *    （或下面 [onResume] 的兜底）自动起轮次。
+     *
+     * 面板走 AOSP 的 `Settings.Panel.ACTION_WIFI`（ZDROP dex `1ca886` 同款）：这是各家 ROM
+     * 必须实现的标准化入口，绕开 OEM 全设置页深链失效；但**渲染者仍是 ROM 自己**，
+     * 所以 [launchWifiPanel] 把实际命中的路径记进日志。
      */
     private fun apOneTapConnect() {
         if (viewModel.onCameraAp()) {
@@ -1166,32 +1189,55 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             viewModel.connectApDirect()
             return
         }
-        viewModel.armApPanel()
-        if (!launchWifiPanel()) {
-            // 面板与全设置页都拉不起来（理论上不会）：退回旧入口，不白武装
-            showManualIpDialog(ConnectMode.WIFI_AP)
+        val started = viewModel.connectApWithCredential {
+            // specifier 失败/超时（相机没广播、密码失效、用户点了拒绝）：回前台补拉面板，不白点
+            if (_binding != null) launchApWifiPanel()
+        }
+        if (started) {
+            binding.tvStatusMessage.text = "正在请求连接相机热点，请在系统弹窗点「允许」…"
         } else {
-            binding.tvStatusMessage.text =
-                "请在弹出面板里点相机热点（NIKON_…），连上后会自动开始连接"
+            launchApWifiPanel()
         }
     }
 
-    /** 拉起系统 WLAN 面板；API<29 或面板不可用时退回 WiFi 设置页。@return 是否成功离开本 App */
-    private fun launchWifiPanel(): Boolean {
-        val intents = buildList {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // Settings.Panel.ACTION_WIFI 的字符串值；不直接用常量是为了 API<29 分支同表
-                add(Intent("android.settings.panel.action.WIFI"))
-            }
-            add(Intent(Settings.ACTION_WIFI_SETTINGS))
+    /** 拉起系统 WLAN 入口并登记武装状态；两条 Intent 都拉不起来才退回手动 IP 旧入口。 */
+    private fun launchApWifiPanel() {
+        val path = launchWifiPanel()
+        if (path == "none") {
+            showManualIpDialog(ConnectMode.WIFI_AP)
+            return
         }
-        for (intent in intents) {
-            val ok = runCatching {
-                startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        viewModel.armApPanel(path)
+        binding.tvStatusMessage.text =
+            "请在弹出面板里点相机热点（NIKON_…），连上后会自动开始连接"
+    }
+
+    /**
+     * FR-35①：拉起 WLAN 入口，返回实际命中的路径 —— `panel`（AOSP 标准面板）/
+     * `settings`（OEM 全设置页）/ `none`（都拉不起来）。
+     *
+     * 为什么要记：「vivo OriginOS、OPPO ColorOS 到底有没有实现 panel action」离线无法核实
+     * （AGP 里查不到 ROM 的实现），而它决定了「绕过定制页」这句承诺是否兑现。
+     * 静默回落到全设置页是真机最容易踩、又最容易误判成「App 没做」的一条路。
+     */
+    private fun launchWifiPanel(): String {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Settings.Panel.ACTION_WIFI 的字符串值；不直接用常量是为了 API<29 分支同表
+            val panelOk = runCatching {
+                startActivity(
+                    Intent("android.settings.panel.action.WIFI")
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
             }.isSuccess
-            if (ok) return true
+            if (panelOk) return "panel"
         }
-        return false
+        val settingsOk = runCatching {
+            startActivity(
+                Intent(Settings.ACTION_WIFI_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }.isSuccess
+        return if (settingsOk) "settings" else "none"
     }
 
     override fun onResume() {
@@ -1224,7 +1270,11 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 emptyHint(
                     when {
                         explicitError != null -> explicitError
-                        mode == ConnectMode.WIFI_AP -> "未发现相机，请先连接相机 WiFi 后再扫描"
+                        // FR-35②：AP 链路早已免扫描（FR-34①），这句旧提示会把用户引回
+                        // 「先点扫描」的老路，是「一键连接看起来没落地」的直接来源之一。
+                        mode == ConnectMode.WIFI_AP ->
+                            "热点模式不需要扫描：直接点「连接相机」，" +
+                                "App 会自动弹出系统 Wi-Fi 面板或直接连上相机热点"
                         stats == null -> "未发现相机，请确认相机与手机在同一网络"
                         else -> buildString {
                             append("未发现相机 · 已探测 ")

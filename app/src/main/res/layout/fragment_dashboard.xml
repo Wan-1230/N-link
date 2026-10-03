@@ -82,7 +82,7 @@
                                 android:layout_height="wrap_content"
                                 android:layout_marginTop="10dp"
                                 android:lineSpacingExtra="3dp"
-                                android:text="① 相机开启 WiFi 热点（AP 模式），密码见相机屏幕\n② 手机 WLAN 连上相机热点\n③ 回到本页点「扫描相机」→「连接相机」，在相机配对画面按 OK 确认\n连不上时：确认相机热点已开启、手机没开 VPN"
+                                android:text="① 相机开启 WiFi 热点（AP 模式），密码见相机屏幕\n② 手机 WLAN 连上相机热点（记不记得连过都一样，直接进行下一步）\n③ 回到本页点「连接相机」即可 —— App 会直接连上热点，或自动弹出系统 Wi-Fi 面板让你点一下热点\n④ 在相机配对画面按 OK 确认\n热点模式不需要先点「扫描」，那一栏只用于多台相机里挑一台\n连不上时：确认相机热点已开启、手机没开 VPN"
                                 android:textColor="@color/text_secondary"
                                 android:textSize="13sp" />
                         </LinearLayout>

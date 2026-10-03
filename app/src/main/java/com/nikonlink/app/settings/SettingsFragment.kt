@@ -405,7 +405,8 @@ class SettingsFragment : Fragment(), GlassInsetAware {
             NlGlass.dialog(requireContext()).setTitle("使用教程")
                 .setMessage(
                     "【设备】连接相机\n" +
-                        " · WiFi AP：相机开启热点 → 手机连上该热点 → 点「扫描相机」→「连接相机」，" +
+                        " · WiFi AP：相机开启热点 → 手机连上该热点 → 直接点「连接相机」" +
+                        "（不必先扫描；不在热点上时 App 会自动弹出系统 Wi-Fi 面板），" +
                         "在相机配对画面按 OK\n" +
                         " · WiFi STA：相机连上路由器或手机热点 → 点「扫描相机」→「连接相机」\n" +
                         "   首次使用要先做一次「STA 主机注册」（在 WiFi-AP 模式下完成，" +
@@ -597,6 +598,18 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 "网络请求去 INTERNET capability 并全程持有（FR-33；关=旧请求，无互联网热点会被系统回收）",
                 { connFlags.isEnabled(ConnFlags.STA_LOCAL_ONLY_REQUEST) },
                 { connFlags.setEnabled(ConnFlags.STA_LOCAL_ONLY_REQUEST, it) }
+            ),
+            LabFlag(
+                ConnFlags.AP_JOINED_LOOSE,
+                "面板/specifier 回连后按「有 WiFi 且网关是私网」判在网（FR-35①；关=只认 NIKON SSID，改名热点会卡住）",
+                { connFlags.isEnabled(ConnFlags.AP_JOINED_LOOSE) },
+                { connFlags.setEnabled(ConnFlags.AP_JOINED_LOOSE, it) }
+            ),
+            LabFlag(
+                ConnFlags.AP_CRED_SPECIFIER,
+                "有蓝牙凭证时免面板一键连热点（FR-35④；关=一律弹系统 WLAN 面板）",
+                { connFlags.isEnabled(ConnFlags.AP_CRED_SPECIFIER) },
+                { connFlags.setEnabled(ConnFlags.AP_CRED_SPECIFIER, it) }
             ),
             LabFlag(
                 ConnFlags.AP_ONE_TAP,
