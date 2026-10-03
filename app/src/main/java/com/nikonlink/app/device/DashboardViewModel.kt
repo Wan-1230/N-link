@@ -3,6 +3,8 @@ package com.nikonlink.app.device
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nikonlink.app.device.model.CameraDevice
+import com.nikonlink.app.device.model.CameraModel
+import com.nikonlink.app.device.model.CameraModelCatalog
 import com.nikonlink.app.device.model.ConnectionMetrics
 import com.nikonlink.app.device.model.ConnectionState
 import com.nikonlink.app.device.connect.ConnectionHint
@@ -169,6 +171,20 @@ class DashboardViewModel @Inject constructor(
     fun apPanelArmed(): Boolean = connectionManager.isApPanelArmed()
 
     fun tryStartArmedApConnect(): Boolean = connectionManager.tryStartArmedApConnect()
+
+    // ── FR-36：设备页「相机全称」的候选来源（归一化在 CameraModelCatalog，识别不出= null）──
+
+    /** PTP/IP 会话建立时那次 `GetDeviceInfo` 记下的机身自报 Model 原文。 */
+    fun sessionCameraModel(): String? = connectionManager.sessionCameraModel()
+
+    /** BLE 广播名里认出的机型（广播形如 `Z6III_12345678`，序列号后缀会被剥掉）。 */
+    fun discoveredCameraName(): String? = _deviceList.value
+        .firstOrNull { it.model != CameraModel.UNKNOWN }
+        ?.let { CameraModelCatalog.official(it.model) }
+
+    /** 最近一次配对记录里存的机型（新记录存 Model 原文，历史记录那一列是 IP → 返回 null）。 */
+    fun pairedCameraName(): String? = recentDevices.value.firstOrNull()
+        ?.let { CameraModelCatalog.official(it.cameraModel) }
 
     /** 从最近连接列表快速重连 */
     fun connectToRecentDevice(device: PairedDevice) {

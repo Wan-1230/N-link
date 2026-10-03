@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
+import com.nikonlink.app.device.model.CameraModelCatalog
 import com.nikonlink.app.shared.common.AppEventLogger
 import java.io.IOException
 import java.io.OutputStream
@@ -128,6 +129,18 @@ class PtpSessionManager @Inject constructor(
      */
     @Volatile
     var lastSupportedOperations: Set<Int>? = null
+        private set
+
+    /**
+     * 最近一次 `GetDeviceInfo` 里机身自报的 `Model` 原文（FR-36，如 `NIKON Z 50II`）。
+     *
+     * 设备页的「相机全称」优先用它：这次 GetDeviceInfo 在 OpenSession 之前就要发了，
+     * 比参数轮询（`CameraParameterManager.readFirmwareAndModel`）早一整轮，
+     * 连上瞬间就有名字，不用等「不显示」的那几秒。
+     * `null` = 没取到或解析失败 —— 调用方回落下一个来源，不猜。
+     */
+    @Volatile
+    var lastDeviceModel: String? = null
         private set
 
     /** 本次连接是否卡在「相机不回 InitEventAck」上（FR-02：让上层能给出区分性的原因码）。 */
@@ -410,13 +423,22 @@ class PtpSessionManager @Inject constructor(
                 // 就知道相机当前模式支不支持它。解析失败保持 null（= 不知道，不拦）。
                 val ops = PtpDeviceInfo.parseOperations(deviceInfo.data)
                 lastSupportedOperations = ops
+                // FR-36：同一次应答里顺手记下机身自报 Model（设备页的相机全称用它，
+                // 不用等参数轮询那一整轮）。失败=null，UI 回落下一个来源。
+                lastDeviceModel = PtpDeviceInfo.parseModel(deviceInfo.data)
                 eventLogger.event(
                     "device_caps",
                     "ops" to (ops?.size ?: -1),
                     "host_reg_0x952b" to ops?.contains(PtpConstants.OP_NIKON_HOST_REGISTRATION_PREPARE),
                 )
+                // 型号只进事件日志的**归一化结果**：原文可能是序列号形态的串，
+                // 且导出日志会外发（DiagnosticsDisclosure 已声明「相机型号」这一项）。
+                CameraModelCatalog.official(lastDeviceModel)?.let { name ->
+                    eventLogger.event("device_model", "name" to name)
+                }
             } else {
                 lastSupportedOperations = null
+                lastDeviceModel = null
                 Timber.tag(TAG).w("GetDeviceInfo before OpenSession not OK (non-fatal)")
             }
 
