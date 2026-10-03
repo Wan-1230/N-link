@@ -3,7 +3,7 @@
 | 项 | 内容 |
 |---|---|
 | 文档状态 | **在效**（本文件是唯一排期事实源） |
-| 基线 | v3.0.0（tag 锚定 `eef9b6c`，代码树 = `07e2b9e`：FR-29~FR-34 连接加固 + v2.6.5 FTP 收图 + 监看 HUD 重构） |
+| 基线 | v3.0.0（tag 锚定 `eef9b6c`，代码树 = `07e2b9e`：FR-29~FR-34 连接加固 + v2.6.5 FTP 收图 + 监看 HUD 重构）；**FR-35 AP 一键连接收口四条已落地待真机，见 M6** |
 | 取代 | PRD v2.6 §14~§18 的未收口项（原件已归档，未收口项全部迁入本文）；v2.7 草案的排期锚点（草案写于 FR-33/34 之前，按 v2.6.1→v2.7 排期已失效，其条目按新锚点重排进本文） |
 | 盘点方法 | 11 份文档逐篇提取（2026-10-03），每条带出处；「已否决/已撤回」单列防复活 |
 
@@ -15,12 +15,13 @@
 
 | # | 事项 | 出处 |
 |---|---|---|
-| 0.1 | FR-34 六条真机判据：`ap_panel armed→joined`、`ap_gateway source=gateway-fast`、蜂窝 lane 无 >8s socket_try、`net_req hold=true`、静置 5min 存活、全闸关=FR33 逐位一致 | v2.6 §18 |
+| 0.1 | FR-34 六条真机判据：`ap_panel armed→joined`、`ap_gateway source=gateway-fast`、蜂窝 lane 无 >8s socket_try、`net_req hold=true`、静置 5min 存活、全闸关=FR33 逐位一致（`ap_panel` 两条自 FR-35 起带 `path=` 字段，见 M6） | v2.6 §18 |
 | 0.2 | 「谁砍的 wlan0」定谳：首轮真机掉线后读 `wlan_drop fields=`（自证式采集，第一次就能确认 ROM 下发什么）+ `link_state`，裁决 OEM 策略 vs 相机 AP 复位 | AP分析 §8 |
 | 0.3 | FR-30/32/33 遗留判据 V-1~V-4 与 §14.0 回归清单一次跑完（同一次出门测全收） | v2.6 §14/§17 |
 | 0.4 | 群友（无「WiFi 始终开启」开关的机型）FR-33 修复前后各一份日志 | 非上网热点 §6 |
 | 0.5 | Z8+小米 15 Pro 组合零实测；报障者未给版本号的问题回访 | v2.6 §十三·七 |
 | 0.6 | 监看 HUD 新 UI（`07e2b9e`）真机走查：横屏布局、快门行不再被面板盖住、状态卡让位 | 并行会话产出，本仓未验 |
+| 0.7 | FR-35 五条真机判据（含**改名热点专项**，这是 FR-34① 没达成「一键」的靶心） | 本文 M6 |
 
 ## M1 证据基建（先把"怎么算好了"定下来）
 
@@ -38,7 +39,7 @@
 | 2.1 | `[板]` R2a~d：USB 抖动窗口、映射纠正、「谁砍重试」复盘、settle 定值 | v2.6 §14 R2 |
 | 2.2 | `[半]` R4 蜂窝黑洞判据（STA_SKIP_CELLULAR 默认关）：`sta_probe_ctx` 双记数据到位即裁决 | v2.6 §17.2⑤ / STA注册 §R4 |
 | 2.3 | `[板]` FR-25 setWifiEnabled 看门狗（此前已否决一次，若 wlan_drop 定谳指向 ROM 可重提） | v2.6 §10.2 |
-| 2.4 | `[板]` FR-34 P2 两条：有 BLE 凭证时 specifier 免面板一键连；接收缓冲 3.3MB+radio 诊断 | AP分析 §6 |
+| 2.4 | `[半]` FR-34 P2 两条：**specifier 免面板一键连已随 FR-35④ 落地（`[机]`）**；剩「接收缓冲 3.3MB + radio 诊断」未动工 | AP分析 §6 / 本文 M6 |
 | 2.5 | `[未]` 主机注册收尾：0x201F 后 ConfirmHost(R3)、§4.4 四组对照实验 | STA注册 |
 | 2.6 | `[半]` FTP 架构 B：真机验证 + FTP 传输期抑制 STA 重连 | v2.6 §17.5 |
 | 2.7 | `[疑]` USB 未收口：不回字节根因、R6a setConfiguration、R6b USB↔WiFi 互斥、R6c 帧共锁 | v2.6 §11.5/§16.5 |
@@ -74,6 +75,42 @@
 | 5.3 | `[过]` `LiveViewFragment.kt:106` 注释仍引用已删除的 applyGlassHud——顺手修 | 07e2b9e 新失实 |
 | 5.4 | `[过]` GAP-01 soTimeout=0 口径过期（已被 STA 显式超时取代）；「文档滞后于代码」是系统病，本文档每次落地即回填 | 竞品分析 §6.1 |
 
+## M6 FR-35：AP 一键连接收口（2026-10-03 已落地，`[机]` 待真机）
+
+**成因**：用户核查「免扫描一键连接」与「绕过厂商定制系统」两项是否落地。结论——
+FR-34① 的代码链路是通的，但**真机上大概率走不到**，另有三处失分：UI 文案仍写「先点扫描」；
+面板拉起路径（AOSP 面板 vs OEM 全设置页）没有日志，无法定谳「绕过」是否兑现；
+回连判定只认 NIKON SSID，热点改名或无「附近的设备」权限时会**死循环**
+（点了面板回来不起轮次、武装标记不消费、再点还是弹面板）。四条全部闸门化，关闸=FR-34 行为。
+
+| # | 条目 | 落点 | 关闸行为 |
+|---|---|---|---|
+| 35.1 | 面板拉起路径落日志：`launchWifiPanel()` 返回 `panel`/`settings`/`none`，写入 `ap_panel phase=armed path=` | `DashboardFragment.kt` launchWifiPanel / launchApWifiPanel；`ConnectionManager.armApPanelConnect(path)` | 无日志区分（FR-34 原状） |
+| 35.2 | AP 文案与主次收口：热点教程去掉「必须先扫描」、空候选提示改指「连接相机」、AP 页签扫描按钮文案「扫描（可选）」且连接按钮权重 1.6:1 | `fragment_dashboard.xml` tvApGuide；`DashboardFragment` applyActionEmphasis / 空候选提示；`SettingsFragment` 使用教程 AP 行 | 仅文案（纯静态，无运行时开关） |
+| 35.3 | `AP_JOINED_LOOSE=v35_ap_joined_loose`：武装状态下的在网判定放宽为「SSID 命中 **或** 有 WiFi 网络且其网关是私网 IPv4」；纯函数 `ApGatewayResolver.looksJoinedAp()` 出 JVM 单测 2 条 | `ApGatewayResolver.kt` looksJoinedAp / isOnApNetwork；`ConnectionManager.tryStartArmedApConnect()` | 只认 SSID（死角复现） |
+| 35.4 | `AP_CRED_SPECIFIER=v35_ap_cred_specifier`：本会话有 BLE 下发的 WiFi 凭证时，点「连接相机」直接走 `WifiNetworkSpecifier` 免面板一键连（复用 v2.2 通路），失败/超时回调 UI 补拉面板；在途标记防确认框风暴 | `ConnectionManager.connectApWithCredential(onFailed)`；`DashboardFragment.apOneTapConnect()` 三分流 | 一律走系统面板 |
+
+**判定口径（为什么首次点按仍用严格 SSID）**：35.3 的放宽只用在**武装状态下**（用户刚在面板
+或系统确认框里点过热点）。若把它用在 `apOneTapConnect` 的分流上，用户在家用路由器上点
+「连接相机」就会盲打路由器网关，把「该去连热点」的引导吞掉——所以两处刻意不同。
+
+**超出 ZDROP 的部分**：35.4。ZDROP 全 dex 里 specifier / addNetworkSuggestions 匹配数为 0
+（AP分析 §5·3 `已验证`），即竞品不做免确认自动连网；本条用系统确认框换掉「进 WLAN 列表翻热点」，
+是增量而非同构，故独立设闸。
+
+**真机判据（出门测一次跑完，补进 M0 §0.7）**：
+
+1. 热点模式不点扫描，直接点「连接相机」→ 状态行出现三种之一：`正在连接相机热点网关…`（已在热点）/
+   `正在请求连接相机热点，请在系统弹窗点「允许」…`（有凭证）/ `请在弹出面板里点相机热点…`（面板）；
+2. 日志 `ap_panel phase=armed path=` 的取值即「vivo 到底弹的是哪个入口」的定谳证据（`panel`=兑现绕过，`settings`=没兑现）；
+3. **改名热点专项**（35.3 的靶心）：把机身热点名改成非 NIKON 名 → 面板点完回 App 应当 ≤2s 出现
+   `ap_panel phase=joined path=panel` 并起轮次；FR-34 旧行为是「什么都没发生」；
+4. 35.4 需要 BLE 先拿到凭证（相机配对画面过一轮）：无凭证时 `ap_join` 不出现、直接走面板，属正常；
+5. 全闸关（`v35_ap_joined_loose`+`v35_ap_cred_specifier`+`v34_ap_one_tap`）→ 行为逐位回到 FR-33 版（出 FR33 包对比）。
+
+**产物**：`N-Link-v3.0.0-debug-FR35.apk`（debug，未混淆，Lab 面板可逐条关闸二分）。
+单测 238/1 红/1 跳：唯一红仍是画廊 `ProtectionFilterTest`（并行会话既有基线，非本批引入）。
+
 ## 已否决 / 已撤回（防复活清单）
 
 - 已否决：去 8.5s 盲等、InitFail 快收口、in_subnet 快失败、6s 超时、STA 连接池、64 位续传、热更、帧率阶梯（v2.6 §11.1/§13/§17.3/R5）
@@ -82,8 +119,8 @@
 
 ## 拍板队列（等用户输入，按阻塞面排序）
 
-1. M0 出门测窗口（一次跑完 0.1~0.6）
+1. M0 出门测窗口（一次跑完 0.1~0.7，FR-35 包已就绪）
 2. 3.5 影控台四未知 + GAP-25 配对码
 3. 3.1 AI 修图六问（决定 M3 主线走向）
-4. 2.4 FR-34 P2 两条、2.3 看门狗重提与否
+4. 2.3 看门狗重提与否、2.4 剩余半条（缓冲/radio）——FR-35④ specifier 已拍板实现，只剩真机读数
 5. 1.3 `download_done path=` 隐私口径

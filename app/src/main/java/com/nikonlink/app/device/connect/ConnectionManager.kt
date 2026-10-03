@@ -1031,19 +1031,27 @@ class ConnectionManager @Inject constructor(
     // 绕开 OEM 全设置页深链失效问题）。这里把这两条接进现有 learnFirst 通路：
     // 兜底地址起轮次后由 ApGatewayResolver 学真网关，扫描一步都不需要。
 
-    /** >0 = 面板已拉起、等待用户在面板里点相机热点；值为武装时刻。 */
+    /** >0 = 一键连已发起、等待手机挂上相机热点（面板点选或 specifier 确认）；值为武装时刻。 */
     @Volatile
     private var apPanelArmedAt = 0L
+
+    /** FR-35①：本次武装走的是哪条路（panel | settings | specifier），回连日志要能区分。 */
+    @Volatile
+    private var apPanelArmedPath = "panel"
+
+    /** FR-35④：specifier 请求在途标记，防止连点把系统确认框叠成风暴。 */
+    private var apSpecifierJob: Job? = null
 
     fun isApOneTapEnabled(): Boolean = connFlags.isEnabled(ConnFlags.AP_ONE_TAP)
 
     /** 手机当前是否挂在相机热点上（UI 分流用）。 */
     fun isOnCameraAp(): Boolean = apGatewayResolver.isOnCameraAp()
 
-    /** UI 拉起 WLAN 面板前调用：登记武装状态。 */
-    fun armApPanelConnect() {
+    /** UI 拉起 WLAN 面板（或发起 specifier 一键连）前调用：登记武装状态。 */
+    fun armApPanelConnect(path: String = "panel") {
         apPanelArmedAt = System.currentTimeMillis()
-        eventLogger.event("ap_panel", "phase" to "armed")
+        apPanelArmedPath = path
+        eventLogger.event("ap_panel", "phase" to "armed", "path" to path)
     }
 
     fun isApPanelArmed(): Boolean =
@@ -1059,14 +1067,68 @@ class ConnectionManager @Inject constructor(
     }
 
     /**
-     * 武装状态下尝试起一轮 AP 连接（面板回连检测、onResume 兜底都调这里）。
+     * FR-35④：手上有 BLE 下发的 WiFi 凭证时，免系统面板一键连热点。
+     *
+     * 走 v2.2 就实现的 `WifiNetworkSpecifier` 通路（`wifi-ap/WifiManager.kt` 的
+     * `buildCameraApRequest`）：系统弹一次「允许连接该网络」确认框，用户不必再进
+     * WLAN 列表翻 NIKON_xxx；且不依赖 SSID 可读、不受热点改名影响（凭证自带名字与密码）。
+     * 连上后由 [observeApPanelJoin] / [tryStartArmedApConnect] 起 PTP/IP 轮次。
+     *
+     * 竞品没走这条路：ZDROP 全 dex 里 specifier / addNetworkSuggestions 匹配数为 0
+     * （AP 分析 §5·3），所以本条是超出 ZDROP 的增量，单独设闸 [ConnFlags.AP_CRED_SPECIFIER]。
+     *
+     * @param onFailed specifier 失败/超时回调（闸门关、无凭证时**不会**调用），UI 据此回落面板。
+     * @return true = 已发起（结果异步回来）；false = 闸门关或无凭证，调用方应立刻走面板。
+     */
+    fun connectApWithCredential(onFailed: () -> Unit): Boolean {
+        if (!connFlags.isEnabled(ConnFlags.AP_CRED_SPECIFIER)) return false
+        val credential = bleManager.wifiCredential.replayCache.firstOrNull()
+            ?.takeIf { it.ssid.isNotBlank() }
+            ?: return false
+        val sc = scope ?: return false
+        if (apSpecifierJob?.isActive == true) {
+            eventLogger.event("ap_join", "path" to "specifier", "phase" to "busy")
+            return true
+        }
+        val prefer5G = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(PREFS_WIFI_5G_PREFER, false)
+        armApPanelConnect("specifier")
+        apSpecifierJob = sc.launch(Dispatchers.IO) {
+            val ok = runCatching { wifiManager.connectToCamera(credential, prefer5G) }.getOrDefault(false)
+            eventLogger.event(
+                "ap_join", "path" to "specifier", "ok" to ok,
+                // 只记长度/有无密码：SSID 名与口令不落日志（AGENTS.md 隐私条）
+                "ssid_len" to credential.ssid.length, "has_pw" to credential.password.isNotEmpty()
+            )
+            if (ok) {
+                tryStartArmedApConnect()
+            } else {
+                apPanelArmedAt = 0L
+                withContext(Dispatchers.Main) { onFailed() }
+            }
+        }
+        return true
+    }
+
+    /**
+     * 武装状态下尝试起一轮 AP 连接（面板回连检测、specifier 成功、onResume 兜底都调这里）。
+     *
+     * FR-35①：判定从 `isOnCameraAp()`（只认 SSID 命中 NIKON 规则）换成
+     * [ApGatewayResolver.isOnApNetwork]。旧判据有两处必然落空：Android 13+ 没给
+     * 「附近的设备」权限时 SSID 是 `<unknown ssid>`；机身热点名被用户改过。
+     * 落空时连武装标记都不消费，表现为「面板里点了热点、回 App 没反应、再点还是弹面板」——
+     * 这正是 FR-34① 在真机上没达成「一键」的死角。
+     *
      * @return true = 已消费武装标记并发起连接
      */
     fun tryStartArmedApConnect(): Boolean {
         if (!isApPanelArmed()) return false
-        if (!apGatewayResolver.isOnCameraAp()) return false
+        if (!apGatewayResolver.isOnApNetwork()) return false
         apPanelArmedAt = 0L
-        eventLogger.event("ap_panel", "phase" to "joined", "host" to DEFAULT_FALLBACK_HOST)
+        eventLogger.event(
+            "ap_panel", "phase" to "joined", "path" to apPanelArmedPath,
+            "host" to DEFAULT_FALLBACK_HOST
+        )
         connectApDirect()
         return true
     }

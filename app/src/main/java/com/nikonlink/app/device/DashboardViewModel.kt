@@ -156,7 +156,15 @@ class DashboardViewModel @Inject constructor(
 
     fun connectApDirect() = connectionManager.connectApDirect()
 
-    fun armApPanel() = connectionManager.armApPanelConnect()
+    /** FR-35①：[path] = panel | settings | specifier，落进 ap_panel 事件供真机归因。 */
+    fun armApPanel(path: String) = connectionManager.armApPanelConnect(path)
+
+    /**
+     * FR-35④：有 BLE 凭证时免面板一键连。
+     * @return false = 闸门关或本会话没有凭证，调用方应立刻回落系统面板。
+     */
+    fun connectApWithCredential(onFailed: () -> Unit): Boolean =
+        connectionManager.connectApWithCredential(onFailed)
 
     fun apPanelArmed(): Boolean = connectionManager.isApPanelArmed()
 
