@@ -624,7 +624,13 @@ sealed class PtpPacket {
  *   STRING VendorExtensionDesc        ← 1 字节长度 + UTF-16LE（含结尾 NUL）
  *   UINT16 FunctionalMode
  *   AUINT16 OperationsSupported       ← 4 字节个数 + N×2 字节
- *   …（后面的 Events/Properties/Formats 与两个 STRING 本解析器不看）
+ *   AUINT16 EventsSupported
+ *   AUINT16 DevicePropertiesSupported
+ *   AUINT16 CaptureFormats
+ *   AUINT16 ImageFormats
+ *   STRING Manufacturer
+ *   STRING Model                      ← FR-36：设备页的相机全称
+ *   …（SerialNumber/DeviceFlags 本解析器不看）
  *
  * 解析失败一律返回 null —— 调用方据此**放行**（宁可按旧路径盲发，也不要因为解析器
  * 的问题把一条本来能成的注册拦掉）。
@@ -663,6 +669,67 @@ object PtpDeviceInfo {
                 i++
             }
             ops
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 解 `Model` —— 机身自报的型号原文（FR-36，如 `NIKON Z 50II`）。
+     *
+     * Model 前面压着五个 AUINT16 与一个 STRING，**只能顺序解码**到它，不能按偏移直取；
+     * 每跳一项都校验剩余长度，任何一步不够就返回 null（调用方回落到下一个名称来源，
+     * 绝不拿半截字节拼出一个像型号的东西）。
+     *
+     * 与 `UsbPtpProtocol.parseDeviceInfoModel` 是同一套规范偏移，这里重做一遍是为了让
+     * PTP/IP 通道不依赖 USB 模块（两条通道的 DeviceInfo 本来就应当由同一个解析器负责，
+     * 收敛到一处是后续项，不在本次范围内顺手改）。
+     */
+    fun parseModel(raw: ByteArray?): String? {
+        if (raw == null || raw.size < 12) return null
+        return try {
+            var p = 0
+
+            // 注意：u16() 自带指针推进（写成表达式体会静默不前进，读出来全是同一对字节）
+            fun u16(): Int {
+                val v = (raw[p].toInt() and 0xFF) or ((raw[p + 1].toInt() and 0xFF) shl 8)
+                p += 2
+                return v
+            }
+
+            fun skipAUINT16(): Boolean {
+                if (p + 4 > raw.size) return false
+                // u16() 自带指针推进：连读两次正好吃掉 4 字节的 AUINT16 计数
+                val count = u16() or (u16() shl 16)
+                if (count < 0 || count > (raw.size - p) / 2) return false
+                p += count * 2
+                return p <= raw.size
+            }
+
+            fun readString(): String? {
+                if (p >= raw.size) return null
+                val chars = raw[p].toInt() and 0xFF
+                p += 1
+                if (chars == 0) return ""
+                if (raw.size - p < chars * 2) return null
+                val sb = StringBuilder(chars)
+                repeat(chars) {
+                    val c = u16()
+                    if (c != 0) sb.append(c.toChar())
+                }
+                return sb.toString()
+            }
+
+            p += 2                      // StandardVersion
+            p += 4                      // VendorExtensionID
+            p += 2                      // VendorExtensionVersion
+            val descChars = raw[p].toInt() and 0xFF
+            if (p + 1 + descChars * 2 > raw.size) return null
+            p += 1 + descChars * 2      // VendorExtensionDesc
+            p += 2                      // FunctionalMode
+            repeat(5) { if (!skipAUINT16()) return null }
+            readString() ?: return null // Manufacturer
+            readString()?.trim()?.takeIf { it.isNotBlank() }
         } catch (e: Exception) {
             null
         }

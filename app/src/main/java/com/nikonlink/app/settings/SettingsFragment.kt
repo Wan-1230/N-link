@@ -612,6 +612,12 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 { connFlags.setEnabled(ConnFlags.AP_CRED_SPECIFIER, it) }
             ),
             LabFlag(
+                ConnFlags.STA_ARCH_GATE,
+                "选了 FTP 推送架构后不再后台自动 PTP 直连（FR-37；关=架构只影响界面，v3.0.0 行为）",
+                { connFlags.isEnabled(ConnFlags.STA_ARCH_GATE) },
+                { connFlags.setEnabled(ConnFlags.STA_ARCH_GATE, it) }
+            ),
+            LabFlag(
                 ConnFlags.AP_ONE_TAP,
                 "AP 免扫描一键连接 + 系统 WLAN 面板（FR-34①；关=无候选时弹手动 IP 框）",
                 { connFlags.isEnabled(ConnFlags.AP_ONE_TAP) },

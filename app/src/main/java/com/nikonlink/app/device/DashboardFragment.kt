@@ -34,6 +34,7 @@ import com.nikonlink.app.shared.ui.glass.UiFlags
 import com.nikonlink.app.shared.ui.glass.renderChipBackground
 import com.nikonlink.app.MainActivity
 import com.nikonlink.app.R
+import com.nikonlink.app.device.model.CameraModelCatalog
 import com.nikonlink.app.device.model.ConnectionState
 import com.nikonlink.app.device.connect.ConnectionHintKind
 import com.nikonlink.app.device.usb.UsbConnectionState
@@ -223,6 +224,9 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 } else if (state != ConnectionState.FULLY_CONNECTED) {
                     cameraInfoRequested = false
                 }
+                // FR-36：连上/断开都要重算相机全称——断开时参数值已被新会话复位，
+                // 不重算就会把上一台相机的名字永久留在设备页。
+                renderCameraName()
                 binding.swipeRefresh.isRefreshing = false
                 // 连接状态变化后统一刷新状态行（避免各处直接写 tvStatusMessage 造成互相覆盖）
                 renderStatusLine()
@@ -305,7 +309,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
 
                 binding.rowLens.visibility =
                     if (info.lensName.isNotBlank()) View.VISIBLE else View.GONE
-                if (info.modelName.isNotBlank()) binding.tvCameraName.text = info.modelName
+                if (info.modelName.isNotBlank()) renderCameraName()
                 if (info.lensName.isNotBlank()) binding.tvLens.text = info.lensName
 
                 // 快门次数：尼康无快门计数 PTP 属性，读数来自样张照片 MakerNote 的 0x00A7。
@@ -394,7 +398,14 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             viewModel.wifiDeviceList.collect { devices ->
                 wifiDevices = devices
                 renderWifiCandidates(binding.apCandidateList, devices, ConnectMode.WIFI_AP)
-                renderWifiCandidates(binding.staCandidateList, devices, ConnectMode.WIFI_STA)
+                // FR-37：STA 那一栏的行内「连接」按钮按所选架构分流——FTP 推送架构下手机侧
+                // 没有可连的对象，点一下却发起 PTP/IP 直连，正是用户报的「切了没切」。
+                renderWifiCandidates(
+                    binding.staCandidateList,
+                    devices,
+                    ConnectMode.WIFI_STA,
+                    staArch
+                )
                 if (devices.isNotEmpty()) {
                     binding.tvStatusMessage.text = "发现 ${devices.size} 个 WiFi 相机"
                 }
@@ -414,6 +425,8 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.recentDevices.collect { devices ->
                 renderRecentDevices(devices)
+                // FR-36：配对记录是相机全称的第五顺位，记录到位后补一次渲染
+                renderCameraName()
             }
         }
 
@@ -516,8 +529,11 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.usbDeviceInfo.collect { info ->
                 if (info != null) {
-                    binding.tvCameraName.text = info.cameraModel
-                    binding.tvUsbDevice.text = "${info.cameraModel} · 已连接 USB"
+                    // FR-36：相机全称统一走唯一出口（PID 表名/DeviceInfo 原文都在里面归一化）
+                    renderCameraName()
+                    val display = CameraModelCatalog.official(info.cameraModel)
+                        ?: info.cameraModel
+                    binding.tvUsbDevice.text = "$display · 已连接 USB"
                 }
                 renderStatusLine()
             }
@@ -591,6 +607,40 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         }
     }
 
+    /** FR-36：所有名称来源都落空时的兜底 —— 品牌名，与布局里的默认值同一个词。 */
+    private val defaultCameraName = "Nikon"
+
+    /**
+     * FR-36：设备页「相机全称」的**唯一渲染出口**（与 [renderStatusLine] 同一条规矩）。
+     *
+     * 旧写法两处各写各的，两个症状都从这里来：
+     * - 「显示的不是官方名称」：PTP 通道直接写机身自报串（`NIKON Z 50II` 这种全大写形态，
+     *   见 `UsbPtpProtocol.parseDeviceInfoModel` 注释），USB 通道写 PID 映射表名，
+     *   未知 PID 显示 `Nikon Camera (0x0FFF)`；
+     * - 「要么不显示」：两处都只在拿到值时才写，GetDeviceInfo 还没回来（或压根不返回 Model）
+     *   时界面就停在布局里写死的 `Nikon`（`fragment_dashboard.xml` tvApGuide 同级的 tvCameraName）。
+     *
+     * 取值优先级（越靠前越权威，识别不出机型就跳到下一个，**绝不猜**）：
+     * ① 参数轮询解析的 Model（USB 与 PTP/IP 两条通道都会填，最完整）
+     * ② PTP/IP 会话建立那次 `GetDeviceInfo` 记下的原文（比①早一整轮，连上即有）
+     * ③ USB 的型号（DeviceInfo 回填，未回填时是 PID 表名）
+     * ④ BLE 广播名里认出的机型
+     * ⑤ 配对记录里存的机型
+     * 全落空 → `Nikon`（品牌名，不再显示 IP / MAC / 十六进制 PID）
+     */
+    private fun renderCameraName() {
+        if (_binding == null) return
+        val usbModel = viewModel.usbDeviceInfo.value?.cameraModel
+            ?.takeIf { viewModel.usbState.value == UsbConnectionState.CONNECTED }
+        val name = CameraModelCatalog.official(paramsViewModel.cameraInfo.value.modelName)
+            ?: CameraModelCatalog.official(viewModel.sessionCameraModel())
+            ?: CameraModelCatalog.official(usbModel)
+            ?: viewModel.discoveredCameraName()
+            ?: viewModel.pairedCameraName()
+            ?: defaultCameraName
+        if (binding.tvCameraName.text != name) binding.tvCameraName.text = name
+    }
+
     /**
      * 状态行（tvStatusMessage）的**唯一渲染出口**。
      *
@@ -605,7 +655,9 @@ class DashboardFragment : Fragment(), GlassInsetAware {
      */
     private fun renderStatusLine() {
         val usb = viewModel.usbState.value
-        val model = viewModel.usbDeviceInfo.value?.cameraModel
+        // FR-36：状态行也用归一化后的机型（未识别时保留原文，不猜）
+        val model = CameraModelCatalog.official(viewModel.usbDeviceInfo.value?.cameraModel)
+            ?: viewModel.usbDeviceInfo.value?.cameraModel
         val text = when {
             usb == UsbConnectionState.CONNECTED ->
                 if (model.isNullOrBlank()) "已连接（USB）" else "已连接（USB）：$model"
@@ -1010,6 +1062,9 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             append("  · 登录方式：被动（PASV）\n")
             append("  · 连接方式：与手机同一路由器，或相机开热点、手机连上去\n\n")
             append("【手机侧】点「启动 FTP 服务器」，保持本页开着即可。\n")
+            // FR-37：架构选择现在真的管住连接行为了，必须在教程里写明白，否则用户会以为 App 卡了
+            append("  · 选了本架构后，App 不再在后台自动用 PTP/IP 连相机（机身只有一个 PTP 客户端槽，" +
+                "敲门会打断推送）；要做监看 / 相册，点「连接相机」临时直连即可\n")
             append("  · 收到的照片按「设置 → 传输设置 → 默认保存路径」存进 ")
             append("DCIM/N-Link 或 Download/N-Link，和相册页下载的照片在同一处\n")
             append("  · 点「PTP/IP 直连」标签会自动停止服务器（在途推送会中断）\n\n")
@@ -1166,6 +1221,13 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     }
 
     private fun connectWifiCandidate(candidate: WifiCameraCandidate) {
+        // FR-37：与上面同一条规则，覆盖「连接相机」大按钮这条入口（STA+FTP 时按钮虽被隐藏，
+        // 但候选行、快捷入口都可能走到这里）
+        if (currentMode == ConnectMode.WIFI_STA && staArch == AppSettings.STA_ARCH_FTP) {
+            binding.tvStatusMessage.text =
+                "FTP 推送架构：手机只接收，不直连。请启动下方 FTP 服务器并在相机里填同一地址"
+            return
+        }
         binding.tvStatusMessage.text = "连接: ${candidate.name} (${candidate.ipAddress})"
         viewModel.connectToWifiCamera(candidate)
     }
@@ -1253,10 +1315,15 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         viewModel.connectToRecentDevice(device)
     }
 
+    /**
+     * 扫描候选列表。[arch] 只在 STA 那一栏传（AP 栏用默认值）：
+     * FR-37 之后行内「连接」按钮按所选架构分流，FTP 推送架构下不再发起 PTP/IP 直连。
+     */
     private fun renderWifiCandidates(
         container: LinearLayout,
         devices: List<WifiCameraCandidate>,
-        mode: ConnectMode
+        mode: ConnectMode,
+        arch: String = AppSettings.STA_ARCH_PTP
     ) {
         container.removeAllViews()
         if (devices.isEmpty()) {
@@ -1344,7 +1411,16 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             item.tvCandidateInfo.text = "${candidate.ipAddress}:${candidate.port}"
             item.root.pressEffect()
             item.btnCandidateConnect.pressEffect()
-            item.btnCandidateConnect.setOnClickListener { connectWifiCandidate(candidate) }
+            item.btnCandidateConnect.setOnClickListener {
+                // FR-37：STA + FTP 推送架构下相机是**主动推送方**，手机侧没有可连的对象。
+                // 旧代码这里恒走 PTP/IP 直连，等于把用户刚选的架构当场作废（本次用户报障的成因）。
+                if (mode == ConnectMode.WIFI_STA && arch == AppSettings.STA_ARCH_FTP) {
+                    binding.tvStatusMessage.text =
+                        "FTP 推送架构：手机只接收，不直连。请启动下方 FTP 服务器并在相机里填同一地址"
+                    return@setOnClickListener
+                }
+                connectWifiCandidate(candidate)
+            }
             container.addView(item.root)
         }
     }
@@ -1361,7 +1437,10 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 binding.recentDeviceList,
                 false
             )
-            item.tvRecentName.text = device.deviceName.ifBlank { "尼康相机" }
+            // FR-36：配对记录新写的是官方全称（`Nikon Z 50II`）；旧记录那一列存的是
+            // 当年误传的 IP，归一化不成立就退回 deviceName（多为扫描名或「尼康相机」）。
+            item.tvRecentName.text = CameraModelCatalog.official(device.cameraModel)
+                ?: device.deviceName.ifBlank { "尼康相机" }
             item.tvRecentInfo.text = buildString {
                 val endpoint = WifiEndpoint.parse(device.address)
                 if (endpoint != null) {

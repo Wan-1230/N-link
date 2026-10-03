@@ -199,6 +199,13 @@ class CameraParameterManager @Inject constructor(
         // 换机身/换拨盘档位后应重新给一次机会
         resetModeSwitchSupport()
 
+        // FR-36：身份字段同样按「新会话」复位。旧版从不清 `modelName`，而
+        // `readFirmwareAndModel` 又刻意「取到空就保留旧值」—— 于是换了机身、
+        // 或新机身的 GetDeviceInfo 恰好不回 Model 时，设备页会把**上一台相机**的名字
+        // 显示成当前相机的名字。清空后由下面的读取重填；读不到就留空，
+        // 由 UI 的候选来源链回落到可信的下一个来源（而不是编一个或沿用旧的）。
+        _cameraInfo.value = _cameraInfo.value.copy(modelName = "", firmwareVersion = "")
+
         withContext(Dispatchers.IO) {
             try {
                 readAperture()
