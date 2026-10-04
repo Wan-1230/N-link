@@ -415,7 +415,7 @@ class ConnectionManager @Inject constructor(
                     )
                     Timber.tag(TAG).i("AP gateway learned: %s -> %s", endpoint.host, target.host)
                 }
-                withContext(Dispatchers.Main) { beginWifiPairing(target, deviceName, caller.code) }
+                withContext(Dispatchers.Main) { beginWifiPairing(target, deviceName, caller.code, apTiming = true) }
             }
             stateMachine.dispatch(ConnectionEvent.StartConnect)
             return
@@ -452,7 +452,17 @@ class ConnectionManager @Inject constructor(
      * 真正发起一次 WiFi 相机配对/连接（RC-1/2/7/8 的并发治理都在 connector 内部）。
      * 调用方负责在合适时机派发 [ConnectionEvent.StartConnect]。
      */
-    private fun beginWifiPairing(endpoint: WifiEndpoint, deviceName: String?, source: String) {
+    private fun beginWifiPairing(
+        endpoint: WifiEndpoint,
+        deviceName: String?,
+        source: String,
+        /**
+         * FR-38：AP 链路（learnFirst 起轮）为 true —— 连接循环走 ZDROP 时序档
+         * （绑网 8s / 逐次路由复查 / 重绑 2.5s+450ms / 2 次 × 7s / connect 6s）。
+         * STA 与恢复轮次为 false，维持 10 次退避长轮次。
+         */
+        apTiming: Boolean = false
+    ) {
         _connectionHint.value = null
         pairedDeviceAddress = endpoint.address
         userDisconnectRequested = false
@@ -466,6 +476,7 @@ class ConnectionManager @Inject constructor(
             endpoint = endpoint,
             mode = WifiDirectConnector.Mode.PAIRING,
             source = source,
+            apTiming = apTiming,
             onWaitingCameraOk = {
                 if (_connectionHint.value == null) {
                     _connectionHint.value =
@@ -1221,6 +1232,8 @@ class ConnectionManager @Inject constructor(
         // v2.6.6 FR-29①：改挂 CAMERA_UNREACHABLE。原来映射到 TCP_TIMEOUT，而那个码
         // 全仓零生产者 —— STA 最高频的失败因此在日志里长期写着"端口超时"，误导排查。
         reason.contains("camera_unreachable") -> ConnFunnel.Reason.CAMERA_UNREACHABLE
+        // FR-38：AP 路由复查+重绑仍不通 —— 本质仍是"到不了相机的网络"，归同一桶统计
+        reason.contains("ap_route_lost") -> ConnFunnel.Reason.CAMERA_UNREACHABLE
         // v2.6.6 FR-29②：这两类是"我们这轮没跑完"，不是相机的问题，必须能与 UNKNOWN 分开统计。
         reason.contains("loop_error") -> ConnFunnel.Reason.LOOP_ERROR
         reason.contains("round_budget_exhausted") -> ConnFunnel.Reason.ROUND_BUDGET_EXHAUSTED

@@ -405,7 +405,7 @@ class SettingsFragment : Fragment(), GlassInsetAware {
             NlGlass.dialog(requireContext()).setTitle("使用教程")
                 .setMessage(
                     "【设备】连接相机\n" +
-                        " · WiFi AP：相机开启热点 → 手机连上该热点 → 点「扫描相机」→「连接相机」，" +
+                        " · WiFi AP：相机开启热点 → 手机连上该热点 → 点「连接相机」自动完成后续步骤，" +
                         "在相机配对画面按 OK\n" +
                         " · WiFi STA：相机连上路由器或手机热点 → 点「扫描相机」→「连接相机」\n" +
                         "   首次使用要先做一次「STA 主机注册」（在 WiFi-AP 模式下完成，" +

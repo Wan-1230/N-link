@@ -162,6 +162,28 @@ class WifiDirectConnector @Inject constructor(
         /** FR-34⑤：回连等待的轮询间隔 */
         private const val WLAN_RETURN_POLL_MS = 500L
 
+        // ── FR-38：AP 档时序（ZDROP 复刻，全部数值取自 2026-10-03 jadx 逆向）──────────
+        // 对照：C0516A#c(8000ms) 绑网、[bad] N5.java:768/788 重绑 2500ms+450ms、
+        // M5#p AP 双通道至多 2 次、M5 间隔 7000ms、C0556c4#S0 connect 6000ms。
+
+        /** AP 档绑网/等网窗口（ZDROP `C0516A#c` 的 8000ms；STA 档维持 [AWAIT_NETWORK_MS]） */
+        private const val AP_BIND_WAIT_MS = 8_000L
+
+        /** AP 档路由复查失败后的重绑窗口（ZDROP 重绑 2500ms） */
+        private const val AP_REBIND_WAIT_MS = 2_500L
+
+        /** AP 档重绑后的收敛间歇（ZDROP 450ms 后复查） */
+        private const val AP_REBIND_SETTLE_MS = 450L
+
+        /** AP 档单轮尝试次数（ZDROP `M5#p` AP 双通道至多 2 次） */
+        private const val AP_MAX_ATTEMPTS = 2
+
+        /** AP 档尝试间隔（ZDROP AP 双通道重试间隔 7000ms） */
+        private const val AP_RETRY_MS = 7_000L
+
+        /** AP 档 TCP connect 超时（ZDROP `C0556c4#S0` connect(endpoint, 6000)） */
+        private const val AP_CONNECT_TIMEOUT_MS = 6_000
+
         /**
          * FR-34⑤：是否私网地址 —— PTP/IP 只可能活在这些地址段（相机热点/路由器 LAN）。
          * 公网/VPN 形态的地址走蜂窝是合法路径，不许拿回连等待去拦。
@@ -265,6 +287,12 @@ class WifiDirectConnector @Inject constructor(
          * 而 `recoverWifiSession` 直接调本方法、完全不经漏斗，于是它砍人时一行都不留。
          */
         source: String = "unspecified",
+        /**
+         * FR-38：AP 链路（learnFirst 起轮）置 true —— 启用 ZDROP 时序档
+         * （绑网 8s / 每次尝试前路由复查 / 重绑 2.5s+450ms / 2 次 × 7s / connect 6s）。
+         * STA 轮次与恢复轮次保持 false，走原有 10 次退避长轮次。
+         */
+        apTiming: Boolean = false,
         onWaitingCameraOk: (() -> Unit)? = null,
         onRetry: ((String?) -> Unit)? = null,
         onSuccess: () -> Unit = {},
@@ -296,7 +324,7 @@ class WifiDirectConnector @Inject constructor(
         val job = myScope.launch(Dispatchers.IO) {
             // RC-2: 起新循环前把旧会话拆干净，杜绝两条循环互相 closeSession
             mutex.withLock { runCatching { ptpSession.closeSession() } }
-            run(endpoint, gen, mode, onWaitingCameraOk, onRetry, onSuccess, onFail)
+            run(endpoint, gen, mode, apTiming, onWaitingCameraOk, onRetry, onSuccess, onFail)
         }
         activeJob = job
         return job
@@ -314,12 +342,17 @@ class WifiDirectConnector @Inject constructor(
         endpoint: WifiEndpoint,
         gen: Int,
         mode: Mode,
+        apTiming: Boolean,
         onWaitingCameraOk: (() -> Unit)?,
         onRetry: ((String?) -> Unit)?,
         onSuccess: () -> Unit,
         onFail: (String) -> Unit
     ) {
         val pairing = (mode == Mode.PAIRING)
+        // FR-38：AP 链路 + 闸门开 → ZDROP 时序档。闸门关 = 与 STA 同款长轮次。
+        val apZdrop = apTiming && connFlags.isEnabled(ConnFlags.AP_ZDROP_TIMING)
+        val maxAttempts = if (apZdrop) AP_MAX_ATTEMPTS else MAX_ATTEMPTS
+        val awaitNetworkMs = if (apZdrop) AP_BIND_WAIT_MS else AWAIT_NETWORK_MS
         var attempt = 0
         var lastErr: String? = null
         /** RC-6：连续判定"相机不可达"的次数，用于提前收口（见下方循环）。 */
@@ -336,6 +369,8 @@ class WifiDirectConnector @Inject constructor(
          * 这里把第一次的结论带下去复用。
          */
         var preconnectGrade: PtpIpProbe.ProbeResult? = null
+        /** FR-38：AP 档收口文案用的"最后一次探测档位"（preconnect 与失败归类共用）。 */
+        var lastApGrade: PtpIpProbe.ProbeResult? = null
         /** FR-20④：本轮是否出现过「有 WiFi 但没有一张能覆盖相机 IP」——决定报 bind_failed 还是 no_wifi_network。 */
         var rejectedBySubnetCheck = false
         // RC-5: 连接生命周期内持有 WifiLock/MulticastLock，finally 保证释放
@@ -357,7 +392,7 @@ class WifiDirectConnector @Inject constructor(
                 "port" to endpoint.port
             )
 
-            while (attempt < MAX_ATTEMPTS) {
+            while (attempt < maxAttempts) {
                 currentCoroutineContext().ensureActive()
                 if (gen != generation) return                    // RC-7: 过期令牌立即退
 
@@ -393,7 +428,7 @@ class WifiDirectConnector @Inject constructor(
                 // 相机在热点子网而非上游 WiFi 子网，"任意 WiFi 网络"会绑错路由
                 // FIX-2：三条路径**并行**竞争，不再串行叠加（旧版 8s + 8s = 16.2s 才出结果）
                 // 并行等待期间通过 onRetry 推进度文案，避免长时间静止无反馈
-                val network = resolveNetwork(endpoint.host) { progress ->
+                val network = resolveNetwork(endpoint.host, awaitNetworkMs) { progress ->
                     onRetry?.invoke(progress)
                     eventLogger.event("sta_progress", "gen" to gen, "hint" to progress)
                 }
@@ -403,8 +438,9 @@ class WifiDirectConnector @Inject constructor(
                 // 后面每条 socket（包括不经本类创建的）都往那张到不了相机的网上撞。
                 // 真机日志里那台 6/6 全败、一条 `sta_fallback` 都没有、
                 // socket 一律 1.3s 秒断的机器，就是这个形态。
+                // FR-38：AP 档路由复查失败后可能重绑（见下），所以需要可回写。
                 preconnectGrade = null
-                val usable: android.net.Network? = network?.takeIf {
+                var usable: android.net.Network? = network?.takeIf {
                     !connFlags.isEnabled(ConnFlags.BIND_SUBNET_CHECK) ||
                         networkMonitor.networkCoversHost(it, endpoint.host)
                 }
@@ -552,6 +588,50 @@ class WifiDirectConnector @Inject constructor(
                     detail = if (usable != null) "bound" else "default-route"
                 )
 
+                // ── FR-38（ZDROP C0516A#k 同款）：每次真正 connect 前都复查一次路由 ──
+                // 绑上的网若已不再覆盖相机地址（热点切换/回连换网/DHCP 续租中），
+                // 继续 connect 只会撞满超时。复查失败 → 重绑一轮（2.5s + 450ms，ZDROP
+                // 重绑同款参数）；仍不通则不进 PTP，直接给出"重新绑定"文案 ——
+                // ZDROP 在 M5#p 里对每次双通道尝试都做这个检查，不可达直接抛
+                // "相机热点网络已不可用，请重新绑定后连接"。
+                if (apZdrop && usable != null &&
+                    !networkMonitor.networkCoversHost(usable, endpoint.host)
+                ) {
+                    onRetry?.invoke("相机热点网络正在切换，正在重新绑定…")
+                    eventLogger.event(
+                        "ap_route_recheck", "gen" to gen, "attempt" to attempt,
+                        "phase" to "rebind_start", "host" to endpoint.host
+                    )
+                    val rebound = resolveNetwork(endpoint.host, AP_REBIND_WAIT_MS) { hint ->
+                        onRetry?.invoke(hint)
+                    }
+                    delay(AP_REBIND_SETTLE_MS)
+                    val reboundUsable = rebound?.takeIf {
+                        networkMonitor.networkCoversHost(it, endpoint.host)
+                    }
+                    if (reboundUsable == null) {
+                        eventLogger.event(
+                            "sta_fail", "gen" to gen, "reason" to "ap_route_lost",
+                            "attempt" to attempt, "host" to endpoint.host
+                        )
+                        stateMachine.dispatch(
+                            ConnectionEvent.ErrorOccurred(
+                                describeApFailure(null, "ap_route_lost", endpoint),
+                                recoverable = true
+                            )
+                        )
+                        onFail("ap_route_lost")
+                        return
+                    }
+                    usable = reboundUsable
+                    val reboundOk = networkMonitor.bindProcessTo(usable)
+                    eventLogger.event(
+                        "net_bind", "gen" to gen, "attempt" to attempt, "bound" to reboundOk,
+                        "covers" to true, "host" to endpoint.host, "route" to "process",
+                        "reason" to "ap_rebind"
+                    )
+                }
+
                 // ── FIX-5：连接前刷新发现（对齐 ZDROP "refreshing discovery before connect"）──
                 // ZDROP 在每次真正 connect 之前都会先刷一次对端可达性，原因是：
                 // 相机（尤其 STA 下）会**延迟几秒才在 15740 上监听** —— 它需要先完成
@@ -572,6 +652,8 @@ class WifiDirectConnector @Inject constructor(
                     // 三者的处置是"等机身"/"唤醒相机"/"换网络"，一句 `reachable=false`
                     // 把它们糊成了同一个"再试一次"。
                     preconnectGrade = screen.grade
+                    // FR-38：AP 收口文案要按最后看到的探测档位分级（ZDROP o7#v 按 errno 分类）。
+                    lastApGrade = screen.grade
                     eventLogger.event(
                         "sta_preconnect", "gen" to gen, "attempt" to attempt,
                         "reachable" to screen.open, "grade" to screen.grade.name,
@@ -583,7 +665,10 @@ class WifiDirectConnector @Inject constructor(
                     endpoint.host,
                     endpoint.port,
                     pairingMode = pairing,
-                    network = usable
+                    network = usable,
+                    // FR-38：AP 档用 ZDROP 同款 6s connect 超时（快失败 + 明确文案）；
+                    // STA/恢复档传 0 维持默认 lane 判定。
+                    connectTimeoutMs = if (apZdrop) AP_CONNECT_TIMEOUT_MS else 0
                 ) {
                     onWaitingCameraOk?.invoke()
                 }
@@ -639,6 +724,7 @@ class WifiDirectConnector @Inject constructor(
                 }
                 val unreachable = verdict != null && !verdict.open
                 if (verdict != null) {
+                    lastApGrade = verdict.grade
                     eventLogger.event(
                         "sta_classify", "gen" to gen, "attempt" to attempt,
                         "grade" to verdict.grade.name, "errno" to verdict.errno,
@@ -704,12 +790,13 @@ class WifiDirectConnector @Inject constructor(
                     consecutiveUnreachable = 0
                 }
                 // FR-31②：event 通道被相机冷启动 reset（ZDROP AP 日志同现象）时，
-                // 退避拉长到 7s 跨过秒级恢复窗；其余失败照旧退避表。
+                // 退避拉长到 7s 跨过秒级恢复窗；FR-38：AP 档固定 7s（ZDROP AP 双通道
+                // 重试间隔）；其余失败照旧退避表。
                 val eventCold = ptpSession.lastFailPhase == "init_event"
-                val backoffMs = if (eventCold) {
-                    EVENT_COLD_BACKOFF_MS
-                } else {
-                    BACKOFF_MS[(attempt - 1).coerceAtMost(BACKOFF_MS.size - 1)]
+                val backoffMs = when {
+                    eventCold -> EVENT_COLD_BACKOFF_MS
+                    apZdrop -> AP_RETRY_MS
+                    else -> BACKOFF_MS[(attempt - 1).coerceAtMost(BACKOFF_MS.size - 1)]
                 }
                 if (eventCold) {
                     eventLogger.event(
@@ -717,6 +804,12 @@ class WifiDirectConnector @Inject constructor(
                         "ms" to backoffMs, "reason" to "event_cold", "host" to endpoint.host
                     )
                     onRetry?.invoke("相机事件通道未就绪，约 7 秒后重试…")
+                } else if (apZdrop) {
+                    eventLogger.event(
+                        "sta_backoff", "gen" to gen, "attempt" to attempt,
+                        "ms" to backoffMs, "reason" to "ap_retry", "host" to endpoint.host
+                    )
+                    onRetry?.invoke("连接未成功，约 7 秒后重试（第 ${attempt + 1}/$AP_MAX_ATTEMPTS 次）…")
                 }
                 delay(backoffMs)   // RC-8
             }
@@ -729,7 +822,11 @@ class WifiDirectConnector @Inject constructor(
             )
             stateMachine.dispatch(
                 ConnectionEvent.ErrorOccurred(
-                    describeStaFailure(lastErr, endpoint),
+                    // FR-38：AP 档按最后一次探测档位给出 ZDROP 式分级文案
+                    // （REFUSED=相机未开端口 / TIMEOUT=超时 / NO_ROUTE=无路由），
+                    // 让"连接"按钮本身就是重试入口。
+                    if (apZdrop) describeApFailure(lastApGrade, lastErr, endpoint)
+                    else describeStaFailure(lastErr, endpoint),
                     recoverable = true
                 )
             )
@@ -856,6 +953,8 @@ class WifiDirectConnector @Inject constructor(
 
     private suspend fun resolveNetwork(
         host: String,
+        /** FR-38：等待窗口（STA 档默认 4s；AP 档传 ZDROP 的 8s 绑网窗 / 重绑 2.5s）。 */
+        waitMs: Long = AWAIT_NETWORK_MS,
         onProgress: ((String) -> Unit)? = null
     ): android.net.Network? {
         var resolved: android.net.Network? = null
@@ -888,13 +987,13 @@ class WifiDirectConnector @Inject constructor(
                 // 注册不带系统超时、超时不注销、跨 attempt 复用，轮次结束由
                 // finally(!sessionBound)/teardownSession 统一 release。
                 runCatching {
-                    networkRequester.acquire(host, AWAIT_NETWORK_MS, holdUntilRelease = true)
+                    networkRequester.acquire(host, waitMs, holdUntilRelease = true)
                 }
                     .onFailure { logResolveFailure("requester", it) }
                     .getOrNull()?.let { n -> requesterPick.set(n); winner.trySend(n) }
             }
             val monitor = async(Dispatchers.IO) {
-                runCatching { networkMonitor.awaitWifiNetworkFor(host, AWAIT_NETWORK_MS) }
+                runCatching { networkMonitor.awaitWifiNetworkFor(host, waitMs) }
                     .onFailure { logResolveFailure("monitor", it) }
                     .getOrNull()?.let { winner.trySend(it) }
             }
@@ -912,7 +1011,7 @@ class WifiDirectConnector @Inject constructor(
             // 进度心跳：并行等待期间保持用户感知
             val ticker = launch(Dispatchers.IO) {
                 var waited = 0L
-                while (waited < AWAIT_NETWORK_MS) {
+                while (waited < waitMs) {
                     delay(PROGRESS_TICK_MS)
                     waited += PROGRESS_TICK_MS
                     onProgress?.invoke("正在准备网络（${waited / 1000}s）…")
@@ -920,7 +1019,7 @@ class WifiDirectConnector @Inject constructor(
             }
 
             // 只等到整体上限；期间谁先给出结果就用谁
-            resolved = withTimeoutOrNull(AWAIT_NETWORK_MS + 500L) {
+            resolved = withTimeoutOrNull(waitMs + 500L) {
                 for (network in winner) return@withTimeoutOrNull network
                 null
             }
@@ -1141,6 +1240,37 @@ class WifiDirectConnector @Inject constructor(
             }
             "invalid_endpoint" -> "IP 地址无效，请填写形如 192.168.1.1 的 IPv4 地址"
             else -> "WiFi 相机连接失败：请确认相机与手机在同一网络后重试"
+        }
+    }
+
+    /**
+     * FR-38：AP 档（ZDROP 时序）的失败文案 —— 按最后一次探测档位分级，
+     * 对齐 ZDROP `o7#v` 按 errno 分类给文案的做法：
+     * - REFUSED（相机在、端口没开）→ "相机未响应"分支；
+     * - TIMEOUT（包发了没人回）→ "连接超时"分支；
+     * - NO_ROUTE（本机没有到相机的路由）→ "路由/热点掉了"分支；
+     * - ap_route_lost（路由复查重绑失败）→ "重新绑定"分支。
+     * 其余原因（未连 WiFi / 绑错网 / 握手被拒等）回落 [describeStaFailure] 的既有文案。
+     */
+    private fun describeApFailure(
+        grade: PtpIpProbe.ProbeResult?,
+        reason: String?,
+        endpoint: WifiEndpoint
+    ): String {
+        if (reason == "ap_route_lost") {
+            return "相机热点网络已不可用。请重新连接相机热点，再点一次「连接相机」"
+        }
+        return when (grade) {
+            PtpIpProbe.ProbeResult.REFUSED ->
+                "已到达相机网络，但相机未响应连接请求。" +
+                    "请确认相机已开启 WiFi 并停在连接等待画面，然后重新点一次连接"
+            PtpIpProbe.ProbeResult.NO_ROUTE ->
+                "当前 Wi-Fi 没有到相机（${endpoint.host}）的网络路由。" +
+                    "请确认手机仍连接着相机热点，然后重新点一次连接"
+            PtpIpProbe.ProbeResult.TIMEOUT ->
+                "连接相机超时。请确认相机 WiFi 已开启、手机仍连接相机热点，" +
+                    "然后重新点一次连接"
+            else -> describeStaFailure(reason, endpoint)
         }
     }
 }

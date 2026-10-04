@@ -397,6 +397,14 @@ class ConnFlags @Inject constructor(
          */
         const val WLAN_DROP_REASON = "v34_drop_reason"
 
+        /**
+         * FR-38：AP 轮次改用 ZDROP 时序档（2026-10-03 逆向定谳）——绑网 8s、每次尝试前
+         * 路由复查、复查失败重绑 2.5s+450ms、双通道至多 2 次（间隔 7s）、TCP connect 6s、
+         * 失败按探测档位分级出文案。只在 AP 链路（learnFirst 起轮）生效，STA 轮次不受影响。
+         * 关闸 = 回到 STA 同款的 10 次退避长轮次。
+         */
+        const val AP_ZDROP_TIMING = "v38_ap_zdrop_timing"
+
 
 
         /**
@@ -509,6 +517,9 @@ class ConnFlags @Inject constructor(
             STA_WLAN_WAIT to true,
             STA_FAST_IDLE_REFRESH to true,
             WLAN_DROP_REASON to true,
+            // FR-38：AP 轮次的 ZDROP 时序档，默认开（失败从 ~4 分钟长轮次收敛到 ~30s
+            // 出明确文案；关闸即回 10 次退避旧行为，现场可二分）
+            AP_ZDROP_TIMING to true,
         )
     }
 
