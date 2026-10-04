@@ -8,6 +8,7 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.widget.ImageView
 import kotlin.math.min
+import com.nikonlink.app.shared.ui.Motion
 
 /**
  * 监看画面缩放控制器（模块 1：双指缩放与网格联动重构）。
@@ -35,7 +36,7 @@ class LiveViewZoomController(
     companion object {
         const val MIN_ZOOM = 1.0f
         const val MAX_ZOOM = 5.0f
-        private const val RESET_DURATION_MS = 200L
+        private const val RESET_DURATION_MS = Motion.BASE
         private const val EDGE_ANIM_MS = 180L
     }
 

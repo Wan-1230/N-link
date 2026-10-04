@@ -95,6 +95,15 @@
     <color name="lv_badge_red">#8A2B26</color>
     <color name="lv_seg_track">#1FFFFFFF</color>
     <color name="lv_seg_sel">#33FFFFFF</color>
+    <color name="lv_page_bg">#000000</color>
+    <color name="lv_on_solid">#000000</color>
+
+    <!-- 视S1：照片叠加遮罩族 —— 恒定覆盖在照片内容上，主题无关
+         （原 layout 内硬编码 #33/#AA/#CC 黑 与 #44 白，2026-10-04 收进 token） -->
+    <color name="photo_scrim_select">#33000000</color>
+    <color name="photo_scrim_badge">#AA000000</color>
+    <color name="photo_scrim_name">#CC000000</color>
+    <color name="photo_scrim_track">#44FFFFFF</color>
 
     <!-- 底部导航：背景与页面底色一致 -->
     <color name="nav_background">#FFFFFF</color>

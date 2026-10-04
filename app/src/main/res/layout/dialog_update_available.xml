@@ -17,7 +17,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:textColor="@color/text_primary"
-        android:textSize="15sp"
+        android:textSize="@dimen/font_body"
         android:textStyle="bold" />
 
     <TextView
@@ -26,7 +26,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="4dp"
         android:textColor="@color/text_tertiary"
-        android:textSize="12sp" />
+        android:textSize="@dimen/font_nav" />
 
     <TextView
         android:id="@+id/tvUpdateNotes"
@@ -36,7 +36,7 @@
         android:ellipsize="end"
         android:maxLines="10"
         android:textColor="@color/text_primary"
-        android:textSize="13sp" />
+        android:textSize="@dimen/font_caption" />
 
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btnUpdateQuark"
@@ -45,7 +45,7 @@
         android:layout_height="48dp"
         android:layout_marginTop="20dp"
         android:text="夸克网盘下载（国内推荐）"
-        android:textSize="15sp" />
+        android:textSize="@dimen/font_body" />
 
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btnUpdateBaidu"
@@ -54,7 +54,7 @@
         android:layout_height="48dp"
         android:layout_marginTop="10dp"
         android:text="百度网盘下载"
-        android:textSize="15sp" />
+        android:textSize="@dimen/font_body" />
 
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btnUpdateGithub"
@@ -63,7 +63,7 @@
         android:layout_height="44dp"
         android:layout_marginTop="10dp"
         android:text="GitHub 更新"
-        android:textSize="14sp" />
+        android:textSize="@dimen/font_body" />
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -79,7 +79,7 @@
             android:layout_height="wrap_content"
             android:text="查看完整日志"
             android:textColor="@color/text_tertiary"
-            android:textSize="13sp" />
+            android:textSize="@dimen/font_caption" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnLater"
@@ -88,6 +88,6 @@
             android:layout_height="wrap_content"
             android:text="稍后"
             android:textColor="@color/text_tertiary"
-            android:textSize="13sp" />
+            android:textSize="@dimen/font_caption" />
     </LinearLayout>
 </LinearLayout>

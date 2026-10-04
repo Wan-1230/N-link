@@ -14,6 +14,7 @@ import com.nikonlink.app.databinding.ItemPhotoGridBinding
 import com.nikonlink.app.shared.ui.pressEffect
 import java.util.Calendar
 import java.util.Locale
+import com.nikonlink.app.shared.ui.Motion
 
 /**
  * 网格里的一行：要么是日期分组标题，要么是一张照片。
@@ -488,7 +489,7 @@ class PhotoGridAdapter(
                             ObjectAnimator.ofFloat(binding.viewSelectedMask, View.ALPHA, 0f, 1f),
                             ObjectAnimator.ofFloat(binding.root, View.ALPHA, 1f, 0.92f)
                         )
-                        duration = 150
+                        duration = Motion.FAST
                         start()
                     }
                 } else {
@@ -508,7 +509,7 @@ class PhotoGridAdapter(
                             ObjectAnimator.ofFloat(binding.viewSelectedMask, View.ALPHA, 1f, 0f),
                             ObjectAnimator.ofFloat(binding.root, View.ALPHA, 0.92f, 1f)
                         )
-                        duration = 150
+                        duration = Motion.FAST
                         addListener(object : android.animation.AnimatorListenerAdapter() {
                             override fun onAnimationEnd(animation: android.animation.Animator) {
                                 // 身份校验：ViewHolder 已被复用到别的照片时，

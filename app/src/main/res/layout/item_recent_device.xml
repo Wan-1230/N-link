@@ -31,7 +31,7 @@
             android:ellipsize="end"
             android:maxLines="1"
             android:textColor="@color/text_primary"
-            android:textSize="13sp"
+            android:textSize="@dimen/font_caption"
             android:textStyle="bold" />
 
         <TextView
@@ -42,7 +42,7 @@
             android:ellipsize="end"
             android:maxLines="1"
             android:textColor="@color/text_tertiary"
-            android:textSize="11sp" />
+            android:textSize="@dimen/font_foot" />
     </LinearLayout>
 
     <TextView
@@ -54,6 +54,6 @@
         android:paddingHorizontal="14dp"
         android:text="快速连接"
         android:textColor="@color/on_primary"
-        android:textSize="12sp"
+        android:textSize="@dimen/font_nav"
         android:textStyle="bold" />
 </LinearLayout>

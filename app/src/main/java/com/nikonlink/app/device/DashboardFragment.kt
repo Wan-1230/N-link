@@ -56,6 +56,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import com.nikonlink.app.shared.ui.Motion
 
 /**
  * Tab1 设备首页
@@ -726,7 +727,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             binding.layoutDetail.visibility = if (detailExpanded) View.VISIBLE else View.GONE
             binding.iconDetailChevron.animate()
                 .rotation(if (detailExpanded) 180f else 0f)
-                .setDuration(200)
+                .setDuration(Motion.BASE)
                 .start()
         }
     }
@@ -1055,7 +1056,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 panel.animate()
                     .alpha(1f)
                     .translationY(0f)
-                    .setDuration(180)
+                    .setDuration(Motion.BASE)
                     .start()
             } else {
                 panel.visibility = View.GONE

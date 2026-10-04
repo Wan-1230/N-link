@@ -71,7 +71,7 @@
             android:paddingHorizontal="12dp"
             android:text="时间 ↓"
             android:textColor="@color/text_primary"
-            android:textSize="13sp" />
+            android:textSize="@dimen/font_caption" />
 
         <TextView
             android:id="@+id/btnMultiSelect"
@@ -83,7 +83,7 @@
             android:paddingHorizontal="12dp"
             android:text="多选"
             android:textColor="@color/text_primary"
-            android:textSize="13sp" />
+            android:textSize="@dimen/font_caption" />
     </LinearLayout>
 
     <View
@@ -124,7 +124,7 @@
         android:gravity="center_vertical|start"
         android:layout_marginHorizontal="@dimen/page_margin"
         android:textColor="@color/text_secondary"
-        android:textSize="13sp"
+        android:textSize="@dimen/font_caption"
         android:visibility="gone"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
@@ -195,7 +195,7 @@
                     android:paddingHorizontal="40dp"
                     android:text="连接相机后查看相册"
                     android:textColor="@color/text_tertiary"
-                    android:textSize="13sp" />
+                    android:textSize="@dimen/font_caption" />
             </LinearLayout>
         </FrameLayout>
     </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
@@ -247,7 +247,7 @@
                         android:gravity="center"
                         android:text="相机照片"
                         android:textColor="@color/on_primary"
-                        android:textSize="13sp"
+                        android:textSize="@dimen/font_caption"
                         android:textStyle="bold" />
 
                     <!-- F1「已标记」独立分区：聚合跨卡跨日的标记照片，一键批量收片 -->
@@ -259,7 +259,7 @@
                         android:gravity="center"
                         android:text="已标记"
                         android:textColor="@color/text_primary"
-                        android:textSize="13sp" />
+                        android:textSize="@dimen/font_caption" />
 
                     <TextView
                         android:id="@+id/tabLocalPhotos"
@@ -269,7 +269,7 @@
                         android:gravity="center"
                         android:text="本地照片"
                         android:textColor="@color/text_primary"
-                        android:textSize="13sp" />
+                        android:textSize="@dimen/font_caption" />
                 </LinearLayout>
             </FrameLayout>
         </LinearLayout>
@@ -297,7 +297,7 @@
             android:paddingStart="18dp"
             android:text="已选 0 项"
             android:textColor="@color/text_primary"
-            android:textSize="13sp"
+            android:textSize="@dimen/font_caption"
             android:textStyle="bold" />
 
         <!-- F1：标记/取消标记（切换语义：选中集全部已标 → 取消，否则 → 打标） -->
@@ -310,7 +310,7 @@
             android:paddingHorizontal="12dp"
             android:text="标记"
             android:textColor="@color/text_primary"
-            android:textSize="13sp" />
+            android:textSize="@dimen/font_caption" />
 
         <TextView
             android:id="@+id/btnSelectAll"
@@ -321,7 +321,7 @@
             android:paddingHorizontal="12dp"
             android:text="全选"
             android:textColor="@color/text_primary"
-            android:textSize="13sp" />
+            android:textSize="@dimen/font_caption" />
 
         <TextView
             android:id="@+id/btnShare"
@@ -332,7 +332,7 @@
             android:paddingHorizontal="12dp"
             android:text="分享"
             android:textColor="@color/text_primary"
-            android:textSize="13sp" />
+            android:textSize="@dimen/font_caption" />
 
         <TextView
             android:id="@+id/btnDelete"
@@ -343,7 +343,7 @@
             android:paddingHorizontal="12dp"
             android:text="删除"
             android:textColor="@color/text_primary"
-            android:textSize="13sp" />
+            android:textSize="@dimen/font_caption" />
 
         <TextView
             android:id="@+id/btnDownload"
@@ -355,7 +355,7 @@
             android:paddingHorizontal="16dp"
             android:text="下载"
             android:textColor="@color/on_primary"
-            android:textSize="13sp"
+            android:textSize="@dimen/font_caption"
             android:textStyle="bold" />
     </LinearLayout>
 </androidx.constraintlayout.widget.ConstraintLayout>

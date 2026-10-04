@@ -22,7 +22,7 @@
         android:layout_weight="1"
         android:text="2026年9月3日"
         android:textColor="@color/text_primary"
-        android:textSize="14sp"
+        android:textSize="@dimen/font_body"
         android:textStyle="bold" />
 
     <TextView
@@ -34,5 +34,5 @@
         android:paddingVertical="4dp"
         android:text="全选"
         android:textColor="@color/text_primary"
-        android:textSize="12sp" />
+        android:textSize="@dimen/font_nav" />
 </LinearLayout>

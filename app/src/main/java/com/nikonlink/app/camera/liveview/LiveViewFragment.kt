@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import kotlin.math.max
+import com.nikonlink.app.shared.ui.Motion
 
 /**
  * 全屏实时取景器（v2.7 重构 · 飓风相机参考范式）。
@@ -423,19 +424,19 @@ class LiveViewFragment : Fragment() {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     v.animate().cancel()
-                    v.animate().scaleX(0.88f).scaleY(0.88f).setDuration(70).start()
+                    v.animate().scaleX(0.88f).scaleY(0.88f).setDuration(Motion.INSTANT).start()
                     true
                 }
                 MotionEvent.ACTION_UP -> {
                     v.animate().cancel()
-                    v.animate().scaleX(1f).scaleY(1f).setDuration(110).start()
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(Motion.FAST).start()
                     flashScreen()
                     shootingViewModel.capture()
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     v.animate().cancel()
-                    v.animate().scaleX(1f).scaleY(1f).setDuration(110).start()
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(Motion.FAST).start()
                     true
                 }
                 else -> false
@@ -446,10 +447,10 @@ class LiveViewFragment : Fragment() {
     private fun flashScreen() {
         binding.viewFlash.visibility = View.VISIBLE
         binding.viewFlash.alpha = 0f
-        binding.viewFlash.animate().alpha(0.65f).setDuration(50)
+        binding.viewFlash.animate().alpha(0.65f).setDuration(Motion.INSTANT)
             .withEndAction {
                 if (_binding != null) {
-                    binding.viewFlash.animate().alpha(0f).setDuration(160)
+                    binding.viewFlash.animate().alpha(0f).setDuration(Motion.FAST)
                         .withEndAction {
                             if (_binding != null) binding.viewFlash.visibility = View.GONE
                         }.start()
@@ -499,13 +500,13 @@ class LiveViewFragment : Fragment() {
             .alpha(1f)
             .scaleX(1.15f)
             .scaleY(1.15f)
-            .setDuration(130)
+            .setDuration(Motion.FAST)
             .withEndAction {
                 if (_binding != null) {
                     binding.viewFocusIndicator.animate()
                         .scaleX(1f)
                         .scaleY(1f)
-                        .setDuration(90)
+                        .setDuration(Motion.INSTANT)
                         .start()
                 }
             }
@@ -518,7 +519,7 @@ class LiveViewFragment : Fragment() {
     private fun hideFocusIndicator() {
         if (_binding == null) return
         binding.viewFocusIndicator.animate().cancel()
-        binding.viewFocusIndicator.animate().alpha(0f).setDuration(220)
+        binding.viewFocusIndicator.animate().alpha(0f).setDuration(Motion.BASE)
             .withEndAction {
                 if (_binding != null) binding.viewFocusIndicator.visibility = View.GONE
             }.start()
@@ -555,13 +556,13 @@ class LiveViewFragment : Fragment() {
         views.forEach { view ->
             view.visibility = View.VISIBLE
             view.alpha = 0f
-            view.animate().alpha(1f).setDuration(150).start()
+            view.animate().alpha(1f).setDuration(Motion.FAST).start()
         }
     }
 
     private fun fadeOut(vararg views: View) {
         views.forEach { view ->
-            view.animate().alpha(0f).setDuration(120)
+            view.animate().alpha(0f).setDuration(Motion.FAST)
                 .withEndAction {
                     if (_binding != null) view.visibility = View.GONE
                 }.start()
