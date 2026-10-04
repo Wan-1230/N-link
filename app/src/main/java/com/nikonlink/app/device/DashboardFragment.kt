@@ -1069,18 +1069,20 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     }
 
     /**
-     * 扫描 / 连接按钮行的显隐（v2.6.3）。
+     * 扫描 / 连接按钮行的显隐（v2.6.3；FR-38 扩展）。
      *
-     * 只有「STA + FTP 推送收图」这一种组合要隐藏：FTP 架构下相机是**主动推送方**，
-     * 手机侧没有可发现、可连接的对象，留着两个按钮只会让人以为还要点。
-     * 判据里显式带上 `currentMode`，所以：
-     *  · AP / USB 两个页签**恒为 VISIBLE**（硬约束：这两条链路的界面不受影响）
-     *  · 从 STA 的 FTP 架构切到别的页签，一定恢复
+     *  · STA + FTP 推送收图：整行隐藏 —— FTP 架构下相机是**主动推送方**，
+     *    手机侧没有可发现、可连接的对象，留着两个按钮只会让人以为还要点。
+     *  · FR-38：AP 页签隐藏「扫描相机」，只留「连接相机」一枚按钮 —— 点击即
+     *    完整入口（在相机热点上直接起轮次，不在则拉系统 WLAN 面板），不再要求
+     *    先扫描。STA / USB 页签保留扫描按钮（发现候选 / 检测 USB 设备仍是主入口）。
      */
     private fun applyActionRowVisibility() {
         if (_binding == null) return
         val hide = currentMode == ConnectMode.WIFI_STA && staArch == AppSettings.STA_ARCH_FTP
         binding.actionContainer.visibility = if (hide) View.GONE else View.VISIBLE
+        binding.btnModeScan.visibility =
+            if (currentMode == ConnectMode.WIFI_AP) View.GONE else View.VISIBLE
     }
 
     private fun panelFor(mode: ConnectMode): View {
@@ -1123,13 +1125,17 @@ class DashboardFragment : Fragment(), GlassInsetAware {
 
     private fun connectForCurrentMode() {
         when (currentMode) {
-            ConnectMode.WIFI_AP, ConnectMode.WIFI_STA -> ensureStaPermissions {
+            // FR-38：AP 模式「连接相机」是唯一入口，点击即自动完成全部后续步骤 ——
+            // 在相机热点上直接起轮次（网关学习兜底地址，零输入零确认）；
+            // 不在则拉系统 WLAN 面板，用户点选热点回来后自动接续。不再走
+            // 「候选优先 / 手动 IP 弹窗」的旧分支（那要求用户先扫描或多一步输入）。
+            ConnectMode.WIFI_AP -> ensureStaPermissions {
+                apOneTapConnect()
+            }
+            ConnectMode.WIFI_STA -> ensureStaPermissions {
                 val target = wifiDevices.firstOrNull()
                 if (target != null) {
                     connectWifiCandidate(target)
-                } else if (currentMode == ConnectMode.WIFI_AP && viewModel.apOneTapEnabled()) {
-                    // FR-34①：AP 模式免扫描一键连接（ZDROP 同构）
-                    apOneTapConnect()
                 } else {
                     showManualIpDialog(currentMode)
                 }

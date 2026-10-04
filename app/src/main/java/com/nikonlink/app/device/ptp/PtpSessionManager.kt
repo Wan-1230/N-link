@@ -204,12 +204,21 @@ class PtpSessionManager @Inject constructor(
         host: String,
         port: Int,
         label: String,
+        /**
+         * FR-38：AP 轮次的显式覆盖（ZDROP 同款 6000ms）。0 = 按 lane 判定取默认值。
+         * 注意必须排在 `configure` 之前 —— Kotlin 尾随 lambda 绑定最后一个形参。
+         */
+        timeoutOverrideMs: Int = 0,
         configure: Socket.() -> Unit
     ): Socket {
         // FR-34③：默认路由 lane（network=null）用短超时，绑网 lane 保持 30s。
-        val timeoutMs = if (network == null &&
-            connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.STA_LANE_TIMEOUT)
-        ) UNBOUND_LANE_CONNECT_TIMEOUT_MS else CONNECT_TIMEOUT_MS
+        val timeoutMs = when {
+            timeoutOverrideMs > 0 -> timeoutOverrideMs
+            network == null &&
+                connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.STA_LANE_TIMEOUT) ->
+                UNBOUND_LANE_CONNECT_TIMEOUT_MS
+            else -> CONNECT_TIMEOUT_MS
+        }
         var attempt = 0
         while (true) {
             val startedAt = System.currentTimeMillis()
@@ -262,6 +271,12 @@ class PtpSessionManager @Inject constructor(
         port: Int,
         pairingMode: Boolean = false,
         network: Network? = null,
+        /**
+         * FR-38：AP 轮次传入 6000（ZDROP `C0556c4#S0` 同款 connect 超时），
+         * 0 = 维持默认 lane 判定（绑网 30s / 默认路由 8s）。
+         * 注意排在 `onWifiConnected` 之前 —— Kotlin 尾随 lambda 绑定最后一个形参。
+         */
+        connectTimeoutMs: Int = 0,
         onWifiConnected: (() -> Unit)? = null
     ): Boolean = withContext(Dispatchers.IO) {
         if (isConnected()) return@withContext true
@@ -281,7 +296,7 @@ class PtpSessionManager @Inject constructor(
             // 建立 Command 通道
             Timber.tag(TAG).i("phase=connecting host=%s:%d", host, port)
             eventLogger.event("connect", "phase" to "socket", "host" to host, "port" to port, "pairing" to pairingMode)
-            commandSocket = connectSocketWithRetry(network, host, port, label = "command") {
+            commandSocket = connectSocketWithRetry(network, host, port, label = "command", timeoutOverrideMs = connectTimeoutMs) {
                 tcpNoDelay = true
                 keepAlive = true
                 receiveBufferSize = 4 * 1024 * 1024  // 放大 TCP 接收窗口，提升大文件传输吞吐
@@ -336,7 +351,7 @@ class PtpSessionManager @Inject constructor(
 
             // 建立 Event 通道
             Timber.tag(TAG).i("phase=event connecting")
-            eventSocket = connectSocketWithRetry(network, host, port, label = "event") {
+            eventSocket = connectSocketWithRetry(network, host, port, label = "event", timeoutOverrideMs = connectTimeoutMs) {
                 // 官方对 data / event 两条通道都设 TCP_NODELAY。PTP/IP 是
                 // 小包一问一答，Nagle 会把 event 包压在缓冲区里等待累积，
                 // 白白叠加几十毫秒——原来这里漏了，只 command 通道设了。
