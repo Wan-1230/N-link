@@ -50,6 +50,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.nikonlink.app.shared.ui.Motion
 
 /**
  * Tab3 遥控拍摄（黑白极简）
@@ -271,10 +272,10 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         binding.viewFocusIndicator.animate().cancel()
         binding.viewFocusIndicator.visibility = View.VISIBLE
         binding.viewFocusIndicator.alpha = 0f
-        binding.viewFocusIndicator.animate().alpha(1f).setDuration(120).start()
+        binding.viewFocusIndicator.animate().alpha(1f).setDuration(Motion.FAST).start()
         binding.viewFocusIndicator.postDelayed({
             if (_binding != null) {
-                binding.viewFocusIndicator.animate().alpha(0f).setDuration(300)
+                binding.viewFocusIndicator.animate().alpha(0f).setDuration(Motion.SLOW)
                     .withEndAction { if (_binding != null) binding.viewFocusIndicator.visibility = View.GONE }
                     .start()
             }
@@ -314,14 +315,14 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         val valueView = TextView(ctx).apply {
             text = "--"
             setTextColor(resources.getColor(R.color.text_primary, null))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setTextSize(TypedValue.COMPLEX_UNIT_PX, resources.getDimensionPixelSize(R.dimen.font_body).toFloat())
             typeface = android.graphics.Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
         }
         val labelView = TextView(ctx).apply {
             text = label
             setTextColor(resources.getColor(R.color.text_tertiary, null))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+            setTextSize(TypedValue.COMPLEX_UNIT_PX, resources.getDimensionPixelSize(R.dimen.font_foot).toFloat())
             gravity = Gravity.CENTER
         }
         val cell = LinearLayout(ctx).apply {
@@ -625,16 +626,16 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         binding.btnShutter.setOnTouchListener { v, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    v.animate().scaleX(0.9f).scaleY(0.9f).setDuration(80).start()
+                    v.animate().scaleX(0.9f).scaleY(0.9f).setDuration(Motion.INSTANT).start()
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    v.animate().scaleX(1f).scaleY(1f).setDuration(100).start()
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(Motion.FAST).start()
                     onShutterPressed()
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    v.animate().scaleX(1f).scaleY(1f).setDuration(100).start()
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(Motion.FAST).start()
                     true
                 }
                 else -> false
@@ -788,10 +789,10 @@ class RemoteFragment : Fragment(), GlassInsetAware {
     private fun flashScreen() {
         binding.viewFlash.visibility = View.VISIBLE
         binding.viewFlash.alpha = 0f
-        binding.viewFlash.animate().alpha(0.75f).setDuration(60)
+        binding.viewFlash.animate().alpha(0.75f).setDuration(Motion.INSTANT)
             .withEndAction {
                 if (_binding != null) {
-                    binding.viewFlash.animate().alpha(0f).setDuration(180)
+                    binding.viewFlash.animate().alpha(0f).setDuration(Motion.BASE)
                         .withEndAction { if (_binding != null) binding.viewFlash.visibility = View.GONE }
                         .start()
                 }

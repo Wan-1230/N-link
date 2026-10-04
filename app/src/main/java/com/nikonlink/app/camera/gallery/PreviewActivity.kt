@@ -43,6 +43,7 @@ import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 import timber.log.Timber
 import javax.inject.Inject
+import com.nikonlink.app.shared.ui.Motion
 
 /**
  * 全屏预览页（二级页面：右推入转场由主题 windowAnimationStyle 提供）
@@ -360,7 +361,7 @@ class PreviewActivity : AppCompatActivity() {
             it.animate()
                 .alpha(if (visible) 1f else 0f)
                 .translationY(if (visible) 0f else away)
-                .setDuration(if (visible) 220L else 180L)
+                .setDuration(if (visible) Motion.BASE else Motion.BASE)
                 .setInterpolator(
                     if (visible) android.view.animation.DecelerateInterpolator()
                     else android.view.animation.AccelerateInterpolator()
@@ -542,14 +543,14 @@ class PreviewActivity : AppCompatActivity() {
             }
             val title = android.widget.TextView(this@PreviewActivity).apply {
                 text = "拍摄信息"
-                setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 16f)
+                setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, resources.getDimensionPixelSize(R.dimen.font_title).toFloat())
                 setTypeface(typeface, android.graphics.Typeface.BOLD)
             }
             container.addView(title)
 
             val body = android.widget.TextView(this@PreviewActivity).apply {
                 text = info.text
-                setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 13f)
+                setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, resources.getDimensionPixelSize(R.dimen.font_caption).toFloat())
                 setLineSpacing(dp(4).toFloat(), 1f)
                 setTextColor(getColor(R.color.text_primary))
                 setPadding(0, dp(12), 0, dp(12))
@@ -563,7 +564,7 @@ class PreviewActivity : AppCompatActivity() {
                 setBackgroundResource(R.drawable.bg_chip_selected)
                 setPadding(dp(16), dp(10), dp(16), dp(10))
                 setTextColor(getColor(R.color.on_primary))
-                setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 13f)
+                setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, resources.getDimensionPixelSize(R.dimen.font_caption).toFloat())
                 pressEffect()
                 setOnClickListener {
                     val clipboard = getSystemService(

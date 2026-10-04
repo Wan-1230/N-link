@@ -44,7 +44,7 @@
             android:gravity="center"
             android:maxLines="1"
             android:textColor="@color/white"
-            android:textSize="14sp"
+            android:textSize="@dimen/font_body"
             android:textStyle="bold" />
 
         <!-- 页码指示：第 N / 共 M 张 -->
@@ -54,7 +54,7 @@
             android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
             android:textColor="@color/white"
-            android:textSize="12sp" />
+            android:textSize="@dimen/font_nav" />
 
         <ImageView
             android:id="@+id/btnMore"
@@ -88,7 +88,7 @@
             android:max="100"
             android:progress="0"
             android:progressTint="@color/white"
-            android:progressBackgroundTint="#44FFFFFF"
+            android:progressBackgroundTint="@color/photo_scrim_track"
             android:visibility="gone" />
 
         <LinearLayout
@@ -121,7 +121,7 @@
                     android:layout_marginTop="4dp"
                     android:text="标记"
                     android:textColor="@color/white"
-                    android:textSize="12sp" />
+                    android:textSize="@dimen/font_nav" />
             </LinearLayout>
 
             <LinearLayout
@@ -147,7 +147,7 @@
                     android:layout_marginTop="4dp"
                     android:text="下载"
                     android:textColor="@color/white"
-                    android:textSize="12sp" />
+                    android:textSize="@dimen/font_nav" />
             </LinearLayout>
 
             <LinearLayout
@@ -171,7 +171,7 @@
                     android:layout_marginTop="4dp"
                     android:text="EXIF"
                     android:textColor="@color/white"
-                    android:textSize="12sp" />
+                    android:textSize="@dimen/font_nav" />
             </LinearLayout>
 
             <LinearLayout
@@ -195,7 +195,7 @@
                     android:layout_marginTop="4dp"
                     android:text="分享"
                     android:textColor="@color/white"
-                    android:textSize="12sp" />
+                    android:textSize="@dimen/font_nav" />
             </LinearLayout>
 
             <!-- 删除：与「标记 / 下载 / EXIF / 分享」同一套底栏按钮规范
@@ -221,7 +221,7 @@
                     android:layout_marginTop="4dp"
                     android:text="删除"
                     android:textColor="@color/white"
-                    android:textSize="12sp" />
+                    android:textSize="@dimen/font_nav" />
             </LinearLayout>
         </LinearLayout>
     </LinearLayout>

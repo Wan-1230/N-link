@@ -9,6 +9,16 @@
     <dimen name="card_radius">12dp</dimen>
     <dimen name="divider_height">1dp</dimen>
 
+    <!-- 视S1 字号阶梯：全 App 只允许这 6 档（对齐 NlText.* 与视觉规范 v2.6.5 的 24/16/14/13）。
+         布局里 textSize 一律引用 @dimen/font_*，不再允许裸 sp（2026-10-04 起 221 处已全量替换）。
+         映射口径：24→display；22/20/18/17/16→title；15/14→body；13→caption；12→nav；11/10/9→foot -->
+    <dimen name="font_display">24sp</dimen>
+    <dimen name="font_title">16sp</dimen>
+    <dimen name="font_body">14sp</dimen>
+    <dimen name="font_caption">13sp</dimen>
+    <dimen name="font_nav">12sp</dimen>
+    <dimen name="font_foot">11sp</dimen>
+
     <!-- 全屏监看 HUD 尺寸：三档圆角梯度 + 控件高度，取代原先散落在 layout 里的硬编码 -->
     <dimen name="lv_radius_sm">8dp</dimen>
     <dimen name="lv_radius_md">12dp</dimen>

@@ -283,7 +283,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
             }
             val chip = TextView(requireContext()).apply {
                 text = filter.label
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                setTextSize(TypedValue.COMPLEX_UNIT_PX, resources.getDimensionPixelSize(R.dimen.font_caption).toFloat())
                 maxLines = 1
                 setPadding(dp(16), dp(7), dp(16), dp(7))
                 val lp = android.widget.LinearLayout.LayoutParams(
@@ -301,7 +301,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
         // F2：「未下载」开关 chip，与类型筛选可叠加；仅相机相册显示
         val notDownloadedChip = TextView(requireContext()).apply {
             text = "未下载"
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextSize(TypedValue.COMPLEX_UNIT_PX, resources.getDimensionPixelSize(R.dimen.font_caption).toFloat())
             maxLines = 1
             setPadding(dp(16), dp(7), dp(16), dp(7))
             val lp = android.widget.LinearLayout.LayoutParams(

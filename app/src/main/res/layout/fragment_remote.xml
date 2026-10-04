@@ -50,7 +50,7 @@
                     android:paddingHorizontal="18dp"
                     android:text="照片"
                     android:textColor="@color/text_primary"
-                    android:textSize="13sp" />
+                    android:textSize="@dimen/font_caption" />
 
                 <TextView
                     android:id="@+id/btnModeVideo"
@@ -60,7 +60,7 @@
                     android:paddingHorizontal="18dp"
                     android:text="视频"
                     android:textColor="@color/text_primary"
-                    android:textSize="13sp" />
+                    android:textSize="@dimen/font_caption" />
             </LinearLayout>
         </FrameLayout>
 
@@ -80,7 +80,7 @@
             android:paddingHorizontal="14dp"
             android:text="联动画面 ▾"
             android:textColor="@color/text_primary"
-            android:textSize="13sp" />
+            android:textSize="@dimen/font_caption" />
 
         <TextView
             android:id="@+id/tvRemoteStatus"
@@ -89,7 +89,7 @@
             android:layout_marginStart="10dp"
             android:text="未连接"
             android:textColor="@color/text_tertiary"
-            android:textSize="12sp" />
+            android:textSize="@dimen/font_nav" />
     </LinearLayout>
 
     <!-- 实时取景区域（占 2/3） -->
@@ -144,7 +144,7 @@
                 android:layout_marginStart="4dp"
                 android:text=""
                 android:textColor="@color/liveview_text"
-                android:textSize="11sp" />
+                android:textSize="@dimen/font_foot" />
 
             <ImageView
                 android:id="@+id/ivLvShots"
@@ -162,7 +162,7 @@
                 android:layout_marginStart="4dp"
                 android:text=""
                 android:textColor="@color/liveview_text"
-                android:textSize="11sp" />
+                android:textSize="@dimen/font_foot" />
 
             <View
                 android:layout_width="0dp"
@@ -175,7 +175,7 @@
                 android:layout_height="wrap_content"
                 android:text="未连接"
                 android:textColor="@color/liveview_text"
-                android:textSize="11sp" />
+                android:textSize="@dimen/font_foot" />
         </LinearLayout>
 
         <!-- 录制状态标识：实心圆点 + 时长（灰度，不引入彩色） -->
@@ -206,7 +206,7 @@
                 android:layout_marginStart="6dp"
                 android:text="00:00"
                 android:textColor="@color/white"
-                android:textSize="12sp"
+                android:textSize="@dimen/font_nav"
                 android:textStyle="bold" />
         </LinearLayout>
 
@@ -358,7 +358,7 @@
                     android:paddingEnd="8dp"
                     android:text="间隔拍摄"
                     android:textColor="@color/text_primary"
-                    android:textSize="12sp"
+                    android:textSize="@dimen/font_nav"
                     android:textStyle="bold" />
 
                 <ImageView
@@ -387,7 +387,7 @@
                 android:layout_height="wrap_content"
                 android:text="已拍 0 张"
                 android:textColor="@color/text_tertiary"
-                android:textSize="12sp" />
+                android:textSize="@dimen/font_nav" />
         </LinearLayout>
     </LinearLayout>
 </LinearLayout>

@@ -4,7 +4,7 @@
     <!-- 排版层级：大标题 700 / 模块标题 700 / 次级标题 700 / 正文 400 / 辅助 400 -->
     <style name="NlText.Title" parent="TextAppearance.Material3.TitleLarge">
         <item name="android:textColor">@color/text_primary</item>
-        <item name="android:textSize">24sp</item>
+        <item name="android:textSize">@dimen/font_display</item>
         <item name="android:fontFamily">sans-serif</item>
         <item name="android:textStyle">bold</item>
         <item name="android:maxLines">1</item>
@@ -13,21 +13,21 @@
 
     <style name="NlText.SectionTitle">
         <item name="android:textColor">@color/text_primary</item>
-        <item name="android:textSize">16sp</item>
+        <item name="android:textSize">@dimen/font_title</item>
         <item name="android:fontFamily">sans-serif</item>
         <item name="android:textStyle">bold</item>
     </style>
 
     <style name="NlText.Subtitle">
         <item name="android:textColor">@color/text_primary</item>
-        <item name="android:textSize">14sp</item>
+        <item name="android:textSize">@dimen/font_body</item>
         <item name="android:fontFamily">sans-serif</item>
         <item name="android:textStyle">bold</item>
     </style>
 
     <style name="NlText.GroupTitle">
         <item name="android:textColor">@color/text_secondary</item>
-        <item name="android:textSize">13sp</item>
+        <item name="android:textSize">@dimen/font_caption</item>
         <item name="android:fontFamily">sans-serif</item>
         <item name="android:textStyle">bold</item>
     </style>
@@ -46,7 +46,7 @@
         <item name="android:textColor">@color/on_nikon_yellow</item>
         <item name="backgroundTint">@color/nikon_yellow</item>
         <item name="cornerRadius">8dp</item>
-        <item name="android:textSize">15sp</item>
+        <item name="android:textSize">@dimen/font_body</item>
         <item name="android:textStyle">bold</item>
         <item name="android:insetTop">0dp</item>
         <item name="android:insetBottom">0dp</item>
@@ -63,7 +63,7 @@
         <item name="strokeColor">@color/outline</item>
         <item name="strokeWidth">1dp</item>
         <item name="cornerRadius">8dp</item>
-        <item name="android:textSize">15sp</item>
+        <item name="android:textSize">@dimen/font_body</item>
         <item name="android:insetTop">0dp</item>
         <item name="android:insetBottom">0dp</item>
         <item name="android:stateListAnimator">@null</item>
@@ -121,6 +121,6 @@
     <style name="NlPicker">
         <item name="colorControlNormal">@color/outline</item>
         <item name="android:textColorPrimary">@color/text_primary</item>
-        <item name="android:textSize">16sp</item>
+        <item name="android:textSize">@dimen/font_title</item>
     </style>
 </resources>

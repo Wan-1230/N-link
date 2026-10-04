@@ -310,7 +310,7 @@ class SettingsFragment : Fragment(), GlassInsetAware {
             }
             val text = android.widget.TextView(requireContext()).apply {
                 this.text = body
-                setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12f)
+                setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, resources.getDimensionPixelSize(R.dimen.font_nav).toFloat())
                 setPadding(48, 24, 48, 24)
                 setTextIsSelectable(true)
             }

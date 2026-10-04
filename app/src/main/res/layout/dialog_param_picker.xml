@@ -16,7 +16,7 @@
         android:gravity="center"
         android:text="参数"
         android:textColor="@color/text_primary"
-        android:textSize="16sp"
+        android:textSize="@dimen/font_title"
         android:textStyle="bold" />
 
     <TextView
@@ -26,7 +26,7 @@
         android:layout_marginTop="4dp"
         android:gravity="center"
         android:textColor="@color/text_tertiary"
-        android:textSize="12sp" />
+        android:textSize="@dimen/font_nav" />
 
     <NumberPicker
         android:id="@+id/numberPicker"
@@ -59,7 +59,7 @@
             android:paddingHorizontal="14dp"
             android:textColor="@color/text_primary"
             android:textColorHint="@color/text_tertiary"
-            android:textSize="14sp" />
+            android:textSize="@dimen/font_body" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnManualApply"
@@ -78,7 +78,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
         android:textColor="@color/text_tertiary"
-        android:textSize="11sp"
+        android:textSize="@dimen/font_foot"
         android:visibility="gone" />
 
     <com.google.android.material.button.MaterialButton

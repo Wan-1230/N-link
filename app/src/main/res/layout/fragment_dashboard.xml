@@ -84,7 +84,7 @@
                                 android:lineSpacingExtra="3dp"
                                 android:text="① 相机开启 WiFi 热点（AP 模式），密码见相机屏幕\n② 手机 WLAN 连上相机热点\n③ 回到本页点「连接相机」，后续自动完成，在相机配对画面按 OK 确认\n连不上时：确认手机仍连着相机热点、相机 WiFi 已开启，再点一次「连接相机」"
                                 android:textColor="@color/text_secondary"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
                         </LinearLayout>
 
                         <TextView
@@ -144,7 +144,7 @@
                                     android:gravity="center"
                                     android:text="PTP/IP 直连"
                                     android:textColor="@color/on_primary"
-                                    android:textSize="13sp"
+                                    android:textSize="@dimen/font_caption"
                                     android:textStyle="bold" />
 
                                 <TextView
@@ -155,7 +155,7 @@
                                     android:gravity="center"
                                     android:text="FTP 推送收图"
                                     android:textColor="@color/text_primary"
-                                    android:textSize="13sp" />
+                                    android:textSize="@dimen/font_caption" />
                             </LinearLayout>
                         </FrameLayout>
 
@@ -202,7 +202,7 @@
                                 android:lineSpacingExtra="3dp"
                                 android:text="首次使用先注册一次（之后不再需要）：\n  相机菜单 →「Wi-Fi连接（STA mode）」创建配置文件（旧固件在「连接至 PC」→ 网络设定里）。\n  向导连上网后会停在「正在等待连接」的画面 —— 注册必须在这一步做：\n  让手机与相机处于同一网络，回到本页点「STA 主机注册」，相机屏幕按 OK（约 10 秒）。\n  ⚠ 普通的「连接至智能设备」热点也能连上相机，但它不接受注册，点了报 0x201F。\n\n日常连接：\n  ① 手机与相机连接同一个路由器\n  ② 相机菜单进入「WiFi 连接（STA mode）」，选择该路由器，停在等待画面\n  ③ 点「扫描相机」自动发现 → 点「连接相机」\n搜不到相机时：确认手机没开 VPN、路由器没开 AP 隔离（两者都会挡掉设备发现）"
                                 android:textColor="@color/text_secondary"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
 
                             <!-- v1.0.2 拆分：两种 STA 子模式（发现与路由策略不同） -->
                             <LinearLayout
@@ -222,7 +222,7 @@
                                     android:paddingVertical="8dp"
                                     android:text="同一 WiFi"
                                     android:textColor="@color/on_primary"
-                                    android:textSize="13sp" />
+                                    android:textSize="@dimen/font_caption" />
 
                                 <TextView
                                     android:id="@+id/chipStaHotspot"
@@ -235,7 +235,7 @@
                                     android:paddingVertical="8dp"
                                     android:text="连接手机热点"
                                     android:textColor="@color/text_primary"
-                                    android:textSize="13sp" />
+                                    android:textSize="@dimen/font_caption" />
                             </LinearLayout>
 
                             <!-- STA 主机注册：常驻入口。相机未记住本机时用强调色显示 -->
@@ -253,7 +253,7 @@
                                 android:layout_height="wrap_content"
                                 android:layout_marginTop="8dp"
                                 android:textColor="@color/text_secondary"
-                                android:textSize="13sp"
+                                android:textSize="@dimen/font_caption"
                                 android:visibility="gone" />
                         </LinearLayout>
 
@@ -332,7 +332,7 @@
                                     android:layout_marginTop="10dp"
                                     android:lineSpacingExtra="3dp"
                                     android:textColor="@color/text_secondary"
-                                    android:textSize="13sp" />
+                                    android:textSize="@dimen/font_caption" />
                             </LinearLayout>
 
                             <LinearLayout
@@ -355,7 +355,7 @@
                                     android:layout_height="wrap_content"
                                     android:layout_marginTop="8dp"
                                     android:textColor="@color/text_secondary"
-                                    android:textSize="13sp" />
+                                    android:textSize="@dimen/font_caption" />
 
                                 <TextView
                                     android:id="@+id/tvFtpEndpoint"
@@ -363,7 +363,7 @@
                                     android:layout_height="wrap_content"
                                     android:layout_marginTop="10dp"
                                     android:textColor="@color/text_primary"
-                                    android:textSize="15sp"
+                                    android:textSize="@dimen/font_body"
                                     android:textStyle="bold" />
 
                                 <LinearLayout
@@ -378,14 +378,14 @@
                                         android:layout_weight="1"
                                         android:text="用户名"
                                         android:textColor="@color/text_secondary"
-                                        android:textSize="13sp" />
+                                        android:textSize="@dimen/font_caption" />
 
                                     <TextView
                                         android:id="@+id/tvFtpUser"
                                         android:layout_width="wrap_content"
                                         android:layout_height="wrap_content"
                                         android:textColor="@color/text_primary"
-                                        android:textSize="13sp" />
+                                        android:textSize="@dimen/font_caption" />
                                 </LinearLayout>
 
                                 <LinearLayout
@@ -400,14 +400,14 @@
                                         android:layout_weight="1"
                                         android:text="密码"
                                         android:textColor="@color/text_secondary"
-                                        android:textSize="13sp" />
+                                        android:textSize="@dimen/font_caption" />
 
                                     <TextView
                                         android:id="@+id/tvFtpPass"
                                         android:layout_width="wrap_content"
                                         android:layout_height="wrap_content"
                                         android:textColor="@color/text_primary"
-                                        android:textSize="13sp" />
+                                        android:textSize="@dimen/font_caption" />
                                 </LinearLayout>
 
                                 <com.google.android.material.button.MaterialButton
@@ -424,7 +424,7 @@
                                     android:layout_height="wrap_content"
                                     android:layout_marginTop="8dp"
                                     android:textColor="@color/text_secondary"
-                                    android:textSize="13sp"
+                                    android:textSize="@dimen/font_caption"
                                     android:visibility="gone" />
 
                                 <TextView
@@ -433,7 +433,7 @@
                                     android:layout_height="wrap_content"
                                     android:layout_marginTop="10dp"
                                     android:textColor="@color/text_primary"
-                                    android:textSize="13sp"
+                                    android:textSize="@dimen/font_caption"
                                     android:visibility="gone" />
 
                                 <LinearLayout
@@ -490,7 +490,7 @@
                                 android:lineSpacingExtra="3dp"
                                 android:text="① 准备一根支持数据传输的 C to C 线（很多充电线不传数据，插上没反应多半是线的问题）\n② 相机 USB 设置里把模式设为 MTP / PTP\n③ 用线连接手机与相机，点「连接相机」，在系统弹窗里允许访问 USB 设备"
                                 android:textColor="@color/text_secondary"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
 
                             <TextView
                                 android:id="@+id/tvUsbDevice"
@@ -499,7 +499,7 @@
                                 android:layout_marginTop="10dp"
                                 android:text="未检测到 USB 相机"
                                 android:textColor="@color/text_tertiary"
-                                android:textSize="12sp" />
+                                android:textSize="@dimen/font_nav" />
                         </LinearLayout>
                     </LinearLayout>
                 </LinearLayout>
@@ -569,7 +569,7 @@
                                 android:layout_marginStart="8dp"
                                 android:text="未连接"
                                 android:textColor="@color/on_dark_card_variant"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
 
                             <ProgressBar
                                 android:id="@+id/progressConnecting"
@@ -592,7 +592,7 @@
                                 android:maxWidth="160dp"
                                 android:maxLines="1"
                                 android:textColor="@color/on_dark_card_variant"
-                                android:textSize="12sp" />
+                                android:textSize="@dimen/font_nav" />
                         </LinearLayout>
 
                         <!-- 相机全称 -->
@@ -606,7 +606,7 @@
                             android:maxLines="1"
                             android:text="Nikon"
                             android:textColor="@color/on_dark_card"
-                            android:textSize="24sp" />
+                            android:textSize="@dimen/font_display" />
 
                         <!-- 电池 -->
                         <LinearLayout
@@ -632,7 +632,7 @@
                                 android:layout_weight="1"
                                 android:text="电池电量"
                                 android:textColor="@color/on_dark_card_variant"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
 
                             <TextView
                                 android:id="@+id/tvBattery"
@@ -640,7 +640,7 @@
                                 android:layout_height="wrap_content"
                                 android:text=""
                                 android:textColor="@color/on_dark_card"
-                                android:textSize="13sp"
+                                android:textSize="@dimen/font_caption"
                                 android:textStyle="bold" />
                         </LinearLayout>
 
@@ -667,7 +667,7 @@
                                 android:layout_marginStart="8dp"
                                 android:text="存储卡"
                                 android:textColor="@color/on_dark_card_variant"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
 
                             <ProgressBar
                                 android:id="@+id/pbStorage"
@@ -690,7 +690,7 @@
                                 android:maxWidth="176dp"
                                 android:text=""
                                 android:textColor="@color/on_dark_card"
-                                android:textSize="13sp"
+                                android:textSize="@dimen/font_caption"
                                 android:textStyle="bold" />
                         </LinearLayout>
 
@@ -718,7 +718,7 @@
                                 android:layout_weight="1"
                                 android:text="剩余可拍摄"
                                 android:textColor="@color/on_dark_card_variant"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
 
                             <TextView
                                 android:id="@+id/tvShotsRemaining"
@@ -726,7 +726,7 @@
                                 android:layout_height="wrap_content"
                                 android:text=""
                                 android:textColor="@color/on_dark_card"
-                                android:textSize="13sp"
+                                android:textSize="@dimen/font_caption"
                                 android:textStyle="bold" />
                         </LinearLayout>
 
@@ -756,7 +756,7 @@
                                 android:maxLines="1"
                                 android:text=""
                                 android:textColor="@color/on_dark_card_variant"
-                                android:textSize="12sp" />
+                                android:textSize="@dimen/font_nav" />
                         </LinearLayout>
 
                         <!-- 连接 / 断开按钮 -->
@@ -958,7 +958,7 @@
                                 android:layout_weight="1"
                                 android:text="快门次数"
                                 android:textColor="@color/text_secondary"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
 
                             <TextView
                                 android:id="@+id/tvShutterCount"
@@ -966,7 +966,7 @@
                                 android:layout_height="wrap_content"
                                 android:text=""
                                 android:textColor="@color/text_primary"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
                         </LinearLayout>
 
                         <LinearLayout
@@ -983,7 +983,7 @@
                                 android:layout_weight="1"
                                 android:text="固件版本"
                                 android:textColor="@color/text_secondary"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
 
                             <TextView
                                 android:id="@+id/tvFirmware"
@@ -991,7 +991,7 @@
                                 android:layout_height="wrap_content"
                                 android:text=""
                                 android:textColor="@color/text_primary"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
                         </LinearLayout>
 
                         <LinearLayout
@@ -1008,7 +1008,7 @@
                                 android:layout_weight="1"
                                 android:text="蓝牙信号"
                                 android:textColor="@color/text_secondary"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
 
                             <TextView
                                 android:id="@+id/tvBleSignal"
@@ -1016,7 +1016,7 @@
                                 android:layout_height="wrap_content"
                                 android:text=""
                                 android:textColor="@color/text_primary"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
                         </LinearLayout>
 
                         <LinearLayout
@@ -1033,7 +1033,7 @@
                                 android:layout_weight="1"
                                 android:text="WiFi 频段"
                                 android:textColor="@color/text_secondary"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
 
                             <TextView
                                 android:id="@+id/tvWifiBand"
@@ -1041,7 +1041,7 @@
                                 android:layout_height="wrap_content"
                                 android:text=""
                                 android:textColor="@color/text_primary"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
                         </LinearLayout>
 
                         <LinearLayout
@@ -1056,7 +1056,7 @@
                                 android:layout_weight="1"
                                 android:text="重连次数"
                                 android:textColor="@color/text_secondary"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
 
                             <TextView
                                 android:id="@+id/tvReconnectCount"
@@ -1064,7 +1064,7 @@
                                 android:layout_height="wrap_content"
                                 android:text="0 次"
                                 android:textColor="@color/text_primary"
-                                android:textSize="13sp" />
+                                android:textSize="@dimen/font_caption" />
                         </LinearLayout>
                     </LinearLayout>
                 </LinearLayout>
@@ -1144,7 +1144,7 @@
                     android:gravity="center"
                     android:text="WiFi AP 连接"
                     android:textColor="@color/on_primary"
-                    android:textSize="12sp"
+                    android:textSize="@dimen/font_nav"
                     android:textStyle="bold" />
 
                 <TextView
@@ -1155,7 +1155,7 @@
                     android:gravity="center"
                     android:text="WiFi STA 连接"
                     android:textColor="@color/text_primary"
-                    android:textSize="12sp" />
+                    android:textSize="@dimen/font_nav" />
 
                 <TextView
                     android:id="@+id/tabUsb"
@@ -1165,7 +1165,7 @@
                     android:gravity="center"
                     android:text="USB 有线连接"
                     android:textColor="@color/text_primary"
-                    android:textSize="12sp" />
+                    android:textSize="@dimen/font_nav" />
             </LinearLayout>
         </FrameLayout>
     </LinearLayout>

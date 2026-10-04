@@ -71,7 +71,7 @@
                 android:maxLines="1"
                 android:text="设备"
                 android:textColor="@color/nav_inactive_icon"
-                android:textSize="10sp" />
+                android:textSize="@dimen/font_foot" />
         </LinearLayout>
 
         <LinearLayout
@@ -97,7 +97,7 @@
                 android:maxLines="1"
                 android:text="相机照片"
                 android:textColor="@color/nav_inactive_icon"
-                android:textSize="10sp" />
+                android:textSize="@dimen/font_foot" />
         </LinearLayout>
 
         <LinearLayout
@@ -123,7 +123,7 @@
                 android:maxLines="1"
                 android:text="拍摄"
                 android:textColor="@color/nav_inactive_icon"
-                android:textSize="10sp" />
+                android:textSize="@dimen/font_foot" />
         </LinearLayout>
 
         <LinearLayout
@@ -149,7 +149,7 @@
                 android:maxLines="1"
                 android:text="设置"
                 android:textColor="@color/nav_inactive_icon"
-                android:textSize="10sp" />
+                android:textSize="@dimen/font_foot" />
         </LinearLayout>
     </LinearLayout>
 

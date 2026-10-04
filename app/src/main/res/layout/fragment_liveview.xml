@@ -15,7 +15,7 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#000000">
+    android:background="@color/lv_page_bg">
 
     <ImageView
         android:id="@+id/ivLiveView"
@@ -70,7 +70,7 @@
                 android:layout_height="wrap_content"
                 android:text="亮度直方图"
                 android:textColor="@color/lv_text_dim"
-                android:textSize="10sp" />
+                android:textSize="@dimen/font_foot" />
 
             <com.nikonlink.app.camera.liveview.HistogramView
                 android:id="@+id/viewHistogram"
@@ -94,7 +94,7 @@
                 android:layout_height="wrap_content"
                 android:text="RGB 波形"
                 android:textColor="@color/lv_text_dim"
-                android:textSize="10sp" />
+                android:textSize="@dimen/font_foot" />
 
             <com.nikonlink.app.camera.liveview.WaveformView
                 android:id="@+id/viewWaveform"
@@ -143,7 +143,7 @@
             android:singleLine="true"
             android:text="P"
             android:textColor="@color/lv_text"
-            android:textSize="13sp"
+            android:textSize="@dimen/font_caption"
             android:textStyle="bold" />
 
         <TextView
@@ -158,7 +158,7 @@
             android:singleLine="true"
             android:text="AF-C"
             android:textColor="@color/lv_text"
-            android:textSize="12sp"
+            android:textSize="@dimen/font_nav"
             android:textStyle="bold" />
 
         <View
@@ -177,7 +177,7 @@
             android:singleLine="true"
             android:text="0 FPS · 0 ms"
             android:textColor="@color/lv_text_dim"
-            android:textSize="11sp" />
+            android:textSize="@dimen/font_foot" />
 
         <TextView
             android:id="@+id/tvLvState"
@@ -191,7 +191,7 @@
             android:singleLine="true"
             android:text="未监看"
             android:textColor="@color/lv_text"
-            android:textSize="11sp"
+            android:textSize="@dimen/font_foot"
             android:textStyle="bold" />
 
         <ImageView
@@ -225,7 +225,7 @@
             android:layout_height="wrap_content"
             android:text="未开始监看"
             android:textColor="@color/lv_text"
-            android:textSize="16sp"
+            android:textSize="@dimen/font_title"
             android:textStyle="bold" />
 
         <TextView
@@ -236,7 +236,7 @@
             android:gravity="center"
             android:text="开始后可用触摸对焦、缩放与参数回读"
             android:textColor="@color/lv_text_dim"
-            android:textSize="12sp" />
+            android:textSize="@dimen/font_nav" />
 
         <TextView
             android:id="@+id/btnStateAction"
@@ -247,8 +247,8 @@
             android:paddingHorizontal="24dp"
             android:paddingVertical="10dp"
             android:text="开始监看"
-            android:textColor="#000000"
-            android:textSize="13sp"
+            android:textColor="@color/lv_on_solid"
+            android:textSize="@dimen/font_caption"
             android:textStyle="bold" />
     </LinearLayout>
 
@@ -285,7 +285,7 @@
                     android:layout_height="wrap_content"
                     android:text="S"
                     android:textColor="@color/lv_text_dim"
-                    android:textSize="10sp" />
+                    android:textSize="@dimen/font_foot" />
 
                 <TextView
                     android:id="@+id/tvShutterValue"
@@ -296,7 +296,7 @@
                     android:singleLine="true"
                     android:text="--"
                     android:textColor="@color/lv_text"
-                    android:textSize="12sp"
+                    android:textSize="@dimen/font_nav"
                     android:textStyle="bold" />
             </LinearLayout>
 
@@ -316,7 +316,7 @@
                     android:layout_height="wrap_content"
                     android:text="A"
                     android:textColor="@color/lv_text_dim"
-                    android:textSize="10sp" />
+                    android:textSize="@dimen/font_foot" />
 
                 <TextView
                     android:id="@+id/tvApertureValue"
@@ -327,7 +327,7 @@
                     android:singleLine="true"
                     android:text="--"
                     android:textColor="@color/lv_text"
-                    android:textSize="12sp"
+                    android:textSize="@dimen/font_nav"
                     android:textStyle="bold" />
             </LinearLayout>
 
@@ -347,7 +347,7 @@
                     android:layout_height="wrap_content"
                     android:text="ISO"
                     android:textColor="@color/lv_text_dim"
-                    android:textSize="10sp" />
+                    android:textSize="@dimen/font_foot" />
 
                 <TextView
                     android:id="@+id/tvIsoValue"
@@ -358,7 +358,7 @@
                     android:singleLine="true"
                     android:text="--"
                     android:textColor="@color/lv_text"
-                    android:textSize="12sp"
+                    android:textSize="@dimen/font_nav"
                     android:textStyle="bold" />
             </LinearLayout>
 
@@ -378,7 +378,7 @@
                     android:layout_height="wrap_content"
                     android:text="EV"
                     android:textColor="@color/lv_text_dim"
-                    android:textSize="10sp" />
+                    android:textSize="@dimen/font_foot" />
 
                 <TextView
                     android:id="@+id/tvEvValue"
@@ -389,7 +389,7 @@
                     android:singleLine="true"
                     android:text="--"
                     android:textColor="@color/lv_text"
-                    android:textSize="12sp"
+                    android:textSize="@dimen/font_nav"
                     android:textStyle="bold" />
             </LinearLayout>
 
@@ -409,7 +409,7 @@
                     android:layout_height="wrap_content"
                     android:text="WB"
                     android:textColor="@color/lv_text_dim"
-                    android:textSize="10sp" />
+                    android:textSize="@dimen/font_foot" />
 
                 <TextView
                     android:id="@+id/tvWbValue"
@@ -420,7 +420,7 @@
                     android:singleLine="true"
                     android:text="--"
                     android:textColor="@color/lv_text"
-                    android:textSize="11sp"
+                    android:textSize="@dimen/font_foot"
                     android:textStyle="bold" />
             </LinearLayout>
         </LinearLayout>
@@ -525,7 +525,7 @@
                         android:paddingVertical="8dp"
                         android:text="0.50"
                         android:textColor="@color/lv_accent"
-                        android:textSize="20sp"
+                        android:textSize="@dimen/font_title"
                         android:textStyle="bold" />
                 </LinearLayout>
 
@@ -536,7 +536,7 @@
                     android:layout_marginTop="2dp"
                     android:text="点按屏幕触摸对焦；MF 模式下旋转跟焦轮驱动对焦（相对指令）"
                     android:textColor="@color/lv_text_dim"
-                    android:textSize="11sp" />
+                    android:textSize="@dimen/font_foot" />
             </LinearLayout>
 
             <!-- 曝光面板：快门/光圈/ISO 刻度尺 + EV 只读 -->
@@ -563,7 +563,7 @@
                         android:layout_weight="1"
                         android:text="快门速度"
                         android:textColor="@color/lv_text_dim"
-                        android:textSize="12sp" />
+                        android:textSize="@dimen/font_nav" />
 
                     <TextView
                         android:id="@+id/tvShutterCur"
@@ -573,7 +573,7 @@
                         android:singleLine="true"
                         android:text="--"
                         android:textColor="@color/lv_text"
-                        android:textSize="13sp"
+                        android:textSize="@dimen/font_caption"
                         android:textStyle="bold" />
                 </LinearLayout>
 
@@ -595,7 +595,7 @@
                         android:layout_weight="1"
                         android:text="光圈"
                         android:textColor="@color/lv_text_dim"
-                        android:textSize="12sp" />
+                        android:textSize="@dimen/font_nav" />
 
                     <TextView
                         android:id="@+id/tvApertureCur"
@@ -605,7 +605,7 @@
                         android:singleLine="true"
                         android:text="--"
                         android:textColor="@color/lv_text"
-                        android:textSize="13sp"
+                        android:textSize="@dimen/font_caption"
                         android:textStyle="bold" />
                 </LinearLayout>
 
@@ -627,7 +627,7 @@
                         android:layout_weight="1"
                         android:text="ISO"
                         android:textColor="@color/lv_text_dim"
-                        android:textSize="12sp" />
+                        android:textSize="@dimen/font_nav" />
 
                     <TextView
                         android:id="@+id/tvIsoCur"
@@ -637,7 +637,7 @@
                         android:singleLine="true"
                         android:text="--"
                         android:textColor="@color/lv_text"
-                        android:textSize="13sp"
+                        android:textSize="@dimen/font_caption"
                         android:textStyle="bold" />
                 </LinearLayout>
 
@@ -660,7 +660,7 @@
                         android:layout_weight="1"
                         android:text="曝光补偿 EV"
                         android:textColor="@color/lv_text_dim"
-                        android:textSize="12sp" />
+                        android:textSize="@dimen/font_nav" />
 
                     <TextView
                         android:id="@+id/tvEvCur"
@@ -670,7 +670,7 @@
                         android:singleLine="true"
                         android:text="--"
                         android:textColor="@color/lv_text"
-                        android:textSize="13sp"
+                        android:textSize="@dimen/font_caption"
                         android:textStyle="bold" />
 
                     <TextView
@@ -679,7 +679,7 @@
                         android:layout_marginStart="8dp"
                         android:text="请通过相机机内拨盘调整"
                         android:textColor="@color/lv_text_dim"
-                        android:textSize="10sp" />
+                        android:textSize="@dimen/font_foot" />
                 </LinearLayout>
             </LinearLayout>
 
@@ -707,7 +707,7 @@
                         android:layout_weight="1"
                         android:text="白平衡"
                         android:textColor="@color/lv_text_dim"
-                        android:textSize="12sp" />
+                        android:textSize="@dimen/font_nav" />
 
                     <TextView
                         android:id="@+id/tvWbCur"
@@ -717,7 +717,7 @@
                         android:singleLine="true"
                         android:text="--"
                         android:textColor="@color/lv_text"
-                        android:textSize="13sp"
+                        android:textSize="@dimen/font_caption"
                         android:textStyle="bold" />
                 </LinearLayout>
 
@@ -746,7 +746,7 @@
                     android:layout_marginBottom="8dp"
                     android:text="测光模式"
                     android:textColor="@color/lv_text_dim"
-                    android:textSize="12sp" />
+                    android:textSize="@dimen/font_nav" />
 
                 <com.nikonlink.app.shared.ui.widget.SegmentBar
                     android:id="@+id/segMetering"
@@ -772,7 +772,7 @@
                     android:layout_height="wrap_content"
                     android:text="显示辅助"
                     android:textColor="@color/lv_text_dim"
-                    android:textSize="12sp" />
+                    android:textSize="@dimen/font_nav" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -871,7 +871,7 @@
                         android:layout_marginStart="10dp"
                         android:text="开始监看"
                         android:textColor="@color/lv_text"
-                        android:textSize="13sp" />
+                        android:textSize="@dimen/font_caption" />
                 </LinearLayout>
 
                 <LinearLayout
@@ -896,7 +896,7 @@
                         android:layout_marginStart="10dp"
                         android:text="画面放大"
                         android:textColor="@color/lv_text"
-                        android:textSize="13sp" />
+                        android:textSize="@dimen/font_caption" />
                 </LinearLayout>
 
                 <LinearLayout
@@ -921,7 +921,7 @@
                         android:layout_marginStart="10dp"
                         android:text="画面缩小"
                         android:textColor="@color/lv_text"
-                        android:textSize="13sp" />
+                        android:textSize="@dimen/font_caption" />
                 </LinearLayout>
 
                 <LinearLayout
@@ -946,7 +946,7 @@
                         android:layout_marginStart="10dp"
                         android:text="重置缩放"
                         android:textColor="@color/lv_text"
-                        android:textSize="13sp" />
+                        android:textSize="@dimen/font_caption" />
                 </LinearLayout>
             </LinearLayout>
         </FrameLayout>
