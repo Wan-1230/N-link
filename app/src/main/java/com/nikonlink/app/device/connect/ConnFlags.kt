@@ -206,8 +206,8 @@ class ConnFlags @Inject constructor(
         /**
          * FR-28④：拆 USB 链路之前，先给机身发一次 CloseSession(0x1003)。
          *
-         * 四款竞品的静态产物里**都有** CloseSession（ZDROP `sendCloseSession`、
-         * 像素蛋糕那套 SDK 甚至有品牌专用的 `NikonCloseSessionAction` 与 `CloseSessionCommand`），
+         * 各家现成实现中**都有** CloseSession（有的还额外提供了 `CloseSessionCommand`
+         * 第三方那套 SDK 甚至有品牌专用的 `NikonCloseSessionAction` 与 `CloseSessionCommand`），
          * 而我们的正常拆链路路径（保活判死 → ERROR → 下一轮 `disconnect(silent=true)`）
          * 只做 `releaseInterface` + `connection.close()`，**一个字节都不告诉机身** ——
          * 于是机身认为会话还在自己手里，下一次 OpenSession 没人应答。
@@ -240,7 +240,7 @@ class ConnFlags @Inject constructor(
          * R2：注册前先用 `GetDeviceInfo` 的 `OperationsSupported` 检查相机**当前模式**
          * 支不支持主机注册（0x952B）。
          *
-         * 尼康的 SnapBridge AP（连接至智能设备）与主机配置向导**都在 192.168.1.1
+         * 机身 AP（连接至智能设备）与主机配置向导**都在 192.168.1.1
          * 提供 PTP/IP**，但只有向导接受 0x952B。原实现不看这个，直接盲发 → 拿到
          * 0x201F 之后只能给一句笼统的"请确认相机屏幕处于可接受连接的画面"。
          * 打开后：不支持就**不发**，直接给出"相机不在主机配置向导"的明确结论，
@@ -319,18 +319,18 @@ class ConnFlags @Inject constructor(
          * 根因链（docs/非上网热点被系统回收-根因与修复方案-2026-10-02.md）：相机热点无互联网，
          * 验证失败后系统剥掉 INTERNET capability → 默认请求匹配不上 → 不构成持有 →
          * ConnectivityService 回收「非默认且无持有」的网络 → 链路被踢 → 相机显示「无法连接」
-         * 并关热点。竞品三家 dex 反编译均为 `removeCapability(12)`（§8 方法级实锤）。
+         * 并关热点。同类产品三家 dex 静态分析均为 `removeCapability(12)`（§8 方法级实锤）。
          * 关闸 = 回到旧请求构造与快路径零注册，逐位等价 v2.6.1。
          */
         const val STA_LOCAL_ONLY_REQUEST = "v33_local_only_request"
 
-        // ── FR-34 AP 一键连接与失败归因第二轮（docs/AP连接失败与ZDROP策略分析-2026-10-02.md）──
+        // ── FR-34 AP 一键连接与失败归因第二轮（docs/AP连接失败与策略分析-2026-10-02.md）──
 
         /**
          * FR-34①：AP 模式点「连接相机」不再要求先扫描。
          *
          * 无候选时：已在相机热点 → 直接以兜底地址起轮次（learnFirst 会学网关）；
-         * 不在 → 拉起系统 WLAN 面板（`Settings.Panel.ACTION_WIFI`，ZDROP dex `1ca886`
+         * 不在 → 拉起系统 WLAN 面板（`Settings.Panel.ACTION_WIFI`，dex `1ca886`
          * 同款标准化入口，绕开 OEM 全设置页深链），回连命中相机热点后自动起轮次。
          * 关闸 = 回到「无候选弹手动 IP 框」。
          */
@@ -341,7 +341,7 @@ class ConnFlags @Inject constructor(
          *
          * 「网关就是相机」是 AP 的定义，手机就在热点上时不需要第二次采样、
          * 也不需要 TCP 筛探（筛探还会占机身唯一的 PTP/IP 槽，FR-21 实测收回要 ~35s）。
-         * DISCOVER 实测 2335ms → ~1200ms（对齐 ZDROP 的固定 1200ms readiness）。
+         * DISCOVER 实测 2335ms → ~1200ms（对齐 固定 1200ms readiness）。
          * 关闸 = 双采样 + 筛探的 v2.6.1 行为。
          */
         const val AP_GW_FASTPATH = "v34_ap_gw_fastpath"
@@ -352,7 +352,7 @@ class ConnFlags @Inject constructor(
          * 真机日志（2026-10-02 R5）：wlan0 已掉，3 次 30s 级超时从蜂窝
          * /10.115.218.201 打出 ≈73s 纯空转；绑网 lane 保持 30s 不动
          * （FR-22 的教训：慢成功 26.4~181.3s 都发生在有句柄的路径上）。
-         * ZDROP 全程 6000ms（其日志「after 6000ms」）。
+         * 全程 6000ms（其日志「after 6000ms」）。
          */
         const val STA_LANE_TIMEOUT = "v34_lane_timeout"
 
@@ -499,7 +499,7 @@ class ConnFlags @Inject constructor(
             // FR-33：非上网热点被系统回收的修复，默认开（这是修复不是实验：
             // 群友无「WiFi 始终开启」开关的设备不修则必掉；关闸=旧行为，现场可二分）
             STA_LOCAL_ONLY_REQUEST to true,
-            // FR-34：七条全部默认开——①②是流程与耗时收敛（ZDROP 同构），③⑤修本轮
+            // FR-34：七条全部默认开——①②是流程与耗时收敛（同构），③⑤修本轮
             // 日志实证的蜂窝空转（≈103s），④修「窗口过期错过回连」×3，⑥修 60s 档
             // 够不着的 14s 快速死亡，⑦纯日志。逐条可独立关闸做现场二分。
             AP_ONE_TAP to true,

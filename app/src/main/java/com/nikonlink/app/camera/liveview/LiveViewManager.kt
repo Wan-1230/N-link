@@ -58,7 +58,7 @@ class LiveViewManager @Inject constructor(
         /** 一轮监看最多允许几次就地重启（超过就是真故障，交还用户处理） */
         private const val USB_LV_RESTART_LIMIT = 5
 
-        /** RC-9：StartLiveView 成功后等待相机完成切换（gphoto2 实测 ~250ms）再验帧 */
+        /** RC-9：StartLiveView 成功后等待相机完成切换（实测 ~250ms）再验帧 */
         private const val LV_START_SETTLE_MS = 300L
 
         /** RC-10：最多重试轮数，每轮都重发 0x9201 */

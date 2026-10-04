@@ -591,7 +591,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
                 viewModel.showMessage("请先选择要下载的照片")
                 return@setOnClickListener
             }
-            // F1 大额保护（ZRelay largeSelectionWarning 口径）：全选超过阈值先二次确认
+            // F1 大额保护：全选超过阈值先二次确认
             if (viewModel.activeAlbum.value == AlbumSource.MARKED &&
                 viewModel.selectedHandles.value.size > LARGE_SELECTION_WARNING
             ) {
