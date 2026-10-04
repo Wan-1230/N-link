@@ -25,7 +25,7 @@ import javax.inject.Singleton
  * 这是 AP 通道唯一不依赖蓝牙凭证、也不依赖任何硬编码网段的判定依据 —— 旧实现
  * 只有 BLE 凭证与写死的 192.168.1.1 两条路，新固件把凭证 LsSec 加密后 AP 就整体不可用。
  *
- * 采样与规则借鉴行业通行做法（ZDROP 的 `AP gateway detected / stabilized /
+ * 采样与规则按行业通行做法设计：
  * ignored because it matches handset address`）：
  * - 加入后先等 [READINESS_MS] 再取，避免读到 DHCP 未完成时的中间态；
  * - 连采两次一致才认 [stable]=true（网关在恢复过程中会变）；
@@ -41,7 +41,7 @@ class ApGatewayResolver @Inject constructor(
     companion object {
         private const val TAG = "ApGateway"
 
-        /** 加入热点后到第一次取网关的等待（ZDROP: AP network readiness wait=1200ms） */
+        /** 加入热点后到第一次取网关的等待（AP 就绪等待，取自实机标定值） */
         private const val READINESS_MS = 1200L
 
         /** 两次采样间隔 */
@@ -58,7 +58,7 @@ class ApGatewayResolver @Inject constructor(
         private const val PROBE_SETTLE_MS = 400L
 
         /**
-         * 尼康机身热点名：`NIKON_` + 8 位十六进制（ZDROP 同源规则），区域/固件变体
+         * 尼康机身热点名：`NIKON_` + 8 位十六进制，区域/固件变体
          * 见 `NIKON-WF…` / `Nikon WU…`。判定放宽到「以 NIKON 开头」，
          * 因为这里只用于「手机是不是已经连在相机网络上」的启发式，误判的代价只是多试一次。
          */
@@ -153,7 +153,7 @@ class ApGatewayResolver @Inject constructor(
         // FR-34②：手机就在相机热点上、首采样又拿到了有效 IPv4 网关 —— 直接采信。
         // 「网关即相机」是 AP 的定义，不需要第二采样确认，更不该再花 800ms+400ms
         // 去 TCP 筛探（那还会占机身唯一的 PTP/IP 槽，FR-21 实测收回要 ~35s）。
-        // 真机 DISCOVER p50=2335ms → ~1200ms，对齐 ZDROP 的固定 1200ms readiness。
+        // 真机 DISCOVER p50=2335ms → ~1200ms，对齐 固定 1200ms readiness。
         val fast = connFlags.isEnabled(ConnFlags.AP_GW_FASTPATH) &&
             first != null && isOnCameraAp()
         val second = if (first == null || fast) null else {

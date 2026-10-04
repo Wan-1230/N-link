@@ -407,7 +407,7 @@ class CameraParameterManager @Inject constructor(
     }
 
     /**
-     * 快门次数：尼康机身**不提供**任何快门计数的 PTP 属性（对照 libgphoto2：佳能 0xD1AC /
+     * 快门次数：尼康机身**不提供**任何快门计数的 PTP 属性（对照标准 PTP 规范：佳能 0xD1AC /
      * 奥林巴斯 0xD059 / 富士 0xD154 都有，尼康没有），唯一数据源是照片 EXIF 的
      * MakerNote `0x00A7`。所以链路固定为「挑一张样张 → 只读文件头 → 本机解析」，全程离线。
      */
@@ -833,7 +833,7 @@ class CameraParameterManager @Inject constructor(
      * 不同机身对快门的暴露方式不一致：
      * - 标准 0x500D（ExposureTime，1/10000s）：部分机身只读、不刷新，个别机型量纲还不符合规范；
      * - 厂商 0xD100（ShutterSpeed，高 16 位分子/低 16 位分母的打包分数）：Z 系列遥控模式下
-     *   的实际控制属性（参考 ZRelay / SnapBridge 生态的双源实现）。
+     *   的实际控制属性（双源交叉验证）。
      *
      * 优先取 0xD100 的合法值，读不到再回退 0x500D；拿到曝光秒数后 snap 到档位表
      * （显示名与滚轮定位统一用档位 raw，保证三处口径一致）。两者都非法时：
@@ -1057,7 +1057,7 @@ class CameraParameterManager @Inject constructor(
     }
 
     /**
-     * 切到 B 门档（0x500D = 0xFFFFFFFF，digiCamControl Bulb 模型）。
+     * 切到 B 门档（0x500D = 0xFFFFFFFF，Bulb 模型）。
      *
      * 必须绕过 [setShutterSpeed] 的 0.5s–30s 档位钳位——那是长曝光失效的隐性阻断之一：
      * 即使 UI 提供了 B 门档，经过钳位后写下去的也永远是 30s。

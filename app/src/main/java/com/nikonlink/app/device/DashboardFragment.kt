@@ -654,7 +654,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             viewModel.disconnectUsb()
         }
 
-        // STA 主机注册（ZDROP 式）：先引导用户在相机端进入「连接至 PC」向导，再执行注册
+        // STA 主机注册（式）：先引导用户在相机端进入「连接至 PC」向导，再执行注册
         binding.btnStaHostRegister.pressEffect()
         binding.btnStaHostRegister.setOnClickListener {
             NlGlass.dialog(requireContext())
@@ -1128,7 +1128,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 if (target != null) {
                     connectWifiCandidate(target)
                 } else if (currentMode == ConnectMode.WIFI_AP && viewModel.apOneTapEnabled()) {
-                    // FR-34①：AP 模式免扫描一键连接（ZDROP 同构）
+                    // FR-34①：AP 模式免扫描一键连接（同构）
                     apOneTapConnect()
                 } else {
                     showManualIpDialog(currentMode)
@@ -1156,7 +1156,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
      *
      * 已在相机热点 → 直接以兜底地址起轮次（learnFirst 会学真网关）；
      * 不在 → 拉起系统 WLAN 面板让用户点选热点。面板是 AOSP 的
-     * `Settings.Panel.ACTION_WIFI`（ZDROP dex `1ca886` 同款）：以应用内底部面板
+     * `Settings.Panel.ACTION_WIFI`（dex `1ca886` 同款）：以应用内底部面板
      * 渲染，绕开各家 ROM 全设置页的深链失效问题；回连命中后由
      * ConnectionManager 的观察者（或下面的 onResume 兜底）自动起轮次。
      */
