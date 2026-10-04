@@ -57,6 +57,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import com.nikonlink.app.shared.ui.Motion
+import com.nikonlink.app.shared.ui.widget.NlEmptyState
 
 /**
  * Tab1 设备首页
@@ -1227,13 +1228,13 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             // ③ 可操作建议（手动输入 IP）
             val explicitError = viewModel.wifiScanError.value
             val stats = viewModel.wifiScanStats.value
-            container.addView(
-                emptyHint(
-                    when {
-                        explicitError != null -> explicitError
-                        mode == ConnectMode.WIFI_AP -> "未发现相机，请先连接相机 WiFi 后再扫描"
-                        stats == null -> "未发现相机，请确认相机与手机在同一网络"
-                        else -> buildString {
+            // 视S2：明确的短文案走设计级空态组件（图标容器 + 标题）；
+            // 长诊断串保持轻量纯文本 —— 大段 12sp 诊断不该被放大加粗
+            val diagnosticText: String? = when {
+                explicitError != null -> explicitError
+                mode == ConnectMode.WIFI_AP -> null
+                stats == null -> null
+                else -> buildString {
                             append("未发现相机 · 已探测 ")
                             append(stats.probedHosts)
                             append(" 个地址（ARP 表 ")
@@ -1291,8 +1292,14 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                             append("\n可点「连接」手动输入相机 IP（相机机身菜单可查）")
                         }
                     }
+                container.addView(
+                    if (diagnosticText != null) emptyHint(diagnosticText)
+                    else emptyState(
+                        if (mode == ConnectMode.WIFI_AP) "未发现相机，请先连接相机 WiFi 后再扫描"
+                        else "未发现相机，请确认相机与手机在同一网络",
+                        icon = "📷"
+                    )
                 )
-            )
             return
         }
         devices.forEach { candidate ->
@@ -1309,7 +1316,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     private fun renderRecentDevices(devices: List<PairedDevice>) {
         binding.recentDeviceList.removeAllViews()
         if (devices.isEmpty()) {
-            binding.recentDeviceList.addView(emptyHint("暂无最近连接设备"))
+            binding.recentDeviceList.addView(emptyState("暂无最近连接设备", icon = "🕐"))
             return
         }
         devices.forEach { device ->
@@ -1332,6 +1339,17 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             item.btnRecentConnect.pressEffect()
             item.btnRecentConnect.setOnClickListener { connectRecentDevice(device) }
             binding.recentDeviceList.addView(item.root)
+        }
+    }
+
+    /** 视S2：设计级空态组件（图标容器 + 标题，可扩展副文案/行动按钮），占满容器宽居中 */
+    private fun emptyState(title: String, icon: CharSequence? = null): NlEmptyState {
+        return NlEmptyState(requireContext()).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            bind(title = title, icon = icon)
         }
     }
 

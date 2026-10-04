@@ -79,7 +79,7 @@
             <TextView
                 android:id="@+id/btnZoomQr"
                 android:layout_width="wrap_content"
-                android:layout_height="36dp"
+                android:layout_height="48dp"
                 android:background="@drawable/bg_chip"
                 android:gravity="center"
                 android:paddingHorizontal="14dp"
@@ -90,7 +90,7 @@
             <TextView
                 android:id="@+id/btnSaveQr"
                 android:layout_width="wrap_content"
-                android:layout_height="36dp"
+                android:layout_height="48dp"
                 android:layout_marginStart="10dp"
                 android:background="@drawable/bg_chip"
                 android:gravity="center"
@@ -102,7 +102,7 @@
             <TextView
                 android:id="@+id/btnShareQr"
                 android:layout_width="wrap_content"
-                android:layout_height="36dp"
+                android:layout_height="48dp"
                 android:layout_marginStart="10dp"
                 android:background="@drawable/bg_chip"
                 android:gravity="center"

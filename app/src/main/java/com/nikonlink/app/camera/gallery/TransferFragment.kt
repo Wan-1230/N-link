@@ -1,6 +1,8 @@
 package com.nikonlink.app.camera.gallery
 
+import com.nikonlink.app.shared.ui.Motion
 import com.nikonlink.app.shared.ui.NlFeedback
+import com.nikonlink.app.shared.ui.pressEffect
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
@@ -37,7 +39,6 @@ import com.nikonlink.app.shared.ui.glass.renderChipBackground
 import com.nikonlink.app.MainActivity
 import com.nikonlink.app.R
 import com.nikonlink.app.databinding.FragmentTransferBinding
-import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -83,6 +84,29 @@ class TransferFragment : Fragment(), GlassInsetAware {
 
     /** 模块 4.3：用户主动刷新后，数据合并完成时强制回列表顶部 */
     private var pendingScrollToTop = false
+
+    /** 视S2：骨架屏 alpha 脉冲（加载期循环，收尾时取消） */
+    private var skeletonPulse: android.animation.ObjectAnimator? = null
+
+    /** 视S2：骨架屏呼吸动画——0.45↔1.0 alpha，Motion.SLOW 一拍，与玻璃曲线同族 */
+    private fun startSkeletonPulse() {
+        if (skeletonPulse?.isRunning == true) return
+        val view = binding.skeletonGrid
+        skeletonPulse = android.animation.ObjectAnimator
+            .ofFloat(view, View.ALPHA, 0.45f, 1f).apply {
+                duration = Motion.SLOW
+                repeatMode = android.animation.ObjectAnimator.REVERSE
+                repeatCount = android.animation.ObjectAnimator.INFINITE
+                interpolator = android.view.animation.PathInterpolator(0.2f, 0.9f, 0.2f, 1f)
+                start()
+            }
+    }
+
+    private fun stopSkeletonPulse() {
+        skeletonPulse?.cancel()
+        skeletonPulse = null
+        if (_binding != null) binding.skeletonGrid.alpha = 1f
+    }
 
     /**
      * 需求 3：关闭「不重复下载已下载照片」后要回到原来的位置。
@@ -832,6 +856,9 @@ class TransferFragment : Fragment(), GlassInsetAware {
                     }
                     binding.layoutEmpty.visibility =
                         if (list.isEmpty()) View.VISIBLE else View.GONE
+                    // 视S2：空态图标容器与空态文案同显同隐
+                    binding.tvEmptyIcon.visibility =
+                        if (list.isEmpty()) View.VISIBLE else View.GONE
                     if (list.isEmpty()) {
                         // O4：筛选态空结果兜底——「未下载」筛选开着且列表为空，
                         // 但原始列表有货 = 全部下载完了。自动关筛选并提示，
@@ -981,7 +1008,14 @@ class TransferFragment : Fragment(), GlassInsetAware {
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.isLoading.collect { loading ->
-                binding.progressLoading.visibility = if (loading) View.VISIBLE else View.GONE
+                // 视S2：加载态升级为骨架屏（灰块 + alpha 脉冲），转圈退役。
+                // 只在「列表还是空的」首轮加载时显示——下拉刷新已有内容时不遮内容。
+                // progressLoading 保留但常隐：转圈兜底职责移交骨架，留作回退开关。
+                binding.progressLoading.visibility = View.GONE
+                val showSkeleton = loading && viewModel.photoList.value.isEmpty()
+                binding.skeletonGrid.visibility =
+                    if (showSkeleton) View.VISIBLE else View.GONE
+                if (showSkeleton) startSkeletonPulse() else stopSkeletonPulse()
                 // 仅收起下拉刷新圈；滚动复位挪到 uiPhotos 最终提交之后（见下方 collector）——
                 // 旧版在这里滚顶会插在「排序后的最终列表 submit」之前，产生「跳底再弹回」两段运动
                 if (!loading) binding.swipeRefresh.isRefreshing = false
@@ -1199,6 +1233,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
         dockInsetTabs = null
         glassBackdrop = null
         topBarFx = null
+        stopSkeletonPulse()   // 视S2：脉冲动画持有 view 引用，必须先于 binding 置空取消
         super.onDestroyView()
         _binding = null
     }

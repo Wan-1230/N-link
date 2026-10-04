@@ -62,7 +62,7 @@
         <TextView
             android:id="@+id/btnSort"
             android:layout_width="wrap_content"
-            android:layout_height="32dp"
+            android:layout_height="48dp"
             android:layout_marginStart="8dp"
             android:minWidth="64dp"
             android:background="@drawable/bg_chip"
@@ -76,7 +76,7 @@
         <TextView
             android:id="@+id/btnMultiSelect"
             android:layout_width="wrap_content"
-            android:layout_height="32dp"
+            android:layout_height="48dp"
             android:layout_marginStart="8dp"
             android:background="@drawable/bg_chip"
             android:gravity="center"
@@ -170,7 +170,7 @@
                 android:paddingBottom="12dp"
                 android:scrollbars="none" />
 
-            <!-- 空状态 / 加载提示 -->
+            <!-- 空状态 / 加载提示（视S2：空态 = 图标容器 + 引导语，替代纯文字） -->
             <LinearLayout
                 android:id="@+id/layoutEmpty"
                 android:layout_width="wrap_content"
@@ -178,6 +178,16 @@
                 android:layout_gravity="center"
                 android:gravity="center"
                 android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/tvEmptyIcon"
+                    android:layout_width="72dp"
+                    android:layout_height="72dp"
+                    android:background="@drawable/bg_skeleton"
+                    android:gravity="center"
+                    android:text="📷"
+                    android:textSize="@dimen/font_display"
+                    android:visibility="gone" />
 
                 <ProgressBar
                     android:id="@+id/progressLoading"
@@ -196,6 +206,72 @@
                     android:text="连接相机后查看相册"
                     android:textColor="@color/text_tertiary"
                     android:textSize="@dimen/font_caption" />
+            </LinearLayout>
+
+            <!-- 视S2 相册骨架屏：加载期替代转圈，2 行 × 3 列灰块 + alpha 脉冲（代码驱动） -->
+            <LinearLayout
+                android:id="@+id/skeletonGrid"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:orientation="vertical"
+                android:paddingHorizontal="2dp"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <View
+                        android:layout_width="0dp"
+                        android:layout_height="110dp"
+                        android:layout_weight="1"
+                        android:layout_margin="1dp"
+                        android:background="@drawable/bg_skeleton" />
+
+                    <View
+                        android:layout_width="0dp"
+                        android:layout_height="110dp"
+                        android:layout_weight="1"
+                        android:layout_margin="1dp"
+                        android:background="@drawable/bg_skeleton" />
+
+                    <View
+                        android:layout_width="0dp"
+                        android:layout_height="110dp"
+                        android:layout_weight="1"
+                        android:layout_margin="1dp"
+                        android:background="@drawable/bg_skeleton" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:orientation="horizontal">
+
+                    <View
+                        android:layout_width="0dp"
+                        android:layout_height="110dp"
+                        android:layout_weight="1"
+                        android:layout_margin="1dp"
+                        android:background="@drawable/bg_skeleton" />
+
+                    <View
+                        android:layout_width="0dp"
+                        android:layout_height="110dp"
+                        android:layout_weight="1"
+                        android:layout_margin="1dp"
+                        android:background="@drawable/bg_skeleton" />
+
+                    <View
+                        android:layout_width="0dp"
+                        android:layout_height="110dp"
+                        android:layout_weight="1"
+                        android:layout_margin="1dp"
+                        android:background="@drawable/bg_skeleton" />
+                </LinearLayout>
             </LinearLayout>
         </FrameLayout>
     </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
