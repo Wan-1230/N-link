@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 视S2 骨架屏占位块：chip_unselected 底 + 12dp 圆角，配合代码侧 alpha 脉冲 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/chip_unselected" />
+    <corners android:radius="12dp" />
+</shape>
