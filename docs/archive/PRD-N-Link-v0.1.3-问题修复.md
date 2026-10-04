@@ -796,7 +796,7 @@ val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEG
 
 | 能力 | 说明 | 数据流向 |
 | --- | --- | --- |
-| 影像传输 | 照片暂存云端，自动转发到第三方网盘（Lightroom / Dropbox / Google Photos / OneDrive / NIKON IMAGE SPACE）。免费 30 天存储 | **相机 → 云 → 网盘** |
+| 影像传输 | 照片暂存云端，自动转发到网盘（/ Dropbox / Google Photos / OneDrive / NIKON IMAGE SPACE）。免费 30 天存储 | **相机 → 云 → 网盘** |
 | 成像配方 / 色彩方案 | 云端 Picture Control 预设，下载到机身（最多 9 个） | 云 → 相机 |
 | 固件更新 | 云端推送固件到相机 | 云 → 相机 |
 | 真实性服务（C2PA） | 为照片附加内容凭证 | 相机侧 |
@@ -828,9 +828,9 @@ auth.cld.nikon.com  --302-->  accounts.cld.nikon.com/login
 | --- | --- | --- |
 | **B1** | **无公开 API** | 尼康未发布任何 Nikon Imaging Cloud 的 REST/GraphQL API 文档、OpenAPI 规格或开发者门户。功能全部由 Web 前端内部调用，接口未对外暴露 |
 | **B2** | **无第三方 OAuth 客户端注册入口** | Keycloak realm `user` 下没有面向第三方开发者的 client 注册流程。App 若要拿 token，只能复用 `client_id=c0001`（第一方 Web client），这属于**未授权访问他人服务** |
-| **B3** | **合规与 ToS 风险** | 逆向并复用第一方 client_id、模拟 Web 前端调用，违反尼康服务条款；且属"绕过技术保护措施"。对于一个开源项目，这是不可接受的法律风险 |
+| **B3** | **合规与 ToS 风险** | 实测并复用第一方 client_id、模拟 Web 前端调用，违反尼康服务条款；且属"绕过技术保护措施"。对于一个开源项目，这是不可接受的法律风险 |
 | **B4** | **数据同步范围不可介入** | 「影像传输」是**相机直连 Wi-Fi 上传到云**完成的，云端只是中转。照片流不经过手机 App，第三方 App 在链路上没有位置，无法"接管"或"同步"这部分数据 |
-| **B5** | **凭据无法合法获取** | 即便逆向成功，token 有效期、刷新机制、风控策略均由尼康单方面控制，随时失效，无法作为产品功能交付 |
+| **B5** | **凭据无法合法获取** | 即便实测成功，token 有效期、刷新机制、风控策略均由尼康单方面控制，随时失效，无法作为产品功能交付 |
 | **B6** | **机型覆盖面过窄** | 仅 Z6III/Z50II/Z5II/Zf/ZR 五款支持云创，而 N-Link 面向的机型更广（Z6/Z7/Z5/Z50/Z30/Z8/Z9/Zf 等），接入收益面有限 |
 
 #### 5.2.4 唯一官方开放渠道（不含云服务）

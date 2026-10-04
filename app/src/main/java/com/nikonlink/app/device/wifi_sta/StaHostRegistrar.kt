@@ -38,10 +38,10 @@ import timber.log.Timber
  * 旧实现里 [com.nikonlink.app.device.connect.ConnectionManager.registerStaHost] 的第一行是
  * `if (!ptpSession.isConnected()) return Failure("相机未连接…AP 模式…")` —— 注册被绑死在
  * 「先有一条已建立的 PTP 会话」上，而那条会话历史上只有 AP 连接能建立。于是
- * 「相机已连上手机热点、停在主机配置向导」这个**本该直接注册**的现场（ZDROP 教程与
+ * 「相机已连上手机热点、停在主机配置向导」这个**本该直接注册**的现场（教程与
  * 其 2026-10-01 诊断日志的标准流程）反而被判成「相机未连接」。
  *
- * ZDROP 诊断日志（host-register 段）证明注册本身是一条**独立链路**，不依赖任何既有会话：
+ * 诊断日志（host-register 段）证明注册本身是一条**独立链路**，不依赖任何既有会话：
  * 发现 endpoint → 自建 command/event 双通道 → GetDeviceInfo → OpenSession →
  * 0x952B → 等相机确认 → 0x935A → 直接拆通道（sendCloseSession=false）。
  * 本类把这条链路落地：自有 socket、自有事务号，不碰 [com.nikonlink.app.device.ptp.PtpSessionManager]
@@ -67,7 +67,7 @@ class StaHostRegistrar @Inject constructor(
 
         /**
          * init-command-ack 到 event 通道建链之间的稳定窗口。
-         * 取值来自 ZDROP 诊断日志 host-register 段实测：注册链路用 350ms（其连接链路用 650ms）。
+         * 取值来自 诊断日志 host-register 段实测：注册链路用 350ms（其连接链路用 650ms）。
          */
         private const val PRE_EVENT_SETTLE_MS = 350L
 
@@ -127,7 +127,7 @@ class StaHostRegistrar @Inject constructor(
                     initFailReason = init.reasonCode,
                     detail = "相机拒绝了握手（${PtpConstants.describeInitFailReason(init.reasonCode)}）。\n" +
                         "它的 PTP/IP 槽位可能正被别的设备占用：先断开其它连着相机的应用" +
-                        "（SnapBridge、电脑端软件等），或等相机收回旧会话后再点注册。"
+                        "（机身官方应用、电脑端软件等），或等相机收回旧会话后再点注册。"
                 )
             }
             if (init !is InitResponsePacket) {
@@ -161,7 +161,7 @@ class StaHostRegistrar @Inject constructor(
                 )
             }
             // 与连接链路同语义：部分机身缺了 EventAck 后的 ping/pong 会判链路失败。
-            // 注册链路里没等到 Pong 只记不拦——ZDROP 的注册段日志就没有这一往返。
+            // 注册链路里没等到 Pong 只记不拦——注册段日志就没有这一往返。
             runCatching {
                 eventOut.write(PingPacket.toBytes())
                 eventOut.flush()
@@ -263,7 +263,7 @@ class StaHostRegistrar @Inject constructor(
             )
         } finally {
             // 不发 CloseSession：注册完成后相机会自己退出向导并重建 WiFi，
-            // 在这里等它回应只会拖慢拆链（与 ZDROP 的 sendCloseSession=false 同语义）。
+            // 在这里等它回应只会拖慢拆链（与 sendCloseSession=false 同语义）。
             runCatching { eventSocket?.close() }
             runCatching { commandSocket?.close() }
         }

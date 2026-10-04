@@ -97,14 +97,14 @@ class ConnectionManager @Inject constructor(
 
         /**
          * FR-30：未连接态自主注册的发现预算。
-         * 8s 够 mDNS 一轮应答 + 网段短超时补扫（ZDROP 的发现代际实测 6s 收口）；
+         * 8s 够 mDNS 一轮应答 + 网段短超时补扫（发现代际实测 6s 收口）；
          * 注册是用户手动点的动作，超过这个数还不如让用户先看一眼相机屏幕。
          */
         private const val REG_DISCOVERY_TIMEOUT_MS = 8_000L
 
         /**
          * FR-32：注册收到 InitFail reason=1（槽位被占）后的冷却窗。
-         * 数值出处：FR-21 实测机身收回半开会话要几十秒（ZDROP 对照同量级）；
+         * 数值出处：FR-21 实测机身收回半开会话要几十秒（对照同量级）；
          * 2026-10-02 真机连轰 4 次 reason=1 期间相机向导进入失败态（用户目视「连接失败」）。
          */
         private const val REG_REASON1_COOLDOWN_MS = 35_000L
@@ -749,7 +749,7 @@ class ConnectionManager @Inject constructor(
     }
 
     /**
-     * STA 主机注册（ZDROP 式）：发送 PrepareHost(0x952B) / ConfirmHost(0x935A)，
+     * STA 主机注册（式）：发送 PrepareHost(0x952B) / ConfirmHost(0x935A)，
      * 把本机 GUID 注册为相机信任主机。
      * 注册成功后，相机切 STA 模式才会放行 InitCommandRequest（否则会 InitFail 拒绝）。
      *
@@ -757,7 +757,7 @@ class ConnectionManager @Inject constructor(
      * - **已连接**（AP 模式连上、或 STA 已连）：在当前活会话内注册，v2.6.3 以来的原路径，逻辑不变；
      * - **未连接**（v2.6.6 FR-30）：相机已连上本机热点/同一路由器并停在向导时，
      *   先做一轮受限发现拿到 endpoint，再交 [StaHostRegistrar] 开临时通道完成注册 ——
-     *   不再要求「先通过 AP 连上相机」。ZDROP 2026-10-01 诊断日志的 host-register 段
+     *   不再要求「先通过 AP 连上相机」。2026-10-01 诊断日志的 host-register 段
      *   证明注册本就是一条不依赖既有会话的独立链路。
      */
     suspend fun registerStaHost(
@@ -767,7 +767,7 @@ class ConnectionManager @Inject constructor(
             return registerStaHostStandalone(onProgress)
         }
         // v2.6.3 R2（ConnFlags.HOSTREG_PRECHECK）：发 0x952B 之前先看相机**当前模式**
-        // 有没有把它列进 OperationsSupported。尼康的 SnapBridge AP 与主机配置向导都在
+        // 有没有把它列进 OperationsSupported。机身 AP 与主机配置向导都在
         // 192.168.1.1 提供 PTP/IP，但只有向导支持注册 —— 这是唯一能在**发命令之前**
         // 分辨两者的信号，省掉一次注定失败的往返和一句含糊的报错。
         // ops 为 null（没取到/解析失败）时不拦，按旧路径盲发。
@@ -822,7 +822,7 @@ class ConnectionManager @Inject constructor(
         eventLogger.event("hostreg", "phase" to "discover_start", "transport" to "standalone")
         // FR-31③④：注册发现**不发 InitCommand**（会占住相机唯一槽位，把紧随其后的
         // 注册握手挤成 reason=1；2026-10-02 真机连拒 4 次），且强候选命中即收，
-        // 不再跑满扫描预算（旧实测 discover 段 8~18s，ZDROP 发现代际 1.4s）。
+        // 不再跑满扫描预算（旧实测 discover 段 8~18s，发现代际 1.4s）。
         val candidates = runCatching {
             scanWifiCameras(
                 timeoutMs = REG_DISCOVERY_TIMEOUT_MS,
@@ -1025,7 +1025,7 @@ class ConnectionManager @Inject constructor(
 
     // ── FR-34①：AP 一键连接（免扫描 + 系统 WLAN 面板）──────────────────────────
     //
-    // ZDROP 的两条简化在同机同相机上被日志与 dex 双重证实（分析文档 §4/§5）：
+    // 两条简化在同机同相机上被日志与 dex 双重证实（分析文档 §4/§5）：
     // ① AP endpoint 硬编码 192.168.1.1，零扫描；② 热点加入用
     // `android.settings.panel.action.WIFI`（AOSP 标准化面板，各家 ROM 必须实现，
     // 绕开 OEM 全设置页深链失效问题）。这里把这两条接进现有 learnFirst 通路：
@@ -1052,7 +1052,7 @@ class ConnectionManager @Inject constructor(
     /**
      * FR-34①：AP 模式无扫描候选时直接以兜底地址起轮次。
      * `learnFirst` 分支会用 ApGatewayResolver 学出真网关，扫描一步都不需要 ——
-     * ZDROP 同款语义（其 dex 里 endpoint 默认就是 192.168.1.1，零扫描）。
+     * 同款语义（其 dex 里 endpoint 默认就是 192.168.1.1，零扫描）。
      */
     fun connectApDirect() {
         connectToWifiCamera(DEFAULT_FALLBACK_HOST, caller = ConnFunnel.Caller.USER_TAP)

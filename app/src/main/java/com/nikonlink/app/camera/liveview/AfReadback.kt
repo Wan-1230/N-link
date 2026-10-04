@@ -24,7 +24,7 @@ object AfReadback {
 
     /**
      * 候选 AF 相关属性码（尼康厂商段）。
-     * 注意：以下码值取自社区/逆向资料，**未经本型号真机确认**，仅用于「逐个试读 + 记录成败」。
+     * 注意：以下码值取自社区公开资料，**未经本型号真机确认**，仅用于「逐个试读 + 记录成败」。
      * `verified=false` 表示语义待实机标定，请勿据此直接解析坐标。
      */
     data class Candidate(val code: Int, val label: String, val verified: Boolean = false)
