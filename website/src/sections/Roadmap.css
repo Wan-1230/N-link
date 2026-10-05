@@ -1,0 +1,62 @@
+.rm__h {
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  margin-bottom: var(--sp-4);
+}
+
+.rm__h--done {
+  color: var(--accent);
+}
+
+.rm__done,
+.rm__todo {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+  font-size: 0.9rem;
+  color: var(--fg-dim);
+}
+
+.rm__done li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.rm__tick {
+  margin-top: 6px;
+  width: 12px;
+  height: 7px;
+  border-left: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  transform: rotate(-45deg);
+}
+
+.rm__todo li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.rm__bullet {
+  margin-top: 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--fg-faint);
+}
+
+.rm__t {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.rm__s {
+  margin-top: 2px;
+  font-size: 0.8rem;
+  color: var(--fg-faint);
+}

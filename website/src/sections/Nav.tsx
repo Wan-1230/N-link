@@ -1,0 +1,171 @@
+import { useEffect, useRef, useState } from 'react';
+import { LangToggle } from '../components/ui/LangToggle';
+import { useDict } from '../i18n';
+import { useScrollSpy } from '../hooks/useScrollSpy';
+import { useRouter, Link } from '../lib/router';
+import { formatCount } from '../lib/format';
+import { HOME_SECTIONS, PRODUCT_GROUPS, REPO, type ProductItemKey } from '../lib/site';
+import { useReleases } from '../hooks/useReleases';
+import './Nav.css';
+
+export function Nav() {
+  const dict = useDict();
+  const { path, navigate } = useRouter();
+  const { feed } = useReleases();
+  const [scrolled, setScrolled] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [drawer, setDrawer] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const wrapRef = useRef<HTMLElement>(null);
+  const closeTimer = useRef<number>(0);
+
+  const onHome = path === '/';
+  const active = useScrollSpy(onHome ? HOME_SECTIONS : []);
+
+  useEffect(() => {
+    const onScroll = () => {
+      const y = window.scrollY;
+      setScrolled(y > 24);
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      setProgress(max > 0 ? Math.min(1, y / max) : 0);
+    };
+    onScroll();
+    addEventListener('scroll', onScroll, { passive: true });
+    return () => removeEventListener('scroll', onScroll);
+  }, [path]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    const onDown = (e: PointerEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    addEventListener('keydown', onKey);
+    addEventListener('pointerdown', onDown);
+    return () => {
+      removeEventListener('keydown', onKey);
+      removeEventListener('pointerdown', onDown);
+    };
+  }, [open]);
+
+  const goProduct = (item: ProductItemKey) => {
+    setOpen(false);
+    setDrawer(false);
+    navigate('/', item);
+  };
+
+  const groupHasActive = (items: readonly string[]) => onHome && items.includes(active ?? '');
+
+  return (
+    <header className={`nav${scrolled ? ' nav--scrolled' : ''}`} ref={wrapRef}>
+      <div className="nav__inner shell">
+        <Link className="nav__brand" to="/" onClick={() => setOpen(false)}>
+          <span className="nav__mark" aria-hidden="true" />
+          N-Link
+        </Link>
+
+        <nav className="nav__links" aria-label="N-Link">
+          <div
+            className="nav__item"
+            onPointerEnter={(e) => {
+              if (e.pointerType !== 'mouse') return;
+              clearTimeout(closeTimer.current);
+              setOpen(true);
+            }}
+            onPointerLeave={(e) => {
+              if (e.pointerType !== 'mouse') return;
+              closeTimer.current = window.setTimeout(() => setOpen(false), 160);
+            }}
+          >
+            <button
+              type="button"
+              className={`nav__trigger${open || groupHasActive(['features', 'pipeline', 'why', 'how', 'tech', 'roadmap']) ? ' nav__trigger--on' : ''}`}
+              aria-expanded={open}
+              aria-controls="nav-product-menu"
+              onClick={() => setOpen((v) => !v)}
+            >
+              {dict.nav.product}
+              <span className={`nav__caret${open ? ' nav__caret--up' : ''}`} aria-hidden="true" />
+            </button>
+
+            <div id="nav-product-menu" className={`nav__mega${open ? ' nav__mega--open' : ''}`}>
+              <div className="nav__mega-groups">
+                {PRODUCT_GROUPS.map((g) => (
+                  <div key={g.key} className="nav__group">
+                    <p className="nav__group-title">{dict.nav.groups[g.key]}</p>
+                    {g.items.map((item) => (
+                      <button
+                        key={item}
+                        type="button"
+                        className={`nav__leaf${active === item ? ' nav__leaf--on' : ''}`}
+                        onClick={() => goProduct(item)}
+                      >
+                        <span className="nav__leaf-label">{dict.nav.items[item].label}</span>
+                        <span className="nav__leaf-desc">{dict.nav.items[item].desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                ))}
+              </div>
+              <p className="nav__mega-hint">{dict.nav.productHint}</p>
+            </div>
+          </div>
+
+          <Link
+            className={`nav__link${path === '/releases' ? ' nav__link--on' : ''}`}
+            to="/releases"
+            onClick={() => setOpen(false)}
+          >
+            {dict.nav.releases}
+          </Link>
+        </nav>
+
+        <div className="nav__actions">
+          <LangToggle />
+          <a className="nav__gh" href={REPO.url} target="_blank" rel="noreferrer">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" fill="currentColor">
+              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.04-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.4 1.1.12 1.92.06 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+            </svg>
+            <span className="plate">{feed.stars == null ? 'GitHub' : formatCount(feed.stars)}</span>
+          </a>
+          <button type="button" className="nav__cta" onClick={() => navigate('/releases', 'latest')}>
+            {dict.cta.download}
+          </button>
+          <button
+            type="button"
+            className="nav__burger"
+            aria-expanded={drawer}
+            aria-label={drawer ? dict.nav.close : dict.nav.open}
+            onClick={() => setDrawer((v) => !v)}
+          >
+            <span />
+            <span />
+          </button>
+        </div>
+      </div>
+
+      <span className="nav__progress" style={{ transform: `scaleX(${progress})` }} aria-hidden="true" />
+
+      {drawer && (
+        <nav className="nav__drawer glass glass--strong" aria-label="N-Link">
+          {PRODUCT_GROUPS.map((g) => (
+            <div key={g.key} className="nav__drawer-group">
+              <p>{dict.nav.groups[g.key]}</p>
+              {g.items.map((item) => (
+                <button key={item} type="button" onClick={() => goProduct(item)}>
+                  {dict.nav.items[item].label}
+                </button>
+              ))}
+            </div>
+          ))}
+          <div className="nav__drawer-group">
+            <p>{dict.nav.releases}</p>
+            <button type="button" onClick={() => { setDrawer(false); navigate('/releases', 'latest'); }}>
+              {dict.cta.download}
+            </button>
+          </div>
+        </nav>
+      )}
+    </header>
+  );
+}

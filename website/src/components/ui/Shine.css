@@ -1,0 +1,33 @@
+.shine {
+  display: inline-block;
+  background-image: linear-gradient(
+    100deg,
+    var(--shine-base) 0%,
+    var(--shine-base) 38%,
+    var(--shine-hot) 50%,
+    var(--shine-base) 62%,
+    var(--shine-base) 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shine-sweep var(--shine-speed) linear infinite;
+}
+
+@keyframes shine-sweep {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shine {
+    animation: none;
+    background-image: none;
+    color: var(--shine-base);
+  }
+}

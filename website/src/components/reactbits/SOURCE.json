@@ -1,0 +1,160 @@
+{
+  "upstream": "https://github.com/DavidHDev/react-bits",
+  "commit": "b6666e9f3a03a062143ce409f3aac53e27fdfaa8",
+  "license": "MIT + Commons Clause License Condition v1.0 (SPDX: NOASSERTION)",
+  "licenseFile": "LICENSE.upstream.txt",
+  "note": "React Bits 上游源码逐字拷入；仅本文件与 index.ts 为本地新增。许可允许作为网站/应用的一部分使用与分发（含商用），禁止单独出售、再授权或打包重分发组件本身，须保留版权声明与出处。",
+  "components": {
+    "ClickSpark": [
+      {
+        "file": "ClickSpark.jsx",
+        "upstreamPath": "/src/content/Animations/ClickSpark/ClickSpark.jsx",
+        "bytes": 3819,
+        "sha256": "63b91cf2e4d6ce12e422685bfc7783a07466a24c22b9ae4443f0cca3fdcd3512"
+      }
+    ],
+    "Magnet": [
+      {
+        "file": "Magnet.jsx",
+        "upstreamPath": "/src/content/Animations/Magnet/Magnet.jsx",
+        "bytes": 2008,
+        "sha256": "b94a20ea6e2764512a180e7e3b16c6123bb16e3b45ad8f79d13079912989c5bc"
+      }
+    ],
+    "AnimatedContent": [
+      {
+        "file": "AnimatedContent.jsx",
+        "upstreamPath": "/src/content/Animations/AnimatedContent/AnimatedContent.jsx",
+        "bytes": 2489,
+        "sha256": "03877fc7d220cf80b637b8ac419caaf9850e6dca9e234cb76c226915be1b5dc6"
+      }
+    ],
+    "Aurora": [
+      {
+        "file": "Aurora.css",
+        "upstreamPath": "/src/content/Backgrounds/Aurora/Aurora.css",
+        "bytes": 53,
+        "sha256": "2df81fdc13c0e763f17aec359863d3d0ec8ef97e442788be47635882f480467d"
+      },
+      {
+        "file": "Aurora.jsx",
+        "upstreamPath": "/src/content/Backgrounds/Aurora/Aurora.jsx",
+        "bytes": 6268,
+        "sha256": "1ca0baa117d299e8a53e0b9901a0d0267b929c80d1adc2e349e8123b358dc417"
+      }
+    ],
+    "SpotlightCard": [
+      {
+        "file": "SpotlightCard.css",
+        "upstreamPath": "/src/content/Components/SpotlightCard/SpotlightCard.css",
+        "bytes": 625,
+        "sha256": "d2e0a07a5b9edf383c74d7a3ee93d9e0c6cdfff21c861c67dca1ce88902d08f9"
+      },
+      {
+        "file": "SpotlightCard.jsx",
+        "upstreamPath": "/src/content/Components/SpotlightCard/SpotlightCard.jsx",
+        "bytes": 739,
+        "sha256": "f31b73f72852c45cb8430abb568fac23aae95c545369b04795c0f76792bfd779"
+      }
+    ],
+    "TiltedCard": [
+      {
+        "file": "TiltedCard.css",
+        "upstreamPath": "/src/content/Components/TiltedCard/TiltedCard.css",
+        "bytes": 1061,
+        "sha256": "98f8b8156d22cfa4806953f302a4002e91f255e5d21b2971e26b2556b0eeca67"
+      },
+      {
+        "file": "TiltedCard.jsx",
+        "upstreamPath": "/src/content/Components/TiltedCard/TiltedCard.jsx",
+        "bytes": 3171,
+        "sha256": "cf521827f4236eec7171f81755ff08bab82e05689bf426071dbbd5b0abbcc939"
+      }
+    ],
+    "Stepper": [
+      {
+        "file": "Stepper.css",
+        "upstreamPath": "/src/content/Components/Stepper/Stepper.css",
+        "bytes": 2424,
+        "sha256": "8f95c1ecd5b1a6e7740b9efc4dce02187d5241b4d4cef1878f9797c4e536c777"
+      },
+      {
+        "file": "Stepper.jsx",
+        "upstreamPath": "/src/content/Components/Stepper/Stepper.jsx",
+        "bytes": 7522,
+        "sha256": "c1984e8ee9fced1c6d4adc99b5bc7f15d4c97b14dfaa483ac7dbf64c83388faf"
+      }
+    ],
+    "Dock": [
+      {
+        "file": "Dock.css",
+        "upstreamPath": "/src/content/Components/Dock/Dock.css",
+        "bytes": 1069,
+        "sha256": "0c3660de56f0b05d2f76d33271b895af642b314c641f190676b77849e3642cac"
+      },
+      {
+        "file": "Dock.jsx",
+        "upstreamPath": "/src/content/Components/Dock/Dock.jsx",
+        "bytes": 3946,
+        "sha256": "1b34937bb5e21ca49e3148053df9ffc0acc4e1bee859d2bbba97724fdd766e30"
+      }
+    ],
+    "SplitText": [
+      {
+        "file": "SplitText.jsx",
+        "upstreamPath": "/src/content/TextAnimations/SplitText/SplitText.jsx",
+        "bytes": 4537,
+        "sha256": "0cf8557800ea57acb4d42b2c510c76e04fb6859691ee0b6c77eea692c1a5534c"
+      }
+    ],
+    "BlurText": [
+      {
+        "file": "BlurText.jsx",
+        "upstreamPath": "/src/content/TextAnimations/BlurText/BlurText.jsx",
+        "bytes": 2876,
+        "sha256": "acc6de3d323a3e961849b2b35967317ab2295fb28742090f75ea189a5aefa7be"
+      }
+    ],
+    "CountUp": [
+      {
+        "file": "CountUp.jsx",
+        "upstreamPath": "/src/content/TextAnimations/CountUp/CountUp.jsx",
+        "bytes": 2545,
+        "sha256": "ce44e284022cc510a36feca3c376d6cb344311f9f8932521d43cdedbf4d250d2"
+      }
+    ],
+    "ShinyText": [
+      {
+        "file": "ShinyText.css",
+        "upstreamPath": "/src/content/TextAnimations/ShinyText/ShinyText.css",
+        "bytes": 41,
+        "sha256": "ddd3e35beb196f744606b5677830a35c86741b07d000543cf522667dbce74c80"
+      },
+      {
+        "file": "ShinyText.jsx",
+        "upstreamPath": "/src/content/TextAnimations/ShinyText/ShinyText.jsx",
+        "bytes": 3604,
+        "sha256": "40db1d6de91972de7c78702c2b29f58ca9b2de22a07193fdec9683a16b4cb5dd"
+      }
+    ],
+    "GradientText": [
+      {
+        "file": "GradientText.css",
+        "upstreamPath": "/src/content/TextAnimations/GradientText/GradientText.css",
+        "bytes": 999,
+        "sha256": "bf78ec32709f2efbf66ea7edccc647cc05d5fe20f65ccb08888abfbb1d5e0aaa"
+      },
+      {
+        "file": "GradientText.jsx",
+        "upstreamPath": "/src/content/TextAnimations/GradientText/GradientText.jsx",
+        "bytes": 3068,
+        "sha256": "060d15a5e57005b1c69a7d3774d4df0512fb3462e300a78898735883179c9369"
+      }
+    ]
+  },
+  "filesWritten": 20,
+  "pruned": [
+    "Backgrounds/Silk（依赖 three + @react-three/fiber，体积不合算）",
+    "Components/AnimatedList（自带滚动条的定高小部件，不适合整页日志时间轴）"
+  ]
+}
