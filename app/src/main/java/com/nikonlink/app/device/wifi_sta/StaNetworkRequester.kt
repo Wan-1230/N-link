@@ -18,7 +18,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * STA 网络请求器（对标 ZDROP `t1/s` 的网络申请链路）。
+ * STA 网络请求器（按标准网络申请链路设计）。
  *
  * ## 为什么要主动 `requestNetwork`
  *
@@ -33,7 +33,7 @@ import javax.inject.Singleton
  *
  * `ConnectivityManager.requestNetwork()` 是系统提供的"我要用这张网"的显式声明：
  * 注册期间系统会维持该网络不被回收，并通过 [NetworkCallback] 把可用/丢失事件
- * 推给我们 —— ZDROP 正是靠它把 STA 链路跑稳的。
+ * 推给我们 —— 这是把 STA 链路跑稳的关键。
  *
  * ## 与 [WifiNetworkMonitor] 的分工
  *
@@ -83,7 +83,7 @@ class StaNetworkRequester @Inject constructor(
      *
      * 选网策略（两级）：
      * 1. 快路径：已有 WiFi 网络里挑**链路地址与相机 IP 同网段**的那个
-     *    （ZDROP `t1/q` 同款判定）。手机开热点时相机在热点子网、上游 WiFi 在
+     *    （按子网匹配的判定）。手机开热点时相机在热点子网、上游 WiFi 在
      *    另一个子网，按"任意 WiFi 网络"选会绑错路由，所以必须按子网匹配；
      * 2. 慢路径：向系统 `requestNetwork` 并等待回调，期间持续按子网匹配。
      *
@@ -132,7 +132,7 @@ class StaNetworkRequester @Inject constructor(
         // 默认请求（含该 capability）永远匹配不上它，就**不构成持有**；
         // ConnectivityService 随后按「非默认网络且无 app 请求」回收这张网：
         // wlan0 被踢 → 相机感知客户端丢失 → 显示「无法连接」并关热点。
-        // 竞品 ZDROP/影犀/ZRelay 的 dex 方法级反编译全部是 removeCapability(12)
+        // 同类产品 /同类实现/dex 方法级静态分析全部是 removeCapability(12)
         // （12 = NET_CAPABILITY_INTERNET，见分析文档 §8）。
         // ── FR-33 C2：注册提前到快路径判定之前 ─────────────────────────────────────
         // 旧实现 AP 模式走 findMatchingWifi 命中即 return，会话期间零 NetworkRequest

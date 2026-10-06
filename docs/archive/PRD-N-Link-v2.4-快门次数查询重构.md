@@ -5,15 +5,15 @@
 > 仍开放两项（已转入 v2.5 规划，见 `docs/PRD-N-Link-v2.5-差距收敛与可信性基建.md` §FR-08b）：往 `nikon_fixtures/` 丢一张自拍切片（零代码改动），
 > 以及 §十 第 10-12 条（同意门、机械口径）尚未真机验证
 > 原则：已跑通的功能不改动，改动面压到最小，每项独立可回滚
-> 结论来源：exiftool（Nikon.pm / MakerNotes.pm）、Exiv2（nikonmn_int.cpp / makernote_int.cpp）、libgphoto2（camlibs/ptp2/ptp.h、config.c、library.c、ptp.c）、exif-py、python-shutter-counter、LibRaw 逐行比对，非二手博客
+> 结论来源：exiftool（Nikon.pm / MakerNotes.pm）、Exiv2（nikonmn_int.cpp / makernote_int.cpp）、（camlibs/ptp2/ptp.h、config.c、library.c、ptp.c）、exif-py、python-shutter-counter、LibRaw 逐行比对，非二手博客
 
 ---
 
 ## 一、结论先行：路只有一条，但现在的走法从根上就错了
 
-**机身 PTP 读不到快门次数——这条既有判断成立，已再次穷举验证。** 对照 libgphoto2 `camlibs/ptp2/ptp.h` + `config.c` 的全部厂商属性表：
+**机身 PTP 读不到快门次数——这条既有判断成立，已再次穷举验证。** 对照 `camlibs/ptp2/ptp.h` + `config.c` 的全部厂商属性表：
 
-| 厂商 | 快门计数属性 | gphoto2 是否暴露 |
+| 厂商 | 快门计数属性 | 是否暴露 |
 |---|---|---|
 | Canon | `PTP_DPC_CANON_EOS_ShutterCounter` = `0xD1AC`（UINT32，只读） | 是，config 名 `shuttercounter` |
 | Olympus | `0xD059 ShutterActuationCount` | 是 |
@@ -78,7 +78,7 @@ L4 云端降级   → 修 R8：仅在 L2/L3 明确失败时启用，且 UI 明�
 
 ### L1 头部局读
 
-`GetPartialObject` = **`0x101B`**（参数序 `ObjectHandle, Offset32, MaxBytes32`；数据阶段响应，响应 `Param1` = 实际发送字节数；**按返回值推进，返回 0 即停**，libgphoto2 `ptp.c` 即此写法）。项目已实现：`PtpConstants.OP_GET_PARTIAL_OBJECT`（`PtpProtocol.kt:65`）、`PtpSessionManager.getPartialObject()`（`:650-667`）、`UsbPtpManager.getPartialObject()`（`:1093`）。且它已正确 `bulkDepth.incrementAndGet()`（`:656`），传输期心跳不判死——**这一层几乎零新增协议代码，只需把 `TransferManager` 的 private `partialObject` 收敛成一个公开入口**。
+`GetPartialObject` = **`0x101B`**（参数序 `ObjectHandle, Offset32, MaxBytes32`；数据阶段响应，响应 `Param1` = 实际发送字节数；**按返回值推进，返回 0 即停**，`ptp.c` 即此写法）。项目已实现：`PtpConstants.OP_GET_PARTIAL_OBJECT`（`PtpProtocol.kt:65`）、`PtpSessionManager.getPartialObject()`（`:650-667`）、`UsbPtpManager.getPartialObject()`（`:1093`）。且它已正确 `bulkDepth.incrementAndGet()`（`:656`），传输期心跳不判死——**这一层几乎零新增协议代码，只需把 `TransferManager` 的 private `partialObject` 收敛成一个公开入口**。
 
 两步读取：
 
@@ -87,7 +87,7 @@ L4 云端降级   → 修 R8：仅在 L2/L3 明确失败时启用，且 UI 明�
    - 形态 A/B 的偏移基准在 MakerNote 内部，所以独立 blob 可自洽解析；
    - **形态 C 的基准在主 TIFF 头**，脱离第 1 步的窗口就无法解释——这类笔记实测都很小且紧贴开头，落在 128KB 内，故实现上「只有第 1 步窗口内可解析」即可，不必为 C 做二次读取。
 
-**能力探测**：把 `parseDeviceInfo` 里被跳过的 `OperationsSupported`（`CameraParameterManager.kt:495`）真正解析成 `Set<Int>` 缓存到 session。libgphoto2 的真实机身 dump（`camlibs/ptp2/cameras/*.txt`）显示，凡带 supported-operations 清单的尼康机型**全部声明了 0x101B**（D100/D200/D3/D300/D90/D3000-D5300/D5000/D5100/D5300/D600/D700/D7100/D750/D800/D810/D780/Z6/Z9）。未声明时回退整对象下载，但加 **2MB 硬上限**：读到上限即视为样本不足并给出明确失败原因，不做「悄悄拖完 45MB」。
+**能力探测**：把 `parseDeviceInfo` 里被跳过的 `OperationsSupported`（`CameraParameterManager.kt:495`）真正解析成 `Set<Int>` 缓存到 session。真实机身 dump（`camlibs/ptp2/cameras/*.txt`）显示，凡带 supported-operations 清单的尼康机型**全部声明了 0x101B**（D100/D200/D3/D300/D90/D3000-D5300/D5000/D5100/D5300/D600/D700/D7100/D750/D800/D810/D780/Z6/Z9）。未声明时回退整对象下载，但加 **2MB 硬上限**：读到上限即视为样本不足并给出明确失败原因，不做「悄悄拖完 45MB」。
 
 **128KB 预算已被真机数据校准**：实测 MakerNote 本体位置与长度 —— D2Hs `@808 / 2180B`、NEF `@1744 / 4374B`、`_DSC8437` `@1076 / 7736B`、D70 JPEG `@1014 / 29322B`。全部落在 128KB 内，且都紧贴文件开头。
 反过来，第 2 步的必要性也被同一个数据点证实：D70 的笔记长 29KB，一旦本地副本不完整（我这边这张就是截断到 12KB 的），`offset + size` 越界、解析直接放弃 —— **必须按发现到的 `{offset, size}` 精确补取，而不是赌一个更大的固定前缀**。
@@ -211,7 +211,7 @@ L4 云端降级   → 修 R8：仅在 L2/L3 明确失败时启用，且 UI 明�
 - 指望 `0x1038 GetObjectPropList` —— 实测**无任何机型在 `OperationsSupported` 里声明它**。枚举走 `0x1004 GetStorageIDs → 0x1007 GetObjectHandles → 0x1008 GetObjectInfo`；项目现有的 MTP `0x9805` 快路径可用，但要保留逐对象回退。
 - 用 `GetThumb (0x100A)` / `0x90C4 GetLargeThumb` 当样本 —— 缩略图 JPEG **不含 MakerNote**。
 - 引入 LibRaw 作数据源 —— 它只把 `0x00A7` 当解密密钥，不暴露计数。
-- 拿后期处理过的文件（Lightroom/NX 导出）读数 —— 会被改写或剥掉 MakerNote。
+- 拿后期处理过的文件（/NX 导出）读数 —— 会被改写或剥掉 MakerNote。
 - 期望从机身菜单读出总快门数 —— **无任何尼康机身在用户菜单/固件里提供该读数**，官方路径只有售后拆机读内部计数器。这条要写进帮助文案，别让用户白找。
 
 ---
@@ -258,7 +258,7 @@ L4 云端降级   → 修 R8：仅在 L2/L3 明确失败时启用，且 UI 明�
 | 6 | 清空存储卡后查 | 文案「存储卡内没有照片，无法读取快门次数」，**不是**「查询失败」了事 |
 | 7 | 拍摄中途/链路断开时查 | 「读取失败，点击重试」；日志 `READ_FAILED` |
 | 8 | 老机身（D70/D200/Coolpix/E995 一类） | 出数并 `verified=true`，或明确 `PARSE_FAILED`；**不应**出现「未校验」却数字离谱 |
-| 9 | **默认不上传**（`a295f00` 起） | 全新安装后无论本机是否解得出，都不该有对 `api.digeeker.com` 的请求（抓包或 `dumpsys netstats` 确认） |
+| 9 | **默认不上传**（`a295f00` 起） | 全新安装后无论本机是否解得出，都不该有对 `api.digeeker.com` 的请求（机身官方应用或 `dumpsys netstats` 确认） |
 | 10 | 本机解不出的机身（老机型最易命中） | 该行显示「本机无法解析 · 点击可授权云端解析」，日志 `CONSENT_REQUIRED`；**点下去先弹授权框**，说清上传一张、给谁、含序列号/GPS；点「不用了」不应发生任何上传 |
 | 11 | 同意之后 | 走云端并显示「（云端解析）」；此后**不再弹框**（授权持久），且 `cache/n-link_shutter/` 里不应残留样张 |
 | 12 | Z8/Z9 等电子快门机身 | 若 `0x0037` 与 `0x00A7` 不等，应显示「N 次（本机解析） · 机械 M」；两者相等时**不该**重复出现「机械」字样 |

@@ -165,7 +165,7 @@ class ConnFunnel @Inject constructor(
                 "相机接了连接但对事件通道一言不发",
                 "让相机停留在连接/配对页面；仍不行就关开一次相机电源"
             ),
-            PTP_BUSY_OTHER_CLIENT("ptp_busy", "相机已被其它客户端占用（机身同时只允许一个）", "关闭 SnapBridge 或另一台手机上的连接"),
+            PTP_BUSY_OTHER_CLIENT("ptp_busy", "相机已被其它客户端占用（机身同时只允许一个）", "关闭其它设备上正在连接相机的应用"),
             PTP_HANDSHAKE_FAILED("ptp_handshake_failed", "PTP 握手未完成", "保持相机停留在配对/连接页面后重试"),
             SESSION_DROP("session_drop", "会话中途断开", "等待自动重连，或手动重连"),
 
@@ -186,7 +186,7 @@ class ConnFunnel @Inject constructor(
             USB_PTP_NO_RESPONSE(
                 "usb_ptp_no_response",
                 "USB 已识别相机，但机身不应答 PTP 会话",
-                "点亮相机屏幕；若相机正被 SnapBridge、电脑或本机的 WiFi 连接占着，先断开对方再重插 USB"
+                "点亮相机屏幕；若相机正被电脑或本机的 WiFi 连接占着，先断开对方再重插 USB"
             ),
             CLAIM_FAILED("claim_failed", "USB 接口被其它程序占用", "关闭图库/文件管理器等应用后重试"),
             USB_PERMISSION_DENIED("usb_permission_denied", "USB 访问授权被拒绝", "重新插拔并在弹窗中选择「允许」"),

@@ -11,7 +11,7 @@ import org.junit.Test
  * 这里只覆盖不依赖 Android framework 判定的三件事：
  * 1. 「这个 SSID 是不是相机热点」——决定 AP 能不能不走蓝牙直接连；
  * 2. 「网关地址是不是可用的相机地址」——决定学习结果会不会把手机自己/广播地址
- *    当成相机（ZDROP 的 `AP gateway ignored because it matches handset address`）；
+ *    当成相机（日志口径 `AP gateway ignored because it matches handset address`）；
  * 3. FR-35③「武装状态下算不算已挂上热点」——SSID 不可读时靠私网网关兜底。
  * 实际的路由读取与 PTP 探测需要真机，列在 PRD §12 的 V-8。
  */

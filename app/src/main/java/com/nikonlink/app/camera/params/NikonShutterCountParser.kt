@@ -9,7 +9,7 @@ import java.nio.ByteOrder
  * 尼康快门次数本地解析器。
  *
  * 数据源唯一：照片 EXIF 的 MakerNote(`0x927C`) → 尼康 IFD → tag `0x00A7`。
- * 尼康机身**不提供**任何快门计数的 PTP 设备属性（对照 libgphoto2 `camlibs/ptp2/ptp.h`：
+ * 尼康机身**不提供**任何快门计数的 PTP 设备属性（对照标准 PTP 规范：
  * 佳能 `0xD1AC` / 奥林巴斯 `0xD059` / 富士 `0xD154` 都有，尼康没有），所以别去读属性。
  * `0x00A7` 本身也不加密 —— 它反倒是尼康用来解密 ShotInfo/ColorBalance/LensData 的密钥。
  *
