@@ -706,7 +706,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             viewModel.disconnectUsb()
         }
 
-        // STA 主机注册（ZDROP 式）：先引导用户在相机端进入「连接至 PC」向导，再执行注册
+        // STA 主机注册（式）：先引导用户在相机端进入「连接至 PC」向导，再执行注册
         binding.btnStaHostRegister.pressEffect()
         binding.btnStaHostRegister.setOnClickListener {
             NlGlass.dialog(requireContext())
@@ -1202,7 +1202,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 if (target != null) {
                     connectWifiCandidate(target)
                 } else if (currentMode == ConnectMode.WIFI_AP && viewModel.apOneTapEnabled()) {
-                    // FR-34①：AP 模式免扫描一键连接（ZDROP 同构）
+                    // FR-34①：AP 模式免扫描一键连接（同构）
                     apOneTapConnect()
                 } else {
                     showManualIpDialog(currentMode)
@@ -1241,9 +1241,9 @@ class DashboardFragment : Fragment(), GlassInsetAware {
      * ③ 其余 → 拉起系统 WLAN 面板让用户点热点，回连命中后由 ConnectionManager 的观察者
      *    （或下面 [onResume] 的兜底）自动起轮次。
      *
-     * 面板走 AOSP 的 `Settings.Panel.ACTION_WIFI`（ZDROP dex `1ca886` 同款）：这是各家 ROM
-     * 必须实现的标准化入口，绕开 OEM 全设置页深链失效；但**渲染者仍是 ROM 自己**，
-     * 所以 [launchWifiPanel] 把实际命中的路径记进日志。
+     * 面板走 AOSP 的 `Settings.Panel.ACTION_WIFI`：这是各家 ROM 必须实现的标准化入口，
+     * 绕开 OEM 全设置页深链失效问题；但**渲染者仍是 ROM 自己**，所以 [launchWifiPanel]
+     * 把实际命中的入口（panel / settings / none）记进日志，方便真机归因。
      */
     private fun apOneTapConnect() {
         if (viewModel.onCameraAp()) {
