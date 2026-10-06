@@ -33,6 +33,17 @@ videos/
 /_apk_re/
 /tools/apk-analysis/
 
+# ── 外部产品调研与竞品分析（依据 docs/CONTRIBUTING.md，一律不入库）──
+# 这些内容只在本地工作副本保留，不随仓库分发。
+/docs/竞品*
+/docs/对比*
+/docs/*竞品*
+/docs/*对标*
+/docs/*横评*
+/research/
+/benchmark/
+/tools/sanitize_*.py
+
 # Local configuration file (sdk path, etc)
 local.properties
 
@@ -51,11 +62,7 @@ local.properties
 /album2.xml
 /lv.xml
 /lv2.xml
-/yingxi.xml
-/yx_album.xml
 /live_debug.log
-/yingxi_ops.log
-/yingxi_past.log
 /*_connection_log*.txt
 /*_wifi_connection_log*.txt
 screen-*.png

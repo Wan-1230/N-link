@@ -206,8 +206,8 @@ class ConnFlags @Inject constructor(
         /**
          * FR-28④：拆 USB 链路之前，先给机身发一次 CloseSession(0x1003)。
          *
-         * 四款竞品的静态产物里**都有** CloseSession（ZDROP `sendCloseSession`、
-         * 像素蛋糕那套 SDK 甚至有品牌专用的 `NikonCloseSessionAction` 与 `CloseSessionCommand`），
+         * 各家现成实现中**都有** CloseSession（有的还额外提供了 `CloseSessionCommand`
+         * 第三方那套 SDK 甚至有品牌专用的 `NikonCloseSessionAction` 与 `CloseSessionCommand`），
          * 而我们的正常拆链路路径（保活判死 → ERROR → 下一轮 `disconnect(silent=true)`）
          * 只做 `releaseInterface` + `connection.close()`，**一个字节都不告诉机身** ——
          * 于是机身认为会话还在自己手里，下一次 OpenSession 没人应答。
@@ -240,7 +240,7 @@ class ConnFlags @Inject constructor(
          * R2：注册前先用 `GetDeviceInfo` 的 `OperationsSupported` 检查相机**当前模式**
          * 支不支持主机注册（0x952B）。
          *
-         * 尼康的 SnapBridge AP（连接至智能设备）与主机配置向导**都在 192.168.1.1
+         * 机身 AP（连接至智能设备）与主机配置向导**都在 192.168.1.1
          * 提供 PTP/IP**，但只有向导接受 0x952B。原实现不看这个，直接盲发 → 拿到
          * 0x201F 之后只能给一句笼统的"请确认相机屏幕处于可接受连接的画面"。
          * 打开后：不支持就**不发**，直接给出"相机不在主机配置向导"的明确结论，
@@ -319,18 +319,18 @@ class ConnFlags @Inject constructor(
          * 根因链（docs/非上网热点被系统回收-根因与修复方案-2026-10-02.md）：相机热点无互联网，
          * 验证失败后系统剥掉 INTERNET capability → 默认请求匹配不上 → 不构成持有 →
          * ConnectivityService 回收「非默认且无持有」的网络 → 链路被踢 → 相机显示「无法连接」
-         * 并关热点。竞品三家 dex 反编译均为 `removeCapability(12)`（§8 方法级实锤）。
+         * 并关热点。同类产品三家 dex 静态分析均为 `removeCapability(12)`（§8 方法级实锤）。
          * 关闸 = 回到旧请求构造与快路径零注册，逐位等价 v2.6.1。
          */
         const val STA_LOCAL_ONLY_REQUEST = "v33_local_only_request"
 
-        // ── FR-34 AP 一键连接与失败归因第二轮（docs/AP连接失败与ZDROP策略分析-2026-10-02.md）──
+        // ── FR-34 AP 一键连接与失败归因第二轮（docs/AP连接失败与策略分析-2026-10-02.md）──
 
         /**
          * FR-34①：AP 模式点「连接相机」不再要求先扫描。
          *
          * 无候选时：已在相机热点 → 直接以兜底地址起轮次（learnFirst 会学网关）；
-         * 不在 → 拉起系统 WLAN 面板（`Settings.Panel.ACTION_WIFI`，ZDROP dex `1ca886`
+         * 不在 → 拉起系统 WLAN 面板（`Settings.Panel.ACTION_WIFI`，dex `1ca886`
          * 同款标准化入口，绕开 OEM 全设置页深链），回连命中相机热点后自动起轮次。
          * 关闸 = 回到「无候选弹手动 IP 框」。
          */
@@ -341,7 +341,7 @@ class ConnFlags @Inject constructor(
          *
          * 「网关就是相机」是 AP 的定义，手机就在热点上时不需要第二次采样、
          * 也不需要 TCP 筛探（筛探还会占机身唯一的 PTP/IP 槽，FR-21 实测收回要 ~35s）。
-         * DISCOVER 实测 2335ms → ~1200ms（对齐 ZDROP 的固定 1200ms readiness）。
+         * DISCOVER 实测 2335ms → ~1200ms（对齐 固定 1200ms readiness）。
          * 关闸 = 双采样 + 筛探的 v2.6.1 行为。
          */
         const val AP_GW_FASTPATH = "v34_ap_gw_fastpath"
@@ -352,7 +352,7 @@ class ConnFlags @Inject constructor(
          * 真机日志（2026-10-02 R5）：wlan0 已掉，3 次 30s 级超时从蜂窝
          * /10.115.218.201 打出 ≈73s 纯空转；绑网 lane 保持 30s 不动
          * （FR-22 的教训：慢成功 26.4~181.3s 都发生在有句柄的路径上）。
-         * ZDROP 全程 6000ms（其日志「after 6000ms」）。
+         * 全程 6000ms（其日志「after 6000ms」）。
          */
         const val STA_LANE_TIMEOUT = "v34_lane_timeout"
 
@@ -398,14 +398,56 @@ class ConnFlags @Inject constructor(
         const val WLAN_DROP_REASON = "v34_drop_reason"
 
         /**
-         * FR-38：AP 轮次改用 ZDROP 时序档（2026-10-03 逆向定谳）——绑网 8s、每次尝试前
+         * FR-35①：面板/specifier 回连后的「手机已挂上热点」判定放宽，不再只认 SSID。
+         *
+         * FR-34① 的自动起轮要求 `isOnCameraAp()`（SSID 以 NIKON 开头），两处必然落空：
+         * Android 13+ 未授予「附近的设备」→ SSID 读回 `<unknown ssid>`；机身热点名被用户
+         * 改过 → 不匹配规则。结果是「拉起面板→用户点了热点→回 App 什么都不发生」，
+         * 而且武装标记不消费、再点还是弹面板，用户只能退回扫描（核查 2026-10-03）。
+         * 打开后只在**武装状态下**放宽为「有 WiFi 网络且其网关是私网 IPv4」——
+         * 那一下用户点的就是他要连的热点；误判代价是多起一轮打向私网的 AP 连接，
+         * 由漏斗结论收口，不会挂死。首次点按的分流仍用严格的 SSID 判定。
+         * 关闸 = FR-34 的纯 SSID 判定。
+         */
+        const val AP_JOINED_LOOSE = "v35_ap_joined_loose"
+
+        /**
+         * FR-38：AP 轮次改用短时序档（2026-10-03 实测标定）——绑网 8s、每次尝试前
          * 路由复查、复查失败重绑 2.5s+450ms、双通道至多 2 次（间隔 7s）、TCP connect 6s、
          * 失败按探测档位分级出文案。只在 AP 链路（learnFirst 起轮）生效，STA 轮次不受影响。
          * 关闸 = 回到 STA 同款的 10 次退避长轮次。
          */
         const val AP_ZDROP_TIMING = "v38_ap_zdrop_timing"
 
+        /**
+         * FR-35②：手上有 BLE 下发的 WiFi 凭证时，点「连接相机」直接免面板一键连。
+         *
+         * 复用 v2.2 就实现的 [android.net.wifi.WifiNetworkSpecifier] 通路
+         * （`wifi-ap/WifiManager.kt` 的 `buildCameraApRequest`）：系统只弹一次
+         * 「允许连接该网络」确认框，用户不必再进 WLAN 列表翻 NIKON_xxx。
+         * 与面板路径的差别是它不依赖 SSID 可读、也不受热点改名影响（凭证自带名字与密码）。
+         * 失败/超时/无凭证 → 回落 FR-34 的系统面板，不会白点。
+         * 注：这条通路自带代价 —— 系统确认框必须由用户点一次「允许」，专属网络也随请求注销即断，
+         * 免确认自动连网对普通应用并不可得。属于本项目自己的增量做法，因此单独设闸。
+         * 关闸 = 一律走面板。
+         */
+        const val AP_CRED_SPECIFIER = "v35_ap_cred_specifier"
 
+        /**
+         * FR-37：让设备页选的 STA 架构（PTP/IP 直连 / FTP 推送收图）真的决定连接行为。
+         *
+         * 现状是 `AppSettings.staArchitecture` **全仓只有 UI 读**（切换页签显隐），
+         * 连接层从来不看它：选了「FTP 推送」之后，重连触发、状态机闭环、配对恢复、
+         * 健康探针仍然会自动发 PTP/IP InitCommand 敲机身 —— 而机身只有一个 PTP/IP 客户端槽，
+         * 被敲门时正在 FTP 向导里等推送的相机会被打断（本仓 FR-21/FR-30 反复实测的单槽行为）。
+         * 用户侧观感就是「切了模式没切，App 还是直接连相机」。
+         *
+         * 打开后：**自动**发起的 WiFi 连接（caller ≠ USER_TAP）在 FTP 架构下直接跳过并记
+         * `arch_skip` 事件；用户明确点「连接」的仍放行 —— 监看与相册只有 PTP 能做，
+         * 不能因为选了 FTP 架构就把它们关掉。
+         * 关闸 = 架构选择继续只影响界面（v3.0.0 行为）。
+         */
+        const val STA_ARCH_GATE = "v37_sta_arch_gate"
 
         /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
@@ -507,7 +549,7 @@ class ConnFlags @Inject constructor(
             // FR-33：非上网热点被系统回收的修复，默认开（这是修复不是实验：
             // 群友无「WiFi 始终开启」开关的设备不修则必掉；关闸=旧行为，现场可二分）
             STA_LOCAL_ONLY_REQUEST to true,
-            // FR-34：七条全部默认开——①②是流程与耗时收敛（ZDROP 同构），③⑤修本轮
+            // FR-34：七条全部默认开——①②是流程与耗时收敛（同构），③⑤修本轮
             // 日志实证的蜂窝空转（≈103s），④修「窗口过期错过回连」×3，⑥修 60s 档
             // 够不着的 14s 快速死亡，⑦纯日志。逐条可独立关闸做现场二分。
             AP_ONE_TAP to true,
@@ -517,7 +559,13 @@ class ConnFlags @Inject constructor(
             STA_WLAN_WAIT to true,
             STA_FAST_IDLE_REFRESH to true,
             WLAN_DROP_REASON to true,
-            // FR-38：AP 轮次的 ZDROP 时序档，默认开（失败从 ~4 分钟长轮次收敛到 ~30s
+            // FR-35：①修 FR-34① 的 SSID 死角（不改判定就永远起不了轮）；②是新增的免面板
+            // 通路，失败自动回落面板，所以同样默认开、可独立关闸二分。
+            AP_JOINED_LOOSE to true,
+            AP_CRED_SPECIFIER to true,
+            // FR-37：架构选择此前只影响界面，连接层无视 → 用户报「切了没切」。默认开。
+            STA_ARCH_GATE to true,
+            // FR-38：AP 轮次的短时序档，默认开（失败从 ~4 分钟长轮次收敛到 ~30s
             // 出明确文案；关闸即回 10 次退避旧行为，现场可二分）
             AP_ZDROP_TIMING to true,
         )

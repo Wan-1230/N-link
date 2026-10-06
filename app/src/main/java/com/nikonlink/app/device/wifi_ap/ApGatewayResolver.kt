@@ -25,7 +25,7 @@ import javax.inject.Singleton
  * 这是 AP 通道唯一不依赖蓝牙凭证、也不依赖任何硬编码网段的判定依据 —— 旧实现
  * 只有 BLE 凭证与写死的 192.168.1.1 两条路，新固件把凭证 LsSec 加密后 AP 就整体不可用。
  *
- * 采样与规则借鉴行业通行做法（ZDROP 的 `AP gateway detected / stabilized /
+ * 采样与规则按行业通行做法设计：
  * ignored because it matches handset address`）：
  * - 加入后先等 [READINESS_MS] 再取，避免读到 DHCP 未完成时的中间态；
  * - 连采两次一致才认 [stable]=true（网关在恢复过程中会变）；
@@ -41,7 +41,7 @@ class ApGatewayResolver @Inject constructor(
     companion object {
         private const val TAG = "ApGateway"
 
-        /** 加入热点后到第一次取网关的等待（ZDROP: AP network readiness wait=1200ms） */
+        /** 加入热点后到第一次取网关的等待（AP 就绪等待，取自实机标定值） */
         private const val READINESS_MS = 1200L
 
         /** 两次采样间隔 */
@@ -58,7 +58,7 @@ class ApGatewayResolver @Inject constructor(
         private const val PROBE_SETTLE_MS = 400L
 
         /**
-         * 尼康机身热点名：`NIKON_` + 8 位十六进制（ZDROP 同源规则），区域/固件变体
+         * 尼康机身热点名：`NIKON_` + 8 位十六进制，区域/固件变体
          * 见 `NIKON-WF…` / `Nikon WU…`。判定放宽到「以 NIKON 开头」，
          * 因为这里只用于「手机是不是已经连在相机网络上」的启发式，误判的代价只是多试一次。
          */
@@ -70,6 +70,19 @@ class ApGatewayResolver @Inject constructor(
         }
 
         private val CAMERA_AP_SSID = Regex("(?i)^NIKON[ _\\-].{2,16}$")
+
+        /**
+         * FR-35①：「手机是不是已经挂在相机网络上」的纯判定（供单测覆盖三分支）。
+         *
+         * SSID 命中仍是首选；放宽出来的那一半只在**武装状态**（刚在系统面板或
+         * specifier 确认框里点过热点）下采用，理由见 [ConnFlags.AP_JOINED_LOOSE]。
+         * 网关来自 [gatewayOf]，它已经过滤掉 `169.254`/组播/回环/本机地址，
+         * 这里再要求落进私网段 —— 公网形态的网关属于蜂窝合法路径，不该被当成热点。
+         */
+        fun looksJoinedAp(ssid: String?, gatewayIp: String?, hasWifiNetwork: Boolean): Boolean =
+            looksLikeCameraAp(ssid) ||
+                (hasWifiNetwork && gatewayIp != null &&
+                    com.nikonlink.app.device.wifi_sta.WifiDirectConnector.isPrivateLanIp(gatewayIp))
 
         /** 厂商出厂默认候选（仅作为网关学习失败后的兜底，顺序即优先级） */
         val FACTORY_DEFAULT_HOSTS = listOf("192.168.1.1", "192.168.0.1", "192.168.3.1", "10.0.0.1")
@@ -133,6 +146,30 @@ class ApGatewayResolver @Inject constructor(
     fun isOnCameraAp(): Boolean = looksLikeCameraAp(connectedSsid())
 
     /**
+     * FR-35①：武装状态下的宽松在网判定 —— SSID 读不到或热点改过名时，
+     * 用「有 WiFi 网络且其网关落在私网段」顶上。
+     *
+     * 只给「面板/specifier 刚点完热点」的自动起轮用（`ConnectionManager.tryStartArmedApConnect`）；
+     * 用户首次点「连接相机」的分流仍用严格的 [isOnCameraAp]，否则在家用路由器上点一下
+     * 就会盲打路由器网关，把「该去连热点」的引导机会吞掉。
+     */
+    fun isOnApNetwork(): Boolean {
+        val ssid = connectedSsid()
+        if (looksLikeCameraAp(ssid)) return true
+        if (!connFlags.isEnabled(ConnFlags.AP_JOINED_LOOSE)) return false
+        val network = wifiNetworkOrNull()
+        return looksJoinedAp(ssid, gatewayOf(network), hasWifiNetwork = network != null)
+    }
+
+    /** 当前 WiFi 网络的 [Network] 句柄；没有则 null（FR-35①，与 [resolve] 的取网方式一致）。 */
+    private fun wifiNetworkOrNull(): Network? = runCatching {
+        connectivityManager.allNetworks.firstOrNull { net ->
+            connectivityManager.getNetworkCapabilities(net)
+                ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        }
+    }.getOrNull()
+
+    /**
      * 学习相机地址。[network] 为 specifier 建立的专属网络；为 null 时取当前 WiFi 网络。
      *
      * 可达性判据默认只做到 **TCP 建链**（[ConnFlags.PROBE_TCP_ONLY]）：
@@ -153,7 +190,7 @@ class ApGatewayResolver @Inject constructor(
         // FR-34②：手机就在相机热点上、首采样又拿到了有效 IPv4 网关 —— 直接采信。
         // 「网关即相机」是 AP 的定义，不需要第二采样确认，更不该再花 800ms+400ms
         // 去 TCP 筛探（那还会占机身唯一的 PTP/IP 槽，FR-21 实测收回要 ~35s）。
-        // 真机 DISCOVER p50=2335ms → ~1200ms，对齐 ZDROP 的固定 1200ms readiness。
+        // 真机 DISCOVER p50=2335ms → ~1200ms，对齐 固定 1200ms readiness。
         val fast = connFlags.isEnabled(ConnFlags.AP_GW_FASTPATH) &&
             first != null && isOnCameraAp()
         val second = if (first == null || fast) null else {

@@ -3,6 +3,8 @@ package com.nikonlink.app.device
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nikonlink.app.device.model.CameraDevice
+import com.nikonlink.app.device.model.CameraModel
+import com.nikonlink.app.device.model.CameraModelCatalog
 import com.nikonlink.app.device.model.ConnectionMetrics
 import com.nikonlink.app.device.model.ConnectionState
 import com.nikonlink.app.device.connect.ConnectionHint
@@ -156,11 +158,33 @@ class DashboardViewModel @Inject constructor(
 
     fun connectApDirect() = connectionManager.connectApDirect()
 
-    fun armApPanel() = connectionManager.armApPanelConnect()
+    /** FR-35①：[path] = panel | settings | specifier，落进 ap_panel 事件供真机归因。 */
+    fun armApPanel(path: String) = connectionManager.armApPanelConnect(path)
+
+    /**
+     * FR-35④：有 BLE 凭证时免面板一键连。
+     * @return false = 闸门关或本会话没有凭证，调用方应立刻回落系统面板。
+     */
+    fun connectApWithCredential(onFailed: () -> Unit): Boolean =
+        connectionManager.connectApWithCredential(onFailed)
 
     fun apPanelArmed(): Boolean = connectionManager.isApPanelArmed()
 
     fun tryStartArmedApConnect(): Boolean = connectionManager.tryStartArmedApConnect()
+
+    // ── FR-36：设备页「相机全称」的候选来源（归一化在 CameraModelCatalog，识别不出= null）──
+
+    /** PTP/IP 会话建立时那次 `GetDeviceInfo` 记下的机身自报 Model 原文。 */
+    fun sessionCameraModel(): String? = connectionManager.sessionCameraModel()
+
+    /** BLE 广播名里认出的机型（广播形如 `Z6III_12345678`，序列号后缀会被剥掉）。 */
+    fun discoveredCameraName(): String? = _deviceList.value
+        .firstOrNull { it.model != CameraModel.UNKNOWN }
+        ?.let { CameraModelCatalog.official(it.model) }
+
+    /** 最近一次配对记录里存的机型（新记录存 Model 原文，历史记录那一列是 IP → 返回 null）。 */
+    fun pairedCameraName(): String? = recentDevices.value.firstOrNull()
+        ?.let { CameraModelCatalog.official(it.cameraModel) }
 
     /** 从最近连接列表快速重连 */
     fun connectToRecentDevice(device: PairedDevice) {
@@ -191,7 +215,7 @@ class DashboardViewModel @Inject constructor(
     val staRegisterNeeded: StateFlow<Boolean> = connectionManager.staRegisterNeeded
 
     /**
-     * STA 主机注册（ZDROP 式）：AP 模式连上相机后，把本机 GUID 注册为相机信任主机，
+     * STA 主机注册（式）：AP 模式连上相机后，把本机 GUID 注册为相机信任主机，
      * 之后相机切 STA 模式才会放行握手。前置引导（相机进「连接至 PC」向导）由 UI 完成。
      */
     fun registerStaHost() {

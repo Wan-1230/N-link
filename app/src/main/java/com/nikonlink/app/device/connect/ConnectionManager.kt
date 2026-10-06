@@ -5,6 +5,7 @@ import com.nikonlink.app.device.ble.BleConnectionState
 import com.nikonlink.app.device.ble.BleManager
 import com.nikonlink.app.device.ble.WifiCredential
 import com.nikonlink.app.device.model.ConnectionMetrics
+import com.nikonlink.app.device.model.CameraModelCatalog
 import com.nikonlink.app.device.model.ChannelType
 import com.nikonlink.app.device.model.ConnectionState
 import com.nikonlink.app.device.model.ConnectionEvent
@@ -62,13 +63,17 @@ class ConnectionManager @Inject constructor(
     private val connFlags: ConnFlags,
     private val funnel: ConnFunnel,
     private val preflight: PreflightGate,
-    private val staHostRegistrar: StaHostRegistrar
+    private val staHostRegistrar: StaHostRegistrar,
+    /** FR-36①：AP 面板等待期也要盯掉线原因——这条窗口里 WifiDirectConnector 还没跑起来，它自己的注册覆盖不到。 */
+    private val wifiDropWatcher: com.nikonlink.app.device.wifi_sta.WifiDropReasonWatcher
 ) {
     companion object {
         private const val TAG = "ConnectionMgr"
         private const val WIFI_UPGRADE_DELAY_MS = 1000L
         private const val PREFS_NAME = "nl_settings"
         private const val PREFS_WIFI_5G_PREFER = "wifi_band_5g_prefer"
+        /** FR-37：设备页 STA 架构选择的键（写侧是 `AppSettings.staArchitecture`，同一个 prefs 文件）。 */
+        private const val PREFS_STA_ARCH = "sta_arch"
         /** STA 主机注册标记：相机已记住本机 GUID（门控解除） */
         private const val PREFS_STA_HOST_REGISTERED = "sta_host_registered"
 
@@ -97,14 +102,14 @@ class ConnectionManager @Inject constructor(
 
         /**
          * FR-30：未连接态自主注册的发现预算。
-         * 8s 够 mDNS 一轮应答 + 网段短超时补扫（ZDROP 的发现代际实测 6s 收口）；
+         * 8s 够 mDNS 一轮应答 + 网段短超时补扫（发现代际实测 6s 收口）；
          * 注册是用户手动点的动作，超过这个数还不如让用户先看一眼相机屏幕。
          */
         private const val REG_DISCOVERY_TIMEOUT_MS = 8_000L
 
         /**
          * FR-32：注册收到 InitFail reason=1（槽位被占）后的冷却窗。
-         * 数值出处：FR-21 实测机身收回半开会话要几十秒（ZDROP 对照同量级）；
+         * 数值出处：FR-21 实测机身收回半开会话要几十秒（对照同量级）；
          * 2026-10-02 真机连轰 4 次 reason=1 期间相机向导进入失败态（用户目视「连接失败」）。
          */
         private const val REG_REASON1_COOLDOWN_MS = 35_000L
@@ -320,6 +325,27 @@ class ConnectionManager @Inject constructor(
             return
         }
 
+        // FR-37：设备页选了「FTP 推送收图」时，不让**自动**发起的连接去敲 PTP/IP 门。
+        // 机身只有一个 PTP/IP 客户端槽（FR-21 实测收回要 ~35s），而相机在 FTP 向导里等推送时
+        // 被 InitCommand 敲门就会中断推送——用户观感就是「切了 FTP 还是直接连相机」。
+        // 两条边界：① 用户明确点「连接」（USER_TAP）照旧放行，监看与相册只有 PTP 能做；
+        // ② 手机挂在相机自己的热点上（AP 场景）不拦，因为 FTP 架构是 STA 页签的选择，
+        //    不该顺手管住 AP 链路。
+        if (caller != ConnFunnel.Caller.USER_TAP &&
+            connFlags.isEnabled(ConnFlags.STA_ARCH_GATE) &&
+            isFtpPushArchitecture() && !apGatewayResolver.isOnCameraAp()
+        ) {
+            eventLogger.event(
+                "arch_skip", "host" to endpoint.host, "caller" to caller.code,
+                "arch" to "ftp_push"
+            )
+            _connectionHint.value = ConnectionHint(
+                "当前是 FTP 推送架构：手机只接收相机推送，后台自动 PTP 直连已停用。" +
+                    "要做监看/相册就在设备页点「连接相机」临时直连。"
+            )
+            return
+        }
+
         // v2.2（G11/G12）：先预检再连接 —— 权限/位置开关/OTG 这类硬阻断不该靠重试去碰运气
         val mode = if (endpoint.host == DEFAULT_FALLBACK_HOST) "AP-fallback" else "host"
         funnel.begin("WIFI", mode, caller.code)
@@ -502,10 +528,15 @@ class ConnectionManager @Inject constructor(
                 // 回调非挂起上下文，持久化是 fire-and-forget，放独立协程（与旧实现语义一致）
                 scope?.launch(Dispatchers.IO) {
                     try {
+                        // FR-36：这次调用的第三参是 `model`，旧代码传的是 `endpoint.host`
+                        // （IP 地址）——配对记录里那一列从建立起就是错的，「最近连接」卡片
+                        // 只能显示 `尼康相机`。现在把机身自报 Model 归一化成官方全称写进
+                        // deviceName，型号原文写进 model；取不到时保留旧的行为（扫描名）。
+                        val officialName = CameraModelCatalog.official(ptpSession.lastDeviceModel)
                         deviceRepository.savePairedDevice(
                             endpoint.address,
-                            deviceName ?: "尼康相机",
-                            endpoint.host
+                            officialName ?: deviceName ?: "尼康相机",
+                            ptpSession.lastDeviceModel.orEmpty()
                         )
                     } catch (e: Exception) {
                         Timber.tag(TAG).w(e, "Failed to persist WiFi camera")
@@ -760,7 +791,7 @@ class ConnectionManager @Inject constructor(
     }
 
     /**
-     * STA 主机注册（ZDROP 式）：发送 PrepareHost(0x952B) / ConfirmHost(0x935A)，
+     * STA 主机注册（式）：发送 PrepareHost(0x952B) / ConfirmHost(0x935A)，
      * 把本机 GUID 注册为相机信任主机。
      * 注册成功后，相机切 STA 模式才会放行 InitCommandRequest（否则会 InitFail 拒绝）。
      *
@@ -768,7 +799,7 @@ class ConnectionManager @Inject constructor(
      * - **已连接**（AP 模式连上、或 STA 已连）：在当前活会话内注册，v2.6.3 以来的原路径，逻辑不变；
      * - **未连接**（v2.6.6 FR-30）：相机已连上本机热点/同一路由器并停在向导时，
      *   先做一轮受限发现拿到 endpoint，再交 [StaHostRegistrar] 开临时通道完成注册 ——
-     *   不再要求「先通过 AP 连上相机」。ZDROP 2026-10-01 诊断日志的 host-register 段
+     *   不再要求「先通过 AP 连上相机」。2026-10-01 诊断日志的 host-register 段
      *   证明注册本就是一条不依赖既有会话的独立链路。
      */
     suspend fun registerStaHost(
@@ -778,7 +809,7 @@ class ConnectionManager @Inject constructor(
             return registerStaHostStandalone(onProgress)
         }
         // v2.6.3 R2（ConnFlags.HOSTREG_PRECHECK）：发 0x952B 之前先看相机**当前模式**
-        // 有没有把它列进 OperationsSupported。尼康的 SnapBridge AP 与主机配置向导都在
+        // 有没有把它列进 OperationsSupported。机身 AP 与主机配置向导都在
         // 192.168.1.1 提供 PTP/IP，但只有向导支持注册 —— 这是唯一能在**发命令之前**
         // 分辨两者的信号，省掉一次注定失败的往返和一句含糊的报错。
         // ops 为 null（没取到/解析失败）时不拦，按旧路径盲发。
@@ -833,7 +864,7 @@ class ConnectionManager @Inject constructor(
         eventLogger.event("hostreg", "phase" to "discover_start", "transport" to "standalone")
         // FR-31③④：注册发现**不发 InitCommand**（会占住相机唯一槽位，把紧随其后的
         // 注册握手挤成 reason=1；2026-10-02 真机连拒 4 次），且强候选命中即收，
-        // 不再跑满扫描预算（旧实测 discover 段 8~18s，ZDROP 发现代际 1.4s）。
+        // 不再跑满扫描预算（旧实测 discover 段 8~18s，发现代际 1.4s）。
         val candidates = runCatching {
             scanWifiCameras(
                 timeoutMs = REG_DISCOVERY_TIMEOUT_MS,
@@ -1036,25 +1067,66 @@ class ConnectionManager @Inject constructor(
 
     // ── FR-34①：AP 一键连接（免扫描 + 系统 WLAN 面板）──────────────────────────
     //
-    // ZDROP 的两条简化在同机同相机上被日志与 dex 双重证实（分析文档 §4/§5）：
+    // 两条简化在同机同相机上被日志与 dex 双重证实（分析文档 §4/§5）：
     // ① AP endpoint 硬编码 192.168.1.1，零扫描；② 热点加入用
     // `android.settings.panel.action.WIFI`（AOSP 标准化面板，各家 ROM 必须实现，
     // 绕开 OEM 全设置页深链失效问题）。这里把这两条接进现有 learnFirst 通路：
     // 兜底地址起轮次后由 ApGatewayResolver 学真网关，扫描一步都不需要。
 
-    /** >0 = 面板已拉起、等待用户在面板里点相机热点；值为武装时刻。 */
+    /** >0 = 一键连已发起、等待手机挂上相机热点（面板点选或 specifier 确认）；值为武装时刻。 */
     @Volatile
     private var apPanelArmedAt = 0L
+
+    /** FR-35①：本次武装走的是哪条路（panel | settings | specifier），回连日志要能区分。 */
+    @Volatile
+    private var apPanelArmedPath = "panel"
+
+    /** FR-35④：specifier 请求在途标记，防止连点把系统确认框叠成风暴。 */
+    private var apSpecifierJob: Job? = null
 
     fun isApOneTapEnabled(): Boolean = connFlags.isEnabled(ConnFlags.AP_ONE_TAP)
 
     /** 手机当前是否挂在相机热点上（UI 分流用）。 */
     fun isOnCameraAp(): Boolean = apGatewayResolver.isOnCameraAp()
 
-    /** UI 拉起 WLAN 面板前调用：登记武装状态。 */
-    fun armApPanelConnect() {
+    /**
+     * FR-36：本次 PTP/IP 会话里机身自报的 `Model` 原文（未取到为 null）。
+     * 设备页的相机全称拿它做第二顺位来源——比参数轮询早，连上瞬间就有。
+     */
+    fun sessionCameraModel(): String? = ptpSession.lastDeviceModel
+
+    /**
+     * FR-37：设备页当前的 STA 架构是不是「FTP 推送收图」。
+     *
+     * 键与 `AppSettings.staArchitecture` 同一个 prefs 文件（`nl_settings` / `sta_arch`）——
+     * 这里直接读而不注入 AppSettings，是因为本类已经用同样方式读 `wifi_band_5g_prefer`，
+     * 且 ConnectionManager 的构造参数有 12 个，为一个布尔不加依赖。
+     */
+    private fun isFtpPushArchitecture(): Boolean =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(
+                PREFS_STA_ARCH,
+                com.nikonlink.app.shared.common.AppSettings.STA_ARCH_PTP
+            ) == com.nikonlink.app.shared.common.AppSettings.STA_ARCH_FTP
+
+    /** UI 拉起 WLAN 面板（或发起 specifier 一键连）前调用：登记武装状态。 */
+    fun armApPanelConnect(path: String = "panel") {
         apPanelArmedAt = System.currentTimeMillis()
-        eventLogger.event("ap_panel", "phase" to "armed")
+        apPanelArmedPath = path
+        // FR-35①：把「离开 App 那一刻」的 WLAN 状态一起落日志。没有这一行，
+        // 「面板里点了热点、回来没连上」就分不清是手机没 join 上、相机 AP 没放行、
+        // 还是我们没看见回连（ap_panel 原先只有 phase/path，看不出当时有没有 WiFi 网络）。
+        eventLogger.event(
+            "ap_panel", "phase" to "armed", "path" to path,
+            "wlan_on" to runCatching { wifiManager.isWifiEnabled() }.getOrDefault(false),
+            "has_wifi_net" to apGatewayResolver.isOnCameraAp(),
+            "ssid_len" to (apGatewayResolver.connectedSsid()?.length ?: 0)
+        )
+        // 用户回连这段时间正是「谁砍的 wlan0」的现场（FR-31 RC-A）：面板点完热点后手机
+        // 若立刻报 disconnected，才能证明是手机/系统侧先断，而不是相机侧。
+        // 监听器本来就由 WifiDirectConnector 起止，但那条链路此刻还没跑起来，所以这里补一次
+        // 注册（start/stop 均幂等，且受 WLAN_DROP_REASON 闸门管）。
+        wifiDropWatcher.start()
     }
 
     fun isApPanelArmed(): Boolean =
@@ -1063,21 +1135,75 @@ class ConnectionManager @Inject constructor(
     /**
      * FR-34①：AP 模式无扫描候选时直接以兜底地址起轮次。
      * `learnFirst` 分支会用 ApGatewayResolver 学出真网关，扫描一步都不需要 ——
-     * ZDROP 同款语义（其 dex 里 endpoint 默认就是 192.168.1.1，零扫描）。
+     * 同款语义（其 dex 里 endpoint 默认就是 192.168.1.1，零扫描）。
      */
     fun connectApDirect() {
         connectToWifiCamera(DEFAULT_FALLBACK_HOST, caller = ConnFunnel.Caller.USER_TAP)
     }
 
     /**
-     * 武装状态下尝试起一轮 AP 连接（面板回连检测、onResume 兜底都调这里）。
+     * FR-35④：手上有 BLE 下发的 WiFi 凭证时，免系统面板一键连热点。
+     *
+     * 走 v2.2 就实现的 `WifiNetworkSpecifier` 通路（`wifi-ap/WifiManager.kt` 的
+     * `buildCameraApRequest`）：系统弹一次「允许连接该网络」确认框，用户不必再进
+     * WLAN 列表翻 NIKON_xxx；且不依赖 SSID 可读、不受热点改名影响（凭证自带名字与密码）。
+     * 连上后由 [observeApPanelJoin] / [tryStartArmedApConnect] 起 PTP/IP 轮次。
+     *
+     * 代价是系统确认框必须由用户点一次「允许」，且专属网络随请求注销即断 ——
+     * 免确认自动连网对普通应用并不可得，所以这条单独设闸 [ConnFlags.AP_CRED_SPECIFIER]。
+     *
+     * @param onFailed specifier 失败/超时回调（闸门关、无凭证时**不会**调用），UI 据此回落面板。
+     * @return true = 已发起（结果异步回来）；false = 闸门关或无凭证，调用方应立刻走面板。
+     */
+    fun connectApWithCredential(onFailed: () -> Unit): Boolean {
+        if (!connFlags.isEnabled(ConnFlags.AP_CRED_SPECIFIER)) return false
+        val credential = bleManager.wifiCredential.replayCache.firstOrNull()
+            ?.takeIf { it.ssid.isNotBlank() }
+            ?: return false
+        val sc = scope ?: return false
+        if (apSpecifierJob?.isActive == true) {
+            eventLogger.event("ap_join", "path" to "specifier", "phase" to "busy")
+            return true
+        }
+        val prefer5G = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(PREFS_WIFI_5G_PREFER, false)
+        armApPanelConnect("specifier")
+        apSpecifierJob = sc.launch(Dispatchers.IO) {
+            val ok = runCatching { wifiManager.connectToCamera(credential, prefer5G) }.getOrDefault(false)
+            eventLogger.event(
+                "ap_join", "path" to "specifier", "ok" to ok,
+                // 只记长度/有无密码：SSID 名与口令不落日志（AGENTS.md 隐私条）
+                "ssid_len" to credential.ssid.length, "has_pw" to credential.password.isNotEmpty()
+            )
+            if (ok) {
+                tryStartArmedApConnect()
+            } else {
+                apPanelArmedAt = 0L
+                withContext(Dispatchers.Main) { onFailed() }
+            }
+        }
+        return true
+    }
+
+    /**
+     * 武装状态下尝试起一轮 AP 连接（面板回连检测、specifier 成功、onResume 兜底都调这里）。
+     *
+     * FR-35①：判定从 `isOnCameraAp()`（只认 SSID 命中 NIKON 规则）换成
+     * [ApGatewayResolver.isOnApNetwork]。旧判据有两处必然落空：Android 13+ 没给
+     * 「附近的设备」权限时 SSID 是 `<unknown ssid>`；机身热点名被用户改过。
+     * 落空时连武装标记都不消费，表现为「面板里点了热点、回 App 没反应、再点还是弹面板」——
+     * 这正是 FR-34① 在真机上没达成「一键」的死角。
+     *
      * @return true = 已消费武装标记并发起连接
      */
     fun tryStartArmedApConnect(): Boolean {
         if (!isApPanelArmed()) return false
-        if (!apGatewayResolver.isOnCameraAp()) return false
+        if (!apGatewayResolver.isOnApNetwork()) return false
         apPanelArmedAt = 0L
-        eventLogger.event("ap_panel", "phase" to "joined", "host" to DEFAULT_FALLBACK_HOST)
+        eventLogger.event(
+            "ap_panel", "phase" to "joined", "path" to apPanelArmedPath,
+            "host" to DEFAULT_FALLBACK_HOST
+        )
         connectApDirect()
         return true
     }

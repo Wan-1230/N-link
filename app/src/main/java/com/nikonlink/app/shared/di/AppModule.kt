@@ -95,7 +95,8 @@ object AppModule {
         connFlags: com.nikonlink.app.device.connect.ConnFlags,
         funnel: com.nikonlink.app.device.connect.ConnFunnel,
         preflight: com.nikonlink.app.device.connect.PreflightGate,
-        staHostRegistrar: com.nikonlink.app.device.wifi_sta.StaHostRegistrar
+        staHostRegistrar: com.nikonlink.app.device.wifi_sta.StaHostRegistrar,
+        wifiDropWatcher: com.nikonlink.app.device.wifi_sta.WifiDropReasonWatcher
     ): ConnectionManager = ConnectionManager(
         context,
         bleManager,
@@ -112,7 +113,8 @@ object AppModule {
         connFlags,
         funnel,
         preflight,
-        staHostRegistrar
+        staHostRegistrar,
+        wifiDropWatcher
     )
 
     @Provides
