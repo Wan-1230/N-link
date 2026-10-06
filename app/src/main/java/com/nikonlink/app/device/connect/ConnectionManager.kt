@@ -483,7 +483,7 @@ class ConnectionManager @Inject constructor(
         deviceName: String?,
         source: String,
         /**
-         * FR-38：AP 链路（learnFirst 起轮）为 true —— 连接循环走 ZDROP 时序档
+         * FR-38：AP 链路（learnFirst 起轮）为 true —— 连接循环走短时序档
          * （绑网 8s / 逐次路由复查 / 重绑 2.5s+450ms / 2 次 × 7s / connect 6s）。
          * STA 与恢复轮次为 false，维持 10 次退避长轮次。
          */

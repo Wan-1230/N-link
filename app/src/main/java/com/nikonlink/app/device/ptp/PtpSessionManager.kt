@@ -218,7 +218,7 @@ class PtpSessionManager @Inject constructor(
         port: Int,
         label: String,
         /**
-         * FR-38：AP 轮次的显式覆盖（ZDROP 同款 6000ms）。0 = 按 lane 判定取默认值。
+         * FR-38：AP 轮次的显式覆盖（6000ms 快失败档）。0 = 按 lane 判定取默认值。
          * 注意必须排在 `configure` 之前 —— Kotlin 尾随 lambda 绑定最后一个形参。
          */
         timeoutOverrideMs: Int = 0,
@@ -285,7 +285,7 @@ class PtpSessionManager @Inject constructor(
         pairingMode: Boolean = false,
         network: Network? = null,
         /**
-         * FR-38：AP 轮次传入 6000（ZDROP `C0556c4#S0` 同款 connect 超时），
+         * FR-38：AP 轮次传入 6000（快失败档的 connect 超时），
          * 0 = 维持默认 lane 判定（绑网 30s / 默认路由 8s）。
          * 注意排在 `onWifiConnected` 之前 —— Kotlin 尾随 lambda 绑定最后一个形参。
          */

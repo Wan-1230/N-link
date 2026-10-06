@@ -13,7 +13,7 @@ import com.nikonlink.app.shared.ui.Motion
 /**
  * 视S2 空态组件 —— 「图标容器 + 粗标题 + 副文案 + 行动按钮」，替代代码拼的一行灰字。
  *
- * 对标（2026-10-04 ZDROP 实机取证 `_apk_re/bench/zdrop_album.png`）：成熟相册的空态
+ * 实机取证依据（2026-10-04）：成熟相册的空态
  * 是一个居中设计组件，而不是一句提示。三件套收口：
  * - iconBox：圆角容器（chip_unselected 底 + 24dp 圆角）内的图标/emoji，缺省隐藏；
  * - title：font_title 粗体一级色，主信息；
