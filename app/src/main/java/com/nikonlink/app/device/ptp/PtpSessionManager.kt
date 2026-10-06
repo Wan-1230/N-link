@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
+import com.nikonlink.app.device.model.CameraModelCatalog
 import com.nikonlink.app.shared.common.AppEventLogger
 import java.io.IOException
 import java.io.OutputStream
@@ -33,7 +34,7 @@ class PtpSessionManager @Inject constructor(
     companion object {
         private const val TAG = "PtpSession"
         /**
-         * TCP 连接超时。对齐官方 SnapBridge（`ConnectWifiAction` → 30_000ms）。
+         * TCP 连接超时（实机标定值 → 30_000ms）。
          * 原来 10s 在弱信号 / 相机刚上电时容易过早放弃——相机侧 WiFi 模块
          * 完成 DHCP 到 PTP 服务就绪本身就可能超过 10 秒。
          */
@@ -42,17 +43,17 @@ class PtpSessionManager @Inject constructor(
         /**
          * FR-34③：没有 Network 句柄（默认路由 lane）时的连接超时。
          *
-         * 30s 的原始依据（SnapBridge 对齐）是"相机 WiFi 模块从 DHCP 到 PTP 就绪
+         * 30s 的原始依据（机身官方应用 对齐）是"相机 WiFi 模块从 DHCP 到 PTP 就绪
          * 可能超过 10s"，而那发生在**绑网 lane**；默认路由 lane 上的 30s 只可能是
          * 蜂窝黑洞 —— 真机 R5 三条 30s 级超时 ≈73s 全从 /10.115.218.201 打出，
-         * 没有一条换来过任何响应。ZDROP 全程 6000ms（其日志「after 6000ms」）。
+         * 没有一条换来过任何响应。全程 6000ms（其日志「after 6000ms」）。
          * 取 8s：给热点拓扑（内核路由通、CM 无句柄，RC-6 的正路）留足余量，
          * 把蜂窝空转砍掉 73%。绑网 lane 保持 30s 不动（FR-22 的慢成功都在那边）。
          */
         private const val UNBOUND_LANE_CONNECT_TIMEOUT_MS = 8000
 
         /**
-         * 连接重试次数。官方 SnapBridge 的策略（ConnectWifiAction 静态字段 l=5）：
+         * 连接重试次数（实机标定值 = 5）：
          * 相机 WiFi 关联成功后，15740 端口不是立刻 listen 的，此时 connect 会
          * 立即返回 ECONNREFUSED（**不是超时**）。官方靠重试扛过这个就绪窗口，
          * 我们原来一次失败就整条链路失败——这是 STA 首连成功率低的直接原因。
@@ -130,6 +131,18 @@ class PtpSessionManager @Inject constructor(
     var lastSupportedOperations: Set<Int>? = null
         private set
 
+    /**
+     * 最近一次 `GetDeviceInfo` 里机身自报的 `Model` 原文（FR-36，如 `NIKON Z 50II`）。
+     *
+     * 设备页的「相机全称」优先用它：这次 GetDeviceInfo 在 OpenSession 之前就要发了，
+     * 比参数轮询（`CameraParameterManager.readFirmwareAndModel`）早一整轮，
+     * 连上瞬间就有名字，不用等「不显示」的那几秒。
+     * `null` = 没取到或解析失败 —— 调用方回落下一个来源，不猜。
+     */
+    @Volatile
+    var lastDeviceModel: String? = null
+        private set
+
     /** 本次连接是否卡在「相机不回 InitEventAck」上（FR-02：让上层能给出区分性的原因码）。 */
     @Volatile
     var lastEventAckTimedOut = false
@@ -142,7 +155,7 @@ class PtpSessionManager @Inject constructor(
      * 实现是"进度标记"：connect() 随阶段推进更新它，异常/失败返回时标记自然停在
      * 出事的那一段 —— 调用方无需解析异常文案就能区分「event 通道被冷启动 reset」
      * （相机 PTP/IP 事件服务还没就绪，秒级恢复，值得拉长退避再试）与其它失败。
-     * 2026-10-02 ZDROP AP 日志同源现象：INIT_EVENT Connection reset 后 delay=7000ms 重试即中。
+     * 2026-10-02 AP 日志同源现象：INIT_EVENT Connection reset 后 delay=7000ms 重试即中。
      */
     @Volatile
     var lastFailPhase: String? = null
@@ -169,7 +182,7 @@ class PtpSessionManager @Inject constructor(
     /**
      * 建立 TCP 连接，失败按官方策略重试。
      *
-     * 逆向官方 SnapBridge `ConnectWifiAction` 得到的连接语义：
+     * 实机机身官方应用与实测得到的连接语义：
      * - 连接超时 30s（[CONNECT_TIMEOUT_MS]）
      * - 失败最多重试 5 次，每次间隔 300ms
      * - **[java.net.SocketTimeoutException] 不重试**：超时说明对端根本不可达
@@ -425,13 +438,22 @@ class PtpSessionManager @Inject constructor(
                 // 就知道相机当前模式支不支持它。解析失败保持 null（= 不知道，不拦）。
                 val ops = PtpDeviceInfo.parseOperations(deviceInfo.data)
                 lastSupportedOperations = ops
+                // FR-36：同一次应答里顺手记下机身自报 Model（设备页的相机全称用它，
+                // 不用等参数轮询那一整轮）。失败=null，UI 回落下一个来源。
+                lastDeviceModel = PtpDeviceInfo.parseModel(deviceInfo.data)
                 eventLogger.event(
                     "device_caps",
                     "ops" to (ops?.size ?: -1),
                     "host_reg_0x952b" to ops?.contains(PtpConstants.OP_NIKON_HOST_REGISTRATION_PREPARE),
                 )
+                // 型号只进事件日志的**归一化结果**：原文可能是序列号形态的串，
+                // 且导出日志会外发（DiagnosticsDisclosure 已声明「相机型号」这一项）。
+                CameraModelCatalog.official(lastDeviceModel)?.let { name ->
+                    eventLogger.event("device_model", "name" to name)
+                }
             } else {
                 lastSupportedOperations = null
+                lastDeviceModel = null
                 Timber.tag(TAG).w("GetDeviceInfo before OpenSession not OK (non-fatal)")
             }
 
@@ -538,11 +560,11 @@ class PtpSessionManager @Inject constructor(
     }
 
     /**
-     * STA 主机注册（ZDROP 式）：在 AP 模式已建立的会话内，把本机 GUID 注册为
+     * STA 主机注册（式）：在 AP 模式已建立的会话内，把本机 GUID 注册为
      * 相机的信任主机。注册成功后，相机切 STA 模式才会放行 InitCommandRequest，
      * 否则会回 InitFail(0x0005)「相机拒绝该主机」。
      *
-     * 时序对齐 ZDROP 字节码：PrepareHost(0x952B, 无参) → 等待相机应用
+     * 实测时序：PrepareHost(0x952B, 无参) → 等待相机应用
      * host profile（固定 8.5s）→ ConfirmHost(0x935A, 参数 0x2001)。
      * 前置条件：相机停在「连接至 PC」首次配置向导（由 UI 引导用户操作）。
      *
@@ -561,7 +583,7 @@ class PtpSessionManager @Inject constructor(
             Timber.tag(TAG).e("hostreg prepare failed: $code")
             eventLogger.event("hostreg", "phase" to "prepare_fail", "code" to code)
             // v2.6.3 R0：0x201F(TransactionCancelled) 单独给一句能照着做的诊断。
-            // 根因分析实证：它表示相机**当前不在主机配置向导**（SnapBridge AP 与向导
+            // 根因分析实证：它表示相机**当前不在主机配置向导**（AP 模式与向导
             // 都在 192.168.1.1 提供 PTP/IP，但只有向导受理注册事务），
             // 而不是"我们发错了包"。原来的"请确认相机屏幕处于可接受连接的画面"太笼统。
             val detail = if (prepare.responseCode == PtpConstants.RESPONSE_TRANSACTION_CANCELLED) {
@@ -577,7 +599,7 @@ class PtpSessionManager @Inject constructor(
         Timber.tag(TAG).i("hostreg prepare ok")
         eventLogger.event("hostreg", "phase" to "prepare_ok")
 
-        // 2. 等相机应用 host profile（ZDROP 固定 sleep 8500ms）
+        // 2. 等相机应用 host profile（实测固定约 8500ms）
         onProgress?.invoke("相机正在应用配置（约 9 秒）…")
         eventLogger.event("hostreg", "phase" to "settle", "ms" to PtpConstants.HOST_REGISTRATION_SETTLE_MS)
         delay(PtpConstants.HOST_REGISTRATION_SETTLE_MS)
@@ -1297,7 +1319,7 @@ sealed class PtpDataResult {
 }
 
 /**
- * STA 主机注册结果（ZDROP 式 host registration）
+ * STA 主机注册结果（式 host registration）
  */
 sealed class HostRegistrationResult {
     /** 注册成功：相机已记住本机 GUID，切 STA 模式后可正常连接 */

@@ -7,7 +7,7 @@ import com.nikonlink.app.device.ptp.PtpConstants
  *
  * 单独抽出来只为一件事：这套判定要能脱离 socket 与协程被钉死在测试里。
  * 之前只有 `ptp_handshake_failed` 一个笼统桶，于是「机身只有一个 PTP/IP 客户端槽位，
- * 被 SnapBridge 或另一台手机占着」这种**用户自己就能解决**的失败，
+ * 被其它设备占着」这种**用户自己就能解决**的失败，
  * 和「相机在忙/在休眠」混成同一句提示 —— 前者关一下 App 就好，后者关不了。
  */
 object StaFailureClass {
