@@ -162,26 +162,26 @@ class WifiDirectConnector @Inject constructor(
         /** FR-34⑤：回连等待的轮询间隔 */
         private const val WLAN_RETURN_POLL_MS = 500L
 
-        // ── FR-38：AP 档时序（ZDROP 复刻，全部数值取自 2026-10-03 jadx 逆向）──────────
+        // ── FR-38：AP 档时序（全部数值取自 2026-10-03 实机标定）──────────
         // 对照：C0516A#c(8000ms) 绑网、[bad] N5.java:768/788 重绑 2500ms+450ms、
         // M5#p AP 双通道至多 2 次、M5 间隔 7000ms、C0556c4#S0 connect 6000ms。
 
-        /** AP 档绑网/等网窗口（ZDROP `C0516A#c` 的 8000ms；STA 档维持 [AWAIT_NETWORK_MS]） */
+        /** AP 档绑网/等网窗口（实机标定 8000ms；STA 档维持 [AWAIT_NETWORK_MS]） */
         private const val AP_BIND_WAIT_MS = 8_000L
 
-        /** AP 档路由复查失败后的重绑窗口（ZDROP 重绑 2500ms） */
+        /** AP 档路由复查失败后的重绑窗口（实机标定 2500ms） */
         private const val AP_REBIND_WAIT_MS = 2_500L
 
-        /** AP 档重绑后的收敛间歇（ZDROP 450ms 后复查） */
+        /** AP 档重绑后的收敛间歇（450ms 后复查） */
         private const val AP_REBIND_SETTLE_MS = 450L
 
-        /** AP 档单轮尝试次数（ZDROP `M5#p` AP 双通道至多 2 次） */
+        /** AP 档单轮尝试次数（AP 双通道至多 2 次） */
         private const val AP_MAX_ATTEMPTS = 2
 
-        /** AP 档尝试间隔（ZDROP AP 双通道重试间隔 7000ms） */
+        /** AP 档尝试间隔（AP 双通道重试间隔 7000ms） */
         private const val AP_RETRY_MS = 7_000L
 
-        /** AP 档 TCP connect 超时（ZDROP `C0556c4#S0` connect(endpoint, 6000)） */
+        /** AP 档 TCP connect 超时（connect(endpoint, 6000) 的 6s 快失败档） */
         private const val AP_CONNECT_TIMEOUT_MS = 6_000
 
         /**
@@ -288,7 +288,7 @@ class WifiDirectConnector @Inject constructor(
          */
         source: String = "unspecified",
         /**
-         * FR-38：AP 链路（learnFirst 起轮）置 true —— 启用 ZDROP 时序档
+         * FR-38：AP 链路（learnFirst 起轮）置 true —— 启用短时序档
          * （绑网 8s / 每次尝试前路由复查 / 重绑 2.5s+450ms / 2 次 × 7s / connect 6s）。
          * STA 轮次与恢复轮次保持 false，走原有 10 次退避长轮次。
          */
@@ -349,7 +349,7 @@ class WifiDirectConnector @Inject constructor(
         onFail: (String) -> Unit
     ) {
         val pairing = (mode == Mode.PAIRING)
-        // FR-38：AP 链路 + 闸门开 → ZDROP 时序档。闸门关 = 与 STA 同款长轮次。
+        // FR-38：AP 链路 + 闸门开 → 短时序档。闸门关 = 与 STA 同款长轮次。
         val apZdrop = apTiming && connFlags.isEnabled(ConnFlags.AP_ZDROP_TIMING)
         val maxAttempts = if (apZdrop) AP_MAX_ATTEMPTS else MAX_ATTEMPTS
         val awaitNetworkMs = if (apZdrop) AP_BIND_WAIT_MS else AWAIT_NETWORK_MS
@@ -650,7 +650,7 @@ class WifiDirectConnector @Inject constructor(
                     // 三者的处置是"等机身"/"唤醒相机"/"换网络"，一句 `reachable=false`
                     // 把它们糊成了同一个"再试一次"。
                     preconnectGrade = screen.grade
-                    // FR-38：AP 收口文案要按最后看到的探测档位分级（ZDROP o7#v 按 errno 分类）。
+                    // FR-38：AP 收口文案要按最后看到的探测档位分级（按 errno 分类）。
                     lastApGrade = screen.grade
                     eventLogger.event(
                         "sta_preconnect", "gen" to gen, "attempt" to attempt,
@@ -664,7 +664,7 @@ class WifiDirectConnector @Inject constructor(
                     endpoint.port,
                     pairingMode = pairing,
                     network = usable,
-                    // FR-38：AP 档用 ZDROP 同款 6s connect 超时（快失败 + 明确文案）；
+                    // FR-38：AP 档用 6s connect 超时（快失败 + 明确文案）；
                     // STA/恢复档传 0 维持默认 lane 判定。
                     connectTimeoutMs = if (apZdrop) AP_CONNECT_TIMEOUT_MS else 0
                 ) {
@@ -819,7 +819,7 @@ class WifiDirectConnector @Inject constructor(
             )
             stateMachine.dispatch(
                 ConnectionEvent.ErrorOccurred(
-                    // FR-38：AP 档按最后一次探测档位给出 ZDROP 式分级文案
+                    // FR-38：AP 档按最后一次探测档位给出分级文案
                     // （REFUSED=相机未开端口 / TIMEOUT=超时 / NO_ROUTE=无路由），
                     // 让"连接"按钮本身就是重试入口。
                     if (apZdrop) describeApFailure(lastApGrade, lastErr, endpoint)
@@ -950,7 +950,7 @@ class WifiDirectConnector @Inject constructor(
 
     private suspend fun resolveNetwork(
         host: String,
-        /** FR-38：等待窗口（STA 档默认 4s；AP 档传 ZDROP 的 8s 绑网窗 / 重绑 2.5s）。 */
+        /** FR-38：等待窗口（STA 档默认 4s；AP 档传 8s 绑网窗 / 重绑 2.5s）。 */
         waitMs: Long = AWAIT_NETWORK_MS,
         onProgress: ((String) -> Unit)? = null
     ): android.net.Network? {
@@ -1241,8 +1241,8 @@ class WifiDirectConnector @Inject constructor(
     }
 
     /**
-     * FR-38：AP 档（ZDROP 时序）的失败文案 —— 按最后一次探测档位分级，
-     * 对齐 ZDROP `o7#v` 按 errno 分类给文案的做法：
+     * FR-38：AP 档（短时序）的失败文案 —— 按最后一次探测档位分级，
+     * 按 errno 分类给文案：
      * - REFUSED（相机在、端口没开）→ "相机未响应"分支；
      * - TIMEOUT（包发了没人回）→ "连接超时"分支；
      * - NO_ROUTE（本机没有到相机的路由）→ "路由/热点掉了"分支；
