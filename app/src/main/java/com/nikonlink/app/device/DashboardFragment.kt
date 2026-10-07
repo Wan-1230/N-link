@@ -10,6 +10,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import android.graphics.Typeface
 import android.os.Bundle
 import android.text.InputType
+import android.view.animation.AnimationUtils
 import android.view.animation.DecelerateInterpolator
 import android.view.LayoutInflater
 import android.view.View
@@ -80,6 +81,9 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     private val paramsViewModel: CameraParamsViewModel by viewModels()
 
     private var wifiDevices: List<WifiCameraCandidate> = emptyList()
+
+    /** 视修复 D（STA 单按钮）：「连接相机」触发的自动搜索已武装，命中候选即自动接续 */
+    private var staAutoConnectArmed = false
     private var pairingDialog: AlertDialog? = null
     private var detailExpanded = false
     private var cameraInfoRequested = false
@@ -411,14 +415,20 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 if (devices.isNotEmpty()) {
                     binding.tvStatusMessage.text = "发现 ${devices.size} 个 WiFi 相机"
                 }
+                // 视修复 D（STA 单按钮）：自动搜索命中即自动接续首个候选 ——
+                // 扫描不再是用户要按的第二颗按钮，而是「连接相机」的内嵌一步
+                if (staAutoConnectArmed && devices.isNotEmpty()) {
+                    staAutoConnectArmed = false
+                    devices.firstOrNull()?.let { connectWifiCandidate(it) }
+                }
             }
         }
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.isWifiScanning.collect { scanning ->
-                binding.btnModeScan.isEnabled = !scanning
-                binding.btnModeScan.text = if (scanning) "扫描中..." else "扫描相机"
-                if (!scanning && wifiDevices.isEmpty()) {
+                // FR-38 后扫描按钮已从三个页签移除（连接即自动搜索）；
+                // 扫描状态仍要在状态行可见
+                if (!scanning && wifiDevices.isEmpty() && staAutoConnectArmed.not()) {
                     binding.tvStatusMessage.text = "未发现 WiFi 相机"
                 }
             }
@@ -585,7 +595,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 tv.visibility = View.VISIBLE
                 tv.text = "相机未接受本次连接：注册已经通过，多半是相机还没停在 STA 等待画面。\n" +
                         "请在相机菜单进入「WiFi 连接（STA mode）」，连上网络后停在等待画面，" +
-                        "再点「扫描相机」→「连接相机」。"
+                        "再点「连接相机」自动搜索，或点空态里的「手动输入相机 IP」。"
             }
         }
     }
@@ -677,6 +687,138 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             else -> viewModel.statusMessage.value
         }
         binding.tvStatusMessage.text = text.ifBlank { "未连接" }
+        renderHero()
+    }
+
+    /** 英雄图四态：未连接 / 连接中 / 已连接 / 连接失败。徽章上只放这四个短词。 */
+    private enum class HeroStatus { IDLE, BUSY, CONNECTED, FAILED }
+
+    /**
+     * 连接英雄图渲染：相机图（明暗）+ 状态徽章（底/字/描边）+ 状态灯（色/呼吸）。
+     *
+     * **单一出口**：挂在 [renderStatusLine] 末尾。后者已经是 USB 与无线两条链路所有状态
+     * 变化的收敛点（各处改动都调它），这里不再另外插桩，避免重演"两处各写各的"的老问题。
+     *
+     * **去重**：状态键存在徽章的 tag 上（随视图销毁自动复位，不用在 onDestroyView 手动清），
+     * 键不变整段跳过 —— 状态行会被 statusMessage 高频触发，不去重会让徽章反复回弹。
+     *
+     * 状态判定口径与 [renderStatusLine] 完全一致：USB 已连上 > USB 页签过程态 > 无线状态机。
+     */
+    private fun renderHero() {
+        val wifi = viewModel.connectionState.value
+        val usb = viewModel.usbState.value
+        val (status, label) = when {
+            usb == UsbConnectionState.CONNECTED -> HeroStatus.CONNECTED to "已连接"
+            isUsbMode() -> when (usb) {
+                UsbConnectionState.REQUESTING_PERMISSION,
+                UsbConnectionState.CONNECTING -> HeroStatus.BUSY to "连接中"
+                UsbConnectionState.PERMISSION_DENIED,
+                UsbConnectionState.ERROR -> HeroStatus.FAILED to "连接失败"
+                else -> HeroStatus.IDLE to "未连接"
+            }
+            else -> when (wifi) {
+                ConnectionState.FULLY_CONNECTED,
+                ConnectionState.BLE_CONNECTED -> HeroStatus.CONNECTED to "已连接"
+                ConnectionState.CONNECTING,
+                ConnectionState.WIFI_UPGRADING -> HeroStatus.BUSY to "连接中"
+                ConnectionState.ERROR_WAITING_RETRY -> HeroStatus.FAILED to "连接失败"
+                ConnectionState.DISCONNECTED -> HeroStatus.IDLE to "未连接"
+            }
+        }
+
+        val badge = binding.heroBadge
+        val key = "${status.name}|$label"
+        if (badge.tag == key) return
+        val isFirstPaint = badge.tag == null
+        badge.tag = key
+
+        val dot = binding.heroBadgeDot
+        val text = binding.tvHeroBadge
+        val cam = binding.ivCameraHero
+        fun color(res: Int) = ContextCompat.getColor(requireContext(), res)
+
+        // ── 徽章外观 ─────────────────────────────────────────────────
+        // 不引入彩色状态色（视觉规范 §1.1：除品牌强调色外一律灰度），四态靠"底 + 灯 + 字重"
+        // 三者的组合区分：
+        //   已连接 = 实心反相（primary 底 / on_primary 加粗字）+ 品牌黄灯，视觉最重；
+        //   连接中 = 灰底 + 品牌黄**呼吸**灯；
+        //   失败   = 空心描边（alert 底），与"未连接"靠空心/实心区分，不靠颜色；
+        //   未连接 = 灰底 + 灰灯 + 二级字色，最轻。
+        when (status) {
+            HeroStatus.CONNECTED -> {
+                badge.setBackgroundResource(R.drawable.bg_hero_badge)
+                badge.backgroundTintList = ColorStateList.valueOf(color(R.color.primary))
+                text.setTextColor(color(R.color.on_primary))
+                text.typeface = Typeface.DEFAULT_BOLD
+            }
+            HeroStatus.BUSY -> {
+                badge.setBackgroundResource(R.drawable.bg_hero_badge)
+                badge.backgroundTintList = ColorStateList.valueOf(color(R.color.chip_unselected))
+                text.setTextColor(color(R.color.text_primary))
+                text.typeface = Typeface.DEFAULT
+            }
+            HeroStatus.FAILED -> {
+                // 描边底不 tint —— tint 会把描边一起染掉，空心感就没了
+                badge.setBackgroundResource(R.drawable.bg_hero_badge_alert)
+                badge.backgroundTintList = null
+                text.setTextColor(color(R.color.text_primary))
+                text.typeface = Typeface.DEFAULT
+            }
+            HeroStatus.IDLE -> {
+                badge.setBackgroundResource(R.drawable.bg_hero_badge)
+                badge.backgroundTintList = ColorStateList.valueOf(color(R.color.chip_unselected))
+                text.setTextColor(color(R.color.text_secondary))
+                text.typeface = Typeface.DEFAULT
+            }
+        }
+        text.text = label
+
+        dot.backgroundTintList = ColorStateList.valueOf(
+            color(
+                when (status) {
+                    HeroStatus.CONNECTED, HeroStatus.BUSY -> R.color.status_connected
+                    HeroStatus.FAILED -> R.color.text_primary
+                    HeroStatus.IDLE -> R.color.status_disconnected
+                }
+            )
+        )
+
+        // ── 状态灯呼吸：只让"灯"呼吸，不让机身晃 ──────────────────────
+        if (status == HeroStatus.BUSY) {
+            if (dot.animation == null) {
+                dot.startAnimation(
+                    AnimationUtils.loadAnimation(requireContext(), R.anim.hero_dot_pulse)
+                )
+            }
+        } else {
+            dot.clearAnimation()
+            dot.alpha = 1f
+        }
+
+        // ── 相机图：离线压暗、连接中半亮、已连接全亮 ───────────────────
+        val targetAlpha = when (status) {
+            HeroStatus.CONNECTED -> 1f
+            HeroStatus.BUSY -> 0.9f
+            HeroStatus.FAILED -> 0.62f
+            HeroStatus.IDLE -> 0.68f
+        }
+        if (isFirstPaint) {
+            cam.alpha = targetAlpha
+        } else {
+            cam.animate().alpha(targetAlpha).setDuration(Motion.BASE).start()
+        }
+
+        // ── 切换过渡：徽章轻微回弹，避免硬切 ──────────────────────────
+        if (!isFirstPaint) {
+            badge.animate()
+                .scaleX(1.06f)
+                .scaleY(1.06f)
+                .setDuration(Motion.FAST)
+                .withEndAction {
+                    badge.animate().scaleX(1f).scaleY(1f)
+                        .setDuration(Motion.BASE).start()
+                }.start()
+        }
     }
 
     /**
@@ -839,7 +981,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     "日常连接：\n" +
                     "  ① 手机开启个人热点\n" +
                     "  ② 相机菜单进入「WiFi 连接（STA mode）」，加入手机热点，停在等待画面\n" +
-                    "  ③ 点「扫描相机」自动发现 → 点「连接相机」\n" +
+                    "  ③ 点「连接相机」——自动搜索并接续，无需扫描\n" +
                     "搜不到相机时：确认相机停在等待画面、热点没有设为隐藏、手机没开 VPN"
             } else {
                 "首次使用先注册一次（之后不再需要）：\n" +
@@ -850,7 +992,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     "日常连接：\n" +
                     "  ① 手机与相机连接同一个路由器\n" +
                     "  ② 相机菜单进入「WiFi 连接（STA mode）」，选择该路由器，停在等待画面\n" +
-                    "  ③ 点「扫描相机」自动发现 → 点「连接相机」\n" +
+                    "  ③ 点「连接相机」——自动搜索并接续，无需扫描\n" +
                     "搜不到相机时：确认手机没开 VPN、路由器没开 AP 隔离（两者都会挡掉设备发现）"
             }
         }
@@ -1138,29 +1280,23 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         if (_binding == null) return
         val hide = currentMode == ConnectMode.WIFI_STA && staArch == AppSettings.STA_ARCH_FTP
         binding.actionContainer.visibility = if (hide) View.GONE else View.VISIBLE
-        // FR-38：AP 页签隐藏扫描按钮，只留一枚「连接相机」（点击即完整入口）
-        binding.btnModeScan.visibility =
-            if (currentMode == ConnectMode.WIFI_AP) View.GONE else View.VISIBLE
-        // FR-35②：主次表达仍按所处页签归一。方案 A 下 AP 页签的扫描按钮恒为 GONE，
-        // 这一步对 AP 是空操作；留着是为了保证任何情况下从 AP 切回 STA/USB 都能
-        // 复位到「等宽 + 原文案」，不会残留 FR-35② 的次按钮样式。
+        // 视修复 D：三个页签全部单按钮化 ——「连接相机」即完整入口
+        // （AP=一键直连/拉面板，STA=自动搜索+自动接续，USB=检测并建立通道），
+        // 「扫描相机」退役（保留在布局里便于整体回退）
+        binding.btnModeScan.visibility = View.GONE
+        // FR-35② 的主次表达随扫描退役一并作废：连接按钮恒等宽
         applyActionEmphasis()
     }
 
     /**
-     * FR-35②：AP 页签把「扫描相机」降成次按钮。
-     *
-     * 免扫描（FR-34①）之后扫描只是「多台相机里挑一台」的可选工具，但它在界面上与
-     * 「连接相机」等宽、同样描边，用户按老习惯仍然先点它 —— 这是「一键连接没落地」
-     * 的另一半成因。这里只改**主次表达**（文案 + 宽度权重），不动任何行为：
-     * STA 页签扫描仍是必经步骤，维持等宽与原文案。
+     * FR-35② 的主次表达：扫描按钮退役（视修复 D）后只剩"连接相机恒等宽"一件事。
+     * 保留函数壳是为了回退方便——恢复扫描按钮时把 applyActionRowVisibility 的
+     * GONE 改回按页签切换即可。
      */
     private fun applyActionEmphasis() {
         if (_binding == null) return
-        val ap = currentMode == ConnectMode.WIFI_AP
-        binding.btnModeScan.text = if (ap) "扫描（可选）" else "扫描相机"
         (binding.btnModeConnect.layoutParams as? LinearLayout.LayoutParams)?.let {
-            it.weight = if (ap) 1.6f else 1f
+            it.weight = 1f
             binding.btnModeConnect.layoutParams = it
         }
     }
@@ -1224,7 +1360,11 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 if (target != null) {
                     connectWifiCandidate(target)
                 } else {
-                    showManualIpDialog(currentMode)
+                    // 视修复 D（STA 单按钮，参考实现对齐）：点「连接相机」= 自动搜索 +
+                    // 自动接续，不再要求先按「扫描相机」。无候选时空态给「手动输入 IP」。
+                    staAutoConnectArmed = true
+                    binding.tvStatusMessage.text = "正在搜索相机（mDNS + 网段探测，约 8 秒）…"
+                    viewModel.scanWifi()
                 }
             }
             ConnectMode.USB -> {
@@ -1425,7 +1565,11 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                             "热点模式不需要扫描：直接点「连接相机」，" +
                                 "App 会自动弹出系统 Wi-Fi 面板或直接连上相机热点"
                         else "未发现相机，请确认相机与手机在同一网络",
-                        icon = "📷"
+                        iconRes = R.drawable.ic_camera_hero,
+                        // 视修复 D：单按钮流程里手动 IP 是最后的兜底入口，
+                        // 收进空态的行动按钮（原来挂在已退役的扫描按钮旁）
+                        actionText = "手动输入相机 IP",
+                        onAction = { showManualIpDialog(mode) }
                     )
                 )
             return
@@ -1453,7 +1597,9 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     private fun renderRecentDevices(devices: List<PairedDevice>) {
         binding.recentDeviceList.removeAllViews()
         if (devices.isEmpty()) {
-            binding.recentDeviceList.addView(emptyState("暂无最近连接设备", icon = "🕐"))
+            binding.recentDeviceList.addView(
+                emptyState("暂无最近连接设备", iconRes = R.drawable.ic_empty_clock)
+            )
             return
         }
         devices.forEach { device ->
@@ -1482,14 +1628,19 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         }
     }
 
-    /** 视S2：设计级空态组件（图标容器 + 标题，可扩展副文案/行动按钮），占满容器宽居中 */
-    private fun emptyState(title: String, icon: CharSequence? = null): NlEmptyState {
+    /** 视S2：设计级空态组件（图标容器 + 标题 + 可选行动按钮），占满容器宽居中 */
+    private fun emptyState(
+        title: String,
+        iconRes: Int = 0,
+        actionText: String? = null,
+        onAction: (() -> Unit)? = null
+    ): NlEmptyState {
         return NlEmptyState(requireContext()).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
-            bind(title = title, icon = icon)
+            bind(title = title, iconRes = iconRes, actionText = actionText, onAction = onAction)
         }
     }
 
@@ -1497,7 +1648,11 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         return android.widget.TextView(requireContext()).apply {
             this.text = text
             setTextColor(ContextCompat.getColor(requireContext(), R.color.text_tertiary))
-            textSize = 12f
+            // 视S1：程序化字号同样走 token（原 12f 裸值）
+            setTextSize(
+                android.util.TypedValue.COMPLEX_UNIT_PX,
+                resources.getDimensionPixelSize(R.dimen.font_nav).toFloat()
+            )
             setPadding(0, dp(6), 0, dp(6))
         }
     }
