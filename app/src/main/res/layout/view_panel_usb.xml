@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 视T6 自 fragment_dashboard 抽取：原块内容零改动 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:orientation="vertical"
+    android:visibility="gone">
+
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:background="@drawable/bg_card"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <ImageView
+                                    android:layout_width="24dp"
+                                    android:layout_height="24dp"
+                                    android:contentDescription="USB"
+                                    android:src="@drawable/ic_usb"
+                                    app:tint="@color/text_primary" />
+
+                                <TextView
+                                    style="@style/NlText.SectionTitle"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginStart="10dp"
+                                    android:text="USB 有线连接教程" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/tvUsbGuide"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="10dp"
+                                android:lineSpacingExtra="3dp"
+                                android:text="① 准备一根支持数据传输的 C to C 线（很多充电线不传数据，插上没反应多半是线的问题）\n② 相机 USB 设置里把模式设为 MTP / PTP\n③ 用线连接手机与相机，点「连接相机」，在系统弹窗里允许访问 USB 设备"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="@dimen/font_caption" />
+
+                            <TextView
+                                android:id="@+id/tvUsbDevice"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="10dp"
+                                android:text="未检测到 USB 相机"
+                                android:textColor="@color/text_tertiary"
+                                android:textSize="@dimen/font_nav" />
+                        </LinearLayout>
+                    
+</LinearLayout>
