@@ -862,6 +862,7 @@
                         android:layout_width="20dp"
                         android:layout_height="20dp"
                         android:src="@drawable/ic_lv_play"
+                        android:importantForAccessibility="no"
                         app:tint="@color/white" />
 
                     <TextView
@@ -888,6 +889,7 @@
                         android:layout_width="20dp"
                         android:layout_height="20dp"
                         android:src="@drawable/ic_lv_zoom_in"
+                        android:importantForAccessibility="no"
                         app:tint="@color/white" />
 
                     <TextView
@@ -913,6 +915,7 @@
                         android:layout_width="20dp"
                         android:layout_height="20dp"
                         android:src="@drawable/ic_lv_zoom_out"
+                        android:importantForAccessibility="no"
                         app:tint="@color/white" />
 
                     <TextView
@@ -938,6 +941,7 @@
                         android:layout_width="20dp"
                         android:layout_height="20dp"
                         android:src="@drawable/ic_lv_reset"
+                        android:importantForAccessibility="no"
                         app:tint="@color/white" />
 
                     <TextView

@@ -58,6 +58,25 @@
     <!-- 点击反馈 / 遮罩 -->
     <color name="chip_unselected">#F0F0F0</color>
 
+    <!-- ══════════════════════════════════════════════════════════════════
+         v2.7 连接英雄图（drawable/ic_camera_hero.xml）专用色板。
+         同一张矢量图靠这套 token 在深浅两种主题下各自成立：
+           日间 · 舞台是浅灰（surface_variant→chip_unselected）→ 机身压深灰，靠暗色压住白底；
+           夜间 · 舞台是近黑（#121212）                → 机身整体提亮一档，靠亮灰浮出黑底。
+         两档都保留 hero_cam_edge 描边，保证轮廓在任何底色上都立得住。
+         改色只需动这 10 个 token（两处 colors.xml 同步），不用碰矢量图。
+         ══════════════════════════════════════════════════════════════════ -->
+    <color name="hero_cam_body_top">#4C525B</color>
+    <color name="hero_cam_body_mid">#33383F</color>
+    <color name="hero_cam_body_bottom">#1E2226</color>
+    <color name="hero_cam_edge">#7C828C</color>
+    <color name="hero_cam_lens_rim">#5A606A</color>
+    <color name="hero_cam_lens_body">#24282D</color>
+    <color name="hero_cam_glass_outer">#0D1013</color>
+    <color name="hero_cam_glass_inner">#3B444F</color>
+    <color name="hero_cam_detail">#6E747E</color>
+    <color name="hero_cam_shadow">#1F000000</color>
+
     <!-- Switch 开关：OFF 轨道中性灰（深浅色主题均可见），滑块白色内嵌 -->
     <color name="switch_track_off">#8F8F8F</color>
     <color name="switch_thumb_off">#FFFFFF</color>
@@ -83,7 +102,10 @@
     <color name="lv_accent">@color/nikon_yellow</color>
     <color name="lv_accent_soft">#26FFE100</color>
     <!-- v2.7.2 玻璃下线：全部实体化。层次靠色阶（面板最暗 → 卡片居中 → 芯片最亮）
-         与 1dp 描边区分，不再靠透出画面 -->
+         与 1dp 描边区分，不再靠透出画面
+     夜间豁免声明（视觉规范军规「每个颜色必须有 night 对应值」的例外登记）：
+     监看页是恒黑专业界面（背后是取景画面，无日间形态），lv_* 全族**刻意不设
+     values-night 对应值**——日夜间同值即正确行为，不属遗漏（前端优化规划 §1 #9） -->
     <color name="lv_panel">#F5141416</color>
     <color name="lv_card">#F21B1B1D</color>
     <color name="lv_card_solid">#F21B1B1D</color>
