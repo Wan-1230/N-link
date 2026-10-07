@@ -10,7 +10,7 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:orientation="vertical"
-                        android:padding="20dp">
+                        android:padding="@dimen/space_20">
 
                         <!-- 连接状态行 -->
                         <LinearLayout
@@ -29,8 +29,8 @@
                                 android:id="@+id/tvConnectionStatus"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:layout_marginStart="8dp"
-                                android:text="未连接"
+                                android:layout_marginStart="@dimen/space_8"
+                                android:text="@string/tv_connection_status_text"
                                 android:textColor="@color/on_dark_card_variant"
                                 android:textSize="@dimen/font_caption" />
 
@@ -38,7 +38,7 @@
                                 android:id="@+id/progressConnecting"
                                 android:layout_width="14dp"
                                 android:layout_height="14dp"
-                                android:layout_marginStart="8dp"
+                                android:layout_marginStart="@dimen/space_8"
                                 android:indeterminateTint="@color/on_dark_card_variant"
                                 android:visibility="gone" />
 
@@ -91,9 +91,9 @@
                             <TextView
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
-                                android:layout_marginStart="8dp"
+                                android:layout_marginStart="@dimen/space_8"
                                 android:layout_weight="1"
-                                android:text="电池电量"
+                                android:text="@string/txt_电池电量"
                                 android:textColor="@color/on_dark_card_variant"
                                 android:textSize="@dimen/font_caption" />
 
@@ -127,8 +127,8 @@
                             <TextView
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:layout_marginStart="8dp"
-                                android:text="存储卡"
+                                android:layout_marginStart="@dimen/space_8"
+                                android:text="@string/txt_存储卡"
                                 android:textColor="@color/on_dark_card_variant"
                                 android:textSize="@dimen/font_caption" />
 
@@ -177,9 +177,9 @@
                             <TextView
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
-                                android:layout_marginStart="8dp"
+                                android:layout_marginStart="@dimen/space_8"
                                 android:layout_weight="1"
-                                android:text="剩余可拍摄"
+                                android:text="@string/txt_剩余可拍摄"
                                 android:textColor="@color/on_dark_card_variant"
                                 android:textSize="@dimen/font_caption" />
 
@@ -214,7 +214,7 @@
                                 android:id="@+id/tvLens"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:layout_marginStart="8dp"
+                                android:layout_marginStart="@dimen/space_8"
                                 android:ellipsize="end"
                                 android:maxLines="1"
                                 android:text=""
@@ -229,7 +229,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="48dp"
                             android:layout_marginTop="18dp"
-                            android:text="连接相机"
+                            android:text="@string/btn_connect_text"
                             android:visibility="gone" />
 
                         <com.google.android.material.button.MaterialButton
@@ -238,7 +238,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="48dp"
                             android:layout_marginTop="18dp"
-                            android:text="断开连接"
+                            android:text="@string/btn_disconnect_text"
                             android:visibility="gone" />
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>

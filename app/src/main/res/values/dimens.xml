@@ -9,6 +9,17 @@
     <dimen name="card_radius">12dp</dimen>
     <dimen name="divider_height">1dp</dimen>
 
+    <!-- 视S2/T9 间距标尺（中性名）：4/8/12/16/20/24 六档，只做**精确值归位**——
+         原布局裸 dp 与档位值相同的引用本处，零视觉位移；10dp 等非栅格值维持原值
+         不动（改档会移像素，需逐页视觉 QA，留待真机轮）。语义名 token
+         （page_margin/module_gap/group_gap）继续用于有意图的场景。 -->
+    <dimen name="space_4">4dp</dimen>
+    <dimen name="space_8">8dp</dimen>
+    <dimen name="space_12">12dp</dimen>
+    <dimen name="space_16">16dp</dimen>
+    <dimen name="space_20">20dp</dimen>
+    <dimen name="space_24">24dp</dimen>
+
     <!-- 视S1 字号阶梯：全 App 只允许这 6 档（对齐 NlText.* 与视觉规范 v2.6.5 的 24/16/14/13）。
          布局里 textSize 一律引用 @dimen/font_*，不再允许裸 sp（2026-10-04 起 221 处已全量替换）。
          映射口径：24→display；22/20/18/17/16→title；15/14→body；13→caption；12→nav；11/10/9→foot -->

@@ -82,7 +82,7 @@
                     android:layout_marginTop="@dimen/group_gap"
                     android:background="@drawable/bg_card"
                     android:orientation="vertical"
-                    android:padding="12dp">
+                    android:padding="@dimen/space_12">
 
                     <FrameLayout
                         android:id="@+id/heroStage"
@@ -110,7 +110,7 @@
                             android:gravity="center_vertical"
                             android:orientation="horizontal"
                             android:paddingStart="10dp"
-                            android:paddingEnd="12dp">
+                            android:paddingEnd="@dimen/space_12">
 
                             <View
                                 android:id="@+id/heroBadgeDot"
@@ -123,7 +123,7 @@
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
                                 android:layout_marginStart="6dp"
-                                android:text="未连接"
+                                android:text="@string/tv_hero_badge_text"
                                 android:textColor="@color/text_secondary"
                                 android:textSize="@dimen/font_nav" />
                         </LinearLayout>
@@ -147,7 +147,7 @@
                         android:layout_height="46dp"
                         android:layout_weight="1"
                         android:layout_marginEnd="6dp"
-                        android:text="扫描相机" />
+                        android:text="@string/btn_mode_scan_text" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btnModeConnect"
@@ -156,7 +156,7 @@
                         android:layout_height="46dp"
                         android:layout_weight="1"
                         android:layout_marginStart="6dp"
-                        android:text="连接相机" />
+                        android:text="@string/btn_mode_connect_text" />
                 </LinearLayout>
 
                 <!-- 设备核心卡片（页面视觉中心） -->
@@ -181,11 +181,11 @@
                         android:layout_height="96dp"
                         android:layout_columnWeight="1"
                         android:layout_marginEnd="6dp"
-                        android:layout_marginBottom="12dp"
+                        android:layout_marginBottom="@dimen/space_12"
                         android:background="@drawable/bg_card"
                         android:gravity="center"
                         android:orientation="vertical"
-                        android:paddingVertical="20dp">
+                        android:paddingVertical="@dimen/space_20">
 
                         <ImageView
                             android:layout_width="24dp"
@@ -198,8 +198,8 @@
                             style="@style/NlText.Subtitle"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="8dp"
-                            android:text="遥控拍摄" />
+                            android:layout_marginTop="@dimen/space_8"
+                            android:text="@string/txt_遥控拍摄" />
                     </LinearLayout>
 
                     <LinearLayout
@@ -208,11 +208,11 @@
                         android:layout_height="96dp"
                         android:layout_columnWeight="1"
                         android:layout_marginStart="6dp"
-                        android:layout_marginBottom="12dp"
+                        android:layout_marginBottom="@dimen/space_12"
                         android:background="@drawable/bg_card"
                         android:gravity="center"
                         android:orientation="vertical"
-                        android:paddingVertical="20dp">
+                        android:paddingVertical="@dimen/space_20">
 
                         <ImageView
                             android:layout_width="24dp"
@@ -225,8 +225,8 @@
                             style="@style/NlText.Subtitle"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="8dp"
-                            android:text="查看相册" />
+                            android:layout_marginTop="@dimen/space_8"
+                            android:text="@string/txt_查看相册" />
                     </LinearLayout>
 
                     <LinearLayout
@@ -235,11 +235,11 @@
                         android:layout_height="96dp"
                         android:layout_columnWeight="1"
                         android:layout_marginEnd="6dp"
-                        android:layout_marginBottom="12dp"
+                        android:layout_marginBottom="@dimen/space_12"
                         android:background="@drawable/bg_card"
                         android:gravity="center"
                         android:orientation="vertical"
-                        android:paddingVertical="20dp">
+                        android:paddingVertical="@dimen/space_20">
 
                         <ImageView
                             android:id="@+id/ivWifiBandCard"
@@ -254,8 +254,8 @@
                             style="@style/NlText.Subtitle"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="8dp"
-                            android:text="WiFi 频段" />
+                            android:layout_marginTop="@dimen/space_8"
+                            android:text="@string/tv_wifi_band_card_text" />
                     </LinearLayout>
 
                     <LinearLayout
@@ -264,11 +264,11 @@
                         android:layout_height="96dp"
                         android:layout_columnWeight="1"
                         android:layout_marginStart="6dp"
-                        android:layout_marginBottom="12dp"
+                        android:layout_marginBottom="@dimen/space_12"
                         android:background="@drawable/bg_card"
                         android:gravity="center"
                         android:orientation="vertical"
-                        android:paddingVertical="20dp">
+                        android:paddingVertical="@dimen/space_20">
 
                         <ImageView
                             android:layout_width="24dp"
@@ -281,8 +281,8 @@
                             style="@style/NlText.Subtitle"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="8dp"
-                            android:text="传输设置" />
+                            android:layout_marginTop="@dimen/space_8"
+                            android:text="@string/txt_传输设置" />
                     </LinearLayout>
                 </GridLayout>
 
@@ -300,14 +300,14 @@
                         android:layout_height="52dp"
                         android:gravity="center_vertical"
                         android:orientation="horizontal"
-                        android:paddingHorizontal="20dp">
+                        android:paddingHorizontal="@dimen/space_20">
 
                         <TextView
                             style="@style/NlText.SectionTitle"
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
-                            android:text="相机详情" />
+                            android:text="@string/txt_相机详情" />
 
                         <ImageView
                             android:id="@+id/iconDetailChevron"
@@ -323,8 +323,8 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:orientation="vertical"
-                        android:paddingHorizontal="20dp"
-                        android:paddingBottom="16dp"
+                        android:paddingHorizontal="@dimen/space_20"
+                        android:paddingBottom="@dimen/space_16"
                         android:visibility="gone">
 
                         <View
@@ -344,7 +344,7 @@
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
                                 android:layout_weight="1"
-                                android:text="快门次数"
+                                android:text="@string/txt_快门次数"
                                 android:textColor="@color/text_secondary"
                                 android:textSize="@dimen/font_caption" />
 
@@ -369,7 +369,7 @@
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
                                 android:layout_weight="1"
-                                android:text="固件版本"
+                                android:text="@string/txt_固件版本"
                                 android:textColor="@color/text_secondary"
                                 android:textSize="@dimen/font_caption" />
 
@@ -394,7 +394,7 @@
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
                                 android:layout_weight="1"
-                                android:text="蓝牙信号"
+                                android:text="@string/txt_蓝牙信号"
                                 android:textColor="@color/text_secondary"
                                 android:textSize="@dimen/font_caption" />
 
@@ -419,7 +419,7 @@
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
                                 android:layout_weight="1"
-                                android:text="WiFi 频段"
+                                android:text="@string/txt_wi_fi频"
                                 android:textColor="@color/text_secondary"
                                 android:textSize="@dimen/font_caption" />
 
@@ -442,7 +442,7 @@
                                 android:layout_width="0dp"
                                 android:layout_height="wrap_content"
                                 android:layout_weight="1"
-                                android:text="重连次数"
+                                android:text="@string/txt_重连次数"
                                 android:textColor="@color/text_secondary"
                                 android:textSize="@dimen/font_caption" />
 
@@ -450,7 +450,7 @@
                                 android:id="@+id/tvReconnectCount"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="0 次"
+                                android:text="@string/tv_reconnect_count_text"
                                 android:textColor="@color/text_primary"
                                 android:textSize="@dimen/font_caption" />
                         </LinearLayout>
@@ -477,7 +477,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="我的设备" />
+                android:text="@string/tv_title_text" />
 
             <ImageView
                 android:id="@+id/btnSettingsIcon"
@@ -485,7 +485,7 @@
                 android:layout_height="48dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="设置"
-                android:padding="12dp"
+                android:padding="@dimen/space_12"
                 android:src="@drawable/ic_nav_settings"
                 app:tint="@color/text_primary" />
         </LinearLayout>
@@ -530,7 +530,7 @@
                     android:layout_height="match_parent"
                     android:layout_weight="1"
                     android:gravity="center"
-                    android:text="WiFi AP 连接"
+                    android:text="@string/tab_wifi_ap_text"
                     android:textColor="@color/on_primary"
                     android:textSize="@dimen/font_nav"
                     android:textStyle="bold" />
@@ -541,7 +541,7 @@
                     android:layout_height="match_parent"
                     android:layout_weight="1"
                     android:gravity="center"
-                    android:text="WiFi STA 连接"
+                    android:text="@string/tab_wifi_sta_text"
                     android:textColor="@color/text_primary"
                     android:textSize="@dimen/font_nav" />
 
@@ -551,7 +551,7 @@
                     android:layout_height="match_parent"
                     android:layout_weight="1"
                     android:gravity="center"
-                    android:text="USB 有线连接"
+                    android:text="@string/tab_usb_text"
                     android:textColor="@color/text_primary"
                     android:textSize="@dimen/font_nav" />
             </LinearLayout>

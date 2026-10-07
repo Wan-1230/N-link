@@ -22,7 +22,7 @@
         android:background="@color/liveview_scrim"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingHorizontal="12dp"
+        android:paddingHorizontal="@dimen/space_12"
         android:paddingVertical="10dp">
 
         <ImageView
@@ -31,7 +31,7 @@
             android:layout_height="48dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="返回"
-            android:padding="12dp"
+            android:padding="@dimen/space_12"
             android:src="@drawable/ic_back"
             app:tint="@color/white" />
 
@@ -52,7 +52,7 @@
             android:id="@+id/tvPage"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
+            android:layout_marginStart="@dimen/space_8"
             android:textColor="@color/white"
             android:textSize="@dimen/font_nav" />
 
@@ -62,7 +62,7 @@
             android:layout_height="48dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="更多"
-            android:padding="12dp"
+            android:padding="@dimen/space_12"
             android:src="@drawable/ic_more"
             app:tint="@color/white" />
     </LinearLayout>
@@ -83,8 +83,8 @@
             style="@style/Widget.AppCompat.ProgressBar.Horizontal"
             android:layout_width="match_parent"
             android:layout_height="3dp"
-            android:layout_marginHorizontal="24dp"
-            android:layout_marginBottom="12dp"
+            android:layout_marginHorizontal="@dimen/space_24"
+            android:layout_marginBottom="@dimen/space_12"
             android:max="100"
             android:progress="0"
             android:progressTint="@color/white"
@@ -118,8 +118,8 @@
                     android:id="@+id/tvMarkLabel"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="标记"
+                    android:layout_marginTop="@dimen/space_4"
+                    android:text="@string/tv_mark_label_text"
                     android:textColor="@color/white"
                     android:textSize="@dimen/font_nav" />
             </LinearLayout>
@@ -144,8 +144,8 @@
                     android:id="@+id/tvDownloadLabel"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="下载"
+                    android:layout_marginTop="@dimen/space_4"
+                    android:text="@string/tv_download_label_text"
                     android:textColor="@color/white"
                     android:textSize="@dimen/font_nav" />
             </LinearLayout>
@@ -168,7 +168,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
+                    android:layout_marginTop="@dimen/space_4"
                     android:text="EXIF"
                     android:textColor="@color/white"
                     android:textSize="@dimen/font_nav" />
@@ -192,8 +192,8 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="分享"
+                    android:layout_marginTop="@dimen/space_4"
+                    android:text="@string/txt_分享"
                     android:textColor="@color/white"
                     android:textSize="@dimen/font_nav" />
             </LinearLayout>
@@ -218,8 +218,8 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="删除"
+                    android:layout_marginTop="@dimen/space_4"
+                    android:text="@string/txt_删除"
                     android:textColor="@color/white"
                     android:textSize="@dimen/font_nav" />
             </LinearLayout>

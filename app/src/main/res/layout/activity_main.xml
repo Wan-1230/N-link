@@ -69,7 +69,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
                 android:maxLines="1"
-                android:text="设备"
+                android:text="@string/label_dashboard_text"
                 android:textColor="@color/nav_inactive_icon"
                 android:textSize="@dimen/font_foot" />
         </LinearLayout>
@@ -95,7 +95,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
                 android:maxLines="1"
-                android:text="相机照片"
+                android:text="@string/label_transfer_text"
                 android:textColor="@color/nav_inactive_icon"
                 android:textSize="@dimen/font_foot" />
         </LinearLayout>
@@ -121,7 +121,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
                 android:maxLines="1"
-                android:text="拍摄"
+                android:text="@string/label_remote_text"
                 android:textColor="@color/nav_inactive_icon"
                 android:textSize="@dimen/font_foot" />
         </LinearLayout>
@@ -147,7 +147,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
                 android:maxLines="1"
-                android:text="设置"
+                android:text="@string/label_settings_text"
                 android:textColor="@color/nav_inactive_icon"
                 android:textSize="@dimen/font_foot" />
         </LinearLayout>

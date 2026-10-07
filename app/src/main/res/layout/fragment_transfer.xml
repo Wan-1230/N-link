@@ -33,7 +33,7 @@
             android:autoSizeMinTextSize="16sp"
             android:autoSizeMaxTextSize="24sp"
             android:autoSizeStepGranularity="1sp"
-            android:text="相机照片" />
+            android:text="@string/tv_title_text_3" />
 
         <!-- 模块 4.2：「跳过已下载」开关。XML 注释写的"仅已标记栏可见"已过时 ——
              v1.3.0 需求 2 把它扩到了相机照片源（见 renderSkipDownloadedChip），
@@ -44,7 +44,7 @@
             android:layout_height="48dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="跳过已下载"
-            android:padding="12dp"
+            android:padding="@dimen/space_12"
             android:src="@drawable/ic_skip_downloaded"
             android:visibility="gone"
             app:tint="@color/text_primary" />
@@ -55,7 +55,7 @@
             android:layout_height="48dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="刷新"
-            android:padding="12dp"
+            android:padding="@dimen/space_12"
             android:src="@drawable/ic_refresh"
             app:tint="@color/text_primary" />
 
@@ -63,13 +63,13 @@
             android:id="@+id/btnSort"
             android:layout_width="wrap_content"
             android:layout_height="48dp"
-            android:layout_marginStart="8dp"
+            android:layout_marginStart="@dimen/space_8"
             android:minWidth="64dp"
             android:background="@drawable/bg_chip"
             android:contentDescription="选择相册排序方式（拍摄时间 / 文件类型，升序或降序）"
             android:gravity="center"
-            android:paddingHorizontal="12dp"
-            android:text="时间 ↓"
+            android:paddingHorizontal="@dimen/space_12"
+            android:text="@string/btn_sort_text"
             android:textColor="@color/text_primary"
             android:textSize="@dimen/font_caption" />
 
@@ -77,11 +77,11 @@
             android:id="@+id/btnMultiSelect"
             android:layout_width="wrap_content"
             android:layout_height="48dp"
-            android:layout_marginStart="8dp"
+            android:layout_marginStart="@dimen/space_8"
             android:background="@drawable/bg_chip"
             android:gravity="center"
-            android:paddingHorizontal="12dp"
-            android:text="多选"
+            android:paddingHorizontal="@dimen/space_12"
+            android:text="@string/btn_multi_select_text"
             android:textColor="@color/text_primary"
             android:textSize="@dimen/font_caption" />
     </LinearLayout>
@@ -151,7 +151,7 @@
         android:id="@+id/swipeRefresh"
         android:layout_width="0dp"
         android:layout_height="0dp"
-        android:layout_marginTop="4dp"
+        android:layout_marginTop="@dimen/space_4"
         app:layout_constraintBottom_toTopOf="@id/albumTabRow"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
@@ -167,7 +167,7 @@
                 android:layout_height="match_parent"
                 android:clipToPadding="false"
                 android:paddingHorizontal="2dp"
-                android:paddingBottom="12dp"
+                android:paddingBottom="@dimen/space_12"
                 android:scrollbars="none" />
 
             <!-- 空状态 / 加载提示（视S2：空态 = 图标容器 + 引导语，替代纯文字） -->
@@ -206,10 +206,10 @@
                     android:id="@+id/tvMessage"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
+                    android:layout_marginTop="@dimen/space_12"
                     android:gravity="center"
                     android:paddingHorizontal="40dp"
-                    android:text="连接相机后查看相册"
+                    android:text="@string/tv_message_text"
                     android:textColor="@color/text_tertiary"
                     android:textSize="@dimen/font_caption" />
             </LinearLayout>
@@ -290,8 +290,8 @@
             android:background="@android:color/transparent"
             android:gravity="center"
             android:orientation="vertical"
-            android:paddingHorizontal="20dp"
-            android:paddingTop="8dp"
+            android:paddingHorizontal="@dimen/space_20"
+            android:paddingTop="@dimen/space_8"
             android:paddingBottom="10dp"
             app:layout_constraintBottom_toBottomOf="parent"
             app:layout_constraintEnd_toEndOf="parent"
@@ -327,7 +327,7 @@
                         android:layout_height="match_parent"
                         android:layout_weight="1"
                         android:gravity="center"
-                        android:text="相机照片"
+                        android:text="@string/tab_camera_photos_text"
                         android:textColor="@color/on_primary"
                         android:textSize="@dimen/font_caption"
                         android:textStyle="bold" />
@@ -339,7 +339,7 @@
                         android:layout_height="match_parent"
                         android:layout_weight="1"
                         android:gravity="center"
-                        android:text="已标记"
+                        android:text="@string/tab_marked_photos_text"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_caption" />
 
@@ -349,7 +349,7 @@
                         android:layout_height="match_parent"
                         android:layout_weight="1"
                         android:gravity="center"
-                        android:text="本地照片"
+                        android:text="@string/tab_local_photos_text"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_caption" />
                 </LinearLayout>
@@ -361,8 +361,8 @@
         android:id="@+id/bottomBar"
         android:layout_width="0dp"
         android:layout_height="56dp"
-        android:layout_marginHorizontal="20dp"
-        android:layout_marginBottom="12dp"
+        android:layout_marginHorizontal="@dimen/space_20"
+        android:layout_marginBottom="@dimen/space_12"
         android:background="@drawable/bg_floating_bar"
         android:gravity="center_vertical"
         android:orientation="horizontal"
@@ -377,7 +377,7 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:paddingStart="18dp"
-            android:text="已选 0 项"
+            android:text="@string/tv_selected_count_text"
             android:textColor="@color/text_primary"
             android:textSize="@dimen/font_caption"
             android:textStyle="bold" />
@@ -389,8 +389,8 @@
             android:layout_height="match_parent"
             android:background="?attr/selectableItemBackground"
             android:gravity="center"
-            android:paddingHorizontal="12dp"
-            android:text="标记"
+            android:paddingHorizontal="@dimen/space_12"
+            android:text="@string/btn_mark_text"
             android:textColor="@color/text_primary"
             android:textSize="@dimen/font_caption" />
 
@@ -400,8 +400,8 @@
             android:layout_height="match_parent"
             android:background="?attr/selectableItemBackground"
             android:gravity="center"
-            android:paddingHorizontal="12dp"
-            android:text="全选"
+            android:paddingHorizontal="@dimen/space_12"
+            android:text="@string/btn_select_all_text"
             android:textColor="@color/text_primary"
             android:textSize="@dimen/font_caption" />
 
@@ -411,8 +411,8 @@
             android:layout_height="match_parent"
             android:background="?attr/selectableItemBackground"
             android:gravity="center"
-            android:paddingHorizontal="12dp"
-            android:text="分享"
+            android:paddingHorizontal="@dimen/space_12"
+            android:text="@string/btn_share_text"
             android:textColor="@color/text_primary"
             android:textSize="@dimen/font_caption" />
 
@@ -422,8 +422,8 @@
             android:layout_height="match_parent"
             android:background="?attr/selectableItemBackground"
             android:gravity="center"
-            android:paddingHorizontal="12dp"
-            android:text="删除"
+            android:paddingHorizontal="@dimen/space_12"
+            android:text="@string/btn_delete_text"
             android:textColor="@color/text_primary"
             android:textSize="@dimen/font_caption" />
 
@@ -434,8 +434,8 @@
             android:layout_marginEnd="10dp"
             android:background="@drawable/bg_chip_selected"
             android:gravity="center"
-            android:paddingHorizontal="16dp"
-            android:text="下载"
+            android:paddingHorizontal="@dimen/space_16"
+            android:text="@string/btn_download_text"
             android:textColor="@color/on_primary"
             android:textSize="@dimen/font_caption"
             android:textStyle="bold" />

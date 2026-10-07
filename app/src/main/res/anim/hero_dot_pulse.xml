@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 英雄图状态灯 · 连接中的呼吸效果。
+     只作用在 6dp 的圆点上，不动相机图 —— 呼吸的是"灯"而不是"机身"，
+     避免整块视觉重心在连接过程中持续晃动。 -->
+<alpha xmlns:android="http://schemas.android.com/apk/res/android"
+    android:duration="700"
+    android:fromAlpha="1.0"
+    android:interpolator="@android:anim/accelerate_decelerate_interpolator"
+    android:repeatCount="infinite"
+    android:repeatMode="reverse"
+    android:toAlpha="0.25" />

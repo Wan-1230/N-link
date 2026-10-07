@@ -69,7 +69,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="亮度直方图"
+                android:text="@string/txt_亮度直方图"
                 android:textColor="@color/lv_text_dim"
                 android:textSize="@dimen/font_foot" />
 
@@ -77,7 +77,7 @@
                 android:id="@+id/viewHistogram"
                 android:layout_width="@dimen/lv_graph_w"
                 android:layout_height="48dp"
-                android:layout_marginTop="4dp" />
+                android:layout_marginTop="@dimen/space_4" />
         </LinearLayout>
 
         <LinearLayout
@@ -93,7 +93,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="RGB 波形"
+                android:text="@string/txt_r_g_b波形"
                 android:textColor="@color/lv_text_dim"
                 android:textSize="@dimen/font_foot" />
 
@@ -101,7 +101,7 @@
                 android:id="@+id/viewWaveform"
                 android:layout_width="@dimen/lv_graph_w"
                 android:layout_height="48dp"
-                android:layout_marginTop="4dp" />
+                android:layout_marginTop="@dimen/space_4" />
         </LinearLayout>
     </LinearLayout>
 
@@ -124,7 +124,7 @@
             android:layout_height="@dimen/lv_icon_btn_land"
             android:background="@drawable/bg_lv_chip"
             android:contentDescription="关闭"
-            android:padding="8dp"
+            android:padding="@dimen/space_8"
             android:src="@drawable/ic_close"
             app:tint="@color/white" />
 
@@ -186,7 +186,7 @@
             android:paddingHorizontal="10dp"
             android:paddingVertical="5dp"
             android:singleLine="true"
-            android:text="未监看"
+            android:text="@string/tv_lv_state_text"
             android:textColor="@color/lv_text"
             android:textSize="@dimen/font_foot"
             android:textStyle="bold" />
@@ -198,7 +198,7 @@
             android:layout_marginStart="@dimen/lv_cell_gap"
             android:background="@drawable/bg_lv_chip"
             android:contentDescription="显示辅助"
-            android:padding="8dp"
+            android:padding="@dimen/space_8"
             android:src="@drawable/ic_lv_disp"
             app:tint="@color/white" />
     </LinearLayout>
@@ -212,14 +212,14 @@
         android:gravity="center_horizontal"
         android:orientation="vertical"
         android:paddingHorizontal="28dp"
-        android:paddingVertical="16dp"
+        android:paddingVertical="@dimen/space_16"
         android:visibility="gone">
 
         <TextView
             android:id="@+id/tvStateTitle"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="未开始监看"
+            android:text="@string/tv_state_title_text"
             android:textColor="@color/lv_text"
             android:textSize="@dimen/font_title"
             android:textStyle="bold" />
@@ -230,7 +230,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
             android:gravity="center"
-            android:text="开始后可用触摸对焦、缩放与参数回读"
+            android:text="@string/tv_state_desc_text"
             android:textColor="@color/lv_text_dim"
             android:textSize="@dimen/font_nav" />
 
@@ -238,11 +238,11 @@
             android:id="@+id/btnStateAction"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="@dimen/space_12"
             android:background="@drawable/bg_lv_action"
-            android:paddingHorizontal="24dp"
-            android:paddingVertical="8dp"
-            android:text="开始监看"
+            android:paddingHorizontal="@dimen/space_24"
+            android:paddingVertical="@dimen/space_8"
+            android:text="@string/btn_state_action_text"
             android:textColor="@color/lv_on_solid"
             android:textSize="@dimen/font_caption"
             android:textStyle="bold" />
@@ -478,7 +478,7 @@
                 android:orientation="vertical"
                 android:paddingHorizontal="@dimen/lv_sheet_pad_h"
                 android:paddingTop="10dp"
-                android:paddingBottom="12dp"
+                android:paddingBottom="@dimen/space_12"
                 android:visibility="gone">
 
                 <com.nikonlink.app.shared.ui.widget.SegmentBar
@@ -489,7 +489,7 @@
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
+                    android:layout_marginTop="@dimen/space_4"
                     android:orientation="horizontal">
 
                     <com.nikonlink.app.shared.ui.widget.ArcDialView
@@ -519,7 +519,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:text="点按屏幕触摸对焦；MF 模式下旋转跟焦轮驱动对焦（相对指令）"
+                    android:text="@string/tv_focus_hint_text"
                     android:textColor="@color/lv_text_dim"
                     android:textSize="@dimen/font_foot" />
             </LinearLayout>
@@ -532,7 +532,7 @@
                 android:orientation="vertical"
                 android:paddingHorizontal="@dimen/lv_sheet_pad_h"
                 android:paddingTop="10dp"
-                android:paddingBottom="12dp"
+                android:paddingBottom="@dimen/space_12"
                 android:visibility="gone">
 
                 <LinearLayout
@@ -545,7 +545,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="快门速度"
+                        android:text="@string/txt_快门速度"
                         android:textColor="@color/lv_text_dim"
                         android:textSize="@dimen/font_nav" />
 
@@ -576,7 +576,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="光圈"
+                        android:text="@string/txt_光圈"
                         android:textColor="@color/lv_text_dim"
                         android:textSize="@dimen/font_nav" />
 
@@ -631,7 +631,7 @@
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
+                    android:layout_marginTop="@dimen/space_4"
                     android:gravity="center_vertical"
                     android:orientation="horizontal">
 
@@ -639,7 +639,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="曝光补偿 EV"
+                        android:text="@string/txt_曝光补偿_e"
                         android:textColor="@color/lv_text_dim"
                         android:textSize="@dimen/font_nav" />
 
@@ -657,8 +657,8 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp"
-                        android:text="请通过相机机内拨盘调整"
+                        android:layout_marginStart="@dimen/space_8"
+                        android:text="@string/txt_请通过相机机"
                         android:textColor="@color/lv_text_dim"
                         android:textSize="@dimen/font_foot" />
                 </LinearLayout>
@@ -672,7 +672,7 @@
                 android:orientation="vertical"
                 android:paddingHorizontal="@dimen/lv_sheet_pad_h"
                 android:paddingTop="10dp"
-                android:paddingBottom="12dp"
+                android:paddingBottom="@dimen/space_12"
                 android:visibility="gone">
 
                 <LinearLayout
@@ -685,7 +685,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="白平衡"
+                        android:text="@string/txt_白平衡"
                         android:textColor="@color/lv_text_dim"
                         android:textSize="@dimen/font_nav" />
 
@@ -715,14 +715,14 @@
                 android:orientation="vertical"
                 android:paddingHorizontal="@dimen/lv_sheet_pad_h"
                 android:paddingTop="10dp"
-                android:paddingBottom="12dp"
+                android:paddingBottom="@dimen/space_12"
                 android:visibility="gone">
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginBottom="8dp"
-                    android:text="测光模式"
+                    android:layout_marginBottom="@dimen/space_8"
+                    android:text="@string/txt_测光模式"
                     android:textColor="@color/lv_text_dim"
                     android:textSize="@dimen/font_nav" />
 
@@ -740,13 +740,13 @@
                 android:orientation="vertical"
                 android:paddingHorizontal="@dimen/lv_sheet_pad_h"
                 android:paddingTop="10dp"
-                android:paddingBottom="12dp"
+                android:paddingBottom="@dimen/space_12"
                 android:visibility="gone">
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="显示辅助"
+                    android:text="@string/txt_显示辅助"
                     android:textColor="@color/lv_text_dim"
                     android:textSize="@dimen/font_nav" />
 
@@ -819,7 +819,7 @@
                 android:orientation="vertical"
                 android:paddingHorizontal="@dimen/lv_sheet_pad_h"
                 android:paddingTop="10dp"
-                android:paddingBottom="12dp"
+                android:paddingBottom="@dimen/space_12"
                 android:visibility="gone">
 
                 <LinearLayout
@@ -845,7 +845,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginStart="10dp"
-                        android:text="开始监看"
+                        android:text="@string/tv_lv_toggle_label_text"
                         android:textColor="@color/lv_text"
                         android:textSize="@dimen/font_caption" />
                 </LinearLayout>
@@ -871,7 +871,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginStart="10dp"
-                        android:text="画面放大"
+                        android:text="@string/txt_画面放大"
                         android:textColor="@color/lv_text"
                         android:textSize="@dimen/font_caption" />
                 </LinearLayout>
@@ -897,7 +897,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginStart="10dp"
-                        android:text="画面缩小"
+                        android:text="@string/txt_画面缩小"
                         android:textColor="@color/lv_text"
                         android:textSize="@dimen/font_caption" />
                 </LinearLayout>
@@ -923,7 +923,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginStart="10dp"
-                        android:text="重置缩放"
+                        android:text="@string/txt_重置缩放"
                         android:textColor="@color/lv_text"
                         android:textSize="@dimen/font_caption" />
                 </LinearLayout>
@@ -937,9 +937,9 @@
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingHorizontal="16dp"
+            android:paddingHorizontal="@dimen/space_16"
             android:paddingTop="2dp"
-            android:paddingBottom="8dp">
+            android:paddingBottom="@dimen/space_8">
 
             <FrameLayout
                 android:layout_width="0dp"
@@ -953,7 +953,7 @@
                     android:layout_gravity="center"
                     android:background="@drawable/bg_lv_thumb"
                     android:contentDescription="相册"
-                    android:padding="8dp"
+                    android:padding="@dimen/space_8"
                     android:src="@drawable/ic_nav_album"
                     app:tint="@color/white" />
             </FrameLayout>

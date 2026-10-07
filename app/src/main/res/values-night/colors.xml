@@ -62,4 +62,17 @@
     <color name="nav_selected_bg">#26FFFFFF</color>
     <color name="nav_active_icon">#FFFFFF</color>
     <color name="nav_inactive_icon">#6E6E6E</color>
+
+    <!-- v2.7 连接英雄图专用色板（与 values/colors.xml 同名 token 一一对应）。
+         夜间舞台近黑，机身整体提亮一档 + hero_cam_edge 描边浮出轮廓。 -->
+    <color name="hero_cam_body_top">#7A808A</color>
+    <color name="hero_cam_body_mid">#565C66</color>
+    <color name="hero_cam_body_bottom">#3A3F46</color>
+    <color name="hero_cam_edge">#A8AEB8</color>
+    <color name="hero_cam_lens_rim">#868C96</color>
+    <color name="hero_cam_lens_body">#454B53</color>
+    <color name="hero_cam_glass_outer">#15191D</color>
+    <color name="hero_cam_glass_inner">#58626F</color>
+    <color name="hero_cam_detail">#9AA0AA</color>
+    <color name="hero_cam_shadow">#24FFFFFF</color>
 </resources>

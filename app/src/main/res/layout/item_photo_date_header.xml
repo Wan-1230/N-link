@@ -10,17 +10,17 @@
     android:layout_height="wrap_content"
     android:gravity="center_vertical"
     android:orientation="horizontal"
-    android:paddingStart="4dp"
-    android:paddingEnd="4dp"
+    android:paddingStart="@dimen/space_4"
+    android:paddingEnd="@dimen/space_4"
     android:paddingTop="14dp"
-    android:paddingBottom="8dp">
+    android:paddingBottom="@dimen/space_8">
 
     <TextView
         android:id="@+id/tvDate"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_weight="1"
-        android:text="2026年9月3日"
+        android:text="@string/tv_date_text"
         android:textColor="@color/text_primary"
         android:textSize="@dimen/font_body"
         android:textStyle="bold" />
@@ -31,8 +31,8 @@
         android:layout_height="wrap_content"
         android:background="@drawable/bg_chip"
         android:paddingHorizontal="10dp"
-        android:paddingVertical="4dp"
-        android:text="全选"
+        android:paddingVertical="@dimen/space_4"
+        android:text="@string/tv_select_group_text"
         android:textColor="@color/text_primary"
         android:textSize="@dimen/font_nav" />
 </LinearLayout>

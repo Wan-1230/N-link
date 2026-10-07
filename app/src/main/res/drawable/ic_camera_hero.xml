@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  连接英雄图 · 自绘矢量相机（伪 3D 渲染风）。
+
+  为什么是自绘而不是图片素材：
+   1. 第三方"尼康机身"写实图几乎没有可商用免费的（品牌机身外观受商标/著作权双重约束），
+      通用相机图标又与本项目「黑白灰 + 单一强调色」的体系冲突；
+   2. 位图在深浅两种主题下只能靠底衬兜底，矢量则可以把每个面拆成 token，
+      同一张图在白底/黑底各取一套色（见 colors.xml 的 hero_cam_* 色板）；
+   3. 零新增依赖（Coil 已下线），任意分辨率/字体缩放都不糊，包体 +≈3KB。
+
+  立体感的四个来源：机身竖向渐变、顶部高光与底部反射光、镜头径向金属渐变 + 玻璃径向内反光、
+  接地投影。轮廓靠 0.9dp 描边兜底 —— 这是深浅主题都"看得清"的关键。
+
+  viewport 132×92；机身 x∈[24,108]、y∈[34,78]，镜头圆心 (64,56) r=18.5。
+  改动时保持机身与镜头的位置比例，否则状态徽章的避让区会失准。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="132dp"
+    android:height="92dp"
+    android:viewportWidth="132"
+    android:viewportHeight="92">
+
+    <!-- 接地投影：把机身"坐"在舞台上，避免矢量图发飘 -->
+    <path
+        android:fillColor="@color/hero_cam_shadow"
+        android:pathData="M34,80.5a32,4 0 1,0 64,0a32,4 0 1,0 -64,0Z" />
+
+    <!-- 军舰部（取景器凸起）：顶部两角做了圆滑过渡，读起来才像一体成型 -->
+    <path android:pathData="M53,36L57,24.5Q57.8,21.5 61,21.5H71Q74.2,21.5 75,24.5L79,36Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:endColor="@color/hero_cam_body_mid"
+                android:endX="66"
+                android:endY="36"
+                android:startColor="@color/hero_cam_body_top"
+                android:startX="66"
+                android:startY="21"
+                android:type="linear" />
+        </aapt:attr>
+    </path>
+
+    <!-- 热靴 -->
+    <path
+        android:fillColor="@color/hero_cam_detail"
+        android:pathData="M60,17.5H72Q73.5,17.5 73.5,19V21H58.5V19Q58.5,17.5 60,17.5Z" />
+
+    <!-- 机身：竖向三段渐变，上亮下暗 -->
+    <path android:pathData="M32,34H100A8,8 0 0 1 108,42V70A8,8 0 0 1 100,78H32A8,8 0 0 1 24,70V42A8,8 0 0 1 32,34Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:endColor="@color/hero_cam_body_bottom"
+                android:endX="66"
+                android:endY="78"
+                android:startColor="@color/hero_cam_body_top"
+                android:startX="66"
+                android:startY="34"
+                android:type="linear" />
+        </aapt:attr>
+    </path>
+
+    <!-- 机身描边：0.9dp 半透明边，保证在近黑舞台与近白舞台下轮廓都不消失 -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M32,34H100A8,8 0 0 1 108,42V70A8,8 0 0 1 100,78H32A8,8 0 0 1 24,70V42A8,8 0 0 1 32,34Z"
+        android:strokeAlpha="0.55"
+        android:strokeColor="@color/hero_cam_edge"
+        android:strokeWidth="0.9" />
+
+    <!-- 手柄区（机身左三分之一压深）：给出侧面转折，避免正面图发平 -->
+    <path
+        android:fillAlpha="0.5"
+        android:fillColor="@color/hero_cam_body_bottom"
+        android:pathData="M41,34H32A8,8 0 0 1 24,42V70A8,8 0 0 1 32,78H41Z" />
+
+    <!-- 顶部高光 / 底部反射光：两道细线撑起圆柱感 -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M33,35.4H99"
+        android:strokeAlpha="0.55"
+        android:strokeColor="@color/hero_cam_edge"
+        android:strokeWidth="1.6" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M30,76.8H102"
+        android:strokeAlpha="0.22"
+        android:strokeColor="@color/hero_cam_edge"
+        android:strokeWidth="1" />
+
+    <!-- 镜头外圈：径向金属渐变，高光偏左上 -->
+    <path android:pathData="M45.5,56a18.5,18.5 0 1,0 37,0a18.5,18.5 0 1,0 -37,0Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:centerX="58"
+                android:centerY="50"
+                android:endColor="@color/hero_cam_lens_body"
+                android:gradientRadius="27"
+                android:startColor="@color/hero_cam_lens_rim"
+                android:type="radial" />
+        </aapt:attr>
+    </path>
+
+    <!-- 外圈左上边缘光：一道弧线把镜头从机身里"顶"出来 -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M47.5,48.5A18.5,18.5 0 0 1 64,37.6"
+        android:strokeAlpha="0.5"
+        android:strokeColor="@color/hero_cam_edge"
+        android:strokeWidth="1.3" />
+
+    <!-- 镜筒 -->
+    <path
+        android:fillColor="@color/hero_cam_lens_body"
+        android:pathData="M49.5,56a14.5,14.5 0 1,0 29,0a14.5,14.5 0 1,0 -29,0Z" />
+
+    <!-- 镜片：径向内反光，中心偏左上形成玻璃纵深 -->
+    <path android:pathData="M54,56a10,10 0 1,0 20,0a10,10 0 1,0 -20,0Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:centerX="60"
+                android:centerY="52"
+                android:endColor="@color/hero_cam_glass_outer"
+                android:gradientRadius="15"
+                android:startColor="@color/hero_cam_glass_inner"
+                android:type="radial" />
+        </aapt:attr>
+    </path>
+
+    <!-- 镜片内圈镀膜环 -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M57.4,56a6.6,6.6 0 1,0 13.2,0a6.6,6.6 0 1,0 -13.2,0Z"
+        android:strokeAlpha="0.35"
+        android:strokeColor="@color/hero_cam_edge"
+        android:strokeWidth="0.8" />
+
+    <!-- 两处高光点：主高光（左上）+ 弱反射（右下），镜片的"活"来自这两点 -->
+    <path
+        android:fillAlpha="0.38"
+        android:fillColor="@color/white"
+        android:pathData="M56.1,50.5a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0Z" />
+    <path
+        android:fillAlpha="0.16"
+        android:fillColor="@color/white"
+        android:pathData="M66.7,61.5a1.3,1.3 0 1,0 2.6,0a1.3,1.3 0 1,0 -2.6,0Z" />
+
+    <!-- 镜头安装标记（机身前脸的小白点） -->
+    <path
+        android:fillAlpha="0.5"
+        android:fillColor="@color/hero_cam_edge"
+        android:pathData="M63.1,38a0.9,0.9 0 1,0 1.8,0a0.9,0.9 0 1,0 -1.8,0Z" />
+
+    <!-- 快门按钮 -->
+    <path
+        android:fillColor="@color/hero_cam_detail"
+        android:pathData="M93.4,39.5a3.6,3.6 0 1,0 7.2,0a3.6,3.6 0 1,0 -7.2,0Z" />
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M93.4,39.5a3.6,3.6 0 1,0 7.2,0a3.6,3.6 0 1,0 -7.2,0Z"
+        android:strokeAlpha="0.35"
+        android:strokeColor="@color/hero_cam_edge"
+        android:strokeWidth="0.8" />
+
+    <!-- 自动对焦辅助灯 -->
+    <path
+        android:fillAlpha="0.9"
+        android:fillColor="@color/hero_cam_detail"
+        android:pathData="M91.4,68a2.6,2.6 0 1,0 5.2,0a2.6,2.6 0 1,0 -5.2,0Z" />
+
+</vector>
