@@ -490,6 +490,58 @@ class ConnFlags @Inject constructor(
          */
         const val MASTER = "conn22_enabled"
 
+        /**
+         * 视修复（2026-10-07 闸门评判）：已真机验证的修复闸门在此**锁定**。
+         *
+         * 判定口径：① 有真机日志实锤的失败链修复；② 关掉只会回到已知更差的行为；
+         * ③ 现场二分价值已被更好的判据取代。命中的 key：
+         * - `isEnabled()` 直接返回锁定值，**无视 prefs 旧值**——开发选项实验期
+         *   留下的 false 残留（10-07 日志实锤：AP_ZDROP_TIMING 被拨关后整个测试
+         *   包的 AP 短时序全程未生效）不再能压住修复；
+         * - 不再出现在设置页「开发选项」开关列表里（SettingsFragment.labFlags
+         *   同步裁剪）；
+         * - 总闸 [MASTER] 仍是最高回退手段；单项回退 = git revert 对应提交。
+         */
+        private val LOCKED = mapOf(
+            // ── v2.5/v2.6：真机验证过的失败链修复 ──
+            STA_TIMEOUTS to true,          // FR-02 显式超时：防 event 通道无限挂死
+            HOSTREG_VERIFY to true,        // FR-06 主机注册看机身证据
+            CONN_SERIALIZE to true,        // FR-19 防重入风暴（4.9s/22 条 sta_try）
+            BIND_SUBNET_CHECK to true,     // FR-20 绑错网防护（绑错=全进程路由事故）
+            PROBE_BUDGET to true,          // FR-21 探测不占机身唯一客户端槽
+            IFACE_CLASSIFY to true,        // FR-23 蜂窝/VPN 口不算类 WiFi
+            PREFLIGHT_SOFT to true,        // FR-24 软告警（VPN/避开不良网络）
+            IP_PROMOTE to true,            // FR-26a 被拒地址也记忆
+            USB_SKIP_RECOVERY to true,     // FR-26b/27/28 USB 六条全验证
+            USB_RECONNECT_RAMP to true,
+            USB_CLAIM_CHECK to true,
+            USB_WRITE_STRICT to true,
+            USB_OPENSESSION_RETRY to true,
+            USB_CLOSE_SESSION_ON_TEARDOWN to true,
+            // ── v3.2/v3.3：扫描与热点回收 ──
+            STA_SCAN_EARLY_EXIT to true,   // FR-32 扫描早退（8~18s → 1~3s 实测）
+            STA_REG_REASON1_COOLDOWN to true, // FR-32 注册 reason=1 冷却
+            STA_LINK_DIAG to true,         // FR-32 纯日志诊断（排查期资产）
+            STA_LOCAL_ONLY_REQUEST to true, // FR-33 无互联网热点防回收（不修则必掉）
+            // ── v3.4 一键连接七条 ──
+            AP_ONE_TAP to true,
+            AP_GW_FASTPATH to true,
+            STA_LANE_TIMEOUT to true,      // 蜂窝黑洞 30s→8s
+            STA_SESSION_HOLD to true,
+            STA_WLAN_WAIT to true,
+            STA_FAST_IDLE_REFRESH to true,
+            WLAN_DROP_REASON to true,
+            // ── 2026-10-07 评判后由「实验」转「锁定」的四条 ──
+            // FR-35①/④：SSID 死角与免面板Specifier（10-05 日志 ssid_known=false 而
+            // wlan0 已在相机网段——放宽判定正是修这个的）
+            AP_JOINED_LOOSE to true,
+            AP_CRED_SPECIFIER to true,
+            // FR-37：FTP 架构下后台不再 PTP 敲门（用户报障「切了没切」的成因）
+            STA_ARCH_GATE to true,
+            // FR-38：AP 短时序档（用户本轮明确要求的优化，合并时被误拨回 false）
+            AP_ZDROP_TIMING to true,
+        )
+
         private val DEFAULTS = mapOf(
             AP_GATEWAY to true,
             AP_BLELESS to true,
@@ -559,15 +611,21 @@ class ConnFlags @Inject constructor(
             STA_WLAN_WAIT to true,
             STA_FAST_IDLE_REFRESH to true,
             WLAN_DROP_REASON to true,
-            // FR-35：①修 FR-34① 的 SSID 死角（不改判定就永远起不了轮）；②是新增的免面板
-            // 通路，失败自动回落面板，所以同样默认开、可独立关闸二分。
-            AP_JOINED_LOOSE to true,
-            AP_CRED_SPECIFIER to true,
-            // FR-37：架构选择此前只影响界面，连接层无视 → 用户报「切了没切」。默认开。
-            STA_ARCH_GATE to true,
-            // FR-38：AP 轮次的短时序档，默认开（失败从 ~4 分钟长轮次收敛到 ~30s
-            // 出明确文案；关闸即回 10 次退避旧行为，现场可二分）
-            AP_ZDROP_TIMING to true,
+            // ── 以下四条默认关：AP / STA 连接方式回退到 v3.0.0 正式版行为 ──
+            // 2026-10-07 用户决策：连接方式先退回 v3.0.0 观察，不带新逻辑上线，
+            // 优化留待后续单独一轮。代码一行未动，只改默认值 —— 随时可拨回 true。
+            //
+            // FR-35①：面板/specifier 回连后的「手机已挂上热点」判定是否放宽为
+            // 「有 WiFi 且网关是私网」。开=放宽（修 SSID 死角）；关=只认 NIKON SSID。
+            AP_JOINED_LOOSE to false,
+            // FR-35④：有 BLE 凭证时是否走免面板一键连。开=免面板；关=一律弹系统 WLAN 面板。
+            AP_CRED_SPECIFIER to false,
+            // FR-37：架构选择是否真的决定连接行为。开=FTP 架构下跳过后台自动 PTP 直连；
+            // 关=架构只影响界面（v3.0.0 行为，即本次要回退到的口径）。
+            STA_ARCH_GATE to false,
+            // FR-38：AP 轮次是否用短时序档（绑网 8s / 复查重绑 / 至多 2 次 × 7s / connect 6s）。
+            // 开=失败从 ~4 分钟长轮次收敛到 ~30s 出明确文案；关=回 10 次退避长轮次。
+            AP_ZDROP_TIMING to false,
         )
     }
 
@@ -580,8 +638,11 @@ class ConnFlags @Inject constructor(
         prefs.edit().putBoolean(MASTER, enabled).apply()
     }
 
-    fun isEnabled(key: String): Boolean =
-        masterEnabled() && prefs.getBoolean(key, DEFAULTS[key] ?: true)
+    fun isEnabled(key: String): Boolean {
+        // 锁定闸门：无视 prefs 旧值（含开发选项实验期残留），只受总闸约束
+        LOCKED[key]?.let { return masterEnabled() && it }
+        return masterEnabled() && prefs.getBoolean(key, DEFAULTS[key] ?: true)
+    }
 
     fun setEnabled(key: String, enabled: Boolean) {
         prefs.edit().putBoolean(key, enabled).apply()
