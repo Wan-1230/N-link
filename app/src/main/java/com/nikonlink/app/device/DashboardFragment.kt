@@ -108,7 +108,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         get() = listOf(binding.tabWifiAp, binding.tabWifiSta, binding.tabUsb)
 
     private val modePanels: List<View>
-        get() = listOf(binding.panelWifiAp, binding.panelWifiSta, binding.panelUsb)
+        get() = listOf(binding.panelWifiAp.root, binding.panelWifiSta.root, binding.panelUsb.root)
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentDashboardBinding.inflate(inflater, container, false)
@@ -213,17 +213,17 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     ConnectionState.DISCONNECTED ->
                         Triple("未连接", R.color.on_dark_card_variant, false)
                 }
-                binding.tvConnectionStatus.text = text
-                binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
+                binding.cardDevice.tvConnectionStatus.text = text
+                binding.cardDevice.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
                     ContextCompat.getColor(requireContext(), colorRes)
                 )
-                binding.progressConnecting.visibility = if (loading) View.VISIBLE else View.GONE
+                binding.cardDevice.progressConnecting.visibility = if (loading) View.VISIBLE else View.GONE
 
                 // 已连接 → 显示断开按钮；否则显示连接按钮
                 val connected = state == ConnectionState.FULLY_CONNECTED ||
                         state == ConnectionState.BLE_CONNECTED
-                binding.btnConnect.visibility = View.GONE
-                binding.btnDisconnect.visibility = if (connected) View.VISIBLE else View.GONE
+                binding.cardDevice.btnConnect.visibility = View.GONE
+                binding.cardDevice.btnDisconnect.visibility = if (connected) View.VISIBLE else View.GONE
                 if (state == ConnectionState.FULLY_CONNECTED && !cameraInfoRequested) {
                     cameraInfoRequested = true
                     paramsViewModel.readAll()
@@ -248,8 +248,8 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             viewModel.hostReg.collect { state ->
                 when (state) {
                     null -> {
-                        binding.tvStaHostRegStatus.visibility = View.GONE
-                        binding.btnStaHostRegister.isEnabled = true
+                        binding.panelWifiSta.tvStaHostRegStatus.visibility = View.GONE
+                        binding.panelWifiSta.btnStaHostRegister.isEnabled = true
                         // 结果清空后回到引导提示（若仍需要注册）
                         updateHostRegHint(
                             viewModel.staRegisterNeeded.value,
@@ -257,19 +257,19 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                         )
                     }
                     is HostRegUiState.Running -> {
-                        binding.tvStaHostRegStatus.visibility = View.VISIBLE
-                        binding.tvStaHostRegStatus.text = state.progress
-                        binding.btnStaHostRegister.isEnabled = false
+                        binding.panelWifiSta.tvStaHostRegStatus.visibility = View.VISIBLE
+                        binding.panelWifiSta.tvStaHostRegStatus.text = state.progress
+                        binding.panelWifiSta.btnStaHostRegister.isEnabled = false
                     }
                     is HostRegUiState.Success -> {
-                        binding.tvStaHostRegStatus.visibility = View.VISIBLE
-                        binding.tvStaHostRegStatus.text = state.message
-                        binding.btnStaHostRegister.isEnabled = true
+                        binding.panelWifiSta.tvStaHostRegStatus.visibility = View.VISIBLE
+                        binding.panelWifiSta.tvStaHostRegStatus.text = state.message
+                        binding.panelWifiSta.btnStaHostRegister.isEnabled = true
                     }
                     is HostRegUiState.Failure -> {
-                        binding.tvStaHostRegStatus.visibility = View.VISIBLE
-                        binding.tvStaHostRegStatus.text = state.message
-                        binding.btnStaHostRegister.isEnabled = true
+                        binding.panelWifiSta.tvStaHostRegStatus.visibility = View.VISIBLE
+                        binding.panelWifiSta.tvStaHostRegStatus.text = state.message
+                        binding.panelWifiSta.btnStaHostRegister.isEnabled = true
                     }
                 }
             }
@@ -288,19 +288,19 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         // 相机信息：有真实数据才展示对应行，读不到时整行隐藏，不遗留横杠占位
         viewLifecycleOwner.lifecycleScope.launch {
             paramsViewModel.cameraInfo.collect { info ->
-                binding.rowBattery.visibility =
+                binding.cardDevice.rowBattery.visibility =
                     if (info.batteryLevel >= 0) View.VISIBLE else View.GONE
                 if (info.batteryLevel >= 0) {
-                    binding.tvBattery.text = "${info.batteryLevel}%"
+                    binding.cardDevice.tvBattery.text = "${info.batteryLevel}%"
                 }
 
-                binding.rowStorage.visibility =
+                binding.cardDevice.rowStorage.visibility =
                     if (info.storageTotalMb > 0) View.VISIBLE else View.GONE
                 if (info.storageTotalMb > 0) {
                     val usedPct =
                         ((info.storageTotalMb - info.storageFreeMb) * 100 / info.storageTotalMb).toInt()
-                    binding.pbStorage.progress = usedPct.coerceIn(0, 100)
-                    binding.tvStorage.text =
+                    binding.cardDevice.pbStorage.progress = usedPct.coerceIn(0, 100)
+                    binding.cardDevice.tvStorage.text =
                         if (info.storageDescription.isNotBlank()) {
                             "${info.storageDescription} · ${formatMb(info.storageTotalMb - info.storageFreeMb)} / ${formatMb(info.storageTotalMb)}"
                         } else {
@@ -308,15 +308,15 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                         }
                     // 估算剩余可拍张数（按单张 ~25MB RAW 计）
                     val shots = (info.storageFreeMb / 25).toInt()
-                    binding.tvShotsRemaining.text = "约 $shots 张"
+                    binding.cardDevice.tvShotsRemaining.text = "约 $shots 张"
                 }
-                binding.rowShotsRemaining.visibility =
+                binding.cardDevice.rowShotsRemaining.visibility =
                     if (info.storageTotalMb > 0) View.VISIBLE else View.GONE
 
-                binding.rowLens.visibility =
+                binding.cardDevice.rowLens.visibility =
                     if (info.lensName.isNotBlank()) View.VISIBLE else View.GONE
                 if (info.modelName.isNotBlank()) renderCameraName()
-                if (info.lensName.isNotBlank()) binding.tvLens.text = info.lensName
+                if (info.lensName.isNotBlank()) binding.cardDevice.tvLens.text = info.lensName
 
                 // 快门次数：尼康无快门计数 PTP 属性，读数来自样张照片 MakerNote 的 0x00A7。
                 // 来源与可信度必须呈现给用户 —— 「未校验」表示只过了数值合理性、没过恒等式；
@@ -403,17 +403,17 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.wifiDeviceList.collect { devices ->
                 wifiDevices = devices
-                renderWifiCandidates(binding.apCandidateList, devices, ConnectMode.WIFI_AP)
+                renderWifiCandidates(binding.panelWifiAp.apCandidateList, devices, ConnectMode.WIFI_AP)
                 // FR-37：STA 那一栏的行内「连接」按钮按所选架构分流——FTP 推送架构下手机侧
                 // 没有可连的对象，点一下却发起 PTP/IP 直连，正是用户报的「切了没切」。
                 renderWifiCandidates(
-                    binding.staCandidateList,
+                    binding.panelWifiSta.staCandidateList,
                     devices,
                     ConnectMode.WIFI_STA,
                     staArch
                 )
                 if (devices.isNotEmpty()) {
-                    binding.tvStatusMessage.text = "发现 ${devices.size} 个 WiFi 相机"
+                    binding.cardDevice.tvStatusMessage.text = "发现 ${devices.size} 个 WiFi 相机"
                 }
                 // 视修复 D（STA 单按钮）：自动搜索命中即自动接续首个候选 ——
                 // 扫描不再是用户要按的第二颗按钮，而是「连接相机」的内嵌一步
@@ -429,7 +429,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 // FR-38 后扫描按钮已从三个页签移除（连接即自动搜索）；
                 // 扫描状态仍要在状态行可见
                 if (!scanning && wifiDevices.isEmpty() && staAutoConnectArmed.not()) {
-                    binding.tvStatusMessage.text = "未发现 WiFi 相机"
+                    binding.cardDevice.tvStatusMessage.text = "未发现 WiFi 相机"
                 }
             }
         }
@@ -476,13 +476,13 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                         // USB 链路下频段卡切换为 USB 状态信息（WiFi 频段无意义）
                         binding.ivWifiBandCard.setImageResource(R.drawable.ic_usb)
                         binding.tvWifiBandCard.text = "USB 已连接"
-                        binding.tvConnectionStatus.text = "USB 已连接"
-                        binding.tvUsbDevice.text = "USB 相机已连接，可直接传输照片"
-                        binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
+                        binding.cardDevice.tvConnectionStatus.text = "USB 已连接"
+                        binding.panelUsb.tvUsbDevice.text = "USB 相机已连接，可直接传输照片"
+                        binding.cardDevice.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
                             ContextCompat.getColor(requireContext(), R.color.status_connected)
                         )
-                        binding.btnConnect.visibility = View.GONE
-                        binding.btnDisconnect.visibility = View.VISIBLE
+                        binding.cardDevice.btnConnect.visibility = View.GONE
+                        binding.cardDevice.btnDisconnect.visibility = View.VISIBLE
                         if (!cameraInfoRequested) {
                             cameraInfoRequested = true
                             paramsViewModel.readAll()
@@ -492,30 +492,30 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     UsbConnectionState.ERROR -> {
                         // 模块 6：细分失败原因，禁止统一报「未检测到 USB 相机」
                         // 提示全文写进 USB 卡片（可换行、不截断）；状态行由 renderStatusLine 用短文案
-                        binding.tvUsbDevice.text =
+                        binding.panelUsb.tvUsbDevice.text =
                             viewModel.usbErrorMessage.value ?: "USB 连接失败，正在重试…"
                         renderStatusLine()
                     }
 
                     UsbConnectionState.PERMISSION_DENIED -> {
-                        binding.tvUsbDevice.text =
+                        binding.panelUsb.tvUsbDevice.text =
                             viewModel.usbErrorMessage.value ?: "USB 权限被拒绝"
                         renderStatusLine()
                     }
 
                     UsbConnectionState.REQUESTING_PERMISSION -> {
-                        binding.tvUsbDevice.text = "正在请求 USB 访问权限…"
+                        binding.panelUsb.tvUsbDevice.text = "正在请求 USB 访问权限…"
                         renderStatusLine()
                     }
 
                     UsbConnectionState.CONNECTING -> {
-                        binding.tvUsbDevice.text = "正在建立 USB 连接…"
+                        binding.panelUsb.tvUsbDevice.text = "正在建立 USB 连接…"
                         renderStatusLine()
                     }
 
                     UsbConnectionState.DISCONNECTED -> {
                         // USB 卡片（仅 USB 面板可见）保留完整指引；状态行用短文案，见 renderStatusLine
-                        binding.tvUsbDevice.text =
+                        binding.panelUsb.tvUsbDevice.text =
                             viewModel.usbErrorMessage.value ?: "未检测到 USB 相机"
                         // 切回 WiFi 链路：恢复频段卡，具体频段由指标刷新补齐
                         if (usbActive) {
@@ -524,12 +524,12 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                             binding.tvWifiBandCard.text = "未连接"
                         }
                         if (viewModel.connectionState.value == ConnectionState.DISCONNECTED) {
-                            binding.tvConnectionStatus.text = "未连接"
-                            binding.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
+                            binding.cardDevice.tvConnectionStatus.text = "未连接"
+                            binding.cardDevice.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
                                 ContextCompat.getColor(requireContext(), R.color.on_dark_card_variant)
                             )
-                            binding.btnConnect.visibility = View.GONE
-                            binding.btnDisconnect.visibility = View.GONE
+                            binding.cardDevice.btnConnect.visibility = View.GONE
+                            binding.cardDevice.btnDisconnect.visibility = View.GONE
                         }
                         renderStatusLine()
                     }
@@ -545,7 +545,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     renderCameraName()
                     val display = CameraModelCatalog.official(info.cameraModel)
                         ?: info.cameraModel
-                    binding.tvUsbDevice.text = "$display · 已连接 USB"
+                    binding.panelUsb.tvUsbDevice.text = "$display · 已连接 USB"
                 }
                 renderStatusLine()
             }
@@ -561,7 +561,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     // 但仅限 USB 场景 —— 否则 WiFi 连接页会出现 USB 专属文案（v1.3.0 反馈问题 1）
                     UsbConnectionState.DISCONNECTED -> {
                         if (isUsbMode()) {
-                            binding.tvUsbDevice.text = message ?: "未检测到 USB 相机"
+                            binding.panelUsb.tvUsbDevice.text = message ?: "未检测到 USB 相机"
                         }
                         renderStatusLine()
                     }
@@ -580,7 +580,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
      */
     private fun updateHostRegHint(needed: Boolean, registered: Boolean) {
         if (viewModel.hostReg.value != null) return
-        val tv = binding.tvStaHostRegStatus
+        val tv = binding.panelWifiSta.tvStaHostRegStatus
         when {
             !needed -> tv.visibility = View.GONE
             !registered -> {
@@ -604,7 +604,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
      * 注册按钮的视觉状态：需要注册时用主色强调（引导点击），已注册后回落到描边样式。
      */
     private fun renderStaHostRegisterButton(needed: Boolean) {
-        val btn = binding.btnStaHostRegister
+        val btn = binding.panelWifiSta.btnStaHostRegister
         if (needed) {
             btn.backgroundTintList =
                 ColorStateList.valueOf(ContextCompat.getColor(requireContext(), R.color.primary))
@@ -650,7 +650,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             ?: viewModel.discoveredCameraName()
             ?: viewModel.pairedCameraName()
             ?: defaultCameraName
-        if (binding.tvCameraName.text != name) binding.tvCameraName.text = name
+        if (binding.cardDevice.tvCameraName.text != name) binding.cardDevice.tvCameraName.text = name
     }
 
     /**
@@ -686,7 +686,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
 
             else -> viewModel.statusMessage.value
         }
-        binding.tvStatusMessage.text = text.ifBlank { "未连接" }
+        binding.cardDevice.tvStatusMessage.text = text.ifBlank { "未连接" }
         renderHero()
     }
 
@@ -844,15 +844,15 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         }
 
         // 断开连接（顶部模式区负责发起连接）
-        binding.btnDisconnect.pressEffect()
-        binding.btnDisconnect.setOnClickListener {
+        binding.cardDevice.btnDisconnect.pressEffect()
+        binding.cardDevice.btnDisconnect.setOnClickListener {
             viewModel.disconnect()
             viewModel.disconnectUsb()
         }
 
         // STA 主机注册（式）：先引导用户在相机端进入「连接至 PC」向导，再执行注册
-        binding.btnStaHostRegister.pressEffect()
-        binding.btnStaHostRegister.setOnClickListener {
+        binding.panelWifiSta.btnStaHostRegister.pressEffect()
+        binding.panelWifiSta.btnStaHostRegister.setOnClickListener {
             NlGlass.dialog(requireContext())
                 .setTitle("STA 主机注册")
                 .setMessage(
@@ -876,10 +876,10 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 .show()
         }
         // 结果卡片点击即清除（进行中的状态不可清除）
-        binding.tvStaHostRegStatus.setOnClickListener { viewModel.clearHostReg() }
+        binding.panelWifiSta.tvStaHostRegStatus.setOnClickListener { viewModel.clearHostReg() }
 
         // 点击设备卡片快速重连
-        binding.cardDevice.setOnClickListener {
+        binding.cardDevice.root.setOnClickListener {
             if (viewModel.connectionState.value == ConnectionState.DISCONNECTED) {
                 connectForCurrentMode()
             }
@@ -956,8 +956,8 @@ class DashboardFragment : Fragment(), GlassInsetAware {
      * 连接时按相机 IP 子网匹配路由）；切换即持久化并更新教程文案。
      */
     private fun setupStaSubModes() {
-        val chipSame = binding.chipStaSameWifi
-        val chipHotspot = binding.chipStaHotspot
+        val chipSame = binding.panelWifiSta.chipStaSameWifi
+        val chipHotspot = binding.panelWifiSta.chipStaHotspot
         chipSame.pressEffect()
         chipHotspot.pressEffect()
 
@@ -972,7 +972,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             chipHotspot.setTextColor(
                 ContextCompat.getColor(requireContext(), if (hotspot) R.color.on_primary else R.color.text_primary)
             )
-            binding.tvStaGuide.text = if (hotspot) {
+            binding.panelWifiSta.tvStaGuide.text = if (hotspot) {
                 "首次使用先注册一次（之后不再需要）：\n" +
                     "  相机菜单 →「Wi-Fi连接（STA mode）」创建配置文件（旧固件在「连接至 PC」→ 网络设定里）。\n" +
                     "  向导连上网后会停在「正在等待连接」的画面 —— 注册必须在这一步做：\n" +
@@ -1023,13 +1023,13 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     private fun setupStaArch() {
         staArch = viewModel.settings.staArchitecture
 
-        binding.tabStaArchPtp.pressEffect()
-        binding.tabStaArchFtp.pressEffect()
-        binding.tabStaArchPtp.setOnClickListener { selectStaArch(AppSettings.STA_ARCH_PTP) }
-        binding.tabStaArchFtp.setOnClickListener { selectStaArch(AppSettings.STA_ARCH_FTP) }
+        binding.panelWifiSta.tabStaArchPtp.pressEffect()
+        binding.panelWifiSta.tabStaArchFtp.pressEffect()
+        binding.panelWifiSta.tabStaArchPtp.setOnClickListener { selectStaArch(AppSettings.STA_ARCH_PTP) }
+        binding.panelWifiSta.tabStaArchFtp.setOnClickListener { selectStaArch(AppSettings.STA_ARCH_FTP) }
 
-        binding.btnFtpToggle.pressEffect()
-        binding.btnFtpToggle.setOnClickListener {
+        binding.panelWifiSta.btnFtpToggle.pressEffect()
+        binding.panelWifiSta.btnFtpToggle.setOnClickListener {
             if (viewModel.ftpState.value is FtpPushServer.State.Listening) {
                 viewModel.stopFtpServer()
             } else {
@@ -1075,23 +1075,23 @@ class DashboardFragment : Fragment(), GlassInsetAware {
 
         // 指示器宽度 = 行宽 / 段数。Fragment 初始 hidden（GONE 不参与布局）时宽度为 0，
         // 所以做有限次重试（同相册页 applyIndicator 的处理）。
-        val row = binding.staArchPill
+        val row = binding.panelWifiSta.staArchPill
         fun applyIndicator(retries: Int) {
             if (_binding == null) return
             val rowWidth = row.width - row.paddingLeft - row.paddingRight
             if (rowWidth <= 0) {
                 if (retries > 0) {
-                    binding.staArchIndicator.postDelayed({ applyIndicator(retries - 1) }, 64)
+                    binding.panelWifiSta.staArchIndicator.postDelayed({ applyIndicator(retries - 1) }, 64)
                 }
                 return
             }
             val segWidth = rowWidth / 2
-            if (binding.staArchIndicator.layoutParams.width != segWidth) {
-                binding.staArchIndicator.layoutParams.width = segWidth
-                binding.staArchIndicator.requestLayout()
+            if (binding.panelWifiSta.staArchIndicator.layoutParams.width != segWidth) {
+                binding.panelWifiSta.staArchIndicator.layoutParams.width = segWidth
+                binding.panelWifiSta.staArchIndicator.requestLayout()
             }
             GlassMotion.slidePill(
-                binding.staArchIndicator,
+                binding.panelWifiSta.staArchIndicator,
                 (if (isFtp) 1 else 0) * segWidth.toFloat(),
                 animated = staArchInitialized && animate,
             )
@@ -1108,12 +1108,12 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             )
             tab.typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
         }
-        styleTab(binding.tabStaArchPtp, !isFtp)
-        styleTab(binding.tabStaArchFtp, isFtp)
+        styleTab(binding.panelWifiSta.tabStaArchPtp, !isFtp)
+        styleTab(binding.panelWifiSta.tabStaArchFtp, isFtp)
 
-        binding.layoutStaPtp.visibility = if (isFtp) View.GONE else View.VISIBLE
-        binding.layoutStaFtp.visibility = if (isFtp) View.VISIBLE else View.GONE
-        binding.tvFtpGuide.text = FTP_GUIDE
+        binding.panelWifiSta.layoutStaPtp.visibility = if (isFtp) View.GONE else View.VISIBLE
+        binding.panelWifiSta.layoutStaFtp.visibility = if (isFtp) View.VISIBLE else View.GONE
+        binding.panelWifiSta.tvFtpGuide.text = FTP_GUIDE
         applyActionRowVisibility()
         renderFtpUi()
     }
@@ -1128,49 +1128,49 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         val ctx = requireContext()
         val clients = viewModel.ftpClients.value
 
-        binding.tvFtpUser.text = FtpPushServer.USER
-        binding.tvFtpPass.text = viewModel.ftpPassword
+        binding.panelWifiSta.tvFtpUser.text = FtpPushServer.USER
+        binding.panelWifiSta.tvFtpPass.text = viewModel.ftpPassword
 
         when (val state = viewModel.ftpState.value) {
             is FtpPushServer.State.Listening -> {
-                binding.tvFtpState.text =
+                binding.panelWifiSta.tvFtpState.text =
                     if (clients > 0) "正在接收：$clients 个连接" else "正在监听，等待相机连上来"
-                binding.tvFtpEndpoint.text = "${state.host} : ${state.port}"
-                binding.btnFtpToggle.text = "停止 FTP 服务器"
-                binding.tvFtpHint.visibility = View.VISIBLE
-                binding.tvFtpHint.text =
+                binding.panelWifiSta.tvFtpEndpoint.text = "${state.host} : ${state.port}"
+                binding.panelWifiSta.btnFtpToggle.text = "停止 FTP 服务器"
+                binding.panelWifiSta.tvFtpHint.visibility = View.VISIBLE
+                binding.panelWifiSta.tvFtpHint.text =
                     "把上面的地址和端口填进相机的 FTP 配置，登录方式选「被动（PASV）」。"
             }
 
             is FtpPushServer.State.Failed -> {
-                binding.tvFtpState.text = "启动失败：${state.message}"
-                binding.tvFtpEndpoint.text = "—"
-                binding.btnFtpToggle.text = "重试启动"
-                binding.tvFtpHint.visibility = View.VISIBLE
-                binding.tvFtpHint.text =
+                binding.panelWifiSta.tvFtpState.text = "启动失败：${state.message}"
+                binding.panelWifiSta.tvFtpEndpoint.text = "—"
+                binding.panelWifiSta.btnFtpToggle.text = "重试启动"
+                binding.panelWifiSta.tvFtpHint.visibility = View.VISIBLE
+                binding.panelWifiSta.tvFtpHint.text =
                     "端口被占用时重启应用再试；也确认没有别的 FTP 服务占着 ${FtpPushServer.DEFAULT_PORT}。"
             }
 
             FtpPushServer.State.Stopped -> {
-                binding.tvFtpState.text = "未启动"
+                binding.panelWifiSta.tvFtpState.text = "未启动"
                 val ips = viewModel.ftpCandidateAddresses()
-                binding.tvFtpEndpoint.text = if (ips.isEmpty()) {
+                binding.panelWifiSta.tvFtpEndpoint.text = if (ips.isEmpty()) {
                     "未获取到局域网地址（手机先连上 WiFi 或开热点）"
                 } else {
                     "相机侧填：${ips.first()} : ${FtpPushServer.DEFAULT_PORT}"
                 }
-                binding.btnFtpToggle.text = "启动 FTP 服务器"
-                binding.tvFtpHint.visibility = View.GONE
+                binding.panelWifiSta.btnFtpToggle.text = "启动 FTP 服务器"
+                binding.panelWifiSta.tvFtpHint.visibility = View.GONE
             }
         }
 
         val list = viewModel.ftpReceived.value
-        binding.tvFtpStats.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
-        binding.tvFtpStats.text =
+        binding.panelWifiSta.tvFtpStats.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
+        binding.panelWifiSta.tvFtpStats.text =
             "已接收 ${list.size} 个文件 · ${viewModel.formatFtpBytes(list.sumOf { it.bytes })}"
 
         // 接收记录：代码建行，不新增 XML 布局文件（与预览页的做法一致）
-        val container = binding.ftpLogList
+        val container = binding.panelWifiSta.ftpLogList
         container.removeAllViews()
         list.take(6).forEach { item ->
             val ok = item.savedPath != null
@@ -1303,9 +1303,9 @@ class DashboardFragment : Fragment(), GlassInsetAware {
 
     private fun panelFor(mode: ConnectMode): View {
         return when (mode) {
-            ConnectMode.WIFI_AP -> binding.panelWifiAp
-            ConnectMode.WIFI_STA -> binding.panelWifiSta
-            ConnectMode.USB -> binding.panelUsb
+            ConnectMode.WIFI_AP -> binding.panelWifiAp.root
+            ConnectMode.WIFI_STA -> binding.panelWifiSta.root
+            ConnectMode.USB -> binding.panelUsb.root
         }
     }
 
@@ -1322,12 +1322,12 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         when (currentMode) {
             ConnectMode.WIFI_AP, ConnectMode.WIFI_STA -> {
                 ensureStaPermissions {
-                    binding.tvStatusMessage.text = "正在扫描 WiFi 相机..."
+                    binding.cardDevice.tvStatusMessage.text = "正在扫描 WiFi 相机..."
                     viewModel.scanWifi()
                 }
             }
             ConnectMode.USB -> {
-                binding.tvStatusMessage.text = "正在检测 USB 相机..."
+                binding.cardDevice.tvStatusMessage.text = "正在检测 USB 相机..."
                 viewModel.connectUsb()
                 // 兜底收口：若探测结果与上一次完全相同（StateFlow 不会重发），
                 // 1.5s 后按状态重渲染一次，避免"正在检测…"永久留在状态行
@@ -1363,12 +1363,12 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     // 视修复 D（STA 单按钮，参考实现对齐）：点「连接相机」= 自动搜索 +
                     // 自动接续，不再要求先按「扫描相机」。无候选时空态给「手动输入 IP」。
                     staAutoConnectArmed = true
-                    binding.tvStatusMessage.text = "正在搜索相机（mDNS + 网段探测，约 8 秒）…"
+                    binding.cardDevice.tvStatusMessage.text = "正在搜索相机（mDNS + 网段探测，约 8 秒）…"
                     viewModel.scanWifi()
                 }
             }
             ConnectMode.USB -> {
-                binding.tvStatusMessage.text = "正在建立 USB 通道..."
+                binding.cardDevice.tvStatusMessage.text = "正在建立 USB 通道..."
                 viewModel.connectUsb()
                 // 同 scanForCurrentMode：状态未变化时 StateFlow 不会重发，这里兜底重渲染
                 viewLifecycleOwner.lifecycleScope.launch {
@@ -1383,11 +1383,11 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         // FR-37：与上面同一条规则，覆盖「连接相机」大按钮这条入口（STA+FTP 时按钮虽被隐藏，
         // 但候选行、快捷入口都可能走到这里）
         if (currentMode == ConnectMode.WIFI_STA && staArch == AppSettings.STA_ARCH_FTP) {
-            binding.tvStatusMessage.text =
+            binding.cardDevice.tvStatusMessage.text =
                 "FTP 推送架构：手机只接收，不直连。请启动下方 FTP 服务器并在相机里填同一地址"
             return
         }
-        binding.tvStatusMessage.text = "连接: ${candidate.name} (${candidate.ipAddress})"
+        binding.cardDevice.tvStatusMessage.text = "连接: ${candidate.name} (${candidate.ipAddress})"
         viewModel.connectToWifiCamera(candidate)
     }
 
@@ -1406,7 +1406,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
      */
     private fun apOneTapConnect() {
         if (viewModel.onCameraAp()) {
-            binding.tvStatusMessage.text = "正在连接相机热点网关…"
+            binding.cardDevice.tvStatusMessage.text = "正在连接相机热点网关…"
             viewModel.connectApDirect()
             return
         }
@@ -1415,7 +1415,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             if (_binding != null) launchApWifiPanel()
         }
         if (started) {
-            binding.tvStatusMessage.text = "正在请求连接相机热点，请在系统弹窗点「允许」…"
+            binding.cardDevice.tvStatusMessage.text = "正在请求连接相机热点，请在系统弹窗点「允许」…"
         } else {
             launchApWifiPanel()
         }
@@ -1429,7 +1429,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             return
         }
         viewModel.armApPanel(path)
-        binding.tvStatusMessage.text =
+        binding.cardDevice.tvStatusMessage.text =
             "请在弹出面板里点相机热点（NIKON_…），连上后会自动开始连接"
     }
 
@@ -1470,7 +1470,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
 
     private fun connectRecentDevice(device: PairedDevice) {
         val display = device.deviceName.ifBlank { "尼康相机" }
-        binding.tvStatusMessage.text = "快速连接: $display"
+        binding.cardDevice.tvStatusMessage.text = "快速连接: $display"
         viewModel.connectToRecentDevice(device)
     }
 
@@ -1584,7 +1584,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 // FR-37：STA + FTP 推送架构下相机是**主动推送方**，手机侧没有可连的对象。
                 // 旧代码这里恒走 PTP/IP 直连，等于把用户刚选的架构当场作废（本次用户报障的成因）。
                 if (mode == ConnectMode.WIFI_STA && arch == AppSettings.STA_ARCH_FTP) {
-                    binding.tvStatusMessage.text =
+                    binding.cardDevice.tvStatusMessage.text =
                         "FTP 推送架构：手机只接收，不直连。请启动下方 FTP 服务器并在相机里填同一地址"
                     return@setOnClickListener
                 }
@@ -1595,9 +1595,9 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     }
 
     private fun renderRecentDevices(devices: List<PairedDevice>) {
-        binding.recentDeviceList.removeAllViews()
+        binding.panelWifiSta.recentDeviceList.removeAllViews()
         if (devices.isEmpty()) {
-            binding.recentDeviceList.addView(
+            binding.panelWifiSta.recentDeviceList.addView(
                 emptyState("暂无最近连接设备", iconRes = R.drawable.ic_empty_clock)
             )
             return
@@ -1605,7 +1605,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         devices.forEach { device ->
             val item = ItemRecentDeviceBinding.inflate(
                 layoutInflater,
-                binding.recentDeviceList,
+                binding.panelWifiSta.recentDeviceList,
                 false
             )
             // FR-36：配对记录新写的是官方全称（`Nikon Z 50II`）；旧记录那一列存的是
@@ -1624,7 +1624,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             item.root.pressEffect()
             item.btnRecentConnect.pressEffect()
             item.btnRecentConnect.setOnClickListener { connectRecentDevice(device) }
-            binding.recentDeviceList.addView(item.root)
+            binding.panelWifiSta.recentDeviceList.addView(item.root)
         }
     }
 
@@ -1692,11 +1692,11 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             .setPositiveButton("连接") { _, _ ->
                 val endpoint = WifiEndpoint.parse(input.text?.toString())
                 if (endpoint == null) {
-                    binding.tvStatusMessage.text =
+                    binding.cardDevice.tvStatusMessage.text =
                         "IP 地址无效，请填写形如 192.168.1.1 的 IPv4 地址"
                     return@setPositiveButton
                 }
-                binding.tvStatusMessage.text = "连接 ${endpoint.display}"
+                binding.cardDevice.tvStatusMessage.text = "连接 ${endpoint.display}"
                 viewModel.connectToWifiCamera(
                     WifiCameraCandidate(endpoint.host, endpoint.port, "手动相机", "manual")
                 )

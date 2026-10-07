@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 视T6 自 fragment_dashboard 抽取：原块内容零改动 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:orientation="vertical">
+
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:background="@drawable/bg_card"
+                            android:orientation="vertical"
+                            android:padding="16dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <ImageView
+                                    android:layout_width="24dp"
+                                    android:layout_height="24dp"
+                                    android:contentDescription="WiFi AP"
+                                    android:src="@drawable/ic_wifi_ap"
+                                    app:tint="@color/text_primary" />
+
+                                <TextView
+                                    style="@style/NlText.SectionTitle"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginStart="10dp"
+                                    android:text="WiFi AP 直连教程" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/tvApGuide"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="10dp"
+                                android:lineSpacingExtra="3dp"
+                                android:text="① 相机开启 WiFi 热点（AP 模式），密码见相机屏幕\n② 手机 WLAN 连上相机热点（记不记得连过都一样，直接进行下一步）\n③ 回到本页点「连接相机」即可 —— App 会直接连上热点，或自动弹出系统 Wi-Fi 面板让你点一下热点\n④ 在相机配对画面按 OK 确认\n连不上时：确认手机仍连着相机热点、相机 WiFi 已开启，再点一次「连接相机」"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="@dimen/font_caption" />
+                        </LinearLayout>
+
+                        <TextView
+                            android:id="@+id/tvApCandidatesHeader"
+                            style="@style/NlText.GroupTitle"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="14dp"
+                            android:layout_marginBottom="8dp"
+                            android:text="已发现相机" />
+
+                        <LinearLayout
+                            android:id="@+id/apCandidateList"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical" />
+                    
+</LinearLayout>

@@ -179,14 +179,20 @@
                 android:gravity="center"
                 android:orientation="vertical">
 
-                <TextView
-                    android:id="@+id/tvEmptyIcon"
+                <!-- v2.7：emoji 占位换成与首页同一张自绘矢量相机（drawable/ic_camera_hero）。
+                     容器沿用 72dp 圆角方块（规划 §2.2「图标容器」），padding 6dp 给机身留白，
+                     与 DashboardFragment 空态的相机图保持同一观感。
+                     注意：本空态的 tvMessage 同时兼作下载进度文案（见 TransferFragment），
+                     所以这里只换图标，不动文案结构。 -->
+                <ImageView
+                    android:id="@+id/ivEmptyIcon"
                     android:layout_width="72dp"
                     android:layout_height="72dp"
                     android:background="@drawable/bg_skeleton"
-                    android:gravity="center"
-                    android:text="📷"
-                    android:textSize="@dimen/font_display"
+                    android:contentDescription="相机"
+                    android:padding="6dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_camera_hero"
                     android:visibility="gone" />
 
                 <ProgressBar
