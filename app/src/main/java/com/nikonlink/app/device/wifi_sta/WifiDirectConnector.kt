@@ -480,6 +480,11 @@ class WifiDirectConnector @Inject constructor(
                 // **绑网失败时回落到默认路由继续连，而不是判死。**
                 val defaultRouteFallback = usable == null &&
                     localInterfaces.hasLocalWifiLikeInterface()
+                // 修复（10-07 日志 09:31 会话实锤）：记录"本轮唯一通路是蜂窝黑洞"。
+                // restore_paired 用陈旧地址（AP 时代的 192.168.1.1）在 STA 场景下
+                // in_subnet=false + cm_cellular_hole=true，旧逻辑照样跑满 3 次探测 +
+                // 120s floor —— 用户日志里一条 conn_result 烧了 173712ms 全是蜂窝超时。
+                var fellBackToCellularBlackhole = false
                 if (defaultRouteFallback) {
                     val ifaces = runCatching { localInterfaces.localAddresses() }
                         .getOrDefault(emptyList())
@@ -504,6 +509,10 @@ class WifiDirectConnector @Inject constructor(
                             "host ${endpoint.host} is NOT in any local subnet - " +
                                 "connection will likely fail, rescan needed"
                         )
+                        // 私网目标 + 本机无任何网卡覆盖 + 默认路由是蜂窝 = 物理黑洞，
+                        // 重试一万次也不会好（探测级判据在 probeWouldUseCellular）
+                        fellBackToCellularBlackhole = isPrivateLanIp(endpoint.host) &&
+                            networkMonitor.probeWouldUseCellular(endpoint.host)
                     }
                     // 明确回到默认路由：清掉可能残留的进程级绑网，
                     // 让 socket 完全交给内核按路由表选择出口。
@@ -743,6 +752,25 @@ class WifiDirectConnector @Inject constructor(
                 // 只针对 `camera_unreachable`（地址错/不在同网段/被 AP 隔离），
                 // `ptp_handshake_failed` 仍走满退避 —— 那属于"相机在、只是要用户按 OK"。
                 if (unreachable) {
+                    // 修复（10-07 09:31 会话实锤）：蜂窝黑洞立即收口，不进 3 次计数与 120s floor。
+                    // 本机没有任何网卡覆盖相机地址、默认路由是蜂窝 —— 物理上不可能连通，
+                    // 旧逻辑却让 restore_paired 烧满 173712ms（10 次探测全是蜂窝超时）。
+                    // 下一根日志能对上的特征：`sta_fallback in_subnet=false` + `cm_cellular_hole=true`。
+                    if (fellBackToCellularBlackhole) {
+                        eventLogger.event(
+                            "sta_fail", "gen" to gen, "reason" to "no_camera_subnet",
+                            "attempt" to attempt, "host" to endpoint.host,
+                            "waited_ms" to (System.currentTimeMillis() - loopStartedAt)
+                        )
+                        stateMachine.dispatch(
+                            ConnectionEvent.ErrorOccurred(
+                                describeNoCameraSubnet(endpoint),
+                                recoverable = true
+                            )
+                        )
+                        onFail("no_camera_subnet")
+                        return
+                    }
                     consecutiveUnreachable++
                     // FR-22：'连续 3 次不可达'这个结论本身不足以证明相机不在 ——
                     // 机身端口可能只是还没起监听，而同一批真机日志里**成功**的那几次
@@ -1269,5 +1297,16 @@ class WifiDirectConnector @Inject constructor(
                     "然后重新点一次连接"
             else -> describeStaFailure(reason, endpoint)
         }
+    }
+
+    /**
+     * 修复：蜂窝黑洞快速收口（reason=no_camera_subnet）的文案。
+     * 与 [describeStaFailure] 的 no_wifi_network 区分开 —— 那句让人"去连 WiFi"，
+     * 这里的实情是"手机挂着别的网、保存的地址已不在任何本机网段里"，
+     * 指引必须指向重新发现相机（单按钮会自动做），而不是再去连一次 WiFi。
+     */
+    private fun describeNoCameraSubnet(endpoint: WifiEndpoint): String {
+        return "手机当前不在相机所在的网络里（${endpoint.host} 不在本机任何网段），已停止重试。" +
+            "请重新点「连接相机」自动搜索；或确认手机已连相机热点 / 相机已加入手机热点"
     }
 }
