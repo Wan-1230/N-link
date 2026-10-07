@@ -360,6 +360,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     ShutterCountState.NONE -> getString(R.string.shutter_count_idle)
                 }
                 binding.tvShutterCount.isClickable = shutterRowVisible
+                binding.tvShutterCount.pressEffect()
                 binding.tvShutterCount.setOnClickListener {
                     // 「本机解不出」是唯一值得点开的分支——它要问一次云端授权，不是简单重试
                     if (info.shutterFailReason == ShutterFailReason.CONSENT_REQUIRED) {
@@ -839,6 +840,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
 
     private fun setupInteractions() {
         // 顶部设置入口 → Tab4
+        binding.btnSettingsIcon.pressEffect()
         binding.btnSettingsIcon.setOnClickListener {
             (activity as? MainActivity)?.switchToTab(MainActivity.TAB_SETTINGS)
         }

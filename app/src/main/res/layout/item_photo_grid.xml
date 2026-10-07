@@ -118,7 +118,7 @@
             android:maxLines="1"
             android:paddingHorizontal="6dp"
             android:paddingVertical="3dp"
-            android:text="✓ 已下载"
+            android:text="@string/tv_downloaded_badge_text"
             android:textColor="@color/white"
             android:textSize="@dimen/font_foot"
             android:textStyle="bold"

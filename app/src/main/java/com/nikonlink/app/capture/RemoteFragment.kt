@@ -619,7 +619,9 @@ class RemoteFragment : Fragment(), GlassInsetAware {
     @SuppressLint("ClickableViewAccessibility")
     private fun setupShutter() {
         // 照片 / 视频模式切换
+        binding.btnModePhoto.pressEffect()
         binding.btnModePhoto.setOnClickListener { setVideoMode(false) }
+        binding.btnModeVideo.pressEffect()
         binding.btnModeVideo.setOnClickListener { setVideoMode(true) }
 
         // 快门：按压内陷 + 闪白反馈

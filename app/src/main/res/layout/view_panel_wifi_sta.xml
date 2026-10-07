@@ -15,7 +15,7 @@
                             android:id="@+id/staArchPill"
                             android:layout_width="match_parent"
                             android:layout_height="40dp"
-                            android:layout_marginBottom="12dp"
+                            android:layout_marginBottom="@dimen/space_12"
                             android:background="@drawable/bg_chip"
                             android:padding="3dp">
 
@@ -36,7 +36,7 @@
                                     android:layout_height="match_parent"
                                     android:layout_weight="1"
                                     android:gravity="center"
-                                    android:text="PTP/IP 直连"
+                                    android:text="@string/tab_sta_arch_ptp_text"
                                     android:textColor="@color/on_primary"
                                     android:textSize="@dimen/font_caption"
                                     android:textStyle="bold" />
@@ -47,7 +47,7 @@
                                     android:layout_height="match_parent"
                                     android:layout_weight="1"
                                     android:gravity="center"
-                                    android:text="FTP 推送收图"
+                                    android:text="@string/tab_sta_arch_ftp_text"
                                     android:textColor="@color/text_primary"
                                     android:textSize="@dimen/font_caption" />
                             </LinearLayout>
@@ -65,7 +65,7 @@
                             android:layout_height="wrap_content"
                             android:background="@drawable/bg_card"
                             android:orientation="vertical"
-                            android:padding="16dp">
+                            android:padding="@dimen/space_16">
 
                             <LinearLayout
                                 android:layout_width="match_parent"
@@ -85,7 +85,7 @@
                                     android:layout_width="wrap_content"
                                     android:layout_height="wrap_content"
                                     android:layout_marginStart="10dp"
-                                    android:text="WiFi STA 连接教程" />
+                                    android:text="@string/txt_wi_fi_s" />
                             </LinearLayout>
 
                             <TextView
@@ -103,7 +103,7 @@
                                 android:id="@+id/staModeRow"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginTop="12dp"
+                                android:layout_marginTop="@dimen/space_12"
                                 android:orientation="horizontal">
 
                                 <TextView
@@ -113,8 +113,8 @@
                                     android:layout_weight="1"
                                     android:background="@drawable/bg_chip_selected"
                                     android:gravity="center"
-                                    android:paddingVertical="8dp"
-                                    android:text="同一 WiFi"
+                                    android:paddingVertical="@dimen/space_8"
+                                    android:text="@string/chip_sta_same_wifi_text"
                                     android:textColor="@color/on_primary"
                                     android:textSize="@dimen/font_caption" />
 
@@ -126,8 +126,8 @@
                                     android:layout_weight="1"
                                     android:background="@drawable/bg_chip"
                                     android:gravity="center"
-                                    android:paddingVertical="8dp"
-                                    android:text="连接手机热点"
+                                    android:paddingVertical="@dimen/space_8"
+                                    android:text="@string/chip_sta_hotspot_text"
                                     android:textColor="@color/text_primary"
                                     android:textSize="@dimen/font_caption" />
                             </LinearLayout>
@@ -139,13 +139,13 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="46dp"
                                 android:layout_marginTop="14dp"
-                                android:text="STA 主机注册（让相机记住本机）" />
+                                android:text="@string/btn_sta_host_register_text" />
 
                             <TextView
                                 android:id="@+id/tvStaHostRegStatus"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginTop="8dp"
+                                android:layout_marginTop="@dimen/space_8"
                                 android:textColor="@color/text_secondary"
                                 android:textSize="@dimen/font_caption"
                                 android:visibility="gone" />
@@ -156,8 +156,8 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="14dp"
-                            android:layout_marginBottom="8dp"
-                            android:text="最近连接设备" />
+                            android:layout_marginBottom="@dimen/space_8"
+                            android:text="@string/txt_最近连接设备" />
 
                         <LinearLayout
                             android:id="@+id/recentDeviceList"
@@ -170,8 +170,8 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="14dp"
-                            android:layout_marginBottom="8dp"
-                            android:text="已发现相机" />
+                            android:layout_marginBottom="@dimen/space_8"
+                            android:text="@string/txt_已发现相机" />
 
                         <LinearLayout
                             android:id="@+id/staCandidateList"
@@ -196,7 +196,7 @@
                                 android:layout_height="wrap_content"
                                 android:background="@drawable/bg_card"
                                 android:orientation="vertical"
-                                android:padding="16dp">
+                                android:padding="@dimen/space_16">
 
                                 <LinearLayout
                                     android:layout_width="match_parent"
@@ -216,7 +216,7 @@
                                         android:layout_width="wrap_content"
                                         android:layout_height="wrap_content"
                                         android:layout_marginStart="10dp"
-                                        android:text="FTP 推送收图教程" />
+                                        android:text="@string/txt_f_t_p推送" />
                                 </LinearLayout>
 
                                 <TextView
@@ -235,19 +235,19 @@
                                 android:layout_marginTop="@dimen/module_gap"
                                 android:background="@drawable/bg_card"
                                 android:orientation="vertical"
-                                android:padding="16dp">
+                                android:padding="@dimen/space_16">
 
                                 <TextView
                                     style="@style/NlText.Subtitle"
                                     android:layout_width="wrap_content"
                                     android:layout_height="wrap_content"
-                                    android:text="本机 FTP 服务器" />
+                                    android:text="@string/txt_本机_f_t_p" />
 
                                 <TextView
                                     android:id="@+id/tvFtpState"
                                     android:layout_width="match_parent"
                                     android:layout_height="wrap_content"
-                                    android:layout_marginTop="8dp"
+                                    android:layout_marginTop="@dimen/space_8"
                                     android:textColor="@color/text_secondary"
                                     android:textSize="@dimen/font_caption" />
 
@@ -263,14 +263,14 @@
                                 <LinearLayout
                                     android:layout_width="match_parent"
                                     android:layout_height="wrap_content"
-                                    android:layout_marginTop="8dp"
+                                    android:layout_marginTop="@dimen/space_8"
                                     android:orientation="horizontal">
 
                                     <TextView
                                         android:layout_width="0dp"
                                         android:layout_height="wrap_content"
                                         android:layout_weight="1"
-                                        android:text="用户名"
+                                        android:text="@string/txt_用户名"
                                         android:textColor="@color/text_secondary"
                                         android:textSize="@dimen/font_caption" />
 
@@ -292,7 +292,7 @@
                                         android:layout_width="0dp"
                                         android:layout_height="wrap_content"
                                         android:layout_weight="1"
-                                        android:text="密码"
+                                        android:text="@string/txt_密码"
                                         android:textColor="@color/text_secondary"
                                         android:textSize="@dimen/font_caption" />
 
@@ -310,13 +310,13 @@
                                     android:layout_width="match_parent"
                                     android:layout_height="46dp"
                                     android:layout_marginTop="14dp"
-                                    android:text="启动 FTP 服务器" />
+                                    android:text="@string/btn_ftp_toggle_text" />
 
                                 <TextView
                                     android:id="@+id/tvFtpHint"
                                     android:layout_width="match_parent"
                                     android:layout_height="wrap_content"
-                                    android:layout_marginTop="8dp"
+                                    android:layout_marginTop="@dimen/space_8"
                                     android:textColor="@color/text_secondary"
                                     android:textSize="@dimen/font_caption"
                                     android:visibility="gone" />

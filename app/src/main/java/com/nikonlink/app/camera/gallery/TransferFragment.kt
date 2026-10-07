@@ -229,6 +229,9 @@ class TransferFragment : Fragment(), GlassInsetAware {
             override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
                 val fast = newState != RecyclerView.SCROLL_STATE_IDLE
                 adapter.setFastScrolling(fast)
+                // 高清升级通道同步挂起/放行：滑动中不发起 0x90C4（数百 KB/张），
+                // 停止后队列统一放行（见 TransferViewModel.upgradeThumbnailToHd）
+                viewModel.setFastScrolling(fast)
                 // PRD §8.2 第 4 条 / AC-6：滚动期间采集降频（不冻采），停住后补采一次对齐位置
                 glassBackdrop?.setScrollSuppressing(fast)
                 if (!fast) requestVisibleThumbnails()
@@ -252,6 +255,14 @@ class TransferFragment : Fragment(), GlassInsetAware {
      * 快速滑动期间适配器暂停了 `onRequestThumb`（避免给 PTP 通道灌入大量
      * 马上就滚出视野的请求），停下时这里把视口内仍未加载的格子补齐；
      * 上下各多取两行做预热，减少再次滑动时出现的白块。
+     *
+     * 尾部预取：距列表尾部不足一个预取窗口时，把预热窗口之后的下一屏
+     * （[PREFETCH_SPAN]，3 列 × 3 行）一并提前拉好，翻到底前格子已是现成位图。
+     * 只向下预取：相册默认按拍摄时间倒序（新照片在前），向下翻是主导浏览方向。
+     *
+     * 整个范围（含预取段）同步交给 VM（[TransferViewModel.notifyVisibleThumbWindow]）：
+     * 仍排在并发队列里、却已滚出窗口的旧请求会在拿到名额时让位，实现「可见项优先」。
+     * 预取段必须也在窗口内，否则刚发出的预取请求自己就会被让位检查拦下。
      */
     private fun requestVisibleThumbnails() {
         if (_binding == null) return
@@ -260,12 +271,23 @@ class TransferFragment : Fragment(), GlassInsetAware {
         val last = (lm.findLastVisibleItemPosition() + PRELOAD_SPAN)
             .coerceAtMost(adapter.itemCount - 1)
         if (last < first) return
-        for (pos in first..last) {
+        val count = adapter.itemCount
+        // 接近尾部（余量不足一屏）时把请求与窗口都延到预取段；中途停留维持原窗口，
+        // 不为看不见的照片烧串行 PTP 带宽
+        val end = if (last + PREFETCH_SPAN >= count - 1) {
+            (last + PREFETCH_SPAN).coerceAtMost(count - 1)
+        } else {
+            last
+        }
+        val window = ArrayList<Int>(end - first + 1)
+        for (pos in first..end) {
             val file = adapter.itemAt(pos) ?: continue
+            window += file.handle
             if (!thumbnailCache.hasInMemory(file.handle)) {
                 viewModel.requestThumbnail(file.handle)
             }
         }
+        if (window.isNotEmpty()) viewModel.notifyVisibleThumbWindow(window)
     }
 
     /**
@@ -650,6 +672,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
                 .show()
         }
 
+        binding.btnShare.pressEffect()
         binding.btnShare.setOnClickListener {
             when (viewModel.activeAlbum.value) {
                 // F4：相机源分享走「预览副本」链路（长边 2048，默认剥离 GPS）
@@ -857,7 +880,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
                     binding.layoutEmpty.visibility =
                         if (list.isEmpty()) View.VISIBLE else View.GONE
                     // 视S2：空态图标容器与空态文案同显同隐
-                    binding.tvEmptyIcon.visibility =
+                    binding.ivEmptyIcon.visibility =
                         if (list.isEmpty()) View.VISIBLE else View.GONE
                     if (list.isEmpty()) {
                         // O4：筛选态空结果兜底——「未下载」筛选开着且列表为空，
@@ -1250,5 +1273,8 @@ class TransferFragment : Fragment(), GlassInsetAware {
 
         /** 滚动停止后向前/向后额外预热的格子数（3 列网格，6 ≈ 两行） */
         private const val PRELOAD_SPAN = 6
+
+        /** 尾部预取的一屏格子数（3 列 × 3 行）：接近列表尾部时提前拉好的下一屏 */
+        private const val PREFETCH_SPAN = 9
     }
 }

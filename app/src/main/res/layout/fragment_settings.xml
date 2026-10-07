@@ -56,7 +56,7 @@
                     android:ellipsize="end"
                     android:fontFamily="sans-serif"
                     android:maxLines="1"
-                    android:text="支持开发 · 请喝杯咖啡"
+                    android:text="@string/txt_支持开发"
                     android:textColor="@color/on_dark_card"
                     android:textSize="@dimen/font_title"
                     android:textStyle="bold" />
@@ -75,7 +75,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="@dimen/module_gap_large"
-                android:text="传输设置" />
+                android:text="@string/txt_传输设置" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -96,7 +96,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="下载画质"
+                        android:text="@string/txt_下载画质"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
@@ -104,14 +104,14 @@
                         android:id="@+id/tvQualityValue"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="原图"
+                        android:text="@string/tv_quality_value_text"
                         android:textColor="@color/text_tertiary"
                         android:textSize="@dimen/font_caption" />
 
                     <ImageView
                         android:layout_width="16dp"
                         android:layout_height="16dp"
-                        android:layout_marginStart="4dp"
+                        android:layout_marginStart="@dimen/space_4"
                         android:contentDescription="修改"
                         android:src="@drawable/ic_chevron_right"
                         app:tint="@color/text_tertiary" />
@@ -141,7 +141,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="RAW+JPEG 下载方式"
+                        android:text="@string/txt_r_a_w_j_p"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
@@ -149,14 +149,14 @@
                         android:id="@+id/tvRawPairValue"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="成对下载"
+                        android:text="@string/tv_raw_pair_value_text"
                         android:textColor="@color/text_tertiary"
                         android:textSize="@dimen/font_caption" />
 
                     <ImageView
                         android:layout_width="16dp"
                         android:layout_height="16dp"
-                        android:layout_marginStart="4dp"
+                        android:layout_marginStart="@dimen/space_4"
                         android:contentDescription="修改"
                         android:src="@drawable/ic_chevron_right"
                         app:tint="@color/text_tertiary" />
@@ -180,7 +180,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="默认保存路径"
+                        android:text="@string/txt_默认保存路径"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
@@ -188,14 +188,14 @@
                         android:id="@+id/tvSavePathValue"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="系统相册"
+                        android:text="@string/tv_save_path_value_text"
                         android:textColor="@color/text_tertiary"
                         android:textSize="@dimen/font_caption" />
 
                     <ImageView
                         android:layout_width="16dp"
                         android:layout_height="16dp"
-                        android:layout_marginStart="4dp"
+                        android:layout_marginStart="@dimen/space_4"
                         android:contentDescription="修改"
                         android:src="@drawable/ic_chevron_right"
                         app:tint="@color/text_tertiary" />
@@ -218,7 +218,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="自动下载新照片"
+                        android:text="@string/txt_自动下载新照"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
@@ -253,14 +253,14 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="标记后自动下载"
+                            android:text="@string/txt_标记后自动下"
                             android:textColor="@color/text_primary"
                             android:textSize="@dimen/font_body" />
 
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="相册内标记照片后立即下载原图（联机拍摄用）"
+                            android:text="@string/txt_相册内标记照"
                             android:textColor="@color/text_tertiary"
                             android:textSize="@dimen/font_foot" />
                     </LinearLayout>
@@ -296,14 +296,14 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="分享保留 GPS"
+                            android:text="@string/txt_分享保留_g"
                             android:textColor="@color/text_primary"
                             android:textSize="@dimen/font_body" />
 
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="关闭时分享副本剥离位置信息，仅保留拍摄参数"
+                            android:text="@string/txt_关闭时分享副"
                             android:textColor="@color/text_tertiary"
                             android:textSize="@dimen/font_foot" />
                     </LinearLayout>
@@ -323,7 +323,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="@dimen/module_gap_large"
-                android:text="相机设置" />
+                android:text="@string/txt_相机设置" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -344,7 +344,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="连接偏好"
+                        android:text="@string/txt_连接偏好"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
@@ -352,14 +352,14 @@
                         android:id="@+id/tvConnPrefValue"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="WiFi 优先"
+                        android:text="@string/tv_conn_pref_value_text"
                         android:textColor="@color/text_tertiary"
                         android:textSize="@dimen/font_caption" />
 
                     <ImageView
                         android:layout_width="16dp"
                         android:layout_height="16dp"
-                        android:layout_marginStart="4dp"
+                        android:layout_marginStart="@dimen/space_4"
                         android:contentDescription="修改"
                         android:src="@drawable/ic_chevron_right"
                         app:tint="@color/text_tertiary" />
@@ -387,14 +387,14 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="5GHz 频段优先"
+                            android:text="@string/txt_5_g_hz频"
                             android:textColor="@color/text_primary"
                             android:textSize="@dimen/font_body" />
 
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="双频相机 AP 优先连接 5GHz，失败自动回退"
+                            android:text="@string/txt_双频相机_a"
                             android:textColor="@color/text_tertiary"
                             android:textSize="@dimen/font_foot" />
                     </LinearLayout>
@@ -431,14 +431,14 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="v2.2 连接改进"
+                            android:text="@string/txt_v22连"
                             android:textColor="@color/text_primary"
                             android:textSize="@dimen/font_body" />
 
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="热点地址自动学习、扫描提速、传输期保护、USB 加固；异常时关闭即回到上一版行为"
+                            android:text="@string/txt_热点地址自动"
                             android:textColor="@color/text_tertiary"
                             android:textSize="@dimen/font_foot" />
                     </LinearLayout>
@@ -475,14 +475,14 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="液态玻璃视觉"
+                            android:text="@string/txt_液态玻璃视觉"
                             android:textColor="@color/text_primary"
                             android:textSize="@dimen/font_body" />
 
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="悬浮导航条、弹窗背景模糊、监看 HUD 透景；看不清或嫌卡时关闭，立即回到上一版外观"
+                            android:text="@string/txt_悬浮导航条"
                             android:textColor="@color/text_tertiary"
                             android:textSize="@dimen/font_foot" />
                     </LinearLayout>
@@ -519,14 +519,14 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="降低透明度"
+                            android:text="@string/txt_降低透明度"
                             android:textColor="@color/text_primary"
                             android:textSize="@dimen/font_body" />
 
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="文字与背景对比度更高，代价是失去透景效果"
+                            android:text="@string/txt_文字与背景对"
                             android:textColor="@color/text_tertiary"
                             android:textSize="@dimen/font_foot" />
                     </LinearLayout>
@@ -557,7 +557,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="连接诊断"
+                        android:text="@string/txt_连接诊断"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
@@ -565,7 +565,7 @@
                         android:id="@+id/tvConnDiagValue"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="环境检查 · 最近连接记录"
+                        android:text="@string/tv_conn_diag_value_text"
                         android:textColor="@color/text_tertiary"
                         android:textSize="@dimen/font_caption" />
                 </LinearLayout>
@@ -594,14 +594,14 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="开发选项"
+                        android:text="@string/txt_开发选项"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="回退闸门 · 仅调试包"
+                        android:text="@string/txt_回退闸门"
                         android:textColor="@color/text_tertiary"
                         android:textSize="@dimen/font_caption" />
                 </LinearLayout>
@@ -613,7 +613,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="@dimen/module_gap_large"
-                android:text="通用设置" />
+                android:text="@string/txt_通用设置" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -634,7 +634,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="深浅色模式"
+                        android:text="@string/txt_深浅色模式"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
@@ -642,14 +642,14 @@
                         android:id="@+id/tvThemeValue"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="跟随系统"
+                        android:text="@string/tv_theme_value_text"
                         android:textColor="@color/text_tertiary"
                         android:textSize="@dimen/font_caption" />
 
                     <ImageView
                         android:layout_width="16dp"
                         android:layout_height="16dp"
-                        android:layout_marginStart="4dp"
+                        android:layout_marginStart="@dimen/space_4"
                         android:contentDescription="修改"
                         android:src="@drawable/ic_chevron_right"
                         app:tint="@color/text_tertiary" />
@@ -673,7 +673,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="清除缓存"
+                        android:text="@string/txt_清除缓存"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
@@ -704,14 +704,14 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="导出日志"
+                        android:text="@string/txt_导出日志"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
                     <ImageView
                         android:layout_width="16dp"
                         android:layout_height="16dp"
-                        android:layout_marginStart="4dp"
+                        android:layout_marginStart="@dimen/space_4"
                         android:contentDescription="导出"
                         android:src="@drawable/ic_chevron_right"
                         app:tint="@color/text_tertiary" />
@@ -735,7 +735,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="检查更新"
+                        android:text="@string/txt_检查更新"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
@@ -750,7 +750,7 @@
                     <ImageView
                         android:layout_width="16dp"
                         android:layout_height="16dp"
-                        android:layout_marginStart="4dp"
+                        android:layout_marginStart="@dimen/space_4"
                         android:contentDescription="检查"
                         android:src="@drawable/ic_chevron_right"
                         app:tint="@color/text_tertiary" />
@@ -774,7 +774,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="夸克网盘下载"
+                        android:text="@string/txt_夸克网盘下载"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
@@ -782,14 +782,14 @@
                         android:id="@+id/tvQuarkValue"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="暂无网盘链接"
+                        android:text="@string/tv_quark_value_text"
                         android:textColor="@color/text_tertiary"
                         android:textSize="@dimen/font_caption" />
 
                     <ImageView
                         android:layout_width="16dp"
                         android:layout_height="16dp"
-                        android:layout_marginStart="4dp"
+                        android:layout_marginStart="@dimen/space_4"
                         android:contentDescription="下载"
                         android:src="@drawable/ic_chevron_right"
                         app:tint="@color/text_tertiary" />
@@ -813,7 +813,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="百度网盘下载"
+                        android:text="@string/txt_百度网盘下载"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
@@ -821,14 +821,14 @@
                         android:id="@+id/tvBaiduValue"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="暂无网盘链接"
+                        android:text="@string/tv_baidu_value_text"
                         android:textColor="@color/text_tertiary"
                         android:textSize="@dimen/font_caption" />
 
                     <ImageView
                         android:layout_width="16dp"
                         android:layout_height="16dp"
-                        android:layout_marginStart="4dp"
+                        android:layout_marginStart="@dimen/space_4"
                         android:contentDescription="下载"
                         android:src="@drawable/ic_chevron_right"
                         app:tint="@color/text_tertiary" />
@@ -852,7 +852,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="关于应用"
+                        android:text="@string/txt_关于应用"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
@@ -871,7 +871,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="@dimen/module_gap_large"
-                android:text="帮助与反馈" />
+                android:text="@string/txt_帮助与反馈" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -892,7 +892,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="使用教程"
+                        android:text="@string/txt_使用教程"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
@@ -922,7 +922,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="常见问题"
+                        android:text="@string/txt_常见问题"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
@@ -952,7 +952,7 @@
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:text="意见反馈"
+                        android:text="@string/txt_意见反馈"
                         android:textColor="@color/text_primary"
                         android:textSize="@dimen/font_body" />
 
@@ -981,7 +981,7 @@
                 style="@style/NlText.Title"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="设置" />
+                android:text="@string/tv_title_text_2" />
         </LinearLayout>
 
         <View

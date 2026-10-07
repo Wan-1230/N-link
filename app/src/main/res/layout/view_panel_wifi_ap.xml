@@ -9,7 +9,7 @@
                             android:layout_height="wrap_content"
                             android:background="@drawable/bg_card"
                             android:orientation="vertical"
-                            android:padding="16dp">
+                            android:padding="@dimen/space_16">
 
                             <LinearLayout
                                 android:layout_width="match_parent"
@@ -29,7 +29,7 @@
                                     android:layout_width="wrap_content"
                                     android:layout_height="wrap_content"
                                     android:layout_marginStart="10dp"
-                                    android:text="WiFi AP 直连教程" />
+                                    android:text="@string/txt_wi_fi_a" />
                             </LinearLayout>
 
                             <TextView
@@ -49,8 +49,8 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="14dp"
-                            android:layout_marginBottom="8dp"
-                            android:text="已发现相机" />
+                            android:layout_marginBottom="@dimen/space_8"
+                            android:text="@string/tv_ap_candidates_header_text" />
 
                         <LinearLayout
                             android:id="@+id/apCandidateList"

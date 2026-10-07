@@ -375,6 +375,7 @@ class PhotoGridAdapter(
 
         fun bind(header: PhotoGridItem.DateHeader) {
             binding.tvDate.text = header.label
+            binding.tvSelectGroup.pressEffect()
             binding.tvSelectGroup.setOnClickListener { onToggleGroupSelection(header.handles) }
             applySelection(isGroupAllSelected(header, selected))
         }

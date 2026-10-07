@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  连接英雄图舞台底：右上角一束柔光 + 竖向渐变，把相机图托起来。
+  全部取已有 token（surface_variant / chip_unselected），深浅主题自动换挡，
+  不新增颜色。圆角与卡片一致（card_radius 12dp）。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="270"
+                android:endColor="@color/chip_unselected"
+                android:startColor="@color/surface_variant"
+                android:type="linear" />
+            <corners android:radius="@dimen/card_radius" />
+        </shape>
+    </item>
+
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:centerX="0.72"
+                android:centerY="0.34"
+                android:endColor="@android:color/transparent"
+                android:gradientRadius="0.78"
+                android:startColor="@color/chip_unselected"
+                android:type="radial" />
+            <corners android:radius="@dimen/card_radius" />
+        </shape>
+    </item>
+
+</layer-list>

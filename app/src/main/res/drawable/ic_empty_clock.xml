@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  空态图标 · 时钟（"暂无最近连接设备"专用，替代原来的 🕐 emoji 占位）。
+
+  与相机图（ic_camera_hero）刻意做出层级差：那张是页面主视觉，走伪 3D 金属质感；
+  这张是 72dp 小图标，走轻线性 —— 大图精致、小图简洁，空态才不会显得吵。
+
+  颜色全部取现成文字色 token，所以深浅主题自动换挡，**不需要新增任何颜色**：
+  · text_tertiary —— 表圈（最弱，空态本就该退到背景层）
+  · text_secondary —— 指针与轴心（主体，比表圈强一档）
+  日间 #8C8C8C/#525252，夜间 #7A7A7A/#ADADAD，在 chip_unselected 底色上都够清晰。
+
+  画布 60×60 = 72dp 容器去掉 6dp×2 内衬后的内容区，ImageView 用 fitCenter，
+  于是 scale 恰为 1:1，线宽不需要为缩放让步。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="60dp"
+    android:height="60dp"
+    android:viewportWidth="60"
+    android:viewportHeight="60">
+
+    <!-- 表圈 -->
+    <path
+        android:pathData="M30,11a19,19 0 1,0 0,38a19,19 0 1,0 0,-38Z"
+        android:strokeColor="@color/text_tertiary"
+        android:strokeWidth="2.3" />
+
+    <!-- 时针（指向 10 点方向） -->
+    <path
+        android:pathData="M30,30L30,18.6"
+        android:strokeColor="@color/text_secondary"
+        android:strokeLineCap="round"
+        android:strokeWidth="2.9" />
+
+    <!-- 分针（指向 4 点方向） -->
+    <path
+        android:pathData="M30,30L40.4,35.1"
+        android:strokeColor="@color/text_secondary"
+        android:strokeLineCap="round"
+        android:strokeWidth="2.3" />
+
+    <!-- 中心轴 -->
+    <path
+        android:fillColor="@color/text_secondary"
+        android:pathData="M32.3,30a2.3,2.3 0 1,0 -4.6,0a2.3,2.3 0 1,0 4.6,0Z" />
+
+</vector>

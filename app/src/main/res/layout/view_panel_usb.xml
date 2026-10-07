@@ -10,7 +10,7 @@
                             android:layout_height="wrap_content"
                             android:background="@drawable/bg_card"
                             android:orientation="vertical"
-                            android:padding="16dp">
+                            android:padding="@dimen/space_16">
 
                             <LinearLayout
                                 android:layout_width="match_parent"
@@ -30,7 +30,7 @@
                                     android:layout_width="wrap_content"
                                     android:layout_height="wrap_content"
                                     android:layout_marginStart="10dp"
-                                    android:text="USB 有线连接教程" />
+                                    android:text="@string/txt_u_s_b有线" />
                             </LinearLayout>
 
                             <TextView
@@ -48,7 +48,7 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:layout_marginTop="10dp"
-                                android:text="未检测到 USB 相机"
+                                android:text="@string/tv_usb_device_text"
                                 android:textColor="@color/text_tertiary"
                                 android:textSize="@dimen/font_nav" />
                         </LinearLayout>
