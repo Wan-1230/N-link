@@ -299,13 +299,31 @@ class ConnectionManager @Inject constructor(
             return
         }
 
+        // 修复（10-07 日志 09:06:07 实锤）：会话**已建立**时点击不再顶掉。
+        // 旧守卫带 `!ptpSession.isConnected()` 逃逸——会话活着时 loopRunning 反而为 false，
+        // 一次点击就把刚连上的会话拆掉重连；相机端留下半开会话（单客户端槽收回要 ~35s），
+        // 下一代会话的事件通道随即被相机掐断（event_read_error，2~7s 内反复）。
+        // 用户观感就是"连上了又掉、越点越连不上"，于是点得更勤 —— 死亡螺旋。
+        // 现在语义对齐参考实现（单飞闸）：会话活着 = 拒绝并提示，重连走"断开"。
+        val sameEndpoint = pairedDeviceAddress == endpoint.address
+        val sessionLive = ptpSession.isConnected() && sameEndpoint
+        if (sessionLive) {
+            _connectionHint.value = ConnectionHint(
+                "相机已连接。如需重新连接，请先在设备页断开",
+                kind = ConnectionHintKind.PAIRING_COMPLETE
+            )
+            eventLogger.event(
+                "connect_ignored", "host" to endpoint.host, "caller" to caller.code,
+                "reason" to "session_live"
+            )
+            return
+        }
         // 同一台相机的连接循环还在跑时，这次点击不再另起一轮。
         // 另起一轮的代价是真机日志里看到的：connector.connect() 会 cancel 掉仍在退避
         // 等待的旧循环、把指数退避从 1s 清零，而机身唯一的 PTP/IP 客户端槽需要十几秒
         // 才自己收干净 —— 越快点、越连不上（2026-09-19：30 秒内 4 轮互相 cancel）。
         // 旧循环本身每 1~15s 就在重试，用户在机身上按了 OK 也会立刻被它接住。
-        val loopRunning = connector.isActive && pairedDeviceAddress == endpoint.address &&
-            !ptpSession.isConnected()
+        val loopRunning = connector.isActive && sameEndpoint
         // FR-19：上面那道守卫只看 `connector.isActive`，而 learnFirst 分支要先跑
         // ~2.4s 的网关学习（READINESS 1200ms + RESAMPLE 700ms + 筛探）才碰得到
         // connector —— 那段窗口里 `connector.isActive` 恒为 false，任何重入都放行。
@@ -555,10 +573,74 @@ class ConnectionManager @Inject constructor(
                     "pair_fail",
                     "host" to endpoint.host, "port" to endpoint.port, "reason" to reason
                 )
+                // 修复（10-07 日志实锤）：恢复失败后不再干等 —— 日志里 mDNS 明明发现了
+                // 相机（hostreg discover_hit 10.105.80.14），但没有任何机制把"发现的地址"
+                // 接到连接上，用户只能干看 173s 的蜂窝黑洞。现在失败即自动重发现一次，
+                // 命中不同地址就自动接续（单飞闸会挡住与用户点击的竞争）。
+                maybeAutoRediscover(endpoint.host, source, reason)
                 // 状态行文案由事件监听统一写入（见 observeStateMachine 的 eventListener），
                 // 这里不再重复设置，避免两处文案互相覆盖
             }
         )
+    }
+
+    /** 触发自动重发现的失败类型：地址/网络层面到不了相机（握手类失败不该换地址重试）。 */
+    private val AUTO_REDISCOVER_REASONS = setOf(
+        "camera_unreachable", "no_camera_subnet", "no_wifi_network", "ap_route_lost"
+    )
+
+    /** 每轮会话只自动重发现一次；用户主动点连接时重新武装（见 [connectToWifiCamera]）。 */
+    private var autoRediscoveryUsed = false
+
+    /**
+     * 连接失败后的一次性自动重发现：扫描当前网络里的相机（mDNS + 网段 + ARP），
+     * 命中**不同于失败地址**的相机就自动接续连接。
+     *
+     * 边界：
+     * - 只对网络类失败触发（[AUTO_REDISCOVER_REASONS]），握手被拒换地址没有意义；
+     * - 每轮会话一次（[autoRediscoveryUsed]），USER_TAP 重新武装 —— 防止与恢复循环互相拉扯；
+     * - 命中后以 RECONNECT_TRIGGER 发起 —— 兜底地址的 3 分钟冷却与 FR-37 架构门照常生效，
+     *   不会形成重试风暴。
+     */
+    private fun maybeAutoRediscover(failedHost: String, source: String, reason: String) {
+        if (autoRediscoveryUsed || userDisconnectRequested) return
+        if (reason !in AUTO_REDISCOVER_REASONS) return
+        autoRediscoveryUsed = true
+        eventLogger.event(
+            "auto_rediscover", "phase" to "armed",
+            "failed_host" to failedHost, "reason" to reason, "source" to source
+        )
+        scope?.launch(Dispatchers.IO) {
+            delay(2_000L)   // 让失败收口/状态行先落定，也别在相机收半开会话的窗口里敲门
+            if (userDisconnectRequested || connector.isActive || ptpSession.isConnected()) {
+                return@launch
+            }
+            val cands = runCatching {
+                scanWifiCameras(timeoutMs = 10_000L, hotspotMode = true, ptpConfirm = false, earlyExit = true)
+            }.getOrDefault(emptyList())
+            val target = cands.firstOrNull { it.ipAddress != failedHost }
+            if (target == null) {
+                eventLogger.event("auto_rediscover", "phase" to "miss", "n" to cands.size)
+                return@launch
+            }
+            if (userDisconnectRequested || connector.isActive || ptpSession.isConnected()) {
+                return@launch
+            }
+            eventLogger.event(
+                "auto_rediscover", "phase" to "hit",
+                "host" to target.ipAddress, "port" to target.port
+            )
+            withContext(Dispatchers.Main) {
+                _connectionHint.value = ConnectionHint(
+                    "已发现相机（${target.ipAddress}），正在自动连接…"
+                )
+                connectToWifiCamera(
+                    target.ipAddress,
+                    target.port,
+                    caller = ConnFunnel.Caller.RECONNECT_TRIGGER
+                )
+            }
+        }
     }
 
     /**
@@ -1358,6 +1440,8 @@ class ConnectionManager @Inject constructor(
         // v2.6.6 FR-29①：改挂 CAMERA_UNREACHABLE。原来映射到 TCP_TIMEOUT，而那个码
         // 全仓零生产者 —— STA 最高频的失败因此在日志里长期写着"端口超时"，误导排查。
         reason.contains("camera_unreachable") -> ConnFunnel.Reason.CAMERA_UNREACHABLE
+        // 修复：蜂窝黑洞快速收口（保存地址已不在本机任何网段）—— 本质是"不在相机网络"
+        reason.contains("no_camera_subnet") -> ConnFunnel.Reason.NOT_ON_CAMERA_AP
         // FR-38：AP 路由复查+重绑仍不通 —— 本质仍是"到不了相机的网络"，归同一桶统计
         reason.contains("ap_route_lost") -> ConnFunnel.Reason.CAMERA_UNREACHABLE
         // v2.6.6 FR-29②：这两类是"我们这轮没跑完"，不是相机的问题，必须能与 UNKNOWN 分开统计。
