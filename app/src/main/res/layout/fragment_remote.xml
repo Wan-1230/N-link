@@ -92,6 +92,16 @@
             android:textSize="@dimen/font_nav" />
     </LinearLayout>
 
+    <!-- 视T5：拍摄失败内联状态条——失败原因留在页面上（点一下收起），不再只靠转瞬即逝的 Toast -->
+    <com.nikonlink.app.shared.ui.widget.NlStateBar
+        android:id="@+id/stateRemote"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/page_margin"
+        android:layout_marginEnd="@dimen/page_margin"
+        android:layout_marginTop="6dp"
+        android:visibility="gone" />
+
     <!-- 实时取景区域（占 2/3） -->
     <FrameLayout
         android:id="@+id/liveContainer"
