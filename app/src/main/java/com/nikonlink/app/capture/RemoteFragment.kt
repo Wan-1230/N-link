@@ -932,11 +932,20 @@ class RemoteFragment : Fragment(), GlassInsetAware {
             }
         }
 
-        // 拍摄动作结果提示（录像失败原因等）：旧版静默失败表现为「按了没反应」
+        // 拍摄动作结果提示（录像失败原因等）：旧版静默失败表现为「按了没反应」。
+        // 视T5：失败类消息走内联状态条（留在页面上、点一下收起），不再只靠
+        // 转瞬即逝的 Toast；普通提示仍走 NlFeedback。
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.shootingMessage.collect { msg ->
                 if (!msg.isNullOrBlank()) {
-                    NlFeedback.show(requireContext(), msg, long = true)
+                    if (msg.contains("失败") || msg.contains("错误") || msg.contains("无法")) {
+                        binding.stateRemote.apply {
+                            bind(title = msg, icon = "!", actionText = "知道了") { hide() }
+                            show()
+                        }
+                    } else {
+                        NlFeedback.show(requireContext(), msg, long = true)
+                    }
                     viewModel.consumeMessage()
                 }
             }
