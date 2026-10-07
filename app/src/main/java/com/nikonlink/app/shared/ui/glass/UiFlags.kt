@@ -241,6 +241,14 @@ object UiFlags {
     fun motionEnabled(c: Context): Boolean =
         glassEnabled(c) && get(c, MOTION) && !systemAnimationsOff(c)
 
+    /**
+     * 视修复 T1：按压反馈专用的动效判定 —— 与 [motionEnabled] 的唯一区别是
+     * **不含玻璃条件**：玻璃关掉（经典外观）时按压缩放仍应工作，它属于
+     * 反馈语义而不是玻璃材质。App 动效开关 + 系统「移除动画」两项照常生效。
+     */
+    fun pressMotionEnabled(c: Context): Boolean =
+        get(c, MOTION) && !systemAnimationsOff(c)
+
     /** 系统「动画程序时长缩放」设置项；0 = 用户关闭了动画 */
     private const val ANIM_SCALE_KEY = "animator_duration_scale"
 
