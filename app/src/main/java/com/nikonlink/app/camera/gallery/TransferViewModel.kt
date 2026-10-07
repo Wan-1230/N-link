@@ -329,6 +329,33 @@ class TransferViewModel @Inject constructor(
     private var prewarmJob: Job? = null
 
     /**
+     * 网格快速滑动中（Fragment 的滚动回调同步进来）。
+     * 高清升级通道据此挂起/放行：单张数百 KB 的 0x90C4 与新滚入视野的小图抢同一条
+     * 串行 PTP 通道，且滑动中触发的升级目标大概率马上滚出视野。
+     */
+    private val _fastScrolling = MutableStateFlow(false)
+
+    /** Fragment 滚动状态回调：滑动中挂起高清缩略图升级，停止后统一放行 */
+    fun setFastScrolling(fast: Boolean) {
+        _fastScrolling.value = fast
+    }
+
+    /**
+     * 当前可见（含预热边距）的缩略图窗口。null = 尚未统计（初始加载，放行一切）。
+     *
+     * Fragment 在每次滚动停止时经 [notifyVisibleThumbWindow] 更新；
+     * 相册切换 / 重新拉列表时置回 null（内容变了旧窗口不可信，回到放行态，
+     * 等下一次滚动停止再收窄），避免切 Tab 后可见项被陈旧窗口误伤成永久转圈。
+     */
+    @Volatile
+    private var visibleThumbWindow: Set<Int>? = null
+
+    /** Fragment 滚动停止时上报可见窗口，供排队中的缩略图请求做「可见项优先」判定 */
+    fun notifyVisibleThumbWindow(handles: Collection<Int>) {
+        visibleThumbWindow = handles.toSet()
+    }
+
+    /**
      * 高清缩略图升级队列（渐进式加载的第二段）。
      *
      * 与小图通道**分离**是刻意的：高清预览（0x90C4）单张数百 KB，若与小图共用
@@ -629,6 +656,8 @@ class TransferViewModel @Inject constructor(
             Timber.tag(TAG).d("Photo loading already in progress, skip")
             return
         }
+        // 列表内容即将变化：旧「可见窗口」不可信，置回放行态，等滚动停止后重新收窄
+        visibleThumbWindow = null
         loadingGuard.set(true)
         loadJob?.cancel()
         if (!silent) _isLoading.value = true
@@ -851,6 +880,8 @@ class TransferViewModel @Inject constructor(
         _activeAlbum.value = source
         _selectedHandles.value = emptySet()
         _message.value = ""
+        // 切源 = 换一批 handle：旧「可见窗口」作废（见 visibleThumbWindow 说明）
+        visibleThumbWindow = null
         when (source) {
             AlbumSource.LOCAL -> if (_localPhotos.value.isEmpty()) fetchLocalPhotos()
             AlbumSource.MARKED -> {
@@ -1003,7 +1034,8 @@ class TransferViewModel @Inject constructor(
         // 驱逐后两者脱节：集合里有 handle、界面上却无图，旧逻辑第一行就返回、
         // 永远不再加载 → 「再次打开本地相册全部转圈」。
         if (thumbnailCache.fromMemory(handle) != null) return
-        val bitmap = thumbnailCache.get(handle) ?: withContext(Dispatchers.IO) {
+        // 网格档解码：本地缩略图只服务网格（预览走系统相册），按格子实际像素解码
+        val bitmap = thumbnailCache.get(handle, thumbnailCache.tileMaxEdgePx) ?: withContext(Dispatchers.IO) {
             runCatching {
                 context.contentResolver.loadThumbnail(
                     localContentUri(handle),
@@ -1093,15 +1125,42 @@ class TransferViewModel @Inject constructor(
         }
         if (_thumbnails.value.contains(handle) || !pendingThumbs.add(handle)) {
             // 已有图（哪怕是缓存的小图）→ 仍然尝试后台升高清，保证最终画质
-            if (_thumbnails.value.contains(handle)) upgradeThumbnailToHd(handle)
+            if (_thumbnails.value.contains(handle)) {
+                if (!thumbnailCache.hasInMemory(handle)) {
+                    // 内存位图被 LruCache 驱逐的已加载格子：磁盘直接回填（网格档解码），
+                    // 免一次 PTP 往返——磁盘上存的就是高清字节（putBytes 原样落盘 /
+                    // 下载回填的 1024 JPEG），回填成功后向相机重取 0x90C4 纯属浪费。
+                    // 这是「往回翻已看过的照片全是白块 + 转圈」的主要成因。
+                    viewModelScope.launch {
+                        val bitmap = thumbnailCache.get(handle, thumbnailCache.tileMaxEdgePx)
+                        if (bitmap != null) {
+                            if (handle in _thumbnails.value) {
+                                _thumbUpgradeTick.value = _thumbUpgradeTick.value + 1
+                            } else {
+                                _thumbnails.value = _thumbnails.value + handle
+                            }
+                        } else {
+                            upgradeThumbnailToHd(handle)
+                        }
+                    }
+                } else {
+                    upgradeThumbnailToHd(handle)
+                }
+            }
             return
         }
         viewModelScope.launch {
             thumbSemaphore.withPermit {
                 try {
                     if (_thumbnails.value.contains(handle)) return@withPermit
+                    // 可见项优先：滚动停止后 Fragment 会刷新「可见窗口」（含预热边距），
+                    // 还排在信号量队列里、却已滚出窗口的旧请求在此让位（不发 PTP 请求），
+                    // 并发名额立即腾给刚停稳的可见项 —— 等价于给新请求插队。
+                    // 让位的请求不置任何状态，滚回来时重绑/补请求会再次发起。
+                    val window = visibleThumbWindow
+                    if (window != null && handle !in window) return@withPermit
                     var bitmap = thumbnailCache.fromMemory(handle)
-                        ?: thumbnailCache.get(handle)
+                        ?: thumbnailCache.get(handle, thumbnailCache.tileMaxEdgePx)
                     if (bitmap == null) {
                         // 让路：原图批量传输期间不占用串行命令通道发缩略图，
                         // 传输结束由 drainDeferredThumbnails 整批补发
@@ -1139,12 +1198,26 @@ class TransferViewModel @Inject constructor(
             deferredHdThumbs.add(handle)
             return
         }
+        // 相册性能修复：首屏填充期 HD 升级给小图让路。0x100A 小图与 0x90C4 高清
+        // 共用机身唯一的串行 PTP 命令通道——首屏 30 个格子各自触发升级时，
+        // 数百 KB 的 0x90C4 会插在后续格子的几 KB 小图前面，网格转圈期被拉长。
+        // 还有小图请求在排队时，HD 先进让路队列（drainDeferredThumbnails 统一放行）。
+        if (pendingThumbs.isNotEmpty()) {
+            deferredHdThumbs.add(handle)
+            return
+        }
         if (!pendingHdThumbs.add(handle)) return
         viewModelScope.launch {
+            // 快速滑动期间挂起（不占并发名额，等在挂起点上），停止后统一放行：
+            // 滑动中触发升级的格子大概率马上滚出视野，数百 KB 的 0x90C4 会白白
+            // 占住串行 PTP 通道，拖慢停下后真正可见的那一批
+            _fastScrolling.first { !it }
             hdThumbSemaphore.withPermit {
                 try {
                     val hd = transferManager.fetchThumbnail(handle) ?: return@withPermit
-                    if (thumbnailCache.putBytes(handle, hd) != null) {
+                    // 内存位图按网格档解码：磁盘原样存高清字节，预览页要大图时
+                    // 会按预览档从磁盘现解（见 ThumbnailCache.get 的档位策略）
+                    if (thumbnailCache.putBytes(handle, hd, thumbnailCache.tileMaxEdgePx) != null) {
                         _thumbnails.value = _thumbnails.value + handle
                         _thumbUpgradeTick.value = _thumbUpgradeTick.value + 1
                     }
@@ -1152,9 +1225,23 @@ class TransferViewModel @Inject constructor(
                     Timber.tag("TransferVM").d("HD thumb upgrade failed handle=$handle: ${e.message}")
                 } finally {
                     pendingHdThumbs.remove(handle)
+                    // 自己这一单做完，队列里若还有攒着的 HD 且小图已清空，续上
+                    if (pendingThumbs.isEmpty() && deferredHdThumbs.isNotEmpty() &&
+                        !transferManager.isBulkTransferRunning()
+                    ) {
+                        drainDeferredHdThumbs()
+                    }
                 }
             }
         }
+    }
+
+    /** HD 让路队列的续发（与 [drainDeferredThumbnails] 的小图段分离，避免互相递归） */
+    private fun drainDeferredHdThumbs() {
+        if (deferredHdThumbs.isEmpty()) return
+        val pending = deferredHdThumbs.toList()
+        deferredHdThumbs.clear()
+        pending.forEach { upgradeThumbnailToHd(it) }
     }
 
     /** 原图传输停了：把让路期间攒下的缩略图请求整批补发 */
@@ -1177,7 +1264,8 @@ class TransferViewModel @Inject constructor(
         prewarmJob = viewModelScope.launch {
             for (handle in handles) {
                 if (_thumbnails.value.contains(handle)) continue
-                val bitmap = thumbnailCache.fromMemory(handle) ?: thumbnailCache.get(handle) ?: continue
+                val bitmap = thumbnailCache.fromMemory(handle)
+                    ?: thumbnailCache.get(handle, thumbnailCache.tileMaxEdgePx) ?: continue
                 _thumbnails.value = _thumbnails.value + handle
             }
         }
