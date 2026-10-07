@@ -408,7 +408,7 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                         " · WiFi AP：相机开启热点 → 手机连上该热点 → 直接点「连接相机」" +
                         "（不必先扫描；不在热点上时 App 会自动弹出系统 Wi-Fi 面板），" +
                         "在相机配对画面按 OK\n" +
-                        " · WiFi STA：相机连上路由器或手机热点 → 点「扫描相机」→「连接相机」\n" +
+                        " · WiFi STA：相机连上路由器或手机热点 → 点「连接相机」自动搜索并接续\n" +
                         "   首次使用要先做一次「STA 主机注册」（在 WiFi-AP 模式下完成，" +
                         "详见设备页 STA 连接教程）\n" +
                         " · USB：用支持数据的 C to C 线连接，相机 USB 模式设为 MTP/PTP，" +
@@ -463,11 +463,18 @@ class SettingsFragment : Fragment(), GlassInsetAware {
      * 调用方负责放到 IO/Default 线程上（要扫完整个 APK）。
      */
     /**
-     * 开发选项（**仅调试包**）：把 v2.5 那几个回退闸门摆成能点的开关。
+     * 开发选项（**仅调试包**）：把回退闸门摆成能点的开关。
      *
-     * 存在的理由不是"给开发者图方便"：这些闸门的行为要靠真机才判得出来，而验收的人
-     * 手上只有一个装着调试包的手机、没有 adb —— 打不开 SharedPreferences，默认关的那几项
-     * （如 FR-16 的「已保护」筛选）就永远停在"未验证"。正式包里这一行连同分隔线都是 gone。
+     * 2026-10-07 闸门评判：35 个开关裁到 5 个。判定口径——
+     * ① 有真机日志实锤、关掉只会回到已知更差行为的修复（FR-02/06/19/20/21/23/24/26/27/28、
+     *    FR-32 五条、FR-33、FR-34 七条、FR-35①④、FR-37、FR-38、FR-03、FR-10）全部
+     *    **锁定为默认值并移除开关**（`ConnFlags.LOCKED`，isEnabled 无视 prefs 残留）；
+     * ② 仍未定论、需要现场二分的保留开关：
+     *    - EVENT_SILENCE_HOLD（FR-04）：传输期容忍 event 静默，真机数据不足；
+     *    - GIVEUP_FLOOR（FR-22）：120s 下限救过"慢相机"，也与蜂窝黑洞空转有过纠葛
+     *      （黑洞已由 no_camera_subnet 快速收口接管），保留二分能力；
+     *    - PROTECT_SELECT / TONE_TOOLS / RAW_PAIR：默认关的功能实验，均未全量验收
+     *      （「已保护」的文案测试当前还是红的）。
      */
     private fun setupLabFlags() {
         if (!BuildConfig.DEBUG) return
@@ -489,185 +496,14 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         val c = requireContext()
         return listOf(
             LabFlag(
-                ConnFlags.STA_TIMEOUTS, "STA 显式超时（FR-02）",
-                { connFlags.isEnabled(ConnFlags.STA_TIMEOUTS) },
-                { connFlags.setEnabled(ConnFlags.STA_TIMEOUTS, it) }
-            ),
-            LabFlag(
-                ConnFlags.HOSTREG_VERIFY, "主机注册看机身证据（FR-06）",
-                { connFlags.isEnabled(ConnFlags.HOSTREG_VERIFY) },
-                { connFlags.setEnabled(ConnFlags.HOSTREG_VERIFY, it) }
-            ),
-            LabFlag(
                 ConnFlags.EVENT_SILENCE_HOLD, "传输期间容忍 event 静默（FR-04，默认关）",
                 { connFlags.isEnabled(ConnFlags.EVENT_SILENCE_HOLD) },
                 { connFlags.setEnabled(ConnFlags.EVENT_SILENCE_HOLD, it) }
             ),
-            // ── v2.6 连接链路（PRD v2.6 §五）。关掉任一项 = 回到 v2.3.2 的那一条行为，
-            // 用于二分定位"这条改动到底有没有用"，所以标签写的是**关掉之后会怎样**。
             LabFlag(
-                ConnFlags.CONN_SERIALIZE, "连接请求串行化（FR-19；关=重复点击会另起一代连接）",
-                { connFlags.isEnabled(ConnFlags.CONN_SERIALIZE) },
-                { connFlags.setEnabled(ConnFlags.CONN_SERIALIZE, it) }
-            ),
-            LabFlag(
-                ConnFlags.BIND_SUBNET_CHECK, "绑网前校子网（FR-20；关=到不了相机的 WiFi 也照绑）",
-                { connFlags.isEnabled(ConnFlags.BIND_SUBNET_CHECK) },
-                { connFlags.setEnabled(ConnFlags.BIND_SUBNET_CHECK, it) }
-            ),
-            LabFlag(
-                ConnFlags.PROBE_BUDGET, "探测收敛（FR-21；关=网关被拒后仍逐个试出厂地址）",
-                { connFlags.isEnabled(ConnFlags.PROBE_BUDGET) },
-                { connFlags.setEnabled(ConnFlags.PROBE_BUDGET, it) }
-            ),
-            LabFlag(
-                ConnFlags.GIVEUP_FLOOR, "放弃前先等够（FR-22；关=连续 3 次不可达立即判死）",
+                ConnFlags.GIVEUP_FLOOR, "放弃前先等够 120s（FR-22；关=连续 3 次不可达立即判死）",
                 { connFlags.isEnabled(ConnFlags.GIVEUP_FLOOR) },
                 { connFlags.setEnabled(ConnFlags.GIVEUP_FLOOR, it) }
-            ),
-            LabFlag(
-                ConnFlags.IFACE_CLASSIFY, "网卡分性质（FR-23；关=蜂窝/VPN 口也算「类 WiFi」）",
-                { connFlags.isEnabled(ConnFlags.IFACE_CLASSIFY) },
-                { connFlags.setEnabled(ConnFlags.IFACE_CLASSIFY, it) }
-            ),
-            LabFlag(
-                ConnFlags.PREFLIGHT_SOFT, "软告警不豁免（FR-24；关=在相机热点上什么都不查）",
-                { connFlags.isEnabled(ConnFlags.PREFLIGHT_SOFT) },
-                { connFlags.setEnabled(ConnFlags.PREFLIGHT_SOFT, it) }
-            ),
-            LabFlag(
-                ConnFlags.IP_PROMOTE, "被拒地址也记为相机（FR-26a；关=只有连成功才记，重启回落 192.168.1.1）",
-                { connFlags.isEnabled(ConnFlags.IP_PROMOTE) },
-                { connFlags.setEnabled(ConnFlags.IP_PROMOTE, it) }
-            ),
-            LabFlag(
-                ConnFlags.USB_SKIP_RECOVERY, "USB 不应答时跳过会话恢复（FR-26b；关=照样再等一次超时）",
-                { connFlags.isEnabled(ConnFlags.USB_SKIP_RECOVERY) },
-                { connFlags.setEnabled(ConnFlags.USB_SKIP_RECOVERY, it) }
-            ),
-            LabFlag(
-                ConnFlags.USB_RECONNECT_RAMP,
-                "USB 重连退避跨轮递增（FR-27；关=每轮都从 1 秒重新开始敲）",
-                { connFlags.isEnabled(ConnFlags.USB_RECONNECT_RAMP) },
-                { connFlags.setEnabled(ConnFlags.USB_RECONNECT_RAMP, it) }
-            ),
-            LabFlag(
-                ConnFlags.USB_CLAIM_CHECK,
-                "USB 把 claimInterface 返回值当判据（FR-28①；关=返回 false 也照样发命令）",
-                { connFlags.isEnabled(ConnFlags.USB_CLAIM_CHECK) },
-                { connFlags.setEnabled(ConnFlags.USB_CLAIM_CHECK, it) }
-            ),
-            LabFlag(
-                ConnFlags.USB_WRITE_STRICT,
-                "USB 命令必须写满长度才算成功（FR-28②；关=返回 0 与短写也被放过，接着空等 5 秒）",
-                { connFlags.isEnabled(ConnFlags.USB_WRITE_STRICT) },
-                { connFlags.setEnabled(ConnFlags.USB_WRITE_STRICT, it) }
-            ),
-            LabFlag(
-                ConnFlags.USB_OPENSESSION_RETRY,
-                "OpenSession 允许重试一次以走到清 stall（FR-28③；关=只发一次、管道失步永久锁住）",
-                { connFlags.isEnabled(ConnFlags.USB_OPENSESSION_RETRY) },
-                { connFlags.setEnabled(ConnFlags.USB_OPENSESSION_RETRY, it) }
-            ),
-            LabFlag(
-                ConnFlags.USB_CLOSE_SESSION_ON_TEARDOWN,
-                "拆 USB 链路前先发 CloseSession（FR-28④；关=只 releaseInterface+close，会话留在机身）",
-                { connFlags.isEnabled(ConnFlags.USB_CLOSE_SESSION_ON_TEARDOWN) },
-                { connFlags.setEnabled(ConnFlags.USB_CLOSE_SESSION_ON_TEARDOWN, it) }
-            ),
-            LabFlag(
-                ConnFlags.STA_SCAN_EARLY_EXIT,
-                "扫描强候选命中即早退（FR-32；关=跑满扫描预算，多相机列表最全）",
-                { connFlags.isEnabled(ConnFlags.STA_SCAN_EARLY_EXIT) },
-                { connFlags.setEnabled(ConnFlags.STA_SCAN_EARLY_EXIT, it) }
-            ),
-            LabFlag(
-                ConnFlags.STA_REG_REASON1_COOLDOWN,
-                "注册 reason=1 后冷却 35s（FR-32；关=立即允许重试，旧行为）",
-                { connFlags.isEnabled(ConnFlags.STA_REG_REASON1_COOLDOWN) },
-                { connFlags.setEnabled(ConnFlags.STA_REG_REASON1_COOLDOWN, it) }
-            ),
-            LabFlag(
-                ConnFlags.STA_LINK_DIAG,
-                "链路层/opcode 诊断日志（FR-32；纯日志零行为，排查期建议保持开）",
-                { connFlags.isEnabled(ConnFlags.STA_LINK_DIAG) },
-                { connFlags.setEnabled(ConnFlags.STA_LINK_DIAG, it) }
-            ),
-            LabFlag(
-                ConnFlags.STA_LOCAL_ONLY_REQUEST,
-                "网络请求去 INTERNET capability 并全程持有（FR-33；关=旧请求，无互联网热点会被系统回收）",
-                { connFlags.isEnabled(ConnFlags.STA_LOCAL_ONLY_REQUEST) },
-                { connFlags.setEnabled(ConnFlags.STA_LOCAL_ONLY_REQUEST, it) }
-            ),
-            LabFlag(
-                ConnFlags.AP_JOINED_LOOSE,
-                "面板/specifier 回连后按「有 WiFi 且网关是私网」判在网（FR-35①；关=只认 NIKON SSID，改名热点会卡住）",
-                { connFlags.isEnabled(ConnFlags.AP_JOINED_LOOSE) },
-                { connFlags.setEnabled(ConnFlags.AP_JOINED_LOOSE, it) }
-            ),
-            LabFlag(
-                ConnFlags.AP_CRED_SPECIFIER,
-                "有蓝牙凭证时免面板一键连热点（FR-35④；关=一律弹系统 WLAN 面板）",
-                { connFlags.isEnabled(ConnFlags.AP_CRED_SPECIFIER) },
-                { connFlags.setEnabled(ConnFlags.AP_CRED_SPECIFIER, it) }
-            ),
-            LabFlag(
-                ConnFlags.STA_ARCH_GATE,
-                "选了 FTP 推送架构后不再后台自动 PTP 直连（FR-37；关=架构只影响界面，v3.0.0 行为）",
-                { connFlags.isEnabled(ConnFlags.STA_ARCH_GATE) },
-                { connFlags.setEnabled(ConnFlags.STA_ARCH_GATE, it) }
-            ),
-            LabFlag(
-                ConnFlags.AP_ONE_TAP,
-                "AP 免扫描一键连接 + 系统 WLAN 面板（FR-34①；关=无候选时弹手动 IP 框）",
-                { connFlags.isEnabled(ConnFlags.AP_ONE_TAP) },
-                { connFlags.setEnabled(ConnFlags.AP_ONE_TAP, it) }
-            ),
-            LabFlag(
-                ConnFlags.AP_GW_FASTPATH,
-                "在相机热点上网关单采样直采（FR-34②；关=双采样+TCP 筛探，DISCOVER ~2.3s）",
-                { connFlags.isEnabled(ConnFlags.AP_GW_FASTPATH) },
-                { connFlags.setEnabled(ConnFlags.AP_GW_FASTPATH, it) }
-            ),
-            LabFlag(
-                ConnFlags.STA_LANE_TIMEOUT,
-                "无 Network 句柄时 socket 超时 30s→8s（FR-34③；关=蜂窝黑洞也烧满 30s）",
-                { connFlags.isEnabled(ConnFlags.STA_LANE_TIMEOUT) },
-                { connFlags.setEnabled(ConnFlags.STA_LANE_TIMEOUT, it) }
-            ),
-            LabFlag(
-                ConnFlags.STA_SESSION_HOLD,
-                "连接轮次的持有请求改会话制（FR-34④；关=3~4s 窗口到期即撤，回连瞬间零持有）",
-                { connFlags.isEnabled(ConnFlags.STA_SESSION_HOLD) },
-                { connFlags.setEnabled(ConnFlags.STA_SESSION_HOLD, it) }
-            ),
-            LabFlag(
-                ConnFlags.STA_WLAN_WAIT,
-                "闪断轮次先等 ≤8s 回连再决定收口（FR-34⑤；关=wlan 缺席直接判死整轮）",
-                { connFlags.isEnabled(ConnFlags.STA_WLAN_WAIT) },
-                { connFlags.setEnabled(ConnFlags.STA_WLAN_WAIT, it) }
-            ),
-            LabFlag(
-                ConnFlags.STA_FAST_IDLE_REFRESH,
-                "空闲刷新 60s→10s 档（FR-34⑥；关=v2.6.4 的 60s 档）",
-                { connFlags.isEnabled(ConnFlags.STA_FAST_IDLE_REFRESH) },
-                { connFlags.setEnabled(ConnFlags.STA_FAST_IDLE_REFRESH, it) }
-            ),
-            LabFlag(
-                ConnFlags.WLAN_DROP_REASON,
-                "WLAN 掉线原因码落日志（FR-34⑦；纯日志，remote 有值=相机踢，local 有值=手机断）",
-                { connFlags.isEnabled(ConnFlags.WLAN_DROP_REASON) },
-                { connFlags.setEnabled(ConnFlags.WLAN_DROP_REASON, it) }
-            ),
-            LabFlag(
-                UiFlags.ALBUM_INCR, "相册增量首屏（FR-03）",
-                { UiFlags.albumIncrementalEnabled(c) },
-                { UiFlags.set(c, UiFlags.ALBUM_INCR, it) }
-            ),
-            LabFlag(
-                UiFlags.SHUTTER_XCHECK, "快门次数多样本互验（FR-10）",
-                { UiFlags.shutterCrossCheckEnabled(c) },
-                { UiFlags.set(c, UiFlags.SHUTTER_XCHECK, it) }
             ),
             LabFlag(
                 UiFlags.PROTECT_SELECT, "「已保护」筛选（FR-16，默认关）",
