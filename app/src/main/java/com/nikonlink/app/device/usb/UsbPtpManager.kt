@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.*
 import android.os.Build
+import com.nikonlink.app.device.model.CameraModelCatalog
 import com.nikonlink.app.device.ptp.MtpObjectPropListParser
 import com.nikonlink.app.device.ptp.MtpObjectProps
 import com.nikonlink.app.device.ptp.PtpConstants
@@ -451,12 +452,27 @@ class UsbPtpManager @Inject constructor(
                     // 相机名称以**机身自报的 Model** 为准：PID 映射表覆盖不全且存在
                     // 一 PID 多机型，用它做显示名必然出现「名称不正确」。
                     // 拿到 Model 即回填，拿不到就保留 PID 兜底名，行为不劣于旧版。
-                    runCatching {
+                    val pidFallback = _deviceInfo.value?.cameraModel
+                    val infoResult = runCatching {
                         getDeviceInfo()?.let { UsbPtpProtocol.parseDeviceInfoModel(it) }
-                    }.getOrNull()?.takeIf { it.isNotBlank() }?.let { model ->
-                        val old = _deviceInfo.value?.cameraModel
-                        _deviceInfo.value = _deviceInfo.value?.copy(cameraModel = model)
-                        Timber.tag(TAG).i("USB camera model from DeviceInfo: $model (pid fallback was $old)")
+                    }
+                    val model = infoResult.getOrNull()?.takeIf { it.isNotBlank() }
+                    // 专项 v1 §4.2：USB 侧的 Model 历来只写 Timber，不进导出日志。
+                    // 2026-10-11 小米真机那份日志里设备页停在 `Nikon Camera (0x452)`，
+                    // 却没有任何一行能回答「是 GetDeviceInfo 没回来、还是解析失败、
+                    // 还是拿到了没上屏」—— 三种成因在日志里长得一模一样。
+                    // 这里只补观测，不改取名字的时序（重试属已跑通链路，本轮不动）。
+                    eventLogger.event(
+                        "usb_model",
+                        "parsed" to (model != null),
+                        "len" to (model?.length ?: -1),
+                        "chars" to CameraModelCatalog.describeRaw(model),
+                        "pid_fallback" to (pidFallback ?: "unknown"),
+                        "err" to infoResult.exceptionOrNull()?.javaClass?.simpleName
+                    )
+                    model?.let {
+                        _deviceInfo.value = _deviceInfo.value?.copy(cameraModel = it)
+                        Timber.tag(TAG).i("USB camera model from DeviceInfo: $it (pid fallback was $pidFallback)")
                     }
                     // 会话建立后向相机反馈，保持相机处于持续连接状态
                     val ready = sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)

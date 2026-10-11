@@ -451,6 +451,16 @@ class PtpSessionManager @Inject constructor(
                 CameraModelCatalog.official(lastDeviceModel)?.let { name ->
                     eventLogger.event("device_model", "name" to name)
                 }
+                // 专项 v1 §4.2：同时记下**原文的诊断形态**（可打印 ASCII + U+XXXX 码点）。
+                // 只记归一化结果吃过一次亏：2026-10-11 真机日志留下 `Nikon Z 502`，
+                // 但 `Z 50Ⅱ` 与 `Z 50II` 都推不出这个串 —— 定性所需的原文
+                // 在归一化那一步就被丢掉了，之后只能靠猜，而猜是禁止的。
+                eventLogger.event(
+                    "model_raw",
+                    "source" to "ptpip",
+                    "len" to (lastDeviceModel?.length ?: -1),
+                    "chars" to CameraModelCatalog.describeRaw(lastDeviceModel)
+                )
             } else {
                 lastSupportedOperations = null
                 lastDeviceModel = null

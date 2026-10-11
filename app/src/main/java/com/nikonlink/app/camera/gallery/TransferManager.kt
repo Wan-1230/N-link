@@ -315,12 +315,15 @@ class TransferManager @Inject constructor(
      * @param totalHandles 相机上报的对象句柄总数（0 = 相机在线但卡为空）
      * @param failedInfoCount ObjectInfo 读取失败的句柄数（>0 且 files 非空 = 部分失败）
      * @param transportOnline 拉取期间传输通道是否在线
+     * @param breakerTripped 是否因「连续一整页零成功」提前收口（专项 v1 §3.4）。
+     *   带默认值是为了不动既有四处构造调用 —— 语义上等价于旧的"跑完全部页"。
      */
     data class PhotoListFetch(
         val files: List<CameraFile>,
         val totalHandles: Int,
         val failedInfoCount: Int,
-        val transportOnline: Boolean
+        val transportOnline: Boolean,
+        val breakerTripped: Boolean = false
     ) {
         /** 通道在线、句柄有货却有读取失败且一无所获 = 整体失败（区别于「存储卡为空」与「全是不可展示格式」） */
         val totalFailure: Boolean get() =
@@ -425,7 +428,8 @@ class TransferManager @Inject constructor(
 
                 // ---- 回退路径：按 PAGE_SIZE 分页逐个读取 ObjectInfo（旧行为，页内并发 4）----
                 val result = mutableListOf<CameraFile>()
-                handles.chunked(PAGE_SIZE).forEach { page ->
+                var breakerTripped = false
+                for (page in handles.chunked(PAGE_SIZE)) {
                     val semaphore = Semaphore(OBJECT_INFO_CONCURRENCY)
                     val pageFiles = coroutineScope {
                         page.map { handle: Int ->
@@ -456,8 +460,29 @@ class TransferManager @Inject constructor(
                     }
                     result.addAll(pageFiles)
                     onPage?.invoke(result.toList())
+                    // 专项 v1 §3.4 熔断：一整页打下去**一条都没读到**、失败数已攒满一页 ——
+                    // 继续往下就是重演 2026-10-11 那份真机日志：`0x1008` 被机身以
+                    // 0x200F 连拒 **3007 次**（129s 内约 23 次/秒），同窗保活 0x90C8 却全绿，
+                    // 说明机身是在「拒绝」而不是「没醒」，再打一整个卡也不会变结果，
+                    // 反而把 3×512KB 日志环整个冲掉，连「相机为什么拒绝」的现场一起冲走。
+                    // 判据只看结果、不猜原因：任何原因的连续全失败都不值得再打满一张卡。
+                    // 页里混着成功（result 非空）时不触发，部分失败仍按 partialFailure 呈现。
+                    if (result.isEmpty() && failedInfoCount >= PAGE_SIZE) {
+                        breakerTripped = true
+                        eventLogger.event(
+                            "meta_breaker",
+                            "op" to "0x1008",
+                            "count" to failedInfoCount,
+                            "handles_total" to handles.size,
+                            "action" to "halt"
+                        )
+                        break
+                    }
                 }
-                PhotoListFetch(result, handles.size, failedInfoCount, transportOnline = true)
+                PhotoListFetch(
+                    result, handles.size, failedInfoCount,
+                    transportOnline = true, breakerTripped = breakerTripped
+                )
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Failed to fetch photo list")
                 PhotoListFetch(emptyList(), 0, 0, transportOnline = transport.isConnected)

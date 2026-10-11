@@ -82,6 +82,16 @@ class TransferViewModel @Inject constructor(
         private const val LOAD_HARD_DEADLINE_MS = 60_000L
 
         /**
+         * 元数据整体失败后的自动重拉间隔（专项 v1 §3.4）。
+         *
+         * 三档有界而不是无限重试：机身若是在拒读（0x200F），再打也只再拒一页；
+         * 60s 仍不通就多半是机身状态/存储卡问题，那不在"再试一次"这一侧。
+         * 5s 档覆盖写卡瞬间与相机唤醒，15s/60s 档覆盖 FR-21 实测的机身收回半开 PTP
+         * 会话（约 35s）这一量级。
+         */
+        private val META_RETRY_DELAYS_MS = longArrayOf(5_000L, 15_000L, 60_000L)
+
+        /**
          * 增量分页发射的最小间隔（FR-03）。
          *
          * 每页都排一次累积列表的话，千张卡库要排 50 多次，纯属白烧 CPU；
@@ -434,6 +444,13 @@ class TransferViewModel @Inject constructor(
     /** 上一次的就绪状态，用于只在「未就绪 → 就绪」上升沿触发一次自动加载 */
     private var lastReady = false
 
+    /**
+     * 元数据整体失败后的自动重拉链（专项 v1 §3.4）：[metaRetryRound] 是已排出去的档数，
+     * [metaRetryJob] 是当前的那颗延迟弹。清零时机见 [scheduleMetaRetry] 的注释。
+     */
+    private var metaRetryRound = 0
+    private var metaRetryJob: Job? = null
+
     /** 拍摄后自动同步的合并窗口任务（优化项 3），新事件到来会取消并重排 */
     private var captureSyncJob: Job? = null
 
@@ -717,13 +734,29 @@ class TransferViewModel @Inject constructor(
                     _selectedHandles.value = emptySet()
                     _message.value = when {
                         outcome.totalFailure ->
-                            "相册加载失败（${outcome.totalHandles} 个文件元数据不可读），请下拉重试"
+                            // 熔断过的场景里「请下拉重试」是最没用的一句指引：相机是在**拒绝**
+                            // 读元数据（0x200F），再点一次只会再拒一整页。先排机身状态。
+                            // 按 code 分档文案需要把响应码从 transport 一路带上来，
+                            // 那会动到下载/监看共用的那条通道接口，本轮刻意不做（专项 v1 §6.3）。
+                            if (outcome.breakerTripped)
+                                "相机拒绝提供照片信息（${outcome.totalHandles} 个文件）。请检查：存储卡是否插好、" +
+                                    "机身是否正在写卡或处于回放/拍摄占用、USB 模式是否为 MTP/PTP；处理后下拉刷新"
+                            else
+                                "相册加载失败（${outcome.totalHandles} 个文件元数据不可读），正在自动重试…"
                         outcome.nothingDisplayable -> "未发现可展示的照片或视频"
                         result.isEmpty() -> "存储卡为空或未连接"
                         outcome.partialFailure ->
                             "共 ${result.size} 个文件，${outcome.failedInfoCount} 个读取失败，可下拉重试"
                         else -> "共 ${result.size} 个文件"
                     }
+                }
+                // 专项 v1 §3.4：整体失败后排一次自动重拉。旧行为是两轮跑完就躺着，
+                // 恢复只能靠 cameraReady 上升沿（连接没断、只是相机拒读时它根本不会出现）
+                // 或用户下拉 —— 那正是「必须下拉重试」的直接来源。
+                if (outcome.totalFailure && !silent) scheduleMetaRetry()
+                if (result.isNotEmpty()) {
+                    metaRetryRound = 0
+                    metaRetryJob?.cancel()
                 }
                 if (result.isNotEmpty()) {
                     // F1 失效自愈：全量列表到手后做指纹校验，清理机内已删除/换卡失效的标记。
@@ -741,6 +774,39 @@ class TransferViewModel @Inject constructor(
                 if (fetchedViaHoldPages && fetched.isNotEmpty()) _photoList.value = fetched
                 loadingGuard.set(false)
             }
+        }
+    }
+
+    /**
+     * 元数据整体失败后的自动重拉链（专项 v1 §3.4）。
+     *
+     * 三档有界（5s / 15s / 60s），跑完就停手等用户操作，理由有两条：
+     * - 相机若是在拒读（0x200F），无限重试只是重演 3007 次 `data_fail` 那次事故；
+     * - 60s 之后还不行，问题多半在机身状态或存储卡，不在"再试一次"这一侧。
+     *
+     * 计数只在**用户主动刷新**和**拉到货**时清零（见 [refreshActiveAlbum] 与 loadPhotos），
+     * 其他触发点（切标签、拍摄同步）不清零——否则一轮自动重拉会把自己的预算重置，
+     * 变成没有出口的循环。
+     */
+    private fun scheduleMetaRetry() {
+        val delays = META_RETRY_DELAYS_MS
+        if (metaRetryRound >= delays.size) {
+            Timber.tag(TAG).w(
+                "Album metadata still unreadable after ${delays.size} auto retries; " +
+                    "waiting for manual refresh"
+            )
+            return
+        }
+        val wait = delays[metaRetryRound]
+        metaRetryRound++
+        metaRetryJob?.cancel()
+        metaRetryJob = viewModelScope.launch {
+            delay(wait)
+            // 会话没了就不打：这条链只治「通道在线、相机拒读元数据」这一类失败
+            if (!transferManager.hasActiveSession()) return@launch
+            if (_photoList.value.isNotEmpty()) return@launch   // 已拉到货，链自然终止
+            Timber.tag(TAG).i("Album metadata auto retry round $metaRetryRound after ${wait}ms")
+            loadPhotos(force = true)
         }
     }
 
@@ -903,6 +969,9 @@ class TransferViewModel @Inject constructor(
      * 「已标记」源的数据源于相机列表，刷新即重拉相机（顺带完成标记指纹校验）。
      */
     fun refreshActiveAlbum() {
+        // 用户主动刷新 = 显式要求再给一轮完整预算：把自动重拉的档数清零。
+        // 其他触发点（切标签、拍摄同步）不清，否则一轮重拉会把自己的预算重置。
+        metaRetryRound = 0
         when (_activeAlbum.value) {
             AlbumSource.LOCAL -> fetchLocalPhotos()
             // 手动刷新永远打断进行中的自动加载，保证用户主动操作必有响应；
