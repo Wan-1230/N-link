@@ -579,6 +579,24 @@ class LiveViewFragment : Fragment() {
      */
     private fun showModePicker() {
         if (modeSwitching) return
+        // 监看没在跑时，模式入口过去是被 updateModeEntryState 直接掐掉可点性的：按钮只变淡，
+        // 点了没有任何反应也没有任何提示——2026-10-11 真机反馈的「点击拍摄模式按钮未弹出菜单」
+        // 就是这个分支（日志：`lv_stop reason=max_errors errors=5 restarts=0` 之后按钮即死）。
+        // 现在入口恒可点，按状态给出口头结论。这里刻意**不**自动起监看：起流会占用机身的
+        // LiveView 状态与 PTP 通道，属于动已跑通的链路，恢复动作交给状态胶囊上既有的重试入口。
+        val lvState = viewModel.liveViewState.value
+        if (lvState != LiveViewState.RUNNING) {
+            NlFeedback.show(
+                requireContext(),
+                when (lvState) {
+                    LiveViewState.STARTING -> "监看正在启动，起来之后才能远程切换拍摄模式"
+                    LiveViewState.ERROR -> "监看已异常停止，请先点状态胶囊「重试」恢复监看"
+                    else -> "当前未开启监看，开启后才能远程切换拍摄模式"
+                },
+                long = true
+            )
+            return
+        }
         // v1.3.0 需求 4：本机已被验证为「不支持远程切换」→ 直接给结论
         if (paramsViewModel.modeSwitchUnsupported.value) {
             NlFeedback.show(requireContext(), "该机型不支持从 App 切换拍摄模式（相机接受指令但不改变模式），请用机身拨盘", long = true)
@@ -639,15 +657,21 @@ class LiveViewFragment : Fragment() {
         }
     }
 
-    /** 监看未开始 / 切换中 / 模式列表为空 → 模式入口置灰且点击无效 */
+    /**
+     * 监看未开始 / 切换中 / 模式列表为空 → 入口**只变淡，不掐掉可点性**。
+     *
+     * 旧写法把 `isClickable` 一起关了，用户看到的是"按钮点了没反应"——静默失败是最难被
+     * 发现的一类失败（2026-10-11 真机反馈）。禁用态一律由 `showModePicker` 给出文字结论，
+     * 视觉上的半透明仍然保留，作为"现在还不能切"的提示而不是"这个按钮坏了"。
+     */
     private fun updateModeEntryState() {
         if (_binding == null) return
-        val enabled = viewModel.liveViewState.value == LiveViewState.RUNNING
+        val ready = viewModel.liveViewState.value == LiveViewState.RUNNING
             && !modeSwitching
             && paramsViewModel.exposureProgramModes.isNotEmpty()
-        binding.tvModeTag.isEnabled = enabled
-        binding.tvModeTag.isClickable = enabled
-        binding.tvModeTag.alpha = if (enabled) 1f else 0.5f
+        binding.tvModeTag.isEnabled = true
+        binding.tvModeTag.isClickable = true
+        binding.tvModeTag.alpha = if (ready) 1f else 0.5f
     }
 
     // ---------------- 状态订阅 ----------------

@@ -7,6 +7,7 @@ import android.util.TypedValue
 import android.view.View
 import android.view.animation.PathInterpolator
 import androidx.core.content.ContextCompat
+import androidx.core.view.doOnLayout
 import androidx.core.view.updatePadding
 import com.nikonlink.app.R
 
@@ -281,14 +282,21 @@ object GlassMotion {
  * 顶栏**不再有玻璃底片**（v2.3.1 走查后取消 —— 它背后就是本页的滚动区，采样永远慢一帧，
  * 表现为错位、闪烁、切页残留），所以两种外观下滚动区都是 `clipToPadding=false`：
  * 内容滚到不透明顶栏底下被遮住，与 Android 普通 Toolbar 的行为一致。
- * chrome 高度要等首次布局才量得准（此时 `height=0`），量不到就 post 一次再试。
+ * chrome 高度要等首次布局才量得准（此时 `height=0`），量不到就挂一次性布局监听，
+ * 等它真正量出高度的那一帧再补——隐藏的 Fragment 不参与布局，靠重试次数是赌不出来的。
  */
 object GlassChrome {
 
     fun apply(chrome: View, scroll: View) {
         val h = chrome.height
         if (h <= 0) {
-            chrome.post { if (chrome.height > 0 && scroll.isAttachedToWindow) apply(chrome, scroll) }
+            // 旧实现是 `chrome.post { if (height>0) apply(...) }`——只重试**一次**。
+            // 设置/相册/拍摄三页是 add 完立刻 hide 的（MainActivity.setupFragments），
+            // GONE 状态根本不参与布局，那一次 post 量到的还是 0，于是滚动区 paddingTop
+            // 永久没补上、顶部第一项被覆盖式顶栏压住（2026-10-11 真机反馈）。
+            // doOnLayout 是一次性且自摘除的：视图真正被布局出高度那一帧才执行，
+            // 期间重复调用不会留下常驻监听。
+            chrome.doOnLayout { if (scroll.isAttachedToWindow) apply(chrome, scroll) }
             return
         }
         if (scroll.paddingTop != h) {

@@ -1039,6 +1039,17 @@ class TransferFragment : Fragment(), GlassInsetAware {
                 binding.skeletonGrid.visibility =
                     if (showSkeleton) View.VISIBLE else View.GONE
                 if (showSkeleton) startSkeletonPulse() else stopSkeletonPulse()
+                // 骨架与空态是同一 FrameLayout（fragment_transfer.xml:160）里的居中兄弟，
+                // 首轮加载时两者条件同时成立 → 空态图标与文案会叠在灰块上（2026-10-11 真机反馈，
+                // 回归来自 a6f812d 只加了骨架显隐、没管空态）。这里成对切换：
+                // 骨架占位期间收掉空态，骨架退场后按「当前显示列表是否为空」恢复。
+                // 判据取 viewModel.uiPhotos，与下面 uiPhotos 收集器（:880）同源，
+                // 避免两处各按各的列表算出不同结论。
+                val emptyVisible = !showSkeleton && viewModel.uiPhotos.value.isEmpty()
+                binding.layoutEmpty.visibility =
+                    if (emptyVisible) View.VISIBLE else View.GONE
+                binding.ivEmptyIcon.visibility =
+                    if (emptyVisible) View.VISIBLE else View.GONE
                 // 仅收起下拉刷新圈；滚动复位挪到 uiPhotos 最终提交之后（见下方 collector）——
                 // 旧版在这里滚顶会插在「排序后的最终列表 submit」之前，产生「跳底再弹回」两段运动
                 if (!loading) binding.swipeRefresh.isRefreshing = false
