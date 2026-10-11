@@ -1,6 +1,7 @@
 package com.nikonlink.app.device.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -89,5 +90,71 @@ class CameraModelCatalogTest {
         assertEquals("Nikon Z 9", CameraModelCatalog.official(CameraModel.Z9))
         assertNull(CameraModelCatalog.official(null as String?))
         assertNull(CameraModelCatalog.official(CameraModel.UNKNOWN))
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // v3.1 专项 §2.6：显示层「只清洗、不翻译」的硬回归。
+    // 立项起因（2026-10-11 真机 + JVM 实测）：`Character.isLetterOrDigit('\u2161')==false`，
+    // 旧实现的 filter 把罗马数字静默删掉，`Z 50Ⅱ` 撞上 Z50 枚举 → 把 Z 50Ⅱ 显示成
+    // **另一台相机 Z 50**，且能力表跟着错。下面每条都锚定这个坑。
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /** 罗马数字必须原样展示：机身自报 `Ⅱ` 就显示 `Ⅱ`，不许换成 ASCII 的 `II`。 */
+    @Test
+    fun `罗马数字代次原样展示，不做字符转写`() {
+        assertEquals("Nikon Z 50Ⅱ", CameraModelCatalog.official("Z 50Ⅱ"))
+        assertEquals("Nikon Z 50Ⅱ", CameraModelCatalog.official("NIKON Z 50Ⅱ"))
+        assertEquals("Nikon Z 6Ⅲ", CameraModelCatalog.official("Z 6Ⅲ"))
+        assertEquals("Nikon Z 5Ⅱ", CameraModelCatalog.official("NIKON Z 5_Ⅱ"))   // 下划线清掉，罗马数字留下
+        assertEquals("Nikon Z 50Ⅱ", CameraModelCatalog.official("Z50Ⅱ"))          // 补 Z 与数字间的空格
+    }
+
+    /**
+     * 反方向同样禁止：ASCII `II` 的原文**不许**被"美化"成 `Ⅱ`。
+     * 「严格对应原始元数据」优先于「全 App 统一写法」——两种写法都可能真实出现在机身上。
+     */
+    @Test
+    fun `ASCII 字母代次不被转成罗马数字`() {
+        assertEquals("Nikon Z 50II", CameraModelCatalog.official("Z 50II"))
+        assertEquals("Nikon Z 6III", CameraModelCatalog.official("NIKON Z 6_III"))
+    }
+
+    /**
+     * 用户前提 1 的正向表述：Z50 是一台独立的相机，绝不能因为"帮它补个代次"而显示成 Z50Ⅱ。
+     */
+    @Test
+    fun `Z50 不被升级成 Z50 二代`() {
+        assertEquals("Nikon Z 50", CameraModelCatalog.official("Z 50"))
+        assertEquals("Nikon Z 50", CameraModelCatalog.official("NIKON Z 50"))
+        assertEquals("Nikon Z 50", CameraModelCatalog.official("Nikon Z50_87654321"))
+    }
+
+    /**
+     * 机型**身份**（能力表/兼容表按它分派）必须把罗马数字转写成 ASCII 后查表：
+     * `Z 50Ⅱ` 与 `Z 50II` 命中同一枚举（同一台相机），而 `Z 50` 命中另一枚举（不同相机）。
+     * 旧实现三者全部落到 Z50 —— 那才是"两台相机共用一张能力表"的真 bug。
+     */
+    @Test
+    fun `查表键把罗马数字折成 ASCII 用于识别，但 Z50 与 Z50 二代仍是两个机型`() {
+        assertEquals(CameraModel.Z50II, CameraModelCatalog.model("Z 50Ⅱ"))
+        assertEquals(CameraModel.Z50II, CameraModelCatalog.model("Z 50II"))
+        assertEquals(CameraModel.Z50, CameraModelCatalog.model("Z 50"))
+        assertNotEquals(CameraModelCatalog.model("Z 50Ⅱ"), CameraModelCatalog.model("Z 50"))
+        assertEquals(CameraModel.Z6III, CameraModelCatalog.model("Z 6Ⅲ"))
+        assertEquals(CameraModel.Z6II, CameraModelCatalog.model("Z 6Ⅱ"))
+    }
+
+    /** 带罗马数字的广播名形态（序列号后缀）也要认出来，剥完序列号后罗马数字仍在。 */
+    @Test
+    fun `罗马数字与序列号同串时各自处理`() {
+        assertEquals("Nikon Z 50Ⅱ", CameraModelCatalog.official("Z 50Ⅱ_12345678"))
+        assertEquals(CameraModel.Z50II, CameraModelCatalog.model("Z 50Ⅱ_12345678"))
+    }
+
+    /** 十六进制 PID 兜底串（日志 B 的 `Nikon Camera (0x452)`）永远装不成型号。 */
+    @Test
+    fun `USB 兜底串不被当成型号显示`() {
+        assertNull(CameraModelCatalog.official("Nikon Camera (0x452)"))
+        assertNull(CameraModelCatalog.model("Nikon Camera (0x452)"))
     }
 }

@@ -3,21 +3,36 @@ package com.nikonlink.app.device.model
 import java.util.Locale
 
 /**
- * 相机型号的**官方名称**归一化（FR-36）。
+ * 相机型号的官方名称解析（FR-36，v3.1 修订：显示与查表彻底分家）。
  *
  * 三条通道各自的型号串来源与写法都不一样，直接把原文塞进设备页就会出现
  * 「显示的不是官方相机名称」：
  *
  * | 来源 | 实测/规范写法 | 官方写法 |
  * |---|---|---|
- * | PTP `GetDeviceInfo`.Model（USB 与 PTP/IP 同一字段） | `NIKON Z 50II`（机身自报，见 `UsbPtpProtocol.parseDeviceInfoModel` 注释） | `Nikon Z 50II` |
- * | 尼康 EXIF/PTP 的罗马数字变体 | `NIKON Z 6_III` | `Nikon Z 6III` |
+ * | PTP `GetDeviceInfo`.Model | `NIKON Z 50II` / `Z 50Ⅱ`（机身自报，罗马数字形态见 2026-10-11 真机） | **机身报什么就显示什么** |
+ * | 尼康 EXIF/PTP 的下划线代次 | `NIKON Z 6_III` | `Nikon Z 6III` |
  * | BLE 广播名 / mDNS 服务名 | `Z6III_12345678`（见 `WifiScanner` 注释） | `Nikon Z 6III` |
  * | USB 产品 ID 映射表 | `Z 6III`；未知 PID 是 `Nikon Camera (0x0FFF)` | 识别不出就不显示 |
  *
- * 规则刻意保守：**认不出机型就返回 null**，由调用方回落到下一个来源。
- * 宁可显示上一个可信来源，也不把 IP、MAC、十六进制 PID 或猜测的型号装成相机名称——
- * 「猜错的名字」比「暂时没有名字」更难被用户发现，也更难被我们排查。
+ * ## 两条不可违反的规则（v3.1）
+ *
+ * 1. **显示层只清洗、不翻译**：清洗只动品牌前缀、序列号后缀、代次下划线、`Z` 与数字间的
+ *    空格；**禁止**任何字符改写。罗马数字（U+2160 起，Unicode 类别 Nl）必须**原样保留**——
+ *    `Z 50Ⅱ` 显示成 `Nikon Z 50Ⅱ`，`Z 50II` 显示成 `Nikon Z 50II`，两者允许不同，
+ *    因为「严格对应原始元数据」优先于「统一成一种写法」。
+ * 2. **查表键允许转写，但转写结果绝不回流到显示串**：`model()` 要的是机型身份
+ *    （能力表/兼容表按它分派），把 Ⅱ 转写成 ASCII 的 `II` 才能命中枚举；
+ *    而 `Z 50` 与 `Z 50Ⅱ` 必须命中**不同**的枚举条目——它们是两台相机。
+ *
+ * 规则 1 之前不成立的原因（2026-10-11 JVM 实测）：`Character.isLetterOrDigit('\u2161')`
+ * 返回 **false**（Nl 既不算字母也不算数字），旧实现的 `filter(Char::isLetterOrDigit)`
+ * 会把 Ⅱ 静默删掉，于是 `Z 50Ⅱ` → 键 `Z50` → 撞上真实存在的 Z50 枚举 →
+ * **显示成另一台相机，且能力表也跟着错**。
+ *
+ * 与旧版一致的保守底线：**认不出机型就返回 null**，由调用方回落到下一个来源。
+ * 宁可显示上一个可信来源，也不把 IP、MAC、十六进制 PID、路由器名或猜测的型号
+ * 装成相机名称——「猜错的名字」比「暂时没有名字」更难被用户发现，也更难被我们排查。
  */
 object CameraModelCatalog {
 
@@ -28,6 +43,24 @@ object CameraModelCatalog {
     /** 无权限/未就绪时系统给的空值占位，绝不当成型号显示。 */
     private val NON_NAMES = setOf("<unknown ssid>", "<unknown>", "0000000000000000")
 
+    /** I..X 的 ASCII 形态，与下面两个罗马数字区间一一对应。 */
+    private val ROMAN_ASCII = arrayOf(
+        "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"
+    )
+
+    /**
+     * 罗马数字 → ASCII 字母形态，**只用于查表键**。
+     * U+2160..U+2169（大写）与 U+2170..U+2179（小写）各十个，一一对到 I..X。
+     */
+    private val ROMAN_TO_ASCII: Map<Char, String> =
+        (('Ⅰ'..'Ⅹ') + ('ⅰ'..'ⅹ')).mapIndexed { i, c -> c to ROMAN_ASCII[i % 10] }.toMap()
+
+    /** 型号本体形态：`Z` + 可选空格 + 数字 + 代次后缀（ASCII 字母或罗马数字）。 */
+    private val MODEL_SHAPE = Regex("""^Z\s?\d{1,3}[IⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩA-Z]{0,4}$""", RegexOption.IGNORE_CASE)
+
+    /** 无数字的那两个机身名（`Zf`、`Z fc`）——设备页与枚举里都带空格形态，两种都要收。 */
+    private val BRANDLESS_SHAPE = Regex("""^Z\s?(f|fc)?$""", RegexOption.IGNORE_CASE)
+
     /** `displayName` 去分隔符后的查找表；`UNKNOWN` 不参与。 */
     private val BY_KEY: Map<String, CameraModel> = CameraModel.entries
         .filter { it != CameraModel.UNKNOWN }
@@ -36,27 +69,62 @@ object CameraModelCatalog {
     /**
      * 表里没有、但形态明确是「Z + 数字 + 后缀」的机型（如 `Z 5II`、`Z 50III`）。
      * 全串消费才允许泛化，避免把 `Nikon Z Camera` 这类非型号串拆成型号。
+     * 后缀这一族**必须同时容纳 ASCII 字母与罗马数字字符**，否则 `Z 50Ⅱ` 会掉进"认不出"。
      */
-    private val GENERIC_MODEL = Regex("^Z(\\d+)([A-Z0-9]*)$")
+    private val GENERIC_MODEL = Regex("^Z(\\d+)([A-Z0-9\\u2160-\\u218F]*)$")
 
     /**
-     * 归一化成查找键：先剥掉广播名尾部的序列号，再去品牌、去分隔符。
+     * **查表键**：剥序列号 → 去下划线 → 罗马数字转写成 ASCII → 去品牌 → 只留字母数字。
      *
      * 剥序列号**必须按下划线分隔剥**，不能直接砍尾部的数字串：`Z6III_12345678` 与
      * `Z8_00123456` 是同一个形态，但 `Z 8` 的型号本身就是一位数字——按「尾部 4 位以上数字」
      * 砍会把型号自己的数字一起吞掉（`Z8_00123456` → `Z`）。而 `NIKON Z 6_III` 里的下划线
      * 是罗马数字代次的分隔，不能当序列号剥（尾巴 `III` 不是纯数字，正好留下来）。
+     *
+     * 转写成 ASCII 是**故意**的：它让 `Z 50Ⅱ` 与 `Z 50II` 命中同一个 `CameraModel.Z50II`
+     * （能力/兼容表按机型分派，不该因为机身固件用哪种 Ⅱ 写法就走两条路）；
+     * 而 `Z 50` 转写后仍是 `Z50`，与 `Z50II` 天然不同。
      */
-    private fun normalizeKey(raw: String): String {
-        val trimmed = raw.trim()
-        val cut = trimmed.lastIndexOf('_')
-        val tail = if (cut >= 0) trimmed.substring(cut + 1) else ""
-        // 尾巴是 4 位以上的纯数字才是序列号；`Z 6_III` 的 `III` 不是，必须留在键里
-        val head = if (tail.length >= 4 && tail.all(Char::isDigit)) trimmed.substring(0, cut) else trimmed
-        var key = head.uppercase(Locale.ROOT).filter(Char::isLetterOrDigit)
+    private fun lookupKey(raw: String): String {
+        val head = stripSerial(raw.trim())
+        val ascii = buildString(head.length) {
+            for (c in head) append(ROMAN_TO_ASCII[c] ?: c)
+        }
+        var key = ascii.uppercase(Locale.ROOT).filter(Char::isLetterOrDigit)
         if (key.startsWith(BRAND_UPPER)) key = key.removePrefix(BRAND_UPPER)
         return key
     }
+
+    /** 尾巴是 4 位以上的纯数字才是序列号；`Z 6_III` 的 `III` 不是，必须留在串里。 */
+    private fun stripSerial(trimmed: String): String {
+        val cut = trimmed.lastIndexOf('_')
+        if (cut < 0) return trimmed
+        val tail = trimmed.substring(cut + 1)
+        return if (tail.length >= 4 && tail.all(Char::isDigit)) trimmed.substring(0, cut) else trimmed
+    }
+
+    /**
+     * **显示形态**：只做 §「连接与元数据可靠性专项」v1 §2.2 允许的结构性清理，
+     * 字符一律原样保留（罗马数字、大小写形态都不动）。
+     *
+     * 步骤：剥序列号 → 去代次下划线 → 去品牌前缀 → 压空格 → `Z` 紧跟数字时补一个空格。
+     * 例：`Z6III_12345678` → `Z 6III`；`NIKON Z 6_III` → `Z 6III`；`Z 50Ⅱ` → `Z 50Ⅱ`。
+     */
+    private fun displayToken(raw: String): String {
+        var token = stripSerial(raw.trim()).replace("_", "")
+        if (token.uppercase(Locale.ROOT).startsWith(BRAND_UPPER)) {
+            token = token.substring(BRAND.length)
+        }
+        token = token.trim().replace(Regex("\\s+"), " ")
+        return token.replace(Regex("^Z(?=\\d)"), "Z ")
+    }
+
+    /** 机身自报里有没有罗马数字——这是「必须原样展示」的触发条件。 */
+    private fun hasRomanNumeral(raw: String): Boolean = raw.any { it in ROMAN_TO_ASCII }
+
+    /** 形态像不像型号（不是 IP/MAC/路由器名/十六进制 PID 兜底串）。 */
+    private fun looksLikeModel(token: String): Boolean =
+        MODEL_SHAPE.matches(token) || BRANDLESS_SHAPE.matches(token)
 
     /**
      * 从任意来源的型号串里认出机型。
@@ -65,7 +133,7 @@ object CameraModelCatalog {
      */
     fun model(raw: String?): CameraModel? {
         val key = raw?.trim()?.takeIf { it.isNotEmpty() && it !in NON_NAMES } ?: return null
-        val normalized = normalizeKey(key)
+        val normalized = lookupKey(key)
         if (!normalized.startsWith("Z")) return null
         return BY_KEY[normalized]
     }
@@ -75,21 +143,26 @@ object CameraModelCatalog {
         model?.takeIf { it != CameraModel.UNKNOWN }?.displayName?.let { "$BRAND $it" }
 
     /**
-     * 任意来源的型号串 → 官方全称。
+     * 任意来源的型号串 → 相机全称。三条分支，各有明确理由：
      *
-     * 先查表（覆盖全部已知机型），查不到但形态是「Z + 数字」时按规则泛化
-     * （`NIKON Z 5_II` → `Nikon Z 5II`，表里没有的新机型不至于退回品牌名）；
-     * 两者都不成立返回 null。
+     * 1. **机身自报带罗马数字** → 用清洗后的原文。这是「严格对应原始元数据」的要求：
+     *    枚举里的 `displayName` 是 ASCII 形态，拿它会悄悄把 `Ⅱ` 改写成 `II`。
+     * 2. **认得出且不带罗马数字** → 用枚举的 `displayName`。它修的是大小写与分隔形态的
+     *    脏数据（`nikon z_50ii`、`Z6III_12345678`），是 FR-36 立项的本意。
+     * 3. **认不出但形态是型号**（表里没有的新机型）→ 用清洗后的原文泛化，
+     *    至少不至于退回品牌名；形态不像型号就返回 null，绝不猜。
      */
     fun official(raw: String?): String? {
         val key = raw?.trim()?.takeIf { it.isNotEmpty() && it !in NON_NAMES } ?: return null
-        official(model(key))?.let { return it }
-        val normalized = normalizeKey(key)
-        if (!normalized.startsWith("Z")) return null
-        val match = GENERIC_MODEL.matchEntire(normalized) ?: return null
-        val number = match.groupValues[1]
-        val suffix = match.groupValues[2]
-        // `Z 30`/`Z 5` 这类没有后缀的：数字就是全部；有后缀的紧贴数字写（官方写法 Z 50II 不留空格）
-        return "$BRAND Z $number$suffix"
+        val token = displayToken(key)
+        if (!looksLikeModel(token)) return null
+        if (hasRomanNumeral(key)) return "$BRAND $token"
+        val known = model(key)
+        if (known != null) return "$BRAND ${known.displayName}"
+        // 走到这里说明形态已经过 looksLikeModel 把关：表里没有的新机型按清洗后的原文泛化，
+        // 至少不至于退回品牌名。GENERIC_MODEL 在这里只用于确认「Z+数字+后缀」这个结构，
+        // 结果本身不用于拼显示串——显示串一律来自清洗后的原文。
+        if (GENERIC_MODEL.matchEntire(lookupKey(key)) == null && !BRANDLESS_SHAPE.matches(token)) return null
+        return "$BRAND $token"
     }
 }
