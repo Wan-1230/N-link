@@ -157,4 +157,19 @@ class CameraModelCatalogTest {
         assertNull(CameraModelCatalog.official("Nikon Camera (0x452)"))
         assertNull(CameraModelCatalog.model("Nikon Camera (0x452)"))
     }
+
+    /**
+     * 型号原文的诊断形态：可打印 ASCII 原样、其余换成 `U+XXXX`。
+     * 立项起因是日志里那句 `device_model name=Nikon Z 502` —— 只记归一化结果的话，
+     * 「机身到底自报了什麼」这条线索在写入日志前就被吃掉了，之后只能靠猜。
+     */
+    @Test
+    fun `原文诊断串把非 ASCII 字符显成码点`() {
+        assertEquals("Z 50U+2161", CameraModelCatalog.describeRaw("Z 50Ⅱ"))
+        assertEquals("Z 6U+2162", CameraModelCatalog.describeRaw("Z 6Ⅲ"))
+        assertEquals("Z 50II", CameraModelCatalog.describeRaw("Z 50II"))   // 纯 ASCII 原样
+        assertEquals("Z 502", CameraModelCatalog.describeRaw("Z 502"))     // 若真是 502，就该看见 502
+        assertEquals("ZU+0001", CameraModelCatalog.describeRaw("Z\u0001")) // 控制字符不外发
+        assertEquals("null", CameraModelCatalog.describeRaw(null))
+    }
 }

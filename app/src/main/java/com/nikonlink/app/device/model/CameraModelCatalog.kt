@@ -127,6 +127,27 @@ object CameraModelCatalog {
         MODEL_SHAPE.matches(token) || BRANDLESS_SHAPE.matches(token)
 
     /**
+     * 把机身自报的型号原文转成**可安全外发**的诊断串：可打印 ASCII 原样保留，
+     * 其余字符一律换成 `U+XXXX` 码点。
+     *
+     * 为什么需要它（专项 v1 §4.2）：`device_model` 事件历来只记**归一化之后**的结果，
+     * 于是 2026-10-11 那份真机日志留下 `Nikon Z 502` 却查不出原文长什么样——
+     * 穷举过 `Z 50Ⅱ`、`Z 50II` 都推不出 `502`，说明原文里另有其字，而这条线索
+     * 已经在归一化那一步被丢掉了。没有原文，型号问题就只能靠猜，而猜是禁止的。
+     *
+     * 码点写法同时守住了导出声明的隐私口径：型号在允许范围内，序列号不在——
+     * 万一机身的 Model 字段混进了序列号形态的串，这里也不会把不可见字符原样发出去。
+     */
+    fun describeRaw(raw: String?): String {
+        if (raw == null) return "null"
+        return buildString(raw.length + 8) {
+            for (c in raw) {
+                if (c.code in 0x20..0x7E) append(c) else append("U+").append(c.code.toString(16).uppercase().padStart(4, '0'))
+            }
+        }
+    }
+
+    /**
      * 从任意来源的型号串里认出机型。
      *
      * @return 认不出返回 null（**不做模糊猜测**：既不返回 `UNKNOWN`，也不返回相近的老机型）。
