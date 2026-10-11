@@ -811,6 +811,17 @@ class SettingsFragment : Fragment(), GlassInsetAware {
 
     override fun onDockSpaceChanged(dockSpace: Int) = applyDockSpace()
 
+    /**
+     * 本页是 add 完立刻 hide 的（`MainActivity.setupFragments`），GONE 期间不参与布局，
+     * 首帧里顶栏高度与 `dockSpace()` 都量成 0；切回本页时若不重算，顶部第一项就一直
+     * 被覆盖式顶栏压住（2026-10-11 真机反馈）。与 TransferFragment / RemoteFragment
+     * 的既有 `onHiddenChanged` 做法同源。
+     */
+    override fun onHiddenChanged(hidden: Boolean) {
+        super.onHiddenChanged(hidden)
+        if (!hidden) applyDockSpace()
+    }
+
     companion object {
         /** 检查更新防抖窗口：1.5s 内重复点击只发 1 次请求（PRD S3 / AC-5） */
         private const val UPDATE_CHECK_DEBOUNCE_MS = 1_500L
