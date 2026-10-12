@@ -722,9 +722,9 @@ class LiveViewManager @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 // 归一化点击 (x,y ∈ 0..1，相对监看图像内容) → 相机 AF 坐标域。
-                // 关键修正：AF 坐标箱(AF_COORD_MAX_X×Y)固定 4:3，而 Live View 帧可能不是 4:3，
-                // 直接 x*4000/y*3000 会按 4:3 解释点击、在帧≠4:3 时产生系统偏移；
-                // 改为按帧真实宽高比把内容矩形居中嵌入箱子里再映射（见 mapTapToAfCoord）。
+                // 关键口径：AF 坐标箱与 live view 帧同宽高比（相机厂商官方应用与一款
+                // 第三方控制应用的报文分析证实，见 mapTapToAfCoord），按帧真实比例线性映射；
+                // 早期「固定 4:3 箱 + letterbox」假设无实机标定，帧≠4:3 时纵向系统偏移。
                 val (afX, afY) = mapTapToAfCoord(x, y)
 
                 val response = lv().changeAfArea(afX, afY)
@@ -734,7 +734,9 @@ class LiveViewManager @Inject constructor(
                     delay(AF_AREA_SETTLE_MS)
                     lv().afDrive()
                     Timber.tag(TAG).d(
-                        "Touch focus: tap=($x,$y) -> af=($afX,$afY) frame=${framePixelWidth}x$framePixelHeight"
+                        "Touch focus: tap=($x,$y) -> af=($afX,$afY) " +
+                            "frame=${framePixelWidth}x$framePixelHeight " +
+                            "box=${PtpConstants.AF_COORD_MAX_X}x${mapTapToAfCoord(1f, 1f).second}"
                     )
                     // 下发成功后再回读相机 AF 相关属性，尝试确认相机真实对焦点。
                     // 候选码语义尚未经真机标定，现仅打日志、不解析坐标；无法确认时
@@ -764,37 +766,23 @@ class LiveViewManager @Inject constructor(
     /**
      * 归一化点击 (nx,ny ∈ 0..1，相对监看图像内容) → 相机 AF 坐标 (0..AF_COORD_MAX_X, 0..AF_COORD_MAX_Y)。
      *
-     * 相机 AF 坐标箱是固定 4:3 的域，而 Live View 帧可能是别的比例（如 640×424≈3:2）。
-     * 若直接 nx*4000 / ny*3000，等于把帧当成 4:3，纵向/横向会被系统性拉伸偏移。
-     * 正确做法：把「帧内容矩形」以保比例方式（letterbox 居中）嵌入 4:3 箱子，
-     * 再把归一化点击映射到该内容矩形内。帧=4:3 时退化为旧直乘逻辑（无偏移）。
-     * 帧尺寸未知时退回 4:3 直乘兜底，避免除零。
+     * 坐标域口径（2026-10-12 对相机厂商官方应用与一款成熟第三方控制应用的报文分析，
+     * 两者独立收敛到同一结论）：
+     * - 相机 ChangeAfArea(0x9205) 的两个参数就在 **live view 图像的 wholeSize 像素空间**：
+     *   厂商官方应用用 `afX = tapX / (viewWidth / wholeWidth)` 的单系数线性映射，AF 区域
+     *   回读（centerX/centerY/width/height）也在同一空间直接作画；另一款第三方实现用
+     *   `归一化 × displayArea`（displayArea 缺省即 wholeSize）——结论一致。
+     * - wholeSize 与图像**同宽高比**：官方应用把图像画满 wholeSize 箱后 AF 框才与画面
+     *   重合（其绘制流程先按 bitmap 画图、再按 wholeSize 缩放画 AF 框），故正确换算
+     *   是按帧真实宽高比线性映射，而不是把帧塞进一个固定 4:3 的箱。
+     * - 历史误区：9295a29（2026-09-17）按「AF 箱固定 4:3」把帧 letterbox 进 4000×3000。
+     *   该假设无实机标定（v2.0.2 PRD 自承常数取自第三方实现日志的粗略观察），真机反馈
+     *   对焦点仍与点击不符——帧≠4:3 时纵向被系统性压缩，边缘偏移可达约 11%。
+     *
+     * 纯换算在 [AfCoordMapper]（可单测）；这里只负责取本会话帧尺寸。
      */
-    private fun mapTapToAfCoord(nx: Float, ny: Float): Pair<Int, Int> {
-        val boxW = PtpConstants.AF_COORD_MAX_X
-        val boxH = PtpConstants.AF_COORD_MAX_Y
-        val fw = framePixelWidth
-        val fh = framePixelHeight
-        val (cx, cy) = if (fw > 0 && fh > 0) {
-            val frameAspect = fw.toFloat() / fh
-            val boxAspect = boxW.toFloat() / boxH
-            if (frameAspect > boxAspect) {
-                // 帧更宽：内容占满箱子宽，纵向信箱居中
-                val contentH = boxW / frameAspect
-                val padY = (boxH - contentH) / 2f
-                Pair(nx * boxW, padY + ny * contentH)
-            } else {
-                // 帧更高/更窄：内容占满箱子高，横向信箱居中
-                val contentW = boxH * frameAspect
-                val padX = (boxW - contentW) / 2f
-                Pair(padX + nx * contentW, ny * boxH)
-            }
-        } else {
-            // 未知帧尺寸：兜底 4:3 直乘
-            Pair(nx * boxW, ny * boxH)
-        }
-        return cx.toInt().coerceIn(0, boxW) to cy.toInt().coerceIn(0, boxH)
-    }
+    private fun mapTapToAfCoord(nx: Float, ny: Float): Pair<Int, Int> =
+        AfCoordMapper.map(nx, ny, framePixelWidth, framePixelHeight)
 
     /**
      * 解析监看帧 JPEG 头拿到像素宽高（仅 bounds，不解码像素），用于触摸对焦比例校正。

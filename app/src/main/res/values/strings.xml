@@ -7,8 +7,9 @@
     <string name="notification_title_disconnected">N-Link 未连接</string>
     <string name="notification_title_connecting">N-Link 连接中</string>
     <string name="notification_title_recovering">N-Link 重连中</string>
+    <!-- 2026-10-12 状态文案清理：FULLY_CONNECTED 不区分 BLE/WiFi/USB，通道细节在 App 内展示 -->
     <string name="notification_connection_text_ble">BLE 已连接</string>
-    <string name="notification_connection_text_full">BLE + WiFi 已连接</string>
+    <string name="notification_connection_text_full">已连接</string>
     <string name="notification_connection_text_disconnected">未连接</string>
     <!-- F5 传输完成通知 -->
     <string name="notification_transfer_done_single_title">照片已保存</string>
@@ -107,6 +108,22 @@
     <string name="tv_hero_badge_text">未连接</string>
     <string name="btn_mode_scan_text">扫描相机</string>
     <string name="btn_mode_connect_text">连接相机</string>
+    <!-- 2026-10-12 连接入口拆分：AP 页签独立 Wi-Fi 连接入口（原为「连接相机」弹窗触发） -->
+    <string name="btn_ap_wifi_connect_text">连接相机 Wi-Fi</string>
+    <string name="tv_ap_wifi_state_default">未连接相机热点</string>
+    <string name="tv_ap_wifi_state_on_ap">已连接相机热点，可直接点「连接相机」</string>
+    <string name="tv_ap_wifi_state_on_ap_ssid">已连接相机热点：%1$s</string>
+    <string name="tv_ap_wifi_state_not_on_ap">手机未连接相机热点，点上方按钮开始配网</string>
+    <string name="txt_connection_guide">连接教程</string>
+    <!-- Wi-Fi 连接弹窗（独立入口） -->
+    <string name="dialog_ap_wifi_title">Wi-Fi 连接</string>
+    <string name="dialog_ap_wifi_open_panel">打开 Wi-Fi 面板</string>
+    <string name="dialog_ap_wifi_continue">已连上，继续连接</string>
+    <string name="dialog_ap_wifi_manual_ip">手动输入相机 IP</string>
+    <string name="dialog_ap_wifi_message_not_on_ap">按下面三步把手机连到相机热点：\n① 点「打开 Wi-Fi 面板」\n② 在面板里点相机热点（NIKON_…，密码见相机屏幕）\n③ 返回本应用 —— 连上后自动开始连接相机\n\n连上后若没有自动继续，点「已连上，继续连接」。</string>
+    <string name="dialog_ap_wifi_message_on_ap">手机已连接相机热点，可以直接连接相机。</string>
+    <string name="ap_wifi_panel_opened">请在系统面板里点相机热点（NIKON_…），返回后自动继续</string>
+    <string name="ap_wifi_not_ready_hint">手机还未连接相机热点，请先点 AP 页签里的「连接相机 Wi-Fi」完成配网</string>
     <string name="txt_遥控拍摄">遥控拍摄</string>
     <string name="txt_查看相册">查看相册</string>
     <string name="tv_wifi_band_card_text">WiFi 频段</string>

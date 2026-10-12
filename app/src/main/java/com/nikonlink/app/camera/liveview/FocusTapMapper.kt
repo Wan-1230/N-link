@@ -2,22 +2,24 @@ package com.nikonlink.app.camera.liveview
 
 import android.graphics.Matrix
 import android.graphics.RectF
-import android.view.View
 import android.widget.ImageView
 
 /**
  * 监看画面触摸点 → 归一化取景坐标 的统一换算。
  *
  * 为什么需要这个工具：相机侧 ChangeAfArea(0x9205) 的目标点是按 **liveview 图像内容**
- * 的归一化位置理解的，任何"按 View 尺寸换算"或"忽略缩放"的近似都会让实际对焦点
- * 偏离用户点击的位置。历史上遥控页把黑边算进归一化坐标（点画面边缘发出图像外的点）、
- * 全屏页忽略双指缩放（放大后点哪儿都偏），都是同一类口径错误。
+ * 的归一化位置理解的，任何"按 View 尺寸换算"的近似都会让实际对焦点偏离用户点击的位置。
+ * 历史上遥控页把黑边算进归一化坐标（点画面边缘发出图像外的点），都是同一类口径错误。
  *
- * 换算分两步：
- * 1. **View 级缩放还原**：全屏页的双指缩放通过 [View.setScaleX]/[setScaleY]（围绕 pivot）
- *    实现，不含在 imageMatrix 里。先把触摸点从"缩放后视图坐标"还原到"未缩放视图坐标"。
- * 2. **fitCenter 映射**：ImageView scaleType=fitCenter 时图像按比例居中，四周留黑边；
+ * 换算只有一步：
+ * 1. **fitCenter 映射**：ImageView scaleType=MATRIX 时图像按比例居中，四周留黑边；
  *    用 imageMatrix 求出图像实际显示矩形，只在矩形内归一化，点黑边直接忽略。
+ *
+ * 关于双指缩放：全屏页的缩放由 [LiveViewZoomController] 做在 **imageMatrix** 里
+ * （唯一变换源），View 自身的 scaleX/scaleY 恒为 1 —— 因此这里**不需要**再做
+ * "View 级缩放还原"：触摸事件经框架逆变换后本就是视图本地（未缩放）坐标，
+ * 若再除一次 scale 反而会把放大后的点击双双拉向支点（旧实现此处是按已废弃的
+ * setScaleX 方案写的，随模块 1 矩阵化重构一并更正）。
  *
  * 返回 null 表示点击落在图像区域之外（黑边 / 越界），调用方不应下发对焦。
  */
@@ -27,18 +29,14 @@ object FocusTapMapper {
     data class NormalizedTap(val x: Float, val y: Float)
 
     fun mapToNormalized(imageView: ImageView, tapX: Float, tapY: Float): NormalizedTap? {
-        val viewScaleX = imageView.scaleX
-        val viewScaleY = imageView.scaleY
-        val pivotX = imageView.pivotX
-        val pivotY = imageView.pivotY
-        // Step 1: 还原 View 级缩放（pivot 默认在视图中心）
-        val viewX = pivotX + (tapX - pivotX) / viewScaleX
-        val viewY = pivotY + (tapY - pivotY) / viewScaleY
+        // tapX/tapY 为 ImageView 本地坐标（框架已做逆变换；缩放全在 imageMatrix 里）
+        val viewX = tapX
+        val viewY = tapY
 
         val drawable = imageView.drawable ?: return null
         if (drawable.intrinsicWidth <= 0 || drawable.intrinsicHeight <= 0) return null
 
-        // Step 2: imageMatrix（fitCenter）求图像实际显示区域
+        // imageMatrix（含双指缩放/平移）求图像实际显示区域
         val rect = RectF(
             0f, 0f,
             drawable.intrinsicWidth.toFloat(),
@@ -53,7 +51,10 @@ object FocusTapMapper {
         return NormalizedTap(nx, ny)
     }
 
-    /** 图像实际显示矩形（View 坐标系，已含 View 级缩放），对焦点框定位/命中测试用 */
+    /**
+     * 图像实际显示矩形（View 坐标系，已含 imageMatrix 里的缩放/平移），
+     * 对焦点框定位/命中测试用。注意：当前无调用方（预留），改动前先 grep 确认。
+     */
     fun displayedImageRect(imageView: ImageView): RectF? {
         val drawable = imageView.drawable ?: return null
         if (drawable.intrinsicWidth <= 0 || drawable.intrinsicHeight <= 0) return null
