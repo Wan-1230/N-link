@@ -133,6 +133,7 @@ object AppModule {
         @ApplicationContext context: Context,
         ptpSessionManager: PtpSessionManager,
         usbPtpManager: UsbPtpManager,
+        apConnection: com.nikonlink.app.device.ap.ApConnectionService,
         transferManager: TransferManager,
         digeekerShutterCountClient: DigeekerShutterCountClient,
         settings: AppSettings
@@ -140,6 +141,7 @@ object AppModule {
         context,
         ptpSessionManager,
         usbPtpManager,
+        apConnection,
         transferManager,
         digeekerShutterCountClient,
         settings
