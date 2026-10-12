@@ -146,10 +146,10 @@ class ApGatewayResolver @Inject constructor(
     fun isOnCameraAp(): Boolean = looksLikeCameraAp(connectedSsid())
 
     /**
-     * FR-35①：武装状态下的宽松在网判定 —— SSID 读不到或热点改过名时，
+     * FR-35①：宽松在网判定 —— SSID 读不到或热点改过名时，
      * 用「有 WiFi 网络且其网关落在私网段」顶上。
      *
-     * 只给「面板/specifier 刚点完热点」的自动起轮用（`ConnectionManager.tryStartArmedApConnect`）；
+     * 只给网络恢复路径的自动重发现判定用（ConnectionManager.maybeAutoRediscover）；
      * 用户首次点「连接相机」的分流仍用严格的 [isOnCameraAp]，否则在家用路由器上点一下
      * 就会盲打路由器网关，把「该去连热点」的引导机会吞掉。
      */

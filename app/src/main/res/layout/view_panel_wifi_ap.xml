@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 视T6 自 fragment_dashboard 抽取：原块内容零改动 -->
+<!-- 2026-10-12 连接入口拆分：AP 页签新增独立「Wi-Fi 连接」入口（按钮 + 状态行），
+     不再由「连接相机」弹系统面板触发；连接教程改为默认收起的折叠区（见 guideHeader）。 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto"
     android:orientation="vertical">
 
@@ -32,15 +34,62 @@
                                     android:text="@string/txt_wi_fi_a" />
                             </LinearLayout>
 
+                            <!-- Wi-Fi 连接状态行：手机当前是否挂在相机热点上（独立入口的眼睛） -->
+                            <TextView
+                                android:id="@+id/tvApWifiState"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="10dp"
+                                android:text="@string/tv_ap_wifi_state_default"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="@dimen/font_caption" />
+
+                            <!-- 独立入口：Wi-Fi 连接（原为「连接相机」触发的系统弹窗，拆分为单独按钮） -->
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btnApWifiConnect"
+                                style="@style/NlButton.Outline"
+                                android:layout_width="match_parent"
+                                android:layout_height="46dp"
+                                android:layout_marginTop="10dp"
+                                android:text="@string/btn_ap_wifi_connect_text" />
+
+                            <!-- 连接教程：默认收起，仅留一个展开按钮（点击后展开） -->
+                            <LinearLayout
+                                android:id="@+id/apGuideHeader"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="@dimen/space_12"
+                                android:background="?attr/selectableItemBackground"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal"
+                                android:paddingVertical="6dp">
+
+                                <TextView
+                                    style="@style/NlText.Subtitle"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="@string/txt_connection_guide" />
+
+                                <ImageView
+                                    android:id="@+id/apGuideChevron"
+                                    android:layout_width="20dp"
+                                    android:layout_height="20dp"
+                                    android:contentDescription="展开教程"
+                                    android:src="@drawable/ic_chevron_down"
+                                    app:tint="@color/text_tertiary" />
+                            </LinearLayout>
+
                             <TextView
                                 android:id="@+id/tvApGuide"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginTop="10dp"
+                                android:layout_marginTop="6dp"
                                 android:lineSpacingExtra="3dp"
                                 android:text="① 相机开启 WiFi 热点（AP 模式），密码见相机屏幕\n② 手机 WLAN 连上相机热点（记不记得连过都一样，直接进行下一步）\n③ 回到本页点「连接相机」即可 —— App 会直接连上热点，或自动弹出系统 Wi-Fi 面板让你点一下热点\n④ 在相机配对画面按 OK 确认\n连不上时：确认手机仍连着相机热点、相机 WiFi 已开启，再点一次「连接相机」"
                                 android:textColor="@color/text_secondary"
-                                android:textSize="@dimen/font_caption" />
+                                android:textSize="@dimen/font_caption"
+                                android:visibility="gone" />
                         </LinearLayout>
 
                         <TextView
@@ -57,5 +106,5 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:orientation="vertical" />
-                    
+
 </LinearLayout>

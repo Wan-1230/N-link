@@ -33,15 +33,43 @@
                                     android:text="@string/txt_u_s_b有线" />
                             </LinearLayout>
 
+                            <!-- 连接教程：默认收起，仅留一个展开按钮（点击后展开） -->
+                            <LinearLayout
+                                android:id="@+id/usbGuideHeader"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="10dp"
+                                android:background="?attr/selectableItemBackground"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal"
+                                android:paddingVertical="6dp">
+
+                                <TextView
+                                    style="@style/NlText.Subtitle"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="@string/txt_connection_guide" />
+
+                                <ImageView
+                                    android:id="@+id/usbGuideChevron"
+                                    android:layout_width="20dp"
+                                    android:layout_height="20dp"
+                                    android:contentDescription="展开教程"
+                                    android:src="@drawable/ic_chevron_down"
+                                    app:tint="@color/text_tertiary" />
+                            </LinearLayout>
+
                             <TextView
                                 android:id="@+id/tvUsbGuide"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginTop="10dp"
+                                android:layout_marginTop="6dp"
                                 android:lineSpacingExtra="3dp"
                                 android:text="① 准备一根支持数据传输的 C to C 线（很多充电线不传数据，插上没反应多半是线的问题）\n② 相机 USB 设置里把模式设为 MTP / PTP\n③ 用线连接手机与相机，点「连接相机」，在系统弹窗里允许访问 USB 设备"
                                 android:textColor="@color/text_secondary"
-                                android:textSize="@dimen/font_caption" />
+                                android:textSize="@dimen/font_caption"
+                                android:visibility="gone" />
 
                             <TextView
                                 android:id="@+id/tvUsbDevice"
