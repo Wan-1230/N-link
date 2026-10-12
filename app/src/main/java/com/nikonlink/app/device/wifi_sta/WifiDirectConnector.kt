@@ -771,6 +771,36 @@ class WifiDirectConnector @Inject constructor(
                         onFail("no_camera_subnet")
                         return
                     }
+                    // 批次 C-N4：AP 档的**确定性掉线**判据。`ENONET` 是内核给出的
+                    // 「这台机器不在任何网络上」，再叠本机此刻没有类 WiFi 接口 ——
+                    // 这和「相机没醒 / 端口没起」是两件事：退避、重试、等网都救不了，
+                    // 只有手机重新挂上热点才行。2026-10-12 vivo + Z 50Ⅱ 的 AP 日志
+                    // 三轮完全同型：
+                    //   sta_classify grade=ERROR errno=SocketException:socket failed: ENONET …
+                    //   （此时 ifaces= 空），随后照旧进 attempt=2，
+                    //   再烧 8s 等网 + 8s 回连等待，28~32 秒才收口。
+                    // 提前收口省下的那 20 秒，交给 C-N2/N3/N5 修好的自动重连去接住。
+                    if (apZdrop && connFlags.isEnabled(ConnFlags.AP_ENONET_FAST_CLOSE) &&
+                        verdict?.errno?.contains("ENONET") == true &&
+                        !localInterfaces.hasLocalWifiLikeInterface()
+                    ) {
+                        eventLogger.event(
+                            "sta_fail", "gen" to gen, "reason" to "no_wifi_network",
+                            "attempt" to attempt, "host" to endpoint.host,
+                            "early" to "enet_off_network",
+                            "waited_ms" to (System.currentTimeMillis() - loopStartedAt)
+                        )
+                        stateMachine.dispatch(
+                            ConnectionEvent.ErrorOccurred(
+                                "手机在连接过程中离开了相机热点（系统报「不在任何网络上」）。" +
+                                    "请在系统 WiFi 里重新连上相机热点，之后 App 会自动接着连接，" +
+                                    "不需要反复点击",
+                                recoverable = true
+                            )
+                        )
+                        onFail("no_wifi_network")
+                        return
+                    }
                     consecutiveUnreachable++
                     // FR-22：'连续 3 次不可达'这个结论本身不足以证明相机不在 ——
                     // 机身端口可能只是还没起监听，而同一批真机日志里**成功**的那几次

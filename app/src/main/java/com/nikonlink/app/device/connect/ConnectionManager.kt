@@ -365,6 +365,18 @@ class ConnectionManager @Inject constructor(
         }
 
         // v2.2（G11/G12）：先预检再连接 —— 权限/位置开关/OTG 这类硬阻断不该靠重试去碰运气
+        //
+        // 批次 C-N5：用户主动点一次连接，就重新给自动重发现一次预算。
+        // `autoRediscoveryUsed` 此前只有置 true、没有复位点，注释里承诺的「USER_TAP 重新武装」
+        // 在代码里并不存在 —— 所以整份 vivo 日志的 4 轮失败只发出过 1 条
+        // `auto_rediscover phase=armed`（当天第一次失败那轮），后面几轮的失败
+        // 连「重发现」这一步都没走到。预算仍是一轮一次，且 USER_TAP 豁免兜底地址冷却，
+        // 不会与恢复循环互相拉扯成重试风暴（FR-19 的那道闸照旧生效）。
+        if (connFlags.isEnabled(ConnFlags.AP_REDISCOVER_REARM) &&
+            caller == ConnFunnel.Caller.USER_TAP
+        ) {
+            autoRediscoveryUsed = false
+        }
         val mode = if (endpoint.host == DEFAULT_FALLBACK_HOST) "AP-fallback" else "host"
         funnel.begin("WIFI", mode, caller.code)
         emitEnvironment(endpoint.host)
@@ -421,6 +433,12 @@ class ConnectionManager @Inject constructor(
                 "connect_ignored", "host" to endpoint.host, "caller" to caller.code,
                 "reason" to "fallback_cooldown", "waited_s" to waited
             )
+            // 批次 C-N1：上面那次 `funnel.begin()` 已经把轮次打开了，这里 return 之前
+            // 必须收口，否则它一直挂到用户下一次点击才被顶掉，落成
+            // `stage=INTENT reason=superseded probes=0 ms=59144` 的空壳样本。
+            if (connFlags.isEnabled(ConnFlags.FUNNEL_CLOSE_ON_IGNORE)) {
+                funnel.fail(ConnFunnel.Reason.COOLDOWN_SKIPPED, "waited_s=$waited")
+            }
             return
         }
 
@@ -566,7 +584,20 @@ class ConnectionManager @Inject constructor(
                 _connectionHint.value = null
                 // v2.6.4：兜底地址（默认 192.168.1.1）失败的时间戳，供自动重连做冷却
                 // （见 [connectToWifiCamera] 的 fallback 冷却分支）。
-                if (endpoint.host == DEFAULT_FALLBACK_HOST) {
+                //
+                // 批次 C-N2：**拓扑类失败不记冷却**。2026-10-12 vivo + Z 50Ⅱ 的 AP 日志里
+                // 三轮 28~32 秒失败全部收在 `no_wifi_network`，而每一轮之后 1~4 秒
+                // 失败路径自己发起的自动重连都被这枚 180 秒冷却拦死
+                // （`connect_ignored reason=fallback_cooldown waited_s=1/2/4/8` 四次全中）；
+                // 同一时刻的 `ap_ctx` 却写着 `on_camera_ap=true ssid_is_nikon=true`
+                // —— 手机明明已经挂在相机热点上。用户手动点击（豁免冷却）每次立刻成功
+                // （gen=5 全程 1751ms）。冷却的前提是「这个地址是盲猜的」，
+                // 而这类失败连一次相机地址都没碰到，攒不出那个证据。
+                // `ap_route_lost` 属同类，但本轮日志里没有样本，先不并进集合，等数据。
+                if (endpoint.host == DEFAULT_FALLBACK_HOST &&
+                    !(connFlags.isEnabled(ConnFlags.TOPO_FAIL_NO_COOLDOWN) &&
+                        reason in TOPOLOGY_FAILURE_REASONS)
+                ) {
                     lastFallbackFailAt = System.currentTimeMillis()
                 }
                 eventLogger.event(
@@ -589,7 +620,21 @@ class ConnectionManager @Inject constructor(
         "camera_unreachable", "no_camera_subnet", "no_wifi_network", "ap_route_lost"
     )
 
-    /** 每轮会话只自动重发现一次；用户主动点连接时重新武装（见 [connectToWifiCamera]）。 */
+    /**
+     * 批次 C-N2：这些失败发生时**根本没碰到相机地址** —— 手机当时不在那张网上
+     * （`no_wifi_network`），或刚加入热点、DHCP 还没拿到地址（`bind_failed`）。
+     *
+     * 它们不构成「192.168.1.1 这个地址是猜错的」证据，所以不该启动 180 秒的
+     * 兜底地址冷却；否则用户重新挂上热点后的那一次自动重连会被白白拦掉
+     * （2026-10-12 vivo 日志：四次 `connect_ignored reason=fallback_cooldown`，
+     * 每次都发生在 `ap_ctx on_camera_ap=true` 之后的 1~8 秒内）。
+     */
+    private val TOPOLOGY_FAILURE_REASONS = setOf("no_wifi_network", "bind_failed")
+
+    /**
+     * 每轮会话只自动重发现一次；用户主动点连接时重新武装
+     * （复位点在 [connectToWifiCamera] 的 USER_TAP 分支，批次 C-N5）。
+     */
     private var autoRediscoveryUsed = false
 
     /**
@@ -618,9 +663,22 @@ class ConnectionManager @Inject constructor(
             val cands = runCatching {
                 scanWifiCameras(timeoutMs = 10_000L, hotspotMode = true, ptpConfirm = false, earlyExit = true)
             }.getOrDefault(emptyList())
+            // 批次 C-N3：AP 拓扑下相机自任网关，扫描发现的相机**就是**那个失败地址，
+            // 而旧过滤只接受「不同于失败地址」的候选，于是把它当「没发现」丢掉 ——
+            // 2026-10-12 vivo 日志 `auto_rediscover phase=miss n=1`：发现了 1 台，
+            // 地址正是 192.168.1.1，自动重连等于没跑。
+            // 放宽要同时满足三条：闸门开、失败的是兜底地址、手机此刻确实挂在热点上。
+            // 「扫描当场发现相机在这个地址」是正向证据，不是盲猜重试；STA 链路逐位不变。
+            val sameHostAllowed = connFlags.isEnabled(ConnFlags.AP_REDISCOVER_SAME_HOST) &&
+                failedHost == DEFAULT_FALLBACK_HOST &&
+                apGatewayResolver.isOnApNetwork()
             val target = cands.firstOrNull { it.ipAddress != failedHost }
+                ?: cands.firstOrNull { sameHostAllowed && it.ipAddress == failedHost }
             if (target == null) {
-                eventLogger.event("auto_rediscover", "phase" to "miss", "n" to cands.size)
+                eventLogger.event(
+                    "auto_rediscover", "phase" to "miss", "n" to cands.size,
+                    "same_host_allowed" to sameHostAllowed
+                )
                 return@launch
             }
             if (userDisconnectRequested || connector.isActive || ptpSession.isConnected()) {
@@ -628,7 +686,8 @@ class ConnectionManager @Inject constructor(
             }
             eventLogger.event(
                 "auto_rediscover", "phase" to "hit",
-                "host" to target.ipAddress, "port" to target.port
+                "host" to target.ipAddress, "port" to target.port,
+                "same_host" to (target.ipAddress == failedHost)
             )
             withContext(Dispatchers.Main) {
                 _connectionHint.value = ConnectionHint(

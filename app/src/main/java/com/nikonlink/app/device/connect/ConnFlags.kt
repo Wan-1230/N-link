@@ -450,6 +450,90 @@ class ConnFlags @Inject constructor(
         const val STA_ARCH_GATE = "v37_sta_arch_gate"
 
         /**
+         * 批次 C-N1（2026-10-12 vivo V2509A + Z 50Ⅱ AP 日志取证）：
+         * **纯观测修复**，不改任何连接行为。
+         *
+         * 现场：每轮 AP 失败后 1~4 秒，失败路径自己发起的那次
+         * `conn_attempt caller=reconnect_trigger` 会被兜底地址冷却拦掉
+         * （`connect_ignored reason=fallback_cooldown waited_s=1/2/4/8` 四次全中）。
+         * 但拦截发生在 `funnel.begin()` **之后**、且这个分支直接 `return`，
+         * 于是那枚漏斗轮次永远没有 `fail()` —— 它一直挂到用户的下一次点击才被顶掉，
+         * 落成一个没有任何内容的幽灵样本：
+         * `conn_result stage=INTENT ms=59144 reason=superseded probes=0 revisits=0`
+         * （另有 57770 / 5553 / 6652ms 三条）。
+         * 代价是指标基线里 25 个样本有 4 个（16%）是这种空壳，
+         * 「p50/p95 分阶段耗时」被它们拉偏，而排查时又要先分辨哪些轮次真的跑过。
+         * 关闸 = 恢复「拦截不收口」，幽灵样本回归。
+         */
+        const val FUNNEL_CLOSE_ON_IGNORE = "v40_funnel_close_on_ignore"
+
+        /**
+         * 批次 C-N2（同源取证）：**「手机当时不在相机网上」不该算作「地址是猜的」**。
+         *
+         * [FALLBACK_COOLDOWN_MS]（180s）的设计前提是 v2.6.4 那条：STA 场景拿默认
+         * 192.168.1.1 盲猜，每轮烧 157 秒撞蜂窝黑洞。可 AP 场景里 192.168.1.1
+         * 不是猜的 —— 它就是相机自己任的网关（`ap_gateway host=192.168.1.1 stable=true
+         * source=gateway-fast`），而失败原因是手机掉线（`no_wifi_network`）或 DHCP 还没
+         * 拿到地址（`bind_failed`），这两类失败**一次都没碰到相机地址**，
+         * 攒不出「这个地址是错的」任何证据。
+         * 现状却照样记 `lastFallbackFailAt`，于是失败路径自己发出的那次自动重连
+         * 被 180 秒冷却拦死，四次全拦 —— 日志里三轮 28~32 秒的失败之后
+         * **没有任何自动重试发生**，用户手动点击（豁免冷却）每次都立刻成功
+         * （gen=5 全程 1751ms）。这就是「连不上、要反复点好几次」的直接成因。
+         * 关闸 = 恢复「凡兜底地址失败一律记冷却」。
+         */
+        const val TOPO_FAIL_NO_COOLDOWN = "v40_topo_fail_no_cooldown"
+
+        /**
+         * 批次 C-N3（同源取证）：AP 拓扑下允许自动重发现**接续同一个地址**。
+         *
+         * `maybeAutoRediscover` 只接受 `it.ipAddress != failedHost` 的候选，
+         * 前提是「失败的那个地址是错的，换一条才对」—— 这在 STA 里成立，
+         * 在 AP 里恰好相反：相机自任网关，扫描发现的相机就是同一个 192.168.1.1。
+         * 日志实锤：`auto_rediscover phase=miss n=1` —— 发现了 1 台相机，
+         * 地址正是失败地址，被这条过滤直接丢掉，自动重连等于没跑。
+         * 打开后仍要求两条硬前提：失败地址是兜底地址，且手机此刻就在相机热点上
+         * （[com.nikonlink.app.device.wifi_ap.ApGatewayResolver.isOnApNetwork]），
+         * 所以 STA 链路逐位不变；而「扫描当场发现相机在这个地址」是正向证据，
+         * 不是盲猜重试。每轮会话仍只自动重发现一次（`autoRediscoveryUsed`）。
+         * 关闸 = 恢复「必须换地址」。
+         */
+        const val AP_REDISCOVER_SAME_HOST = "v40_ap_rediscover_same_host"
+
+        /**
+         * 批次 C-N4（同源取证）：`ENONET` + 本机已无类 WiFi 接口 = 确定性掉线，
+         * 立即收口，不再烧第二轮的等网与回连等待。
+         *
+         * 三轮 AP 失败（gen=1/2/3）形态完全一致：绑网成功后 3~7 秒，
+         * socket 直接抛 `SocketException: socket failed: ENONET (Machine is not on
+         * the network)`，此刻 `ifaces=` 是**空的** —— 手机已经不在任何网络上，
+         * 不是相机不响应。可这一轮的判据要走到 attempt=2 才被采用：
+         * 7 秒退避 + 8 秒等网 + 8 秒回连等待 ≈ 23 秒空转，用户看到 28~32 秒
+         * 才知道「手机掉线了」。
+         * 打开后 attempt=1 拿到这个组合判据就收口（约 8 秒），
+         * 省下的时间交给 C-N2/C-N3 的自动重连去接住。
+         * 代价：若手机在 7 秒内自己漫游回去，这一轮会提前判死一次 ——
+         * 但 C-N2/C-N3 生效后紧接着就会自动重来，用户不需要点。
+         * 只作用于 AP 档（[AP_ZDROP_TIMING] 开着），STA 长轮次不受影响。
+         * 关闸 = 恢复「跑满 AP 两次尝试」。
+         */
+        const val AP_ENONET_FAST_CLOSE = "v40_ap_enonet_fast_close"
+
+        /**
+         * 批次 C-N5（同源取证）：**修一处缺陷** —— 自动重发现此前一辈子只跑一次。
+         *
+         * `ConnectionManager.autoRediscoveryUsed` 的注释承诺「USER_TAP 重新武装」，但全仓找不到复位点：
+         * 它只在 `maybeAutoRediscover()` 里被置 true，从未写回 false。
+         * 日志实锤：整份 vivo 日志里 `auto_rediscover phase=armed` **只有 1 条**
+         * （16:21:38，当天第一次失败），随后 16:23:07 / 16:24:35 / 16:24:46 三次失败
+         * 一条都没再发出 —— 不是判据不认，是这枚标志永远卡在 true。
+         * 打开后在用户主动点连接（USER_TAP）真正起轮之前复位，让每次手动点击
+         * 都换来一次自动重发现的机会；预算仍是「一轮一次」，不会与恢复循环互相拉扯。
+         * 关闸 = 恢复「首次失败之后自动重发现永久停用」的现状。
+         */
+        const val AP_REDISCOVER_REARM = "v40_ap_rediscover_rearm"
+
+        /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
          *
          * 尼康机身同时只接受一个 PTP/IP 客户端：我们自己发出的探测握手会占住这个槽，
@@ -611,9 +695,22 @@ class ConnFlags @Inject constructor(
             STA_WLAN_WAIT to true,
             STA_FAST_IDLE_REFRESH to true,
             WLAN_DROP_REASON to true,
+            // ── 批次 C（2026-10-12 vivo AP 日志）四条默认开 ──
+            // 判定口径：四条**只作用在当场已注定失败的路径上**（幽灵轮次、掉线后的
+            // 空转等待、被冷却拦死的自动重连），成功连接一行代码都不会多走 —— 所以
+            // 默认开；逐条仍可在设置页「开发选项」拨回做现场二分。
+            FUNNEL_CLOSE_ON_IGNORE to true,
+            TOPO_FAIL_NO_COOLDOWN to true,
+            AP_REDISCOVER_SAME_HOST to true,
+            AP_REDISCOVER_REARM to true,
+            AP_ENONET_FAST_CLOSE to true,
             // ── 以下四条默认关：AP / STA 连接方式回退到 v3.0.0 正式版行为 ──
             // 2026-10-07 用户决策：连接方式先退回 v3.0.0 观察，不带新逻辑上线，
             // 优化留待后续单独一轮。代码一行未动，只改默认值 —— 随时可拨回 true。
+            //
+            // ⚠ 同日的「闸门评判」已把这四条移进 [LOCKED]=true（prefs 残留会压掉修复），
+            //   而 isEnabled() 先查 LOCKED —— 所以下面这四个 false **当前不生效**，
+            //   实际行为是开。留着只为记录那次决策的原始口径，别再据它判断现状。
             //
             // FR-35①：面板/specifier 回连后的「手机已挂上热点」判定是否放宽为
             // 「有 WiFi 且网关是私网」。开=放宽（修 SSID 死角）；关=只认 NIKON SSID。

@@ -158,6 +158,21 @@ class ConnFunnel @Inject constructor(
                 "让相机停留在连接页面后再点一次；若相机在忙（写卡/别的设备连着）先等它空下来"
             ),
 
+            /**
+             * 批次 C-N1（2026-10-12 vivo AP 日志）：自动重连被兜底地址冷却拦下 ——
+             * 这一轮一次 socket 都没发过。
+             *
+             * 此前拦完直接 `return`，漏斗轮次没人收口，一直挂到用户的下一次点击才被顶掉，
+             * 在日志里长成空壳：`conn_result stage=INTENT ms=59144 reason=superseded probes=0`
+             * （同批还有 57770 / 5553 / 6652ms 三条）。既把 p50/p95 分阶段耗时拉偏，
+             * 又让人照着 [SUPERSEDED] 的提示去查「连接被重复触发」——那条线索是假的。
+             */
+            COOLDOWN_SKIPPED(
+                "cooldown_skipped",
+                "自动重连被兜底地址冷却拦下，本轮未发起连接",
+                "手机连上相机热点后手动点一次连接（用户主动点击不受该冷却限制）"
+            ),
+
             // ── PTP 会话 ──
             PTP_INIT_REJECTED("ptp_init_rejected", "相机拒绝了本机的会话请求", "在相机上完成主机注册/按 OK 确认"),
             EVENT_ACK_TIMEOUT(
