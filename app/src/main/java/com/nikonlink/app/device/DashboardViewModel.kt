@@ -156,6 +156,12 @@ class DashboardViewModel @Inject constructor(
 
     fun onCameraAp(): Boolean = connectionManager.isOnCameraAp()
 
+    /** 当前所连 SSID（无权限/未连接为 null）—— AP 页签 Wi-Fi 状态行用。 */
+    fun connectedSsid(): String? = connectionManager.connectedSsid()
+
+    /** BLE 通道是否真实连着（设备页状态徽章/英雄图去 BLE 化判定用）。 */
+    fun isBleConnected(): Boolean = connectionManager.isBleConnected()
+
     fun connectApDirect() = connectionManager.connectApDirect()
 
     /** FR-35①：[path] = panel | settings | specifier，落进 ap_panel 事件供真机归因。 */

@@ -420,8 +420,10 @@ class TransferViewModel @Inject constructor(
      * 相机是否就绪（任一通道可用）。
      *
      * 三个来源都必须覆盖：
-     * - `FULLY_CONNECTED`：BLE + WiFi 双通道就绪（常规无线连接）
-     * - `BLE_CONNECTED`：相机已在线、WiFi 正在升级，此时 PTP 会话可能已可用
+     * - `FULLY_CONNECTED`：相机链路完全就绪（WiFi 直连 / BLE+WiFi 双通道 / 其它直连，
+     *   2026-10-12 起不按通道名想当然，见 ConnectionManager 状态文案清理）
+     * - `BLE_CONNECTED`：BLE 通道在线（配对升级中）；WiFi 直连掉线不再落此态
+     *   （2026-10-12 断连自动处理改走 HeartbeatTimeout → ERROR_WAITING_RETRY）
      * - `UsbConnectionState.CONNECTED`：USB 有线通道**不进连接状态机**
      *   （ConnectionManager 对 usbState 只打日志），纯 USB 场景必须单独判定
      *

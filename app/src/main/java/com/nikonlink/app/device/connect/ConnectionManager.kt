@@ -1230,6 +1230,9 @@ class ConnectionManager @Inject constructor(
     /** 手机当前是否挂在相机热点上（UI 分流用）。 */
     fun isOnCameraAp(): Boolean = apGatewayResolver.isOnCameraAp()
 
+    /** 当前所连 SSID（无权限/未连接为 null）—— AP 页签 Wi-Fi 状态行用。 */
+    fun connectedSsid(): String? = apGatewayResolver.connectedSsid()
+
     /**
      * FR-36：本次 PTP/IP 会话里机身自报的 `Model` 原文（未取到为 null）。
      * 设备页的相机全称拿它做第二顺位来源——比参数轮询早，连上瞬间就有。
@@ -1367,22 +1370,28 @@ class ConnectionManager @Inject constructor(
     private fun observeStateMachine() {
         stateListener?.let { stateMachine.removeStateListener(it) }
         stateListener = { oldState, newState ->
+            // 2026-10-12 状态文案清理：BLE_CONNECTED 只说明「BLE 通道在线」这一个子状态，
+            // 而 AP/STA/USB 直连根本不经过 BLE —— 该态对非 BLE 链路实际含义是
+            // 「WiFi 掉了、在等恢复」，再显示「BLE 已连接」是把用户往错的方向引
+            // （用户原话：连接成功后状态栏显示 BLE 连接成功，但实际并不依赖 BLE）。
+            // 一律按 BLE 实际连接态与设备类型给文案，不按状态名想当然。
             _statusMessage.value = when (newState) {
                 ConnectionState.DISCONNECTED -> "未连接"
                 ConnectionState.CONNECTING -> "正在连接..."
                 ConnectionState.BLE_CONNECTED -> {
-                    if (pairedDeviceAddress?.startsWith("wifi:") == true) {
-                        "连接中断，正在恢复..."
-                    } else {
-                        "BLE 已连接"
+                    when {
+                        bleManager.isConnected() -> "BLE 已连接"
+                        pairedDeviceAddress?.startsWith("wifi:") == true -> "连接中断，正在恢复..."
+                        else -> "连接中断，正在重连..."
                     }
                 }
                 ConnectionState.WIFI_UPGRADING -> "正在建立 WiFi 通道..."
                 ConnectionState.FULLY_CONNECTED -> {
-                    if (pairedDeviceAddress?.startsWith("wifi:") == true) {
-                        "WiFi 已连接，相机确认成功"
-                    } else {
-                        "BLE + WiFi 已连接"
+                    when {
+                        pairedDeviceAddress?.startsWith("wifi:") == true -> "WiFi 已连接，相机确认成功"
+                        bleManager.isConnected() -> "BLE + WiFi 已连接"
+                        // USB 等不经过 BLE 的直连：不借 BLE 的名
+                        else -> "已连接"
                     }
                 }
                 ConnectionState.ERROR_WAITING_RETRY -> "连接中断，正在重试..."
@@ -1420,6 +1429,17 @@ class ConnectionManager @Inject constructor(
 
     /**
      * PTP/IP 会话断开后自动恢复（WiFi 直连场景没有 BLE 兜底）。
+     *
+     * 2026-10-12 断连自动处理：WiFi 直连设备（pairedDeviceAddress 为 wifi:）会话丢失时，
+     * 旧实现派发 [ConnectionEvent.WifiDisconnected] → 状态机落 BLE_CONNECTED：
+     * ① 界面显示「BLE 已连接」的假连接（该链路根本不经过 BLE，见状态文案清理）；
+     * ② BLE_CONNECTED 对 recoverable 错误不再迁移，恢复失败后状态永久卡死，
+     *    用户只能手动点「断开连接」复位。
+     * 改派 [ConnectionEvent.HeartbeatTimeout]（PTP 会话心跳丢失的准确语义，
+     * 此前该事件无生产者）→ ERROR_WAITING_RETRY「连接中断，正在重试…」+
+     * 指数退避自动重连（observeReconnectTrigger 对 wifi: 设备走 WiFi 重连分支），
+     * 重试预算耗尽时 ErrorOccurred(不可恢复) 经状态机新分支落 DISCONNECTED
+     * 「未连接」—— 全程自动，无需用户手动断开。
      */
     private fun observePtpEvents() {
         scope?.launch {
@@ -1431,7 +1451,7 @@ class ConnectionManager @Inject constructor(
                     pairedDeviceAddress?.startsWith("wifi:") == true
                 ) {
                     Timber.tag(TAG).w("PTP session lost, attempting recovery")
-                    stateMachine.dispatch(ConnectionEvent.WifiDisconnected)
+                    stateMachine.dispatch(ConnectionEvent.HeartbeatTimeout)
                     recoverWifiSession()
                 }
             }
