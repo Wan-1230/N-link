@@ -505,6 +505,32 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 { connFlags.isEnabled(ConnFlags.GIVEUP_FLOOR) },
                 { connFlags.setEnabled(ConnFlags.GIVEUP_FLOOR, it) }
             ),
+            // ── 批次 C（2026-10-12 vivo AP 日志）：五条默认开，逐条可拨回做 A/B ──
+            LabFlag(
+                ConnFlags.FUNNEL_CLOSE_ON_IGNORE, "C-N1 拦下的自动重连也收口漏斗（关=回到留下 59s 幽灵轮次）",
+                { connFlags.isEnabled(ConnFlags.FUNNEL_CLOSE_ON_IGNORE) },
+                { connFlags.setEnabled(ConnFlags.FUNNEL_CLOSE_ON_IGNORE, it) }
+            ),
+            LabFlag(
+                ConnFlags.TOPO_FAIL_NO_COOLDOWN, "C-N2 掉线/DHCP 类失败不记兜底地址冷却（关=自动重连被 180s 拦死）",
+                { connFlags.isEnabled(ConnFlags.TOPO_FAIL_NO_COOLDOWN) },
+                { connFlags.setEnabled(ConnFlags.TOPO_FAIL_NO_COOLDOWN, it) }
+            ),
+            LabFlag(
+                ConnFlags.AP_REDISCOVER_SAME_HOST, "C-N3 相机热点上允许接续同一地址（关=扫到同址相机当没发现）",
+                { connFlags.isEnabled(ConnFlags.AP_REDISCOVER_SAME_HOST) },
+                { connFlags.setEnabled(ConnFlags.AP_REDISCOVER_SAME_HOST, it) }
+            ),
+            LabFlag(
+                ConnFlags.AP_ENONET_FAST_CLOSE, "C-N4 ENONET 即刻收口（关=掉线后仍烧满 28~32s 才报）",
+                { connFlags.isEnabled(ConnFlags.AP_ENONET_FAST_CLOSE) },
+                { connFlags.setEnabled(ConnFlags.AP_ENONET_FAST_CLOSE, it) }
+            ),
+            LabFlag(
+                ConnFlags.AP_REDISCOVER_REARM, "C-N5 用户点一次就重新武装自动重发现（关=一辈子只跑一次）",
+                { connFlags.isEnabled(ConnFlags.AP_REDISCOVER_REARM) },
+                { connFlags.setEnabled(ConnFlags.AP_REDISCOVER_REARM, it) }
+            ),
             LabFlag(
                 UiFlags.PROTECT_SELECT, "「已保护」筛选（FR-16，默认关）",
                 { UiFlags.protectSelectEnabled(c) },
