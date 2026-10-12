@@ -151,6 +151,7 @@ object AppModule {
         @ApplicationContext context: Context,
         ptpSessionManager: PtpSessionManager,
         usbPtpManager: UsbPtpManager,
+        apConnection: com.nikonlink.app.device.ap.ApConnectionService,
         transferRepository: TransferRepository,
         thumbnailCache: ThumbnailCache,
         wifiManager: WifiManager,
@@ -162,6 +163,7 @@ object AppModule {
         context,
         ptpSessionManager,
         usbPtpManager,
+        apConnection,
         transferRepository,
         thumbnailCache,
         wifiManager,
@@ -176,9 +178,11 @@ object AppModule {
     fun provideLiveViewManager(
         ptpSessionManager: PtpSessionManager,
         usbPtpManager: UsbPtpManager,
+        apConnection: com.nikonlink.app.device.ap.ApConnectionService,
         eventLogger: AppEventLogger,
         baselineMetrics: com.nikonlink.app.shared.metrics.BaselineMetrics
-    ): LiveViewManager = LiveViewManager(ptpSessionManager, usbPtpManager, eventLogger, baselineMetrics)
+    ): LiveViewManager =
+        LiveViewManager(ptpSessionManager, usbPtpManager, apConnection, eventLogger, baselineMetrics)
 
     @Provides
     @Singleton

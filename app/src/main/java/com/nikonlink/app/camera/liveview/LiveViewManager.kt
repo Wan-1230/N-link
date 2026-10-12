@@ -33,6 +33,7 @@ import javax.inject.Singleton
 class LiveViewManager @Inject constructor(
     private val ptpSession: PtpSessionManager,
     private val usbPtpManager: UsbPtpManager,
+    private val apConnection: com.nikonlink.app.device.ap.ApConnectionService,
     private val eventLogger: AppEventLogger,
     private val baselineMetrics: BaselineMetrics
 ) {
@@ -153,6 +154,24 @@ class LiveViewManager @Inject constructor(
         Timber.tag(TAG).i("LiveViewManager started")
     }
 
+    private val wifiChannel: LvChannel = WifiLvChannel(ptpSession)
+    private val usbChannel: LvChannel = UsbLvChannel(usbPtpManager)
+    private val apChannel: LvChannel = ApLvChannel(apConnection)
+
+    /**
+     * 当前活跃通道：USB 在线且链路判活优先，其次 AP 直连会话，最后 WiFi(PTP/IP)。
+     * 避免相机假在线（TCP 在但命令无响应）时把命令打进黑洞。
+     */
+    private fun lv(): LvChannel = when {
+        usbPtpManager.isConnected() && usbPtpManager.isAlive() -> usbChannel
+        apConnection.isConnected() -> apChannel
+        else -> wifiChannel
+    }
+
+    /** 无线通道（曝光程序模式进出等无线链路通用操作）：AP 在线走 AP，否则 WiFi。 */
+    private fun wireless(): LvChannel =
+        if (apConnection.isConnected()) apChannel else wifiChannel
+
     fun stop() {
         stopLiveView()
         scope = null
@@ -169,7 +188,7 @@ class LiveViewManager @Inject constructor(
         // 等待在途的 EndLiveView 收敛后再启动，杜绝 End/Start 到达相机的顺序颠倒
         stopJob?.let { runCatching { it.join() } }
         stopJob = null
-        if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) {
+        if (!ptpSession.isConnected() && !usbPtpManager.isConnected() && !apConnection.isConnected()) {
             Timber.tag(TAG).w("PTP not connected")
             _liveViewState.value = LiveViewState.ERROR
             _errorMessage.value = "相机尚未连接，请先完成配对"
@@ -182,13 +201,14 @@ class LiveViewManager @Inject constructor(
             try {
                 // 监看依赖无线控制模式（相机随后上报 DevicePropChanged prop=0x500E）。
                 // 启动前先把曝光程序模式切到 Remote(0x8012)，失败不致命（相机可能已在遥控模式）
-                if (!usbPtpManager.isConnected()) {
+                val ch = lv()
+                if (ch.isWireless) {
                     runCatching {
                         // 先备份当前曝光程序模式，停止监看时恢复
-                        savedExposureMode = ptpSession.getDevicePropValue(
+                        savedExposureMode = ch.getDevicePropValue(
                             PtpConstants.PROP_EXPOSURE_PROGRAM_MODE
                         )
-                        val modeOk = ptpSession.setDevicePropValue(
+                        val modeOk = ch.setDevicePropValue(
                             PtpConstants.PROP_EXPOSURE_PROGRAM_MODE,
                             byteArrayOf(
                                 (PtpConstants.PROP_VALUE_REMOTE_MODE and 0xFF).toByte(),
@@ -202,19 +222,9 @@ class LiveViewManager @Inject constructor(
                 // 启动 LiveView 前先设置 Nikon 图像配置 0xD1AC=3，
                 // 否则相机可能不输出 JPEG 帧
                 runCatching {
-                    val profileOk = onActiveChannel(
-                        wifi = {
-                            ptpSession.setDevicePropValue(
-                                PtpConstants.PROP_NIKON_LV_IMAGE_PROFILE,
-                                byteArrayOf(3)
-                            )
-                        },
-                        usb = {
-                            usbPtpManager.setDevicePropValue(
-                                PtpConstants.PROP_NIKON_LV_IMAGE_PROFILE,
-                                byteArrayOf(3)
-                            )
-                        }
+                    val profileOk = ch.setDevicePropValue(
+                        PtpConstants.PROP_NIKON_LV_IMAGE_PROFILE,
+                        byteArrayOf(3)
                     )
                     if (profileOk) {
                         Timber.tag(TAG).i("LiveView image profile set 0xD1AC=3")
@@ -255,17 +265,6 @@ class LiveViewManager @Inject constructor(
                 false
             }
         }
-    }
-
-    /**
-     * RC-12 通道选择：USB 已连接且链路判活才走 USB，否则一律回退 WiFi。
-     * 避免相机假在线（TCP 在但命令无响应）时把命令打进黑洞。
-     */
-    private suspend fun <T> onActiveChannel(
-        wifi: suspend () -> T,
-        usb: suspend () -> T
-    ): T {
-        return if (usbPtpManager.isConnected() && usbPtpManager.isAlive()) usb() else wifi()
     }
 
     /**
@@ -315,10 +314,8 @@ class LiveViewManager @Inject constructor(
      */
     private suspend fun readProhibitCondition(): String? {
         return try {
-            val data = onActiveChannel(
-                wifi = { ptpSession.getDevicePropValue(PtpConstants.PROP_NIKON_LV_PROHIBIT_CONDITION) },
-                usb = { usbPtpManager.getDevicePropValue(PtpConstants.PROP_NIKON_LV_PROHIBIT_CONDITION) }
-            ) ?: return null
+            val data = lv().getDevicePropValue(PtpConstants.PROP_NIKON_LV_PROHIBIT_CONDITION)
+                ?: return null
             if (data.size < 4) return null
             val value = java.nio.ByteBuffer.wrap(data)
                 .order(java.nio.ByteOrder.LITTLE_ENDIAN).int
@@ -340,10 +337,7 @@ class LiveViewManager @Inject constructor(
         }
     }
 
-    private suspend fun fetchFrame(): ByteArray? = onActiveChannel(
-        wifi = { ptpSession.getLiveViewImage() },
-        usb = { usbPtpManager.getLiveViewImage() }
-    )
+    private suspend fun fetchFrame(): ByteArray? = lv().getLiveViewImage()
 
     /**
      * DeviceBusy 时等待相机就绪（只等待，不判定成功；成功与否由调用方重发 0x9201 验证）。
@@ -364,29 +358,13 @@ class LiveViewManager @Inject constructor(
     }
 
     private suspend fun startLiveViewResult(): Pair<Boolean, Int> {
-        return onActiveChannel(
-            wifi = {
-                val response = ptpSession.sendCommand(PtpConstants.OP_NIKON_START_LIVE_VIEW)
-                Pair(response.isOk, response.responseCode)
-            },
-            usb = {
-                val response = usbPtpManager.sendCommand(PtpConstants.OP_NIKON_START_LIVE_VIEW)
-                if (response == null) Pair(false, -1) else Pair(response.isOk, response.responseCode)
-            }
-        )
+        val r = lv().command(PtpConstants.OP_NIKON_START_LIVE_VIEW)
+        return Pair(r.isOk, r.code)
     }
 
     private suspend fun deviceReadyResult(): Pair<Boolean, Int> {
-        return onActiveChannel(
-            wifi = {
-                val response = ptpSession.sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
-                Pair(response.isOk, response.responseCode)
-            },
-            usb = {
-                val response = usbPtpManager.sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
-                if (response == null) Pair(false, -1) else Pair(response.isOk, response.responseCode)
-            }
-        )
+        val r = lv().command(PtpConstants.OP_NIKON_DEVICE_READY)
+        return Pair(r.isOk, r.code)
     }
 
     /**
@@ -403,14 +381,8 @@ class LiveViewManager @Inject constructor(
             // 记录停止作业：startLiveView 会 join 它，保证 End 先于下一次 Start 到相机
             stopJob = scope?.launch(Dispatchers.IO) {
                 try {
-                    val ok = onActiveChannel(
-                        wifi = {
-                            val wifiOk = ptpSession.stopLiveView()
-                            if (!wifiOk) eventLogger.event("lv_stop_fail", "channel" to "wifi")
-                            wifiOk
-                        },
-                        usb = { usbPtpManager.stopLiveView() }
-                    )
+                    val ok = lv().stopLiveView()
+                    if (!ok) eventLogger.event("lv_stop_fail", "channel" to lv().javaClass.simpleName)
                     if (!ok) Timber.tag(TAG).w("stopLiveView returned false")
                 } catch (_: Exception) {}
             }
@@ -454,10 +426,11 @@ class LiveViewManager @Inject constructor(
         savedExposureMode = null
         if (restore != null && !usbPtpManager.isConnected()) {
             scope?.launch(Dispatchers.IO) {
+                val ch = wireless()
                 runCatching {
                     // 守卫：监看期间用户可能已远程切换了模式（0x500E 可写），
                     // 仅当相机仍停留在遥控值 0x8012 时才回退，避免覆盖用户选择
-                    val current = ptpSession.getDevicePropValue(
+                    val current = ch.getDevicePropValue(
                         PtpConstants.PROP_EXPOSURE_PROGRAM_MODE
                     )
                     val stillRemote = current != null && current.size >= 2 &&
@@ -465,7 +438,7 @@ class LiveViewManager @Inject constructor(
                             ((current[1].toInt() and 0xFF) shl 8)) ==
                         PtpConstants.PROP_VALUE_REMOTE_MODE
                     if (stillRemote) {
-                        ptpSession.setDevicePropValue(
+                        ch.setDevicePropValue(
                             PtpConstants.PROP_EXPOSURE_PROGRAM_MODE, restore
                         )
                         Timber.tag(TAG).i("Wireless control mode exited, exposure mode restored")
@@ -615,6 +588,23 @@ class LiveViewManager @Inject constructor(
             return
         }
 
+        // ── AP 直连通道：取帧失败快速返回（无长命令超时兜底），按「相机静默」处理 ──
+        // 与 USB 的 NO_FRAME/BUSY 同理：拍照写卡、弱光慢快门期间不出帧是正常现象，
+        // 按 WiFi 的 5 次阈值会把正常忙碌误判成故障自停监看。节流重试，
+        // 连续静默过久才就地重启码流；真断链由上方 isWifiLinkDead 的确定性判定收口。
+        if (apConnection.isConnected()) {
+            stallCount++
+            if (stallCount >= USB_STALL_LIMIT) {
+                if (!restartStreamInPlace()) {
+                    return stopWithError("stall_unrecoverable")
+                }
+                stallCount = 0
+            } else {
+                delay(if (stallCount > 8) USB_STALL_DELAY_MS else 120L)
+            }
+            return
+        }
+
         // ── v2.2：USB 通道的分级容错（修「监看过一会儿掉一下」）──────────────────
         // 旧逻辑不分失败类型，累计 5 次即自停监看并要求用户重连；而 USB 上单次
         // 取帧要 2.5s 才失败，5 次仅约 13s —— 弱光慢快门（机身出帧间隔＝曝光时间）、
@@ -698,17 +688,11 @@ class LiveViewManager @Inject constructor(
         if (restartCount >= USB_LV_RESTART_LIMIT) return false
         restartCount++
         val ended = runCatching {
-            onActiveChannel(
-                wifi = { ptpSession.sendCommand(PtpConstants.OP_NIKON_END_LIVE_VIEW).isOk },
-                usb = { usbPtpManager.sendCommand(PtpConstants.OP_NIKON_END_LIVE_VIEW)?.isOk == true }
-            )
+            lv().command(PtpConstants.OP_NIKON_END_LIVE_VIEW).isOk
         }.getOrDefault(false)
         delay(250)
         val started = runCatching {
-            onActiveChannel(
-                wifi = { ptpSession.sendCommand(PtpConstants.OP_NIKON_START_LIVE_VIEW).isOk },
-                usb = { usbPtpManager.sendCommand(PtpConstants.OP_NIKON_START_LIVE_VIEW)?.isOk == true }
-            )
+            lv().command(PtpConstants.OP_NIKON_START_LIVE_VIEW).isOk
         }.getOrDefault(false)
         eventLogger.event(
             "lv_restart",
@@ -722,7 +706,7 @@ class LiveViewManager @Inject constructor(
     /** WiFi(PTP/IP) 通道是否已被判死；USB 通道不受此判定影响。 */
     private fun isWifiLinkDead(): Boolean {
         if (usbPtpManager.isConnected()) return false
-        return ptpSession.isLinkDead()
+        return wireless().isLinkDead()
     }
 
     // ==================== 触摸对焦 ====================
@@ -734,7 +718,7 @@ class LiveViewManager @Inject constructor(
      * @param y 归一化 Y 坐标 (0.0 ~ 1.0)
      */
     suspend fun touchFocus(x: Float, y: Float): Boolean {
-        if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) return false
+        if (!ptpSession.isConnected() && !usbPtpManager.isConnected() && !apConnection.isConnected()) return false
         return withContext(Dispatchers.IO) {
             try {
                 // 归一化点击 (x,y ∈ 0..1，相对监看图像内容) → 相机 AF 坐标域。
@@ -743,23 +727,12 @@ class LiveViewManager @Inject constructor(
                 // 改为按帧真实宽高比把内容矩形居中嵌入箱子里再映射（见 mapTapToAfCoord）。
                 val (afX, afY) = mapTapToAfCoord(x, y)
 
-                val response = onActiveChannel(
-                    wifi = {
-                        ptpSession.sendCommand(
-                            PtpConstants.OP_NIKON_CHANGE_AF_AREA,
-                            listOf(afX, afY)
-                        ).isOk
-                    },
-                    usb = { usbPtpManager.changeAfArea(afX, afY) }
-                )
+                val response = lv().changeAfArea(afX, afY)
 
                 if (response) {
                     // 触发 AF 驱动：稍等 AF 区域生效后再驱动，部分机型立刻驱动会仍按旧区域对焦
                     delay(AF_AREA_SETTLE_MS)
-                    onActiveChannel(
-                        wifi = { ptpSession.afDrive() },
-                        usb = { usbPtpManager.afDrive() }
-                    )
+                    lv().afDrive()
                     Timber.tag(TAG).d(
                         "Touch focus: tap=($x,$y) -> af=($afX,$afY) frame=${framePixelWidth}x$framePixelHeight"
                     )
@@ -875,10 +848,7 @@ class LiveViewManager @Inject constructor(
     }
 
     /** 走当前活跃通道只读回读单条设备属性值（只读，不改连接层） */
-    private suspend fun readDevicePropValue(code: Int): ByteArray? = onActiveChannel(
-        wifi = { ptpSession.getDevicePropValue(code) },
-        usb = { usbPtpManager.getDevicePropValue(code) }
-    )
+    private suspend fun readDevicePropValue(code: Int): ByteArray? = lv().getDevicePropValue(code)
 
     /**
      * 手动对焦驱动
@@ -886,18 +856,10 @@ class LiveViewManager @Inject constructor(
      * @param speed 驱动速度 1-3
      */
     suspend fun manualFocusDrive(direction: Int, speed: Int = 2): Boolean {
-        if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) return false
+        if (!ptpSession.isConnected() && !usbPtpManager.isConnected() && !apConnection.isConnected()) return false
         return withContext(Dispatchers.IO) {
             try {
-                onActiveChannel(
-                    wifi = {
-                        ptpSession.sendCommand(
-                            PtpConstants.OP_NIKON_MF_DRIVE,
-                            listOf(direction, speed)
-                        ).isOk
-                    },
-                    usb = { usbPtpManager.manualFocusDrive(direction, speed) }
-                )
+                lv().manualFocusDrive(direction, speed)
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "MF drive failed")
                 false

@@ -56,7 +56,8 @@ class TransferViewModel @Inject constructor(
     private val settings: AppSettings,
     private val photoMarkRepository: PhotoMarkRepository,
     private val previewShareExporter: PreviewShareExporter,
-    private val remoteShootingManager: RemoteShootingManager
+    private val remoteShootingManager: RemoteShootingManager,
+    private val apConnection: com.nikonlink.app.device.ap.ApConnectionService
 ) : ViewModel() {
 
     companion object {
@@ -600,6 +601,35 @@ class TransferViewModel @Inject constructor(
      * @param holdPages 透传给 [loadPhotos]，下拉刷新/手动刷新置 true（防跳底）
      */
     fun fetchPhotos(force: Boolean = false, holdPages: Boolean = false) {
+        // AP 直连场景：AP 会话在线/建立中都只等 AP，绝不触发旧链路自动重连
+        // （相机唯一 PTP/IP 客户端槽归 AP 会话，旧链路一动就会把活会话踢下线）。
+        if (apConnection.engaged) {
+            if (apConnection.isConnected()) {
+                loadPhotos(force)
+                return
+            }
+            if (!force) _message.value = "正在建立 AP 通道..."
+            viewModelScope.launch {
+                val ok = withTimeoutOrNull(15_000L) {
+                    while (!apConnection.isConnected()) {
+                        when (apConnection.state.value) {
+                            is com.camerakit.api.CameraState.Failed,
+                            is com.camerakit.api.CameraState.Disconnected -> return@withTimeoutOrNull false
+                            else -> Unit
+                        }
+                        delay(200)
+                    }
+                    true
+                }
+                if (ok == true) {
+                    loadPhotos(force)
+                } else {
+                    _isLoading.value = false
+                    _message.value = "AP 连接未就绪，请返回连接页重新连接相机"
+                }
+            }
+            return
+        }
         if (!transferManager.hasActiveSession()) {
             val usbConnected = usbPtpManager.isConnected()
             if (usbConnected) {

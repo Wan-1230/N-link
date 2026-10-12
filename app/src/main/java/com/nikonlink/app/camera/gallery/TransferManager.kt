@@ -13,6 +13,8 @@ import android.os.Environment
 import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.camerakit.ptp.getLargeThumbnail
+import com.camerakit.ptp.rawObjectInfo
 import com.nikonlink.app.MainActivity
 import com.nikonlink.app.NLinkApp
 import com.nikonlink.app.R
@@ -65,6 +67,7 @@ class TransferManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val ptpSession: PtpSessionManager,
     private val usbPtpManager: UsbPtpManager,
+    private val apConnection: com.nikonlink.app.device.ap.ApConnectionService,
     private val transferRepository: TransferRepository,
     private val thumbnailCache: ThumbnailCache,
     private val wifiManager: WifiManager,
@@ -159,6 +162,7 @@ class TransferManager @Inject constructor(
 
     private val ptpTransport: CameraTransport = PtpTransport(ptpSession)
     private val usbTransport: CameraTransport = UsbTransport(usbPtpManager)
+    private val apTransport: CameraTransport = ApTransport(apConnection)
 
     private val _transferState = MutableStateFlow<TransferState>(TransferState.Idle)
     val transferState: StateFlow<TransferState> = _transferState.asStateFlow()
@@ -214,6 +218,7 @@ class TransferManager @Inject constructor(
 
     /** 当前生效的数据通道（UI 展示用）：按连接偏好选择，断线自动回退另一通道 */
     fun activeChannel(): String = when {
+        apTransport.isConnected -> "AP 直连"
         usbPtpManager.isConnected() && ptpSession.isConnected() ->
             if (settings.connectionPreference == AppSettings.CONN_PREF_WIFI) "WiFi" else "USB 有线"
         usbPtpManager.isConnected() -> "USB 有线"
@@ -296,10 +301,10 @@ class TransferManager @Inject constructor(
     }
 
     /**
-     * USB 有线优先，其次 WiFi PTP。
+     * USB 有线优先，其次 WiFi PTP；AP 直连会话在线时同样算有会话。
      */
     fun hasActiveSession(): Boolean {
-        return usbPtpManager.isConnected() || ptpSession.isConnected()
+        return usbPtpManager.isConnected() || ptpSession.isConnected() || apTransport.isConnected
     }
 
     /**
@@ -784,8 +789,11 @@ class TransferManager @Inject constructor(
         }
     }
 
-    private fun channelName(transport: CameraTransport): String =
-        if (transport === usbTransport) "USB" else "WiFi"
+    private fun channelName(transport: CameraTransport): String = when (transport) {
+        usbTransport -> "USB"
+        apTransport -> "AP"
+        else -> "WiFi"
+    }
 
     /**
      * 流式下载到本地文件，支持从已有临时文件断点续传。
@@ -1017,6 +1025,8 @@ class TransferManager @Inject constructor(
     }
 
     private fun currentTransport(): CameraTransport {
+        // AP 直连会话是独立通道：在线时优先（其余链路此时不应再占用相机）
+        if (apTransport.isConnected) return apTransport
         // 连接偏好决定双通道在线时的优先级；单通道在线时自然回退另一通道
         if (usbPtpManager.isConnected() && ptpSession.isConnected()) {
             return if (settings.connectionPreference == AppSettings.CONN_PREF_WIFI) {
@@ -1896,4 +1906,68 @@ private class UsbTransport(
     override suspend fun partialObject(handle: Int, offset: Int, size: Int, sink: OutputStream?): ByteArray? =
         usb.getPartialObject(handle, offset, size, sink)
     override suspend fun deleteObject(handle: Int): Boolean = usb.deleteObject(handle)
+}
+
+/**
+ * AP 直连通道（工作树连接方案会话）。读取语义与 [PtpTransport] 对齐：
+ * 批量元数据（0x9805）不走该通道，返回 null 由上层回退逐条读取 ObjectInfo。
+ */
+private class ApTransport(
+    private val ap: com.nikonlink.app.device.ap.ApConnectionService
+) : CameraTransport {
+    override val isConnected: Boolean get() = ap.isConnected()
+
+    override suspend fun storageIds(): List<Int> =
+        ap.session()?.listStorages()?.map { it.storageId } ?: emptyList()
+
+    override suspend fun objectHandles(storageId: Int): List<Int> =
+        ap.session()?.listObjectHandles(storageId, 0)?.map { it.toInt() } ?: emptyList()
+
+    override suspend fun objectInfo(handle: Int): ByteArray? =
+        ap.ptpSession()?.rawObjectInfo(handle.toLong())?.takeIf { it.isNotEmpty() }
+
+    override suspend fun objectPropList(): List<MtpObjectProps>? = null
+
+    override suspend fun getObject(
+        handle: Int,
+        onProgress: ((Long, Long) -> Unit)?,
+        sink: OutputStream?
+    ): ByteArray? {
+        val session = ap.session() ?: return null
+        val out = if (sink == null) java.io.ByteArrayOutputStream() else null
+        var received = 0L
+        session.readObject(handle.toLong(), 0L) { chunk ->
+            received += chunk.size
+            if (sink != null) sink.write(chunk) else out!!.write(chunk)
+            onProgress?.invoke(received, 0L)
+        }
+        // sink 模式下用非 null 表示成功（与旧通道的返回约定一致）
+        return out?.toByteArray() ?: ByteArray(0)
+    }
+
+    override suspend fun thumbnail(handle: Int): ByteArray? =
+        ap.session()?.getThumbnail(handle.toLong())?.takeIf { it.isNotEmpty() }
+
+    override suspend fun largeThumbnail(handle: Int): ByteArray? =
+        ap.ptpSession()?.getLargeThumbnail(handle.toLong())?.takeIf { it.isNotEmpty() }
+
+    override suspend fun partialObject(
+        handle: Int,
+        offset: Int,
+        size: Int,
+        sink: OutputStream?
+    ): ByteArray? {
+        val session = ap.session() ?: return null
+        val data = session.readRange(handle.toLong(), offset.toLong(), size)
+        if (sink != null && data.isNotEmpty()) sink.write(data)
+        return data
+    }
+
+    override suspend fun deleteObject(handle: Int): Boolean {
+        val session = ap.session() ?: return false
+        return runCatching {
+            session.deleteObject(handle.toLong())
+            true
+        }.getOrDefault(false)
+    }
 }

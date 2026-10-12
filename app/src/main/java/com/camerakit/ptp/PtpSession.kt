@@ -152,6 +152,20 @@ class PtpSession(
         checked(PtpConsts.OP_DELETE_OBJECT, listOf(handle and 0xFFFFFFFFL, 0L))
     }
 
+    // ==================== APP 扩展（宿主 App 功能补充，非连接核心） ====================
+
+    /**
+     * 通用事务：返回原始 [PtpResult]，响应码非 OK 也不抛出（由调用方判读）；
+     * 仅传输层断开仍抛 [CameraError.TransportLost]。
+     * 供同包扩展文件（PtpSessionAppExt）封装宿主 App 功能用命令。
+     */
+    suspend fun rawTransact(
+        opcode: Int,
+        params: List<Long> = emptyList(),
+        dataOut: ByteArray? = null,
+        timeoutMs: Long = 20_000,
+    ): PtpResult = link.transact(opcode, params, dataOut = dataOut, timeoutMs = timeoutMs)
+
     // ---------------- 配对（PC 主机注册，基准实现 实证） ----------------
 
     /** 0x952B 预备：data-in 返回相机侧展示的字符串（载荷前 8 字节为头部）。 */

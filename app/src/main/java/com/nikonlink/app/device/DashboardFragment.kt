@@ -87,6 +87,16 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     private var pairingDialog: AlertDialog? = null
     private var detailExpanded = false
     private var cameraInfoRequested = false
+
+    /**
+     * AP 直连（工作树连接方案）接管设备卡片状态渲染的标记。
+     * AP 会话进行中，旧无线状态机的收集器不得再写同一组视图（否则互相覆盖，
+     * 表现为相机已连上、手机还停在「正在连接」）。
+     */
+    private var apUiActive = false
+
+    /** AP 状态/事件的短文案（renderStatusLine 的 AP 分支数据源）。 */
+    private var apStatusText = ""
     private var currentMode = ConnectMode.WIFI_AP
     private var modeTabWidth = 0
 
@@ -213,17 +223,20 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     ConnectionState.DISCONNECTED ->
                         Triple("未连接", R.color.on_dark_card_variant, false)
                 }
-                binding.cardDevice.tvConnectionStatus.text = text
-                binding.cardDevice.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
-                    ContextCompat.getColor(requireContext(), colorRes)
-                )
-                binding.cardDevice.progressConnecting.visibility = if (loading) View.VISIBLE else View.GONE
+                // AP 会话接管期间不写卡片状态（AP 收集器维护这组视图，避免互相覆盖）
+                if (!apUiActive) {
+                    binding.cardDevice.tvConnectionStatus.text = text
+                    binding.cardDevice.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
+                        ContextCompat.getColor(requireContext(), colorRes)
+                    )
+                    binding.cardDevice.progressConnecting.visibility = if (loading) View.VISIBLE else View.GONE
 
-                // 已连接 → 显示断开按钮；否则显示连接按钮
-                val connected = state == ConnectionState.FULLY_CONNECTED ||
-                        state == ConnectionState.BLE_CONNECTED
-                binding.cardDevice.btnConnect.visibility = View.GONE
-                binding.cardDevice.btnDisconnect.visibility = if (connected) View.VISIBLE else View.GONE
+                    // 已连接 → 显示断开按钮；否则显示连接按钮
+                    val connected = state == ConnectionState.FULLY_CONNECTED ||
+                            state == ConnectionState.BLE_CONNECTED
+                    binding.cardDevice.btnConnect.visibility = View.GONE
+                    binding.cardDevice.btnDisconnect.visibility = if (connected) View.VISIBLE else View.GONE
+                }
                 if (state == ConnectionState.FULLY_CONNECTED && !cameraInfoRequested) {
                     cameraInfoRequested = true
                     paramsViewModel.readAll()
@@ -570,6 +583,106 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 }
             }
         }
+
+        // AP 直连（工作树连接方案）状态：AP 会话接管卡片状态渲染。
+        // 旧无线状态机不再写同一组视图（见 apUiActive），从此不再互相覆盖 ——
+        // 修「相机端已连接成功、手机端还停在正在连接」。
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.apState.collect { state ->
+                if (state is com.camerakit.api.CameraState.Disconnected) {
+                    if (apUiActive) {
+                        apUiActive = false
+                        apStatusText = ""
+                        // 交还旧状态机：触发一次无线状态重渲染
+                        renderStatusLine()
+                    }
+                    return@collect
+                }
+                apUiActive = true
+                val cardText: String
+                val statusText: String
+                val loading: Boolean
+                val connected: Boolean
+                val failed: Boolean
+                when (state) {
+                    is com.camerakit.api.CameraState.Discovering -> {
+                        cardText = "正在连接"; statusText = "正在搜索相机…"
+                        loading = true; connected = false; failed = false
+                    }
+                    is com.camerakit.api.CameraState.Connecting -> {
+                        cardText = "正在连接"; statusText = "正在连接相机…"
+                        loading = true; connected = false; failed = false
+                    }
+                    is com.camerakit.api.CameraState.AwaitingHostConfirm -> {
+                        cardText = "等待相机确认"
+                        statusText = "请在相机的主机确认界面上按 OK 确认本机"
+                        loading = true; connected = false; failed = false
+                    }
+                    is com.camerakit.api.CameraState.Connected -> {
+                        val model = CameraModelCatalog.official(state.deviceInfo.model)
+                            ?: state.deviceInfo.model
+                        cardText = "已连接"
+                        statusText = if (model.isBlank()) "已连接（AP）" else "已连接（AP）：$model"
+                        loading = false; connected = true; failed = false
+                    }
+                    is com.camerakit.api.CameraState.Recovering -> {
+                        cardText = "自动恢复中"; statusText = "连接波动，正在自动恢复…"
+                        loading = true; connected = false; failed = false
+                    }
+                    is com.camerakit.api.CameraState.Failed -> {
+                        cardText = "连接失败"
+                        statusText = state.error.message ?: "连接失败"
+                        loading = false; connected = false; failed = true
+                    }
+                    else -> {
+                        cardText = "未连接"; statusText = "未连接"
+                        loading = false; connected = false; failed = false
+                    }
+                }
+                binding.cardDevice.tvConnectionStatus.text = cardText
+                binding.cardDevice.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
+                    ContextCompat.getColor(
+                        requireContext(),
+                        when {
+                            connected -> R.color.status_connected
+                            failed -> R.color.text_primary
+                            else -> R.color.on_dark_card_variant
+                        }
+                    )
+                )
+                binding.cardDevice.progressConnecting.visibility =
+                    if (loading) View.VISIBLE else View.GONE
+                binding.cardDevice.btnConnect.visibility = View.GONE
+                binding.cardDevice.btnDisconnect.visibility =
+                    if (connected) View.VISIBLE else View.GONE
+                apStatusText = statusText
+                if (connected) {
+                    if (!cameraInfoRequested) {
+                        cameraInfoRequested = true
+                        paramsViewModel.readAll()
+                    }
+                    renderCameraName()
+                }
+                binding.swipeRefresh.isRefreshing = false
+                renderStatusLine()
+            }
+        }
+
+        // AP 会话事件：保活/恢复/配对进度即时上屏
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.apEvents.collect { ev ->
+                if (!apUiActive) return@collect
+                apStatusText = when (ev) {
+                    is com.camerakit.api.CameraEvent.PairingProgress -> ev.text
+                    is com.camerakit.api.CameraEvent.KeepaliveFailed -> "连接不稳定，正在保活…"
+                    is com.camerakit.api.CameraEvent.TransportLost -> "连接中断，正在自动恢复…"
+                    is com.camerakit.api.CameraEvent.SessionRecovered -> "连接已恢复"
+                    is com.camerakit.api.CameraEvent.SessionTokenChanged -> "相机会话已更新…"
+                    is com.camerakit.api.CameraEvent.WirelessDisconnected -> "AP 连接已断开"
+                }
+                renderStatusLine()
+            }
+        }
     }
 
     /** 当前是否处于「USB 有线连接」场景（用户停在 USB 页签，或 USB 链路已激活） */
@@ -646,6 +759,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         val usbModel = viewModel.usbDeviceInfo.value?.cameraModel
             ?.takeIf { viewModel.usbState.value == UsbConnectionState.CONNECTED }
         val name = CameraModelCatalog.official(paramsViewModel.cameraInfo.value.modelName)
+            ?: CameraModelCatalog.official(viewModel.apCameraModel())
             ?: CameraModelCatalog.official(viewModel.sessionCameraModel())
             ?: CameraModelCatalog.official(usbModel)
             ?: viewModel.discoveredCameraName()
@@ -685,6 +799,8 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 UsbConnectionState.CONNECTED -> "已连接（USB）"
             }
 
+            apUiActive -> apStatusText
+
             else -> viewModel.statusMessage.value
         }
         binding.cardDevice.tvStatusMessage.text = text.ifBlank { "未连接" }
@@ -716,6 +832,13 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 UsbConnectionState.PERMISSION_DENIED,
                 UsbConnectionState.ERROR -> HeroStatus.FAILED to "连接失败"
                 else -> HeroStatus.IDLE to "未连接"
+            }
+            apUiActive -> when (viewModel.apState.value) {
+                is com.camerakit.api.CameraState.Connected -> HeroStatus.CONNECTED to "已连接"
+                is com.camerakit.api.CameraState.Failed -> HeroStatus.FAILED to "连接失败"
+                is com.camerakit.api.CameraState.Recovering -> HeroStatus.BUSY to "恢复中"
+                is com.camerakit.api.CameraState.Disconnected -> HeroStatus.IDLE to "未连接"
+                else -> HeroStatus.BUSY to "连接中"
             }
             else -> when (wifi) {
                 ConnectionState.FULLY_CONNECTED,
@@ -850,6 +973,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         binding.cardDevice.btnDisconnect.setOnClickListener {
             viewModel.disconnect()
             viewModel.disconnectUsb()
+            viewModel.disconnectAp()
         }
 
         // STA 主机注册（式）：先引导用户在相机端进入「连接至 PC」向导，再执行注册
