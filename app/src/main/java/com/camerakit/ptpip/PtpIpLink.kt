@@ -85,6 +85,7 @@ class PtpIpLink(
         try {
             val s = socketFactory.createSocket()
             s.tcpNoDelay = true
+            s.keepAlive = true
             s.connect(InetSocketAddress(endpoint.host, endpoint.port), CONNECT_TIMEOUT_MS)
             s.soTimeout = SO_TIMEOUT_MS
             cmdSocket = s
@@ -108,6 +109,7 @@ class PtpIpLink(
 
             val e = socketFactory.createSocket()
             e.tcpNoDelay = true
+            e.keepAlive = true
             // 事件通道绑定到与命令通道相同的本地地址（基准实现 forced 语义），
             // 防止双网手机上事件 socket 漂到其它网络导致相机复位
             val cmdLocal = s.localAddress

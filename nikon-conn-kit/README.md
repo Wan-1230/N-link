@@ -19,7 +19,7 @@ nikon-conn-kit/
 │   ├── discovery/  MdnsCameraDiscovery（_ptp._tcp）、ApEndpointResolver（192.168.1.1）
 │   ├── net/        NetworkBinder（相机热点网络绑定）
 │   └── pairing/    HostRegistrar（PC 主机注册 0x952B→0x935A）、HostIdentityStore
-├── demo/         # 真机验证 App（三通道连接/配对/读取测试）
+├── demo/         # 专用测试软件（demo-debug 包）：三通道连接/主机注册/读取测试，后续测试固定用它
 └── docs/         # 协议笔记
 ```
 
@@ -46,6 +46,7 @@ cd nikon-conn-kit
 | 4 | 相机「STA mode」入同路由器/手机热点，点「STA 发现」 | mDNS 发现相机 → 连接成功 |
 | 5 | 连接后关闭相机 Wi-Fi / 拔线 | 事件流出现传输丢失；无线通道自动恢复 ≤3 次 |
 | 6 | 「配对」 | 相机主机确认界面出现本机主机名，确认后提示注册完成 |
+| 7 | 相机进 STA 主机配置向导停在等待画面，点「STA 主机注册」 | 无需先连接即完成注册，随后自动发起 STA 连接 |
 
 ## 作为库集成
 
