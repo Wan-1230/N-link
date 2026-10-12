@@ -42,6 +42,7 @@ class DashboardViewModel @Inject constructor(
     private val deviceRepository: DeviceRepository,
     val settings: com.nikonlink.app.shared.common.AppSettings,
     private val ftpServer: com.nikonlink.app.device.ftp.FtpPushServer,
+    private val apConnection: com.nikonlink.app.device.ap.ApConnectionService,
 ) : ViewModel() {
 
     val connectionState: StateFlow<ConnectionState> = connectionManager.connectionState
@@ -153,12 +154,7 @@ class DashboardViewModel @Inject constructor(
 
     // ── AP 连接：工作树连接方案整体替换（仅走 ApCameraClient，不回退旧 AP 实现）──
 
-    private val apClient: com.camerakit.api.CameraConnection by lazy {
-        // demo-debug 原版连接代码（原样复刻，未做任何改写）
-        com.camerakit.client.CameraConnectionFactory.create(appContext) { msg ->
-            Timber.tag("ApKit").i(msg)
-        }
-    }
+    private val apClient: com.camerakit.api.CameraConnection get() = apConnection.client
 
     /** AP 连接状态（工作树方案状态机）。 */
     val apState: StateFlow<com.camerakit.api.CameraState> get() = apClient.state
@@ -178,6 +174,7 @@ class DashboardViewModel @Inject constructor(
             Timber.tag("ApKit").i("connectAp ignored: already ${st.javaClass.simpleName}")
             return
         }
+        apConnection.markEngaged()
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             runCatching {
                 apClient.connect(com.camerakit.api.ConnectionMethod.WifiAp(host, port))
@@ -200,10 +197,14 @@ class DashboardViewModel @Inject constructor(
     }
 
     /** 断开 AP 连接。 */
-    fun disconnectAp() = apClient.disconnect()
+    fun disconnectAp() = apConnection.disconnect()
 
     /** 当前 AP 会话（未连接为 null）。 */
     fun apSession(): com.camerakit.api.CameraSession? = apClient.session()
+
+    /** AP 会话建立时机身自报的 Model 原文（设备页相机全称的候选来源之一）。 */
+    fun apCameraModel(): String? =
+        (apState.value as? com.camerakit.api.CameraState.Connected)?.deviceInfo?.model
 
     fun onCameraAp(): Boolean = connectionManager.isOnCameraAp()
 
