@@ -8,27 +8,29 @@ import java.util.Locale
  * 三条通道各自的型号串来源与写法都不一样，直接把原文塞进设备页就会出现
  * 「显示的不是官方相机名称」：
  *
- * | 来源 | 实测/规范写法 | 官方写法 |
+ * | 来源 | 实测/规范写法 | 显示写法 |
  * |---|---|---|
- * | PTP `GetDeviceInfo`.Model | `NIKON Z 50II` / `Z 50Ⅱ`（机身自报，罗马数字形态见 2026-10-11 真机） | **机身报什么就显示什么** |
+ * | PTP `GetDeviceInfo`.Model | `NIKON Z 50II` / `Z 50Ⅱ`（机身自报，罗马数字形态见 2026-10-11 真机） | 一律 ASCII：`Nikon Z 50II` |
  * | 尼康 EXIF/PTP 的下划线代次 | `NIKON Z 6_III` | `Nikon Z 6III` |
  * | BLE 广播名 / mDNS 服务名 | `Z6III_12345678`（见 `WifiScanner` 注释） | `Nikon Z 6III` |
  * | USB 产品 ID 映射表 | `Z 6III`；未知 PID 是 `Nikon Camera (0x0FFF)` | 识别不出就不显示 |
  *
- * ## 两条不可违反的规则（v3.1）
+ * ## 两条不可违反的规则（v3.1；显示字形 2026-10-12 定谳）
  *
- * 1. **显示层只清洗、不翻译**：清洗只动品牌前缀、序列号后缀、代次下划线、`Z` 与数字间的
- *    空格；**禁止**任何字符改写。罗马数字（U+2160 起，Unicode 类别 Nl）必须**原样保留**——
- *    `Z 50Ⅱ` 显示成 `Nikon Z 50Ⅱ`，`Z 50II` 显示成 `Nikon Z 50II`，两者允许不同，
- *    因为「严格对应原始元数据」优先于「统一成一种写法」。
- * 2. **查表键允许转写，但转写结果绝不回流到显示串**：`model()` 要的是机型身份
- *    （能力表/兼容表按它分派），把 Ⅱ 转写成 ASCII 的 `II` 才能命中枚举；
+ * 1. **显示层只清洗 + 罗马字形折 ASCII，但绝不吞字符**：清洗只动品牌前缀、序列号后缀、
+ *    代次下划线、`Z` 与数字间的空格；代次的**信息量**一个字节都不许丢。
+ *    `Z 50Ⅱ` 与 `Z 50II` 都显示成 `Nikon Z 50II` —— 用户 2026-10-12 拍板显示面用 ASCII，
+ *    两种自报写法收敛成同一个名字，设备页与配对记录不会分出两样。
+ *    原文没有丢：`model_raw` 事件按码点记录机身自报的每一个字符，排查时照样能对上。
+ * 2. **查表键转写成 ASCII 后查枚举**：`model()` 要的是机型身份（能力表/兼容表按它分派）；
  *    而 `Z 50` 与 `Z 50Ⅱ` 必须命中**不同**的枚举条目——它们是两台相机。
  *
- * 规则 1 之前不成立的原因（2026-10-11 JVM 实测）：`Character.isLetterOrDigit('\u2161')`
+ * 代次曾被整字符吞掉的原因（2026-10-11 JVM 实测）：`Character.isLetterOrDigit('\u2161')`
  * 返回 **false**（Nl 既不算字母也不算数字），旧实现的 `filter(Char::isLetterOrDigit)`
  * 会把 Ⅱ 静默删掉，于是 `Z 50Ⅱ` → 键 `Z50` → 撞上真实存在的 Z50 枚举 →
  * **显示成另一台相机，且能力表也跟着错**。
+ * 所以红线是「不许吞字符」，字形只是显示选择；把 `Ⅱ` 转成 `II` 是**先转写再判等**，
+ * 与「删掉不可识别字符」是两回事，任何时候都不许退回后者。
  *
  * 与旧版一致的保守底线：**认不出机型就返回 null**，由调用方回落到下一个来源。
  * 宁可显示上一个可信来源，也不把 IP、MAC、十六进制 PID、路由器名或猜测的型号
@@ -126,13 +128,21 @@ object CameraModelCatalog {
 
     /**
      * **显示形态**：只做 §「连接与元数据可靠性专项」v1 §2.2 允许的结构性清理，
-     * 字符一律原样保留（罗马数字、大小写形态都不动）。
+     * 一个字符都不许丢。
      *
-     * 步骤：剥序列号 → 去代次下划线 → 去品牌前缀 → 压空格 → `Z` 紧跟数字时补一个空格。
-     * 例：`Z6III_12345678` → `Z 6III`；`NIKON Z 6_III` → `Z 6III`；`Z 50Ⅱ` → `Z 50Ⅱ`。
+     * 步骤：剥序列号 → 去代次下划线 → **罗马字形转 ASCII** → 去品牌前缀 → 压空格 →
+     * `Z` 紧跟数字时补一个空格。
+     * 例：`Z6III_12345678` → `Z 6III`；`NIKON Z 6_III` → `Z 6III`；`Z 50Ⅱ` → `Z 50II`。
+     *
+     * 罗马字形为什么要转（2026-10-12 用户定谳）：立项时的要求是「特殊字符原样展示」，
+     * 针对的是 `Z 50Ⅱ` 被读成 `Z 502` 那个 bug —— 病因是 `Character.isLetterOrDigit('Ⅱ')`
+     * 为 **false**（Nl 类别既不是字母也不是数字），清洗时整个字符被吞掉，
+     * 跟用哪个字形无关。转 ASCII 之后 `Ⅱ` 变成两个实打实的 `I`，同样回不到 `502`，
+     * 而显示面拿到的是 `Z 50II`。原文并没有丢：`model_raw` 事件记的是码点，
+     * 机身自报 `Z 50Ⅱ` 在日志里仍是 `chars=Z 50Ⅱ`。
      */
     private fun displayToken(raw: String): String {
-        var token = expandGenerationSuffix(stripSerial(raw.trim())).replace("_", "")
+        var token = toAsciiRoman(expandGenerationSuffix(stripSerial(raw.trim()))).replace("_", "")
         if (token.uppercase(Locale.ROOT).startsWith(BRAND_UPPER)) {
             token = token.substring(BRAND.length)
         }
@@ -140,7 +150,11 @@ object CameraModelCatalog {
         return token.replace(Regex("^Z(?=\\d)"), "Z ")
     }
 
-    /** 机身自报里有没有罗马数字——这是「必须原样展示」的触发条件。 */
+    /** 把串里的罗马数字字形逐个换成 ASCII 字母（`Ⅱ`→`II`），其余字符原样。 */
+    private fun toAsciiRoman(s: String): String =
+        buildString(s.length + 4) { for (c in s) append(ROMAN_TO_ASCII[c] ?: c) }
+
+    /** 机身自报里有没有罗马数字——有就不查表，按清洗后的原文结构展示。 */
     private fun hasRomanNumeral(raw: String): Boolean = raw.any { it in ROMAN_TO_ASCII }
 
     /** 形态像不像型号（不是 IP/MAC/路由器名/十六进制 PID 兜底串）。 */
@@ -187,8 +201,9 @@ object CameraModelCatalog {
     /**
      * 任意来源的型号串 → 相机全称。三条分支，各有明确理由：
      *
-     * 1. **机身自报带罗马数字** → 用清洗后的原文。这是「严格对应原始元数据」的要求：
-     *    枚举里的 `displayName` 是 ASCII 形态，拿它会悄悄把 `Ⅱ` 改写成 `II`。
+     * 1. **机身自报带罗马数字** → 用清洗后的原文结构（不查表）。
+     *    表里只有我们已经登记过的机型，机身自报了新形态时查表会把它抹平成已知型号，
+     *    而代次后缀正是 Z50 与 Z 50Ⅱ 的分界，抹不得。显示一律 ASCII（`Z 50II`）。
      * 2. **认得出且不带罗马数字** → 用枚举的 `displayName`。它修的是大小写与分隔形态的
      *    脏数据（`nikon z_50ii`、`Z6III_12345678`），是 FR-36 立项的本意。
      * 3. **认不出但形态是型号**（表里没有的新机型）→ 用清洗后的原文泛化，
