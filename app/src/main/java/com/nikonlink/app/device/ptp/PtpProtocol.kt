@@ -282,10 +282,12 @@ object PtpConstants {
     // 启动 LiveView 前先设定该值，否则相机可能拒绝 StartLiveView
     const val PROP_VALUE_REMOTE_MODE = 0x8012
 
-    // 相机 AF 坐标域（ChangeAfArea 0x9205 的目标点取值范围），固定 x:0~4000, y:0~3000 = 4:3。
-    // 注意：这是相机坐标箱（4:3），而 Live View 实际帧可能不是 4:3（如 640×424≈3:2）。
-    // 触摸对焦时不能直接 nx*4000/ny*3000，必须按帧真实宽高比把这个 4:3 箱缩放后再映射
-    // （见 LiveViewManager.mapTapToAfCoord），否则会产生系统偏移。数值本身为相机域，勿改。
+    // 相机 AF 坐标域（ChangeAfArea 0x9205 的目标点取值范围）。
+    // 口径（2026-10-12 对相机厂商官方应用与一款第三方控制应用的报文分析证实）：该域就是
+    // live view 图像的 wholeSize 像素空间，且与帧同宽高比 —— 厂商官方应用按
+    // `tapX / (viewWidth / wholeWidth)` 单系数线性映射，AF 区域回读同空间作画。
+    // 因此箱宽取标称 4000（第三方实现流量实测上限），箱高按帧宽高比折算
+    // （见 LiveViewManager.mapTapToAfCoord），不是固定 4:3 箱。数值本身为相机域，勿改。
     const val AF_COORD_MAX_X = 4000
     const val AF_COORD_MAX_Y = 3000
 

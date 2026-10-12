@@ -233,6 +233,16 @@ class ConnectionStateMachine @Inject constructor() {
                     resetRetry()
                     ConnectionState.DISCONNECTED
                 }
+                // 2026-10-12 断连自动处理：不可恢复错误（重试预算耗尽、明确失败）
+                // 必须落 DISCONNECTED。旧实现这里不处理 ErrorOccurred，状态永久停在
+                // 「等待重连」—— 用户看到的是一直在重连的假象，只能手动点「断开连接」
+                // 才能复位（本次报障：相机断开后界面不更新为已断开）。
+                is ConnectionEvent.ErrorOccurred ->
+                    if (event.recoverable) current
+                    else {
+                        resetRetry()
+                        ConnectionState.DISCONNECTED
+                    }
                 else -> current
             }
         }

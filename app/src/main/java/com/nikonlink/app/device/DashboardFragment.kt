@@ -16,6 +16,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
@@ -55,8 +56,10 @@ import com.nikonlink.app.camera.params.ShutterCountState
 import com.nikonlink.app.camera.params.ShutterFailReason
 import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import com.nikonlink.app.shared.ui.Motion
 import com.nikonlink.app.shared.ui.widget.NlEmptyState
@@ -85,6 +88,14 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     /** 视修复 D（STA 单按钮）：「连接相机」触发的自动搜索已武装，命中候选即自动接续 */
     private var staAutoConnectArmed = false
     private var pairingDialog: AlertDialog? = null
+
+    /**
+     * 2026-10-12 连接入口拆分：AP 页签独立的「Wi-Fi 连接」弹窗。
+     * 原流程把系统 WLAN 面板挂在「连接相机」上（弹窗内无法完成配网时用户只能手动
+     * 去系统设置），现拆为单独入口；弹窗打开期间轮询在网状态，连上即自动续连。
+     */
+    private var apWifiDialog: AlertDialog? = null
+    private var apWifiPollJob: Job? = null
     private var detailExpanded = false
     private var cameraInfoRequested = false
     private var currentMode = ConnectMode.WIFI_AP
@@ -126,6 +137,8 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         setupInteractions()
         setupModeTabs()
         setupModeActions()
+        setupApWifiEntry()
+        setupGuideToggles()
         setupStaArch()
         paramsViewModel.readAll()
     }
@@ -200,11 +213,13 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                         Triple("已连接", R.color.status_connected, false)
                     ConnectionState.WIFI_UPGRADING ->
                         Triple("建立高速通道", R.color.on_dark_card_variant, true)
+                    // 2026-10-12 状态文案清理：BLE_CONNECTED 不等于 BLE 真连着
+                    // （AP/STA/USB 直连的 WiFi 掉线也会经停此态），按实际 BLE 连接态显示
                     ConnectionState.BLE_CONNECTED ->
-                        if (viewModel.statusMessage.value.contains("连接中断")) {
-                            Triple("连接中断", R.color.on_dark_card_variant, false)
-                        } else {
+                        if (viewModel.isBleConnected()) {
                             Triple("BLE 已连接", R.color.on_dark_card_variant, false)
+                        } else {
+                            Triple("连接中断", R.color.on_dark_card_variant, false)
                         }
                     ConnectionState.CONNECTING ->
                         Triple("连接中", R.color.on_dark_card_variant, true)
@@ -688,6 +703,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             else -> viewModel.statusMessage.value
         }
         binding.cardDevice.tvStatusMessage.text = text.ifBlank { "未连接" }
+        renderApWifiState()
         renderHero()
     }
 
@@ -718,8 +734,12 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 else -> HeroStatus.IDLE to "未连接"
             }
             else -> when (wifi) {
-                ConnectionState.FULLY_CONNECTED,
-                ConnectionState.BLE_CONNECTED -> HeroStatus.CONNECTED to "已连接"
+                // 2026-10-12 状态文案清理：BLE_CONNECTED 且 BLE 未真实连接时
+                // （非 BLE 直连链路掉线经停此态）不再显示「已连接」
+                ConnectionState.FULLY_CONNECTED -> HeroStatus.CONNECTED to "已连接"
+                ConnectionState.BLE_CONNECTED ->
+                    if (viewModel.isBleConnected()) HeroStatus.CONNECTED to "已连接"
+                    else HeroStatus.FAILED to "连接失败"
                 ConnectionState.CONNECTING,
                 ConnectionState.WIFI_UPGRADING -> HeroStatus.BUSY to "连接中"
                 ConnectionState.ERROR_WAITING_RETRY -> HeroStatus.FAILED to "连接失败"
@@ -1320,6 +1340,175 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         binding.btnModeConnect.setOnClickListener { connectForCurrentMode() }
     }
 
+    // ---------------- 2026-10-12：AP 独立 Wi-Fi 连接入口 ----------------
+
+    /**
+     * AP 页签独立的「Wi-Fi 连接」入口。
+     *
+     * 连接入口拆分的由来：旧流程把系统 WLAN 面板挂在「连接相机」上，用户在面板里
+     * 点不完配网（面板内无法完成连接），只能自己去系统设置里配好再回来。现在配网
+     * 收敛到这一颗单独按钮：弹窗内给出状态、面板入口与「已连上继续连接」的手动
+     * 兜底，连上热点后自动起 PTP/IP 轮次（复用既有的武装-回连检测）。
+     */
+    private fun setupApWifiEntry() {
+        binding.panelWifiAp.btnApWifiConnect.pressEffect()
+        binding.panelWifiAp.btnApWifiConnect.setOnClickListener { showApWifiDialog() }
+        renderApWifiState()
+    }
+
+    /** AP 页签 Wi-Fi 状态行：手机此刻是否挂在相机热点上（SSID 可读时带上名字）。 */
+    private fun renderApWifiState() {
+        if (_binding == null) return
+        val state = binding.panelWifiAp.tvApWifiState
+        val text = if (viewModel.onCameraAp()) {
+            val ssid = viewModel.connectedSsid()
+            if (ssid.isNullOrBlank()) {
+                getString(R.string.tv_ap_wifi_state_on_ap)
+            } else {
+                getString(R.string.tv_ap_wifi_state_on_ap_ssid, ssid)
+            }
+        } else {
+            getString(R.string.tv_ap_wifi_state_not_on_ap)
+        }
+        if (state.text != text) state.text = text
+    }
+
+    /**
+     * 「Wi-Fi 连接」弹窗：配网三步引导 + 在网轮询自动续连 + 手动兜底。
+     *
+     * 修复的点：旧弹窗（系统 WLAN 面板）里用户点完热点回到 App 常无下文 ——
+     * 回连判定只认 SSID 命中（Android 13+ 读不到 SSID 时静默失败），且武装标记
+     * 有 TTL，超时后再回来也不续连。这里打开期间持续轮询 [DashboardViewModel.onCameraAp]，
+     * 命中即自动起轮次；仍认不出来的场景给「已连上，继续连接」由用户拍板。
+     */
+    private fun showApWifiDialog() {
+        if (apWifiDialog?.isShowing == true) {
+            // 已打开：刷新一次状态即可，不叠第二个
+            refreshApWifiDialog()
+            return
+        }
+        val builder = NlGlass.dialog(requireContext())
+            .setTitle(R.string.dialog_ap_wifi_title)
+            .setPositiveButton(R.string.dialog_ap_wifi_open_panel) { _, _ ->
+                openApWifiPanelFromDialog()
+            }
+            .setNeutralButton(R.string.dialog_ap_wifi_continue) { _, _ ->
+                // 手动兜底：用户明确表示已连上热点，直接起轮次（绕过 SSID 判定死角）
+                dismissApWifiDialog()
+                binding.cardDevice.tvStatusMessage.text = "正在连接相机热点网关…"
+                viewModel.connectApDirect()
+            }
+            .setNegativeButton(R.string.dialog_ap_wifi_manual_ip) { _, _ ->
+                dismissApWifiDialog()
+                showManualIpDialog(ConnectMode.WIFI_AP)
+            }
+            .setOnDismissListener { apWifiPollJob?.cancel() }
+        apWifiDialog = builder.create()
+        apWifiDialog?.show()
+        // show 之后按钮才实例化，此时才能定制主动作文案
+        refreshApWifiDialog()
+        startApWifiPolling()
+    }
+
+    /** 按当前在网状态刷新弹窗文案（打开时与轮询命中各一次）。 */
+    private fun refreshApWifiDialog() {
+        val dialog = apWifiDialog ?: return
+        val onAp = viewModel.onCameraAp()
+        dialog.setMessage(
+            if (onAp) {
+                getString(R.string.dialog_ap_wifi_message_on_ap)
+            } else {
+                getString(R.string.dialog_ap_wifi_message_not_on_ap)
+            }
+        )
+        // 已在热点上时主动作换成「直接连接」，减少一次跳转
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.apply {
+            text = if (onAp) "连接相机" else getString(R.string.dialog_ap_wifi_open_panel)
+            setOnClickListener {
+                if (onAp) {
+                    dismissApWifiDialog()
+                    binding.cardDevice.tvStatusMessage.text = "正在连接相机热点网关…"
+                    viewModel.connectApDirect()
+                } else {
+                    openApWifiPanelFromDialog()
+                }
+            }
+        }
+    }
+
+    /** 弹窗内打开系统 WLAN 面板，并保持轮询（用户点完热点返回即自动续连）。 */
+    private fun openApWifiPanelFromDialog() {
+        launchApWifiPanel()
+        NlFeedback.show(requireContext(), getString(R.string.ap_wifi_panel_opened))
+        refreshApWifiDialog()
+        if (apWifiPollJob?.isActive != true) startApWifiPolling()
+    }
+
+    /** 弹窗打开期间每秒探一次在网状态；命中即自动起轮次并收窗。 */
+    private fun startApWifiPolling() {
+        apWifiPollJob?.cancel()
+        apWifiPollJob = viewLifecycleOwner.lifecycleScope.launch {
+            while (isActive) {
+                delay(1000)
+                if (_binding == null) break
+                if (apWifiDialog?.isShowing != true) break
+                if (viewModel.onCameraAp()) {
+                    NlFeedback.show(requireContext(), "已连接相机热点，正在连接相机…")
+                    dismissApWifiDialog()
+                    viewModel.connectApDirect()
+                    break
+                }
+                refreshApWifiDialog()
+            }
+        }
+    }
+
+    private fun dismissApWifiDialog() {
+        apWifiPollJob?.cancel()
+        apWifiDialog?.setOnDismissListener(null)
+        apWifiDialog?.dismiss()
+        apWifiDialog = null
+    }
+
+    // ---------------- 2026-10-12：连接教程默认收起（折叠区） ----------------
+
+    /**
+     * 四个模式面板的连接教程统一改为默认收起的折叠区：只留一个展开按钮，
+     * 点击后才展开长教程，首屏保持简洁（用户反馈「设备界面太臃肿」）。
+     */
+    private fun setupGuideToggles() {
+        bindGuideToggle(
+            header = binding.panelWifiAp.apGuideHeader,
+            chevron = binding.panelWifiAp.apGuideChevron,
+            guide = binding.panelWifiAp.tvApGuide
+        )
+        bindGuideToggle(
+            header = binding.panelWifiSta.staGuideHeader,
+            chevron = binding.panelWifiSta.staGuideChevron,
+            guide = binding.panelWifiSta.tvStaGuide
+        )
+        bindGuideToggle(
+            header = binding.panelWifiSta.ftpGuideHeader,
+            chevron = binding.panelWifiSta.ftpGuideChevron,
+            guide = binding.panelWifiSta.tvFtpGuide
+        )
+        bindGuideToggle(
+            header = binding.panelUsb.usbGuideHeader,
+            chevron = binding.panelUsb.usbGuideChevron,
+            guide = binding.panelUsb.tvUsbGuide
+        )
+    }
+
+    private fun bindGuideToggle(header: View, chevron: ImageView, guide: View) {
+        header.pressEffect()
+        header.setOnClickListener {
+            val expanded = guide.visibility == View.VISIBLE
+            guide.visibility = if (expanded) View.GONE else View.VISIBLE
+            chevron.animate().cancel()
+            chevron.rotation = if (expanded) 0f else 180f
+        }
+    }
+
     private fun scanForCurrentMode() {
         when (currentMode) {
             ConnectMode.WIFI_AP, ConnectMode.WIFI_STA -> {
@@ -1412,14 +1601,19 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             viewModel.connectApDirect()
             return
         }
+        // 2026-10-12 连接入口拆分：不在热点上时，「连接相机」不再直接弹系统 WLAN 面板 ——
+        // 配网收敛到 AP 页签独立的「连接相机 Wi-Fi」入口（showApWifiDialog），
+        // 这里只负责把用户指过去，避免「一点连接就弹面板、面板里又连不完」的死循环。
         val started = viewModel.connectApWithCredential {
-            // specifier 失败/超时（相机没广播、密码失效、用户点了拒绝）：回前台补拉面板，不白点
-            if (_binding != null) launchApWifiPanel()
+            // specifier 失败/超时（相机没广播、密码失效、用户点了拒绝）：引导到独立 Wi-Fi 入口
+            if (_binding != null) {
+                binding.cardDevice.tvStatusMessage.text = getString(R.string.ap_wifi_not_ready_hint)
+            }
         }
         if (started) {
             binding.cardDevice.tvStatusMessage.text = "正在请求连接相机热点，请在系统弹窗点「允许」…"
         } else {
-            launchApWifiPanel()
+            binding.cardDevice.tvStatusMessage.text = getString(R.string.ap_wifi_not_ready_hint)
         }
     }
 
@@ -1465,9 +1659,21 @@ class DashboardFragment : Fragment(), GlassInsetAware {
 
     override fun onResume() {
         super.onResume()
+        renderApWifiState()
         // FR-34①：从 WLAN 面板回到 App 的兜底 —— 用户在面板里点热点时
         // networkAvailable 可能早于本页可见，或 SSID 当时还没就绪，这里补一次判定。
-        if (viewModel.apPanelArmed()) viewModel.tryStartArmedApConnect()
+        // 2026-10-12：Wi-Fi 连接弹窗打开期间，武装路径没消费掉时由弹窗路径兜底
+        // （SSID 读不到等判定死角的场景，弹窗的轮询/手动续连仍然有效）。
+        val armedConsumed = viewModel.tryStartArmedApConnect()
+        if (apWifiDialog?.isShowing == true) {
+            if (!armedConsumed && viewModel.onCameraAp()) {
+                NlFeedback.show(requireContext(), "已连接相机热点，正在连接相机…")
+                dismissApWifiDialog()
+                viewModel.connectApDirect()
+            } else {
+                refreshApWifiDialog()
+            }
+        }
     }
 
     private fun connectRecentDevice(device: PairedDevice) {
@@ -1564,8 +1770,8 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                         // FR-35②：AP 链路早已免扫描（方案 A 下扫描按钮亦已隐藏），
                         // 这句旧提示「先连接相机 WiFi 后再扫描」会把用户引回老路。
                         if (mode == ConnectMode.WIFI_AP)
-                            "热点模式不需要扫描：直接点「连接相机」，" +
-                                "App 会自动弹出系统 Wi-Fi 面板或直接连上相机热点"
+                            "热点模式不需要扫描：直接点「连接相机」；" +
+                                "手机未连相机热点时，先点上方「连接相机 Wi-Fi」配网"
                         else "未发现相机，请确认相机与手机在同一网络",
                         iconRes = R.drawable.ic_camera_hero,
                         // 视修复 D：单按钮流程里手动 IP 是最后的兜底入口，
