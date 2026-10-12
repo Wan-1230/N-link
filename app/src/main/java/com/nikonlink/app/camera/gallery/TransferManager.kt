@@ -316,14 +316,18 @@ class TransferManager @Inject constructor(
      * @param failedInfoCount ObjectInfo 读取失败的句柄数（>0 且 files 非空 = 部分失败）
      * @param transportOnline 拉取期间传输通道是否在线
      * @param breakerTripped 是否因「连续一整页零成功」提前收口（专项 v1 §3.4）。
-     *   带默认值是为了不动既有四处构造调用 —— 语义上等价于旧的"跑完全部页"。
+     *   带默认值是为了不动既有构造调用 —— 语义上等价于旧的"跑完全部页"。
+     * @param storeUnavailable 机身在**存储层**就报了 0x2013 存储不可用（专项 v1 §8.4 G4）。
+     *   这一档与「卡是空的」必须分开：按规范 0x2013 不表示繁忙，重试等不来结果，
+     *   唯一有用的是让用户去查卡。
      */
     data class PhotoListFetch(
         val files: List<CameraFile>,
         val totalHandles: Int,
         val failedInfoCount: Int,
         val transportOnline: Boolean,
-        val breakerTripped: Boolean = false
+        val breakerTripped: Boolean = false,
+        val storeUnavailable: Boolean = false
     ) {
         /** 通道在线、句柄有货却有读取失败且一无所获 = 整体失败（区别于「存储卡为空」与「全是不可展示格式」） */
         val totalFailure: Boolean get() =
@@ -393,6 +397,27 @@ class TransferManager @Inject constructor(
                     }.getOrNull().orEmpty()
                 }
                 Timber.tag(TAG).i("Found ${handles.size} objects on camera")
+                // 专项 v1 §8.4 G4：机身在**存储层**就报了「不可用」时，后面的 ObjectInfo
+                // 一定连着被拒 —— 2026-10-12 群友那份日志是 `0x1005 GetStorageInfo` 与
+                // `0x1007 GetObjectHandles` 报 0x2013，紧跟 664 次 `0x1008` 被拒以 0x200F。
+                // 0x2013 按规范不表示"存储繁忙"，所以这一档不排重试、也不进逐条抓取循环，
+                // 直接把结论交给文案层：用户能做的是查卡，不是下拉。
+                // 只在 WiFi(PTP/IP) 通道判定 —— USB 通道的拒绝码本轮还没接（§8.4 G2 备注）。
+                val storeUnavailable = handles.isEmpty() && ptpSession.isConnected() &&
+                    ptpSession.lastDataRejectCode == PtpConstants.RESPONSE_STORE_NOT_AVAILABLE
+                if (storeUnavailable) {
+                    eventLogger.event(
+                        "meta_breaker",
+                        "op" to "0x1007",
+                        "code" to "0x2013",
+                        "action" to "store_unavailable",
+                        "handles_total" to 0
+                    )
+                    return@withContext PhotoListFetch(
+                        emptyList(), 0, 0,
+                        transportOnline = true, storeUnavailable = true
+                    )
+                }
                 if (handles.isEmpty()) {
                     return@withContext PhotoListFetch(emptyList(), 0, 0, transportOnline = true)
                 }

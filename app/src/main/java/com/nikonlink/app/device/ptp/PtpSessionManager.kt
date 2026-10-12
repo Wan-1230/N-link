@@ -146,6 +146,22 @@ class PtpSessionManager @Inject constructor(
     /** 本次连接是否卡在「相机不回 InitEventAck」上（FR-02：让上层能给出区分性的原因码）。 */
     @Volatile
     var lastEventAckTimedOut = false
+
+    /**
+     * 最近一次数据相位命令的机身拒绝码（成功时清零）。专项 v1 §8.4 G2。
+     *
+     * 为什么要它：`TransferManager` 的存储阶段把 `storageIds()` / `objectHandles()`
+     * 的结果一律 `getOrNull().orEmpty()` 掉了，于是「卡不在位（0x2013 存储不可用）」
+     * 「卡是空的」「读超时」三种成因在 UI 上长成同一句话。2026-10-12 群友那份日志里
+     * 0x1005 与 0x1007 报的正是 0x2013，而微软的 MTP 错误代码表明确写着这个码
+     * **不用于表示存储繁忙** —— 重试等不来结果，只有查卡有用。
+     *
+     * 语义是"最后一次"，页内并发（Semaphore 4）下以最后写入者为准：
+     * 它是诊断线索，不参与任何判定分支的正确性，因此不加锁。
+     * 只在 WiFi(PTP/IP) 通道写；USB 通道另有 UsbPtpManager，本轮未接。
+     */
+    @Volatile
+    var lastDataRejectCode: Int = 0
         private set
 
     /**
@@ -702,6 +718,7 @@ class PtpSessionManager @Inject constructor(
                     val finalResponse = response
                         ?: CommandResponsePacket(txId, PtpConstants.RESPONSE_GENERAL_ERROR)
                     if (finalResponse.isOk) {
+                        lastDataRejectCode = 0
                         if (sink != null) {
                             sink.flush()
                             PtpDataResult.Success(ByteArray(0), finalResponse)
@@ -717,6 +734,7 @@ class PtpSessionManager @Inject constructor(
                     } else {
                         // 全链路优化: 数据命令被拒时必须记录响应码，
                         // 否则下载失败静默无日志可查
+                        lastDataRejectCode = finalResponse.responseCode
                         Timber.tag(TAG).w(
                             "Data command rejected: op=0x${operationCode.toString(16)} " +
                                 "code=0x${finalResponse.responseCode.toString(16)} recv=$receivedSize"
