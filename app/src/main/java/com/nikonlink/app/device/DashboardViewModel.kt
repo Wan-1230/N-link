@@ -36,6 +36,7 @@ import timber.log.Timber
  */
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
     private val connectionManager: ConnectionManager,
     private val usbPtpManager: UsbPtpManager,
     private val deviceRepository: DeviceRepository,
@@ -150,27 +151,61 @@ class DashboardViewModel @Inject constructor(
         )
     }
 
-    // ── FR-34①：AP 一键连接的直通（闸门判定、兜底地址轮次、面板武装都在 ConnectionManager）──
+    // ── AP 连接：工作树连接方案整体替换（仅走 ApCameraClient，不回退旧 AP 实现）──
 
-    fun apOneTapEnabled(): Boolean = connectionManager.isApOneTapEnabled()
+    private val apClient: com.camerakit.api.CameraConnection by lazy {
+        // demo-debug 原版连接代码（原样复刻，未做任何改写）
+        com.camerakit.client.CameraConnectionFactory.create(appContext) { msg ->
+            Timber.tag("ApKit").i(msg)
+        }
+    }
+
+    /** AP 连接状态（工作树方案状态机）。 */
+    val apState: StateFlow<com.camerakit.api.CameraState> get() = apClient.state
+
+    /** AP 连接事件（保活/恢复/配对进度）。 */
+    val apEvents: SharedFlow<com.camerakit.api.CameraEvent> get() = apClient.events
+
+    /** 发起 AP 连接（相机热点网关，默认 192.168.1.1:15740）。
+     *
+     * 与 demo-debug 的 wifi-ap 按钮完全同款语义：IO 线程执行 connect + 连接后读取验证；
+     * 并做重入防护 —— 会话存活/连接中时重复触发会先拆掉活会话（表现为
+     * 「连接成功瞬间断开」），这里直接拒绝。
+     */
+    fun connectAp(host: String = "192.168.1.1", port: Int = 15740) {
+        val st = apClient.state.value
+        if (st is com.camerakit.api.CameraState.Connected || st is com.camerakit.api.CameraState.Connecting) {
+            Timber.tag("ApKit").i("connectAp ignored: already ${st.javaClass.simpleName}")
+            return
+        }
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                apClient.connect(com.camerakit.api.ConnectionMethod.WifiAp(host, port))
+                // demo-debug 同款：连接成功自动做一次读取验证（只读不改）
+                apClient.session()?.let { s ->
+                    val info = s.getDeviceInfo()
+                    val storages = s.listStorages()
+                    Timber.tag("ApKit").i("readCheck ok: ${info.model} storages=${storages.size}")
+                }
+            }.onFailure { Timber.tag("ApKit").w(it, "AP connect failed") }
+        }
+    }
+
+    /** 显式主机配对（PC 主机注册）。 */
+    fun pairAp() {
+        viewModelScope.launch {
+            runCatching { apClient.pair() }
+                .onFailure { Timber.tag("ApKit").w(it, "AP pair failed") }
+        }
+    }
+
+    /** 断开 AP 连接。 */
+    fun disconnectAp() = apClient.disconnect()
+
+    /** 当前 AP 会话（未连接为 null）。 */
+    fun apSession(): com.camerakit.api.CameraSession? = apClient.session()
 
     fun onCameraAp(): Boolean = connectionManager.isOnCameraAp()
-
-    fun connectApDirect() = connectionManager.connectApDirect()
-
-    /** FR-35①：[path] = panel | settings | specifier，落进 ap_panel 事件供真机归因。 */
-    fun armApPanel(path: String) = connectionManager.armApPanelConnect(path)
-
-    /**
-     * FR-35④：有 BLE 凭证时免面板一键连。
-     * @return false = 闸门关或本会话没有凭证，调用方应立刻回落系统面板。
-     */
-    fun connectApWithCredential(onFailed: () -> Unit): Boolean =
-        connectionManager.connectApWithCredential(onFailed)
-
-    fun apPanelArmed(): Boolean = connectionManager.isApPanelArmed()
-
-    fun tryStartArmedApConnect(): Boolean = connectionManager.tryStartArmedApConnect()
 
     // ── FR-36：设备页「相机全称」的候选来源（归一化在 CameraModelCatalog，识别不出= null）──
 

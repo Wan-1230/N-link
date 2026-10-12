@@ -381,6 +381,14 @@ class PtpSessionManager @Inject constructor(
             // 建立 Event 通道
             Timber.tag(TAG).i("phase=event connecting")
             eventSocket = connectSocketWithRetry(network, host, port, label = "event", timeoutOverrideMs = connectTimeoutMs) {
+                // 工作树 kit 移植（参考实现 forced 语义实证）：事件通道绑定到与命令通道
+                // 相同的本地地址，防止双网手机上 event socket 漂到其它网络 —— 两条通道
+                // 源地址不一致时，相机可能在 InitEvent 阶段直接复位连接。
+                runCatching {
+                    commandSocket?.localAddress
+                        ?.takeIf { !it.isAnyLocalAddress }
+                        ?.let { bind(java.net.InetSocketAddress(it, 0)) }
+                }
                 // 官方对 data / event 两条通道都设 TCP_NODELAY。PTP/IP 是
                 // 小包一问一答，Nagle 会把 event 包压在缓冲区里等待累积，
                 // 白白叠加几十毫秒——原来这里漏了，只 command 通道设了。
@@ -444,6 +452,34 @@ class PtpSessionManager @Inject constructor(
                 Timber.tag(TAG).w("Event ping timed out: ${it.message}")
             }
 
+            // 会话建立序（工作树 kit 移植，闸 ConnFlags.AP_ZDROP_SESSION）：
+            // 开 = 参考实现诊断实证序：OpenSession(随机会话号) → GetDeviceInfo。
+            //   随机会话号避免与相机残留会话冲突（固定 1 时，上一条粗暴断开的会话
+            //   可能仍占着 1 号，导致 OpenSession 被拒/复位）。
+            // 关 = Fix P0-2 序（默认，逐位等价现状）：GetDeviceInfo → OpenSession(固定 1)，
+            //   让相机屏幕提前显示连接状态；固定 1 是从 connectionNumber 回退后标定的口径。
+            val baselineOrder = connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.AP_ZDROP_SESSION)
+            val openSessionId = if (baselineOrder) (1..0x7FFFFFFF).random() else 1
+
+            suspend fun openSessionOrFail(): Boolean {
+                val openResult = sendCommand(PtpConstants.OP_OPEN_SESSION, listOf(openSessionId))
+                if (!openResult.isOk) {
+                    Timber.tag(TAG).e("Failed to open session: 0x${openResult.responseCode.toString(16)}")
+                    eventLogger.event(
+                        "connect", "phase" to "opensession", "ok" to false,
+                        "code" to PtpConstants.describeResponseCode(openResult.responseCode)
+                    )
+                    // 同 init 阶段：连接失败回 DISCONNECTED，不进 ERROR
+                    _sessionState.value = PtpSessionState.DISCONNECTED
+                    return false
+                }
+                return true
+            }
+            if (baselineOrder) {
+                Timber.tag(TAG).i("phase=opensession (基准实现-order, id=$openSessionId)")
+                if (!openSessionOrFail()) return@withContext false
+            }
+
             // Fix P0-2: OpenSession 前先 GetDeviceInfo，
             // 让相机识别客户端并在屏幕显示连接状态
             Timber.tag(TAG).i("phase=presession GetDeviceInfo")
@@ -483,18 +519,10 @@ class PtpSessionManager @Inject constructor(
                 Timber.tag(TAG).w("GetDeviceInfo before OpenSession not OK (non-fatal)")
             }
 
-            // Fix P0-2: OpenSession 参数固定为 1（标准会话 ID），而非 connectionNumber
-            Timber.tag(TAG).i("phase=opensession")
-            val openResult = sendCommand(PtpConstants.OP_OPEN_SESSION, listOf(1))
-            if (!openResult.isOk) {
-                Timber.tag(TAG).e("Failed to open session: 0x${openResult.responseCode.toString(16)}")
-                eventLogger.event(
-                    "connect", "phase" to "opensession", "ok" to false,
-                    "code" to PtpConstants.describeResponseCode(openResult.responseCode)
-                )
-                // 同 init 阶段：连接失败回 DISCONNECTED，不进 ERROR
-                _sessionState.value = PtpSessionState.DISCONNECTED
-                return@withContext false
+            if (!baselineOrder) {
+                // Fix P0-2: OpenSession 参数固定为 1（标准会话 ID），而非 connectionNumber
+                Timber.tag(TAG).i("phase=opensession")
+                if (!openSessionOrFail()) return@withContext false
             }
             sessionId = response.sessionId
             lastFailPhase = null
