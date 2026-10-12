@@ -86,13 +86,34 @@ object CameraModelCatalog {
      * 而 `Z 50` 转写后仍是 `Z50`，与 `Z50II` 天然不同。
      */
     private fun lookupKey(raw: String): String {
-        val head = stripSerial(raw.trim())
+        val head = expandGenerationSuffix(stripSerial(raw.trim()))
         val ascii = buildString(head.length) {
             for (c in head) append(ROMAN_TO_ASCII[c] ?: c)
         }
         var key = ascii.uppercase(Locale.ROOT).filter(Char::isLetterOrDigit)
         if (key.startsWith(BRAND_UPPER)) key = key.removePrefix(BRAND_UPPER)
         return key
+    }
+
+    /**
+     * 尼康的**代次记法**：`_<1..4>` 折成对应长度的罗马数字字母。
+     *
+     * 2026-10-12 真机一手取证（`model_raw source=ptpip len=5 chars=Z50_2`）：
+     * Z 50Ⅱ 机身自报的 Model 原文是 `Z50_2` —— **既不是 `Ⅱ` 也不是 `II`**。
+     * 旧实现把下划线一删了事，`Z50_2` 就成了 `Z502`，再被泛化分支拼成 `Nikon Z 502`，
+     * 这就是用户报的那个数。而同一份日志里 USB 的 PID 表给的是正确的 `Z 50II`
+     * （`usb_model parsed=true ... pid_fallback=Z 50II`），两条来源打架的根因就在这。
+     *
+     * 这条规则不是新发明的：FR-36 早就承认 `NIKON Z 6_III → Nikon Z 6III`，
+     * 只是漏了机身也在用的阿拉伯数字写法 `_2`/`_3`。折成字母后走枚举，
+     * 显示形态由枚举说了算（`Z 50II`），与 `Z50II`、`Z 50Ⅱ` 两种自报形态归一。
+     *
+     * 只在**尾部 1~4 位纯数字**时触发，且必须在剥序列号**之后** ——
+     * `Z6III_12345678` 那种 8 位尾巴已经先被当序列号剥掉了，不会被误折。
+     */
+    private fun expandGenerationSuffix(s: String): String {
+        val m = Regex("""^(.*?)_([1-4])$""").find(s) ?: return s
+        return m.groupValues[1] + "I".repeat(m.groupValues[2].toInt())
     }
 
     /** 尾巴是 4 位以上的纯数字才是序列号；`Z 6_III` 的 `III` 不是，必须留在串里。 */
@@ -111,7 +132,7 @@ object CameraModelCatalog {
      * 例：`Z6III_12345678` → `Z 6III`；`NIKON Z 6_III` → `Z 6III`；`Z 50Ⅱ` → `Z 50Ⅱ`。
      */
     private fun displayToken(raw: String): String {
-        var token = stripSerial(raw.trim()).replace("_", "")
+        var token = expandGenerationSuffix(stripSerial(raw.trim())).replace("_", "")
         if (token.uppercase(Locale.ROOT).startsWith(BRAND_UPPER)) {
             token = token.substring(BRAND.length)
         }
