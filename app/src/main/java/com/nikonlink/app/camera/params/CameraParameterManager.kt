@@ -1,6 +1,8 @@
 package com.nikonlink.app.camera.params
 
 import android.content.Context
+import com.camerakit.ptp.getDevicePropValue
+import com.camerakit.ptp.setDevicePropValue
 import com.nikonlink.app.capture.BulbPolicy
 import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpSessionManager
@@ -44,6 +46,7 @@ class CameraParameterManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val ptpSession: PtpSessionManager,
     private val usbPtpManager: UsbPtpManager,
+    private val apConnection: com.nikonlink.app.device.ap.ApConnectionService,
     private val transferManager: TransferManager,
     private val digeekerClient: DigeekerShutterCountClient,
     private val settings: AppSettings
@@ -164,7 +167,7 @@ class CameraParameterManager @Inject constructor(
         if (modeWatchJob?.isActive == true) return
         modeWatchJob = scope?.launch {
             while (isActive) {
-                if (ptpSession.isConnected() || usbPtpManager.isConnected()) {
+                if (ptpSession.isConnected() || usbPtpManager.isConnected() || apConnection.isConnected()) {
                     runCatching { readExposureProgram() }
                         .onFailure { Timber.tag(TAG).w(it, "Mode watch read failed") }
                 }
@@ -190,7 +193,7 @@ class CameraParameterManager @Inject constructor(
      * 一次性读取所有参数
      */
     suspend fun readAllParameters() {
-        if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) {
+        if (!ptpSession.isConnected() && !usbPtpManager.isConnected() && !apConnection.isConnected()) {
             Timber.tag(TAG).w("PTP not connected")
             return
         }
@@ -237,30 +240,44 @@ class CameraParameterManager @Inject constructor(
     }
 
     private suspend fun readStorageInfo() {
-        val storageIds = if (usbPtpManager.isConnected()) {
-            usbPtpManager.getStorageIds()
-        } else {
-            ptpSession.getStorageIds()
-        }
-        if (storageIds.isEmpty()) return
-
         var totalBytes = 0L
         var freeBytes = 0L
         var description = ""
         var cardCount = 0
-        storageIds.forEach { storageId ->
-            val raw = if (usbPtpManager.isConnected()) {
-                usbPtpManager.getStorageInfo(storageId)
-            } else {
-                ptpSession.getStorageInfo(storageId)
+
+        if (apConnection.isConnected()) {
+            // AP 直连会话：存储信息直接取会话解析结果，语义与旧双通道一致
+            val storages = apConnection.session()?.listStorages() ?: return
+            storages.forEach { storage ->
+                val max = storage.maxCapacity
+                if (max <= 0 || max == 0xFFFFFFFFL) return@forEach
+                totalBytes += max
+                freeBytes += storage.freeSpace.coerceIn(0, max)
+                cardCount++
+                if (storage.description.isNotBlank()) description = storage.description
             }
-            val info = raw?.let(::parseStorageInfo) ?: return@forEach
-            val max = info.maxCapacityBytes
-            if (max <= 0 || max == 0xFFFFFFFFL) return@forEach
-            totalBytes += max
-            freeBytes += info.freeSpaceBytes.coerceIn(0, max)
-            cardCount++
-            if (info.storageDescription.isNotBlank()) description = info.storageDescription
+        } else {
+            val storageIds = if (usbPtpManager.isConnected()) {
+                usbPtpManager.getStorageIds()
+            } else {
+                ptpSession.getStorageIds()
+            }
+            if (storageIds.isEmpty()) return
+
+            storageIds.forEach { storageId ->
+                val raw = if (usbPtpManager.isConnected()) {
+                    usbPtpManager.getStorageInfo(storageId)
+                } else {
+                    ptpSession.getStorageInfo(storageId)
+                }
+                val info = raw?.let(::parseStorageInfo) ?: return@forEach
+                val max = info.maxCapacityBytes
+                if (max <= 0 || max == 0xFFFFFFFFL) return@forEach
+                totalBytes += max
+                freeBytes += info.freeSpaceBytes.coerceIn(0, max)
+                cardCount++
+                if (info.storageDescription.isNotBlank()) description = info.storageDescription
+            }
         }
         if (cardCount == 0) return
 
@@ -335,7 +352,7 @@ class CameraParameterManager @Inject constructor(
      * 只在打开光圈滚轮时调用一次（PRD Q3），不进 [readAllParameters] 轮询。
      */
     suspend fun readCurrentFocalLengthMm(): Double? {
-        if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) return null
+        if (!ptpSession.isConnected() && !usbPtpManager.isConnected() && !apConnection.isConnected()) return null
         val focalMm = runCatching {
             val data = readDeviceProp(PtpConstants.PROP_FOCAL_LENGTH)
             // 标准 PTP 0x5008：当前焦距 ×100，不支持时为 0
@@ -399,6 +416,17 @@ class CameraParameterManager @Inject constructor(
      * 固件版本 / 型号：从 GetDeviceInfo 的 DeviceVersion 与 Model 解析。
      */
     private suspend fun readFirmwareAndModel() {
+        if (apConnection.isConnected()) {
+            // AP 直连会话：型号/固件版本直接取会话 DeviceInfo
+            val info = apConnection.session()?.getDeviceInfo() ?: return
+            if (info.model.isNotBlank() || info.deviceVersion.isNotBlank()) {
+                _cameraInfo.value = _cameraInfo.value.copy(
+                    modelName = info.model.ifBlank { _cameraInfo.value.modelName },
+                    firmwareVersion = info.deviceVersion
+                )
+            }
+            return
+        }
         val data = if (usbPtpManager.isConnected()) {
             usbPtpManager.getDeviceInfo()
         } else {
@@ -419,7 +447,7 @@ class CameraParameterManager @Inject constructor(
      * MakerNote `0x00A7`。所以链路固定为「挑一张样张 → 只读文件头 → 本机解析」，全程离线。
      */
     private fun ensureShutterCountQuery(force: Boolean = false) {
-        if (!ptpSession.isConnected() && !usbPtpManager.isConnected()) return
+        if (!ptpSession.isConnected() && !usbPtpManager.isConnected() && !apConnection.isConnected()) return
         val state = _cameraInfo.value.shutterQueryState
         if (!force && state != ShutterCountState.NONE) return
         if (!shutterQueryInProgress.compareAndSet(false, true)) return
@@ -1236,6 +1264,10 @@ class CameraParameterManager @Inject constructor(
     )
 
     private suspend fun readDeviceProp(propCode: Int): ByteArray? {
+        // AP 直连会话在线时读 AP 通道（与相册/监看同一会话），否则走原有双通道
+        if (apConnection.isConnected()) {
+            return apConnection.ptpSession()?.getDevicePropValue(propCode)
+        }
         return if (usbPtpManager.isConnected()) {
             usbPtpManager.getDevicePropValue(propCode)
         } else {
@@ -1244,6 +1276,9 @@ class CameraParameterManager @Inject constructor(
     }
 
     private suspend fun writeDeviceProp(propCode: Int, value: ByteArray): Boolean {
+        if (apConnection.isConnected()) {
+            return apConnection.ptpSession()?.setDevicePropValue(propCode, value) == true
+        }
         return if (usbPtpManager.isConnected()) {
             usbPtpManager.setDevicePropValue(propCode, value)
         } else {
