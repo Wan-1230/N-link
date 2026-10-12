@@ -144,6 +144,39 @@ class CameraModelCatalogTest {
         assertEquals(CameraModel.Z6II, CameraModelCatalog.model("Z 6Ⅱ"))
     }
 
+    /**
+     * 真机一手取证的原文形态（2026-10-12 `model_raw source=ptpip len=5 chars=Z50_2`）。
+     *
+     * 机身自报的是阿拉伯数字代次 `Z50_2`，既不是 `Ⅱ` 也不是 `II`。旧实现删掉下划线
+     * 得到 `Z502`，再被泛化分支拼成 `Nikon Z 502` —— 用户报的那个错数就是这么来的。
+     * `_N → N 个 I` 折回枚举后，显示走既有的官方名 `Z 50II`，与同机型的另两种
+     * 自报形态（`Z50II`、`Z 50Ⅱ`）归一。
+     */
+    @Test
+    fun `机身自报的阿拉伯数字代次折回枚举官方名`() {
+        assertEquals("Nikon Z 50II", CameraModelCatalog.official("Z50_2"))
+        assertEquals("Nikon Z 50II", CameraModelCatalog.official("NIKON Z50_2"))
+        assertEquals("Nikon Z 50II", CameraModelCatalog.official("Z 50_2"))
+        assertEquals(CameraModel.Z50II, CameraModelCatalog.model("Z50_2"))
+        // 同一条规则对 Z 6II 也要成立，而不是只给 Z50 打补丁
+        assertEquals("Nikon Z 6II", CameraModelCatalog.official("Z6_2"))
+        assertEquals("Nikon Z 7II", CameraModelCatalog.official("Z7_2"))
+        // 表里没有的代次按原文泛化，不猜相近机型
+        assertEquals("Nikon Z 50III", CameraModelCatalog.official("Z50III_12345678"))
+        // 序列号必须优先于代次被剥掉，否则尾巴数字会被当成代次
+        assertEquals("Nikon Z 50II", CameraModelCatalog.official("Z50_2_12345678"))
+    }
+
+    /** USB 侧 Model 取不到时的兜底：PID 表那条路给的是正确名字，别被覆盖成错的。 */
+    @Test
+    fun `USB 的 PID 兜底名与机身自报归一结果必须一致`() {
+        // 日志里 pid_fallback=Z 50II，而 parsed=Z50_2 —— 两条来源现在收敛到同一个全称
+        assertEquals(
+            CameraModelCatalog.official("Z 50II"),
+            CameraModelCatalog.official("Z50_2")
+        )
+    }
+
     /** 带罗马数字的广播名形态（序列号后缀）也要认出来，剥完序列号后罗马数字仍在。 */
     @Test
     fun `罗马数字与序列号同串时各自处理`() {
