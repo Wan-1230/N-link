@@ -39,6 +39,12 @@ interface CameraConnection {
     /** 显式执行主机配对（PC 主机注册）。 */
     suspend fun pair()
 
+    /**
+     * STA 主机注册（PC 主机注册）：相机停留在主机配置向导时的独立注册入口，
+     * 无需先建连接；[endpoint] 为空时经 mDNS 自动发现相机。
+     */
+    suspend fun registerStaHost(endpoint: CameraEndpoint? = null)
+
     /** 断开连接（优雅关闭，不触发自动恢复）。 */
     fun disconnect()
 }

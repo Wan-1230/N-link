@@ -112,6 +112,19 @@ class MainActivity : Activity() {
             bigButton("Wi-Fi STA", Color.parseColor("#6A1B9A")) { onConnect(ConnectionMethod.WifiSta()) },
         ))
 
+        // STA 主机注册：相机停在主机配置向导时独立注册（无需先连接），注册成功自动续连
+        root.addView(bigButton(
+            "STA 主机注册（相机停在主机配置向导时用）",
+            Color.parseColor("#00695C"),
+        ) {
+            doAsync {
+                client.registerStaHost()
+                log("PC 主机注册完成，自动发起 STA 连接…")
+                client.connect(ConnectionMethod.WifiSta())
+                readTest()
+            }
+        }, matchWrap().apply { topMargin = dp(6) })
+
         // 测试区
         root.addView(sectionTitle("测试操作"))
         root.addView(row4(
