@@ -733,6 +733,12 @@ class TransferViewModel @Inject constructor(
                     // 且 handle 是稳定的（新照片只会拿到新 handle），保留勾选是安全的。
                     _selectedHandles.value = emptySet()
                     _message.value = when {
+                        // 存储层就报了不可用（0x2013）：指引必须是「查卡」，
+                        // 不是那句害人的「下拉重试」—— 规范里这个码不表示繁忙，
+                        // 再刷一百次机身也不会把存储变回来（专项 v1 §8.3）。
+                        outcome.storeUnavailable ->
+                            "相机报告存储不可用：请检查存储卡是否在位、机身是否已弹出或切换卡槽" +
+                                "（双卡机身确认当前选中的卡里确实有卡）。这个状态重试无效，处理后下拉刷新"
                         outcome.totalFailure ->
                             // 熔断过的场景里「请下拉重试」是最没用的一句指引：相机是在**拒绝**
                             // 读元数据（0x200F），再点一次只会再拒一整页。先排机身状态。

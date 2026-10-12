@@ -144,6 +144,21 @@ object PtpConstants {
     const val RESPONSE_ACCESS_DENIED = 0x200F
     const val RESPONSE_NO_THUMBNAIL_PRESENT = 0x2010
     const val RESPONSE_CAPTURE_ALREADY_TERMINATED = 0x2011
+    /**
+     * 0x2013 = **存储不可用**（Store Not Available）。
+     *
+     * 2026-10-12 群友真机日志里 `0x1005 GetStorageInfo` 与 `0x1007 GetObjectHandles`
+     * 双双报这个码（当时常量表没有它，只能以裸 hex 落日志），随后的 664 次
+     * `0x1008 GetObjectInfo` 才被拒以 0x200F —— 相册"打不开"的根因在存储层，不在连接层。
+     *
+     * 语义上必须与 0x2019 DeviceBusy 分开处理：微软的 MTP 错误代码表写明
+     * 「指示存储（或包含所指示对象的存储）实际上不可用，可能是由介质弹出引起的。
+     * **此响应不应用于指示存储处于繁忙状态**」（Wireshark `packet-ptpip.h` 的
+     * `PTPRCStoreNotAvailable = 0x2013` 与之一致；两处均于 2026-10-12 取用）。
+     * 也就是说**重试等不来结果**，唯一的出路是让用户去查卡 —— 这正是旧文案
+     * 「文件元数据不可读，请下拉重试」错得最彻底的地方。
+     */
+    const val RESPONSE_STORE_NOT_AVAILABLE = 0x2013
     const val RESPONSE_DEVICE_BUSY = 0x2019
     const val RESPONSE_INVALID_PARENT_OBJECT = 0x201A
     const val RESPONSE_INVALID_DEVICE_PROP_FORMAT = 0x201B
@@ -198,6 +213,7 @@ object PtpConstants {
         RESPONSE_STORE_READ_ONLY -> "存储卡只读"
         RESPONSE_ACCESS_DENIED -> "访问被拒绝（相机端未确认连接）"
         RESPONSE_NO_THUMBNAIL_PRESENT -> "无缩略图可用"
+        RESPONSE_STORE_NOT_AVAILABLE -> "存储不可用（卡未在位或已弹出）"
         RESPONSE_DEVICE_BUSY -> "相机忙碌，请稍后重试"
         RESPONSE_SESSION_ALREADY_OPEN -> "会话已打开"
         RESPONSE_TRANSACTION_CANCELLED -> "事务已取消"
