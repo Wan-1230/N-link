@@ -1343,19 +1343,12 @@ class DashboardFragment : Fragment(), GlassInsetAware {
 
     private fun connectForCurrentMode() {
         when (currentMode) {
-            // FR-38：AP 模式「连接相机」是唯一入口，点击即自动完成全部后续步骤 ——
-            // 在相机热点上直接起轮次（网关学习兜底地址，零输入零确认）；
-            // 不在则拉系统 WLAN 面板，用户点选热点回来后自动接续。
-            // 闸门保护：`AP_ONE_TAP` 是这条路径的总闸，关闸必须等价于 v2.6.1 行为
-            // （候选优先 → 手动 IP 弹窗），否则现场没法二分。
+            // AP 连接：工作树连接方案整体替换后的唯一入口 ——
+            // 点击即走 kit 链路（路由就绪门 → Wi-Fi 网络绑定 → PTP/IP 握手
+            // → 随机会话号 OpenSession → 自动主机配对），不回退任何旧 AP 实现。
             ConnectMode.WIFI_AP -> ensureStaPermissions {
-                if (viewModel.apOneTapEnabled()) {
-                    apOneTapConnect()
-                } else {
-                    val fallback = wifiDevices.firstOrNull()
-                    if (fallback != null) connectWifiCandidate(fallback)
-                    else showManualIpDialog(currentMode)
-                }
+                binding.cardDevice.tvStatusMessage.text = "正在连接相机（AP）…"
+                viewModel.connectAp()
             }
             ConnectMode.WIFI_STA -> ensureStaPermissions {
                 val target = wifiDevices.firstOrNull()
@@ -1390,84 +1383,19 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             return
         }
         binding.cardDevice.tvStatusMessage.text = "连接: ${candidate.name} (${candidate.ipAddress})"
-        viewModel.connectToWifiCamera(candidate)
-    }
-
-    /**
-     * FR-34① + FR-35：AP 免扫描一键连接，三条路按「用户还要点几下」排序。
-     *
-     * ① 已在相机热点（SSID 命中 NIKON 规则）→ 直接以兜底地址起轮次，learnFirst 学真网关；
-     * ② 本会话有 BLE 下发的 WiFi 凭证 → specifier 免面板一键连（FR-35④，系统只弹一次
-     *    「允许连接该网络」），失败自动补拉 ③；
-     * ③ 其余 → 拉起系统 WLAN 面板让用户点热点，回连命中后由 ConnectionManager 的观察者
-     *    （或下面 [onResume] 的兜底）自动起轮次。
-     *
-     * 面板走 AOSP 的 `Settings.Panel.ACTION_WIFI`：这是各家 ROM 必须实现的标准化入口，
-     * 绕开 OEM 全设置页深链失效问题；但**渲染者仍是 ROM 自己**，所以 [launchWifiPanel]
-     * 把实际命中的入口（panel / settings / none）记进日志，方便真机归因。
-     */
-    private fun apOneTapConnect() {
-        if (viewModel.onCameraAp()) {
-            binding.cardDevice.tvStatusMessage.text = "正在连接相机热点网关…"
-            viewModel.connectApDirect()
-            return
-        }
-        val started = viewModel.connectApWithCredential {
-            // specifier 失败/超时（相机没广播、密码失效、用户点了拒绝）：回前台补拉面板，不白点
-            if (_binding != null) launchApWifiPanel()
-        }
-        if (started) {
-            binding.cardDevice.tvStatusMessage.text = "正在请求连接相机热点，请在系统弹窗点「允许」…"
+        if (currentMode == ConnectMode.WIFI_AP) {
+            // AP 候选同样只走工作树连接方案（同一套链路，仅主机不同）
+            viewModel.connectAp(candidate.ipAddress, candidate.port)
         } else {
-            launchApWifiPanel()
+            viewModel.connectToWifiCamera(candidate)
         }
     }
 
-    /** 拉起系统 WLAN 入口并登记武装状态；两条 Intent 都拉不起来才退回手动 IP 旧入口。 */
-    private fun launchApWifiPanel() {
-        val path = launchWifiPanel()
-        if (path == "none") {
-            showManualIpDialog(ConnectMode.WIFI_AP)
-            return
-        }
-        viewModel.armApPanel(path)
-        binding.cardDevice.tvStatusMessage.text =
-            "请在弹出面板里点相机热点（NIKON_…），连上后会自动开始连接"
-    }
-
-    /**
-     * FR-35①：拉起 WLAN 入口，返回实际命中的路径 —— `panel`（AOSP 标准面板）/
-     * `settings`（OEM 全设置页）/ `none`（都拉不起来）。
-     *
-     * 为什么要记：「vivo OriginOS、OPPO ColorOS 到底有没有实现 panel action」离线无法核实
-     * （AGP 里查不到 ROM 的实现），而它决定了「绕过定制页」这句承诺是否兑现。
-     * 静默回落到全设置页是真机最容易踩、又最容易误判成「App 没做」的一条路。
-     */
-    private fun launchWifiPanel(): String {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Settings.Panel.ACTION_WIFI 的字符串值；不直接用常量是为了 API<29 分支同表
-            val panelOk = runCatching {
-                startActivity(
-                    Intent("android.settings.panel.action.WIFI")
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-            }.isSuccess
-            if (panelOk) return "panel"
-        }
-        val settingsOk = runCatching {
-            startActivity(
-                Intent(Settings.ACTION_WIFI_SETTINGS)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
-        }.isSuccess
-        return if (settingsOk) "settings" else "none"
-    }
+    // 旧 AP 一键连接 / WLAN 面板武装 / 凭证 specifier 回连已整体移除：
+    // AP 前端唯一连接方式 = 工作树连接方案（viewModel.connectAp），无混合路径。
 
     override fun onResume() {
         super.onResume()
-        // FR-34①：从 WLAN 面板回到 App 的兜底 —— 用户在面板里点热点时
-        // networkAvailable 可能早于本页可见，或 SSID 当时还没就绪，这里补一次判定。
-        if (viewModel.apPanelArmed()) viewModel.tryStartArmedApConnect()
     }
 
     private fun connectRecentDevice(device: PairedDevice) {
@@ -1699,9 +1627,14 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     return@setPositiveButton
                 }
                 binding.cardDevice.tvStatusMessage.text = "连接 ${endpoint.display}"
-                viewModel.connectToWifiCamera(
-                    WifiCameraCandidate(endpoint.host, endpoint.port, "手动相机", "manual")
-                )
+                if (mode == ConnectMode.WIFI_AP) {
+                    // AP 手动地址同样只走工作树连接方案
+                    viewModel.connectAp(endpoint.host, endpoint.port)
+                } else {
+                    viewModel.connectToWifiCamera(
+                        WifiCameraCandidate(endpoint.host, endpoint.port, "手动相机", "manual")
+                    )
+                }
             }
             .setNegativeButton("取消", null)
             .show()

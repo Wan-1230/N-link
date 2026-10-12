@@ -420,6 +420,14 @@ class ConnFlags @Inject constructor(
         const val AP_ZDROP_TIMING = "v38_ap_zdrop_timing"
 
         /**
+         * 工作树 kit 移植（参考实现诊断实证）：会话建立序对齐参考实现——
+         * OpenSession(随机会话号) 先于 GetDeviceInfo。随机会话号避免与相机残留会话冲突。
+         * 开 = 参考实现序；关 = Fix P0-2 序（GetDeviceInfo 先行 + OpenSession 固定 1）。
+         * 默认关：保持现行为逐位等价，真机二分对比后再决定是否转默认开。
+         */
+        const val AP_ZDROP_SESSION = "v39_ap_zdrop_session"
+
+        /**
          * FR-35②：手上有 BLE 下发的 WiFi 凭证时，点「连接相机」直接免面板一键连。
          *
          * 复用 v2.2 就实现的 [android.net.wifi.WifiNetworkSpecifier] 通路
@@ -723,6 +731,9 @@ class ConnFlags @Inject constructor(
             // FR-38：AP 轮次是否用短时序档（绑网 8s / 复查重绑 / 至多 2 次 × 7s / connect 6s）。
             // 开=失败从 ~4 分钟长轮次收敛到 ~30s 出明确文案；关=回 10 次退避长轮次。
             AP_ZDROP_TIMING to false,
+            // 工作树 kit 移植：会话序对齐参考实现（OpenSession 随机会话号 → GetDeviceInfo）。
+            // 默认关=Fix P0-2 序不变；开=参考实现序。真机二分后再定默认值。
+            AP_ZDROP_SESSION to false,
         )
     }
 

@@ -85,12 +85,6 @@ class ConnectionManager @Inject constructor(
         private const val DEFAULT_FALLBACK_HOST = "192.168.1.1"
 
         /**
-         * FR-34①：AP 一键连接里「已拉起 WLAN 面板、等待用户点选热点回连」的有效期。
-         * 超过它就忘掉武装状态 —— 用户可能根本没点、或去连了别的网络。
-         */
-        private const val AP_PANEL_ARM_TTL_MS = 120_000L
-
-        /**
          * v2.6.4：兜底地址（[DEFAULT_FALLBACK_HOST]）**自动重试**的冷却时长。
          *
          * 取值理由：日志里每轮盲猜要烧掉 157s，两轮之间相隔约 2.6 分钟 ——
@@ -209,7 +203,6 @@ class ConnectionManager @Inject constructor(
         observeReconnectTrigger()
         observeStaRecovery()
         observeHostRegistrationHint()
-        observeApPanelJoin()
         startMetricsUpdater()
         scope.launch { reconnectLastDeviceIfPaired() }
 
@@ -290,6 +283,13 @@ class ConnectionManager @Inject constructor(
          */
         caller: ConnFunnel.Caller = ConnFunnel.Caller.USER_TAP
     ) {
+        // 旧 AP 连接链路已删除：AP 连接一律走工作树方案（com.camerakit.client）。
+        // 旧链路不再服务相机热点网关（AP 目标），从源头杜绝争抢相机唯一的 PTP/IP 客户端槽。
+        if (ipAddress == DEFAULT_FALLBACK_HOST) {
+            eventLogger.event("connect_ignored", "host" to ipAddress, "reason" to "ap_owned_by_apikit")
+            _connectionHint.value = ConnectionHint("AP 连接已由新链路接管，请使用 AP 页签的「连接相机」")
+            return
+        }
         val endpoint = WifiEndpoint.parse("wifi:$ipAddress:$port")
         if (endpoint == null) {
             eventLogger.event("sta_fail", "reason" to "invalid_endpoint", "host" to ipAddress)
@@ -442,47 +442,8 @@ class ConnectionManager @Inject constructor(
             return
         }
 
-        // v2.2（PRD §5.1 T-A2/T-A3）：AP 模式下相机自任网关，手机已连相机热点时
-        // 「网关就是相机」——先学地址再发起配对，用户/历史给的地址（尤其是默认
-        // 192.168.1.1）只在学不出来时作为兜底。学不到（如 STA 场景网关是路由器）
-        // 时按原地址继续，行为与 v2.1.1 一致。
-        val learnFirst = connFlags.isEnabled(ConnFlags.AP_GATEWAY) &&
-            ((connFlags.isEnabled(ConnFlags.AP_BLELESS) && apGatewayResolver.isOnCameraAp()) ||
-                endpoint.host == DEFAULT_FALLBACK_HOST)
-        if (learnFirst) {
-            _connectionHint.value = null
-            pairedDeviceAddress = endpoint.address
-            userDisconnectRequested = false
-            // RC-1：先登记 job 再派发状态，避免状态机观察者并发发起第二次连接
-            // FR-19：覆盖 `pairingJob` 之前必须先取消旧 job。直接赋值会让上一条 learnFirst
-            // 协程变成**孤儿** —— 它照样会跑完网关学习、照样会调 beginWifiPairing，
-            // 于是每个孤儿各发起一代连接并把上一代 cancel 掉，
-            // 日志里就是 `sta_try gen=N` 与 `sta_cancel gen=N-1` 严格成对刷屏
-            // （真机：4.9 秒内 22 条 sta_try）。
-            if (connFlags.isEnabled(ConnFlags.CONN_SERIALIZE)) pairingJob?.cancel()
-            pairingJob = scope?.launch(Dispatchers.IO) {
-                val learned = runCatching {
-                    apGatewayResolver.resolve(
-                        network = wifiManager.getActiveNetwork(),
-                        wifiNetwork = wifiManager.currentWifiNetwork()
-                    )
-                }.getOrNull()
-                val target = learned?.let {
-                    WifiEndpoint.parse("wifi:${it.host}:${endpoint.port}") ?: endpoint
-                } ?: endpoint
-                if (target.host != endpoint.host) {
-                    eventLogger.event(
-                        "ap_host_override",
-                        "from" to endpoint.host, "to" to target.host, "stable" to learned!!.stable
-                    )
-                    Timber.tag(TAG).i("AP gateway learned: %s -> %s", endpoint.host, target.host)
-                }
-                withContext(Dispatchers.Main) { beginWifiPairing(target, deviceName, caller.code, apTiming = true) }
-            }
-            stateMachine.dispatch(ConnectionEvent.StartConnect)
-            return
-        }
-
+        // 旧 AP 连接链路（learnFirst 网关学习 + apTiming 短时序起轮）已删除：
+        // AP 连接一律走工作树方案（com.camerakit.client）。此处只服务 STA。
         beginWifiPairing(endpoint, deviceName, caller.code)
         stateMachine.dispatch(ConnectionEvent.StartConnect)
     }
@@ -853,22 +814,14 @@ class ConnectionManager @Inject constructor(
             }
         }
 
-        // 监听 WiFi 凭证（BLE 通道交换）
-        scope?.launch {
-            bleManager.wifiCredential.collect { credential ->
-                Timber.tag(TAG).i("WiFi credential received, upgrading channel")
-                upgradeToWifi(credential)
-            }
-        }
+        // 旧 AP 连接链路已删除：不再监听 BLE WiFi 凭证自动升级（specifier 重入相机热点
+        // 会抖动网络、且升级完成后旧链路会抢建 PTP 会话，把工作树 AP 会话踢掉）。
 
         // 监听新文件通知
         scope?.launch {
             bleManager.fileNotification.collect { notification ->
                 Timber.tag(TAG).i("New file: ${notification.fileName} (${notification.fileSize} bytes)")
-                // 如果有新文件且 WiFi 未连接，触发 WiFi 升级
-                if (!wifiManager.isConnected()) {
-                    requestWifiReconnect()
-                }
+                // 旧 AP 连接链路已删除：新文件通知不再自动重入相机热点。
                 // 设置「自动下载新照片」开启时，同步最新照片入队
                 transferManager.scheduleAutoSync()
             }
@@ -1061,9 +1014,8 @@ class ConnectionManager @Inject constructor(
             wifiManager.wifiState.collect { wifiState ->
                 when (wifiState) {
                     com.nikonlink.app.device.wifi_ap.WifiChannelState.CONNECTED -> {
-                        // WiFi 网络就绪后先建立 PTP 会话，避免网络恢复但相机未在线时误报已连接
-                        stateMachine.dispatch(ConnectionEvent.WifiUpgradeRequested)
-                        establishPtpSession()
+                        // 旧 AP 连接链路已删除：不再自动建立旧 PTP 会话（与工作树 AP 会话
+                        // 争抢相机唯一 PTP/IP 客户端槽）。AP 连接一律走 com.camerakit。
                         transferManager.scheduleAutoSync()
                     }
                     com.nikonlink.app.device.wifi_ap.WifiChannelState.DISCONNECTED -> {
@@ -1071,10 +1023,8 @@ class ConnectionManager @Inject constructor(
                             stateMachine.state.value == ConnectionState.WIFI_UPGRADING) {
                             noteSessionWifiDrop()
                             stateMachine.dispatch(ConnectionEvent.WifiDisconnected)
-                            // PRD 3.5: WiFi 断开，BLE 正常 → 通过 BLE 发送 WiFi 重连指令
-                            if (bleManager.isConnected()) {
-                                requestWifiReconnect()
-                            }
+                            // 旧 AP 连接链路已删除：不再自动经 BLE 重入相机热点（网络抖动会掀掉
+                            // 工作树 AP 会话）。
                         }
                     }
                     else -> {}
@@ -1091,9 +1041,7 @@ class ConnectionManager @Inject constructor(
                     eventLogger.event("wifi_sta", "state" to "network_lost")
                     Timber.tag(TAG).i("STA camera link: network lost, waiting for network restore")
                 }
-                if (bleManager.isConnected()) {
-                    requestWifiReconnect()
-                }
+                // 旧 AP 连接链路已删除：网络丢失不再自动重入相机热点。
             }
         }
     }
@@ -1206,26 +1154,8 @@ class ConnectionManager @Inject constructor(
         }
     }
 
-    // ── FR-34①：AP 一键连接（免扫描 + 系统 WLAN 面板）──────────────────────────
-    //
-    // 两条简化在同机同相机上被日志与 dex 双重证实（分析文档 §4/§5）：
-    // ① AP endpoint 硬编码 192.168.1.1，零扫描；② 热点加入用
-    // `android.settings.panel.action.WIFI`（AOSP 标准化面板，各家 ROM 必须实现，
-    // 绕开 OEM 全设置页深链失效问题）。这里把这两条接进现有 learnFirst 通路：
-    // 兜底地址起轮次后由 ApGatewayResolver 学真网关，扫描一步都不需要。
-
-    /** >0 = 一键连已发起、等待手机挂上相机热点（面板点选或 specifier 确认）；值为武装时刻。 */
-    @Volatile
-    private var apPanelArmedAt = 0L
-
-    /** FR-35①：本次武装走的是哪条路（panel | settings | specifier），回连日志要能区分。 */
-    @Volatile
-    private var apPanelArmedPath = "panel"
-
-    /** FR-35④：specifier 请求在途标记，防止连点把系统确认框叠成风暴。 */
-    private var apSpecifierJob: Job? = null
-
-    fun isApOneTapEnabled(): Boolean = connFlags.isEnabled(ConnFlags.AP_ONE_TAP)
+    // 旧 AP 一键连接（免扫描 + 系统 WLAN 面板 + specifier + 武装回连）已整体移除：
+    // AP 前端唯一连接方式 = 工作树连接方案（com.camerakit.client.ApCameraClient）。
 
     /** 手机当前是否挂在相机热点上（UI 分流用）。 */
     fun isOnCameraAp(): Boolean = apGatewayResolver.isOnCameraAp()
@@ -1249,117 +1179,6 @@ class ConnectionManager @Inject constructor(
                 PREFS_STA_ARCH,
                 com.nikonlink.app.shared.common.AppSettings.STA_ARCH_PTP
             ) == com.nikonlink.app.shared.common.AppSettings.STA_ARCH_FTP
-
-    /** UI 拉起 WLAN 面板（或发起 specifier 一键连）前调用：登记武装状态。 */
-    fun armApPanelConnect(path: String = "panel") {
-        apPanelArmedAt = System.currentTimeMillis()
-        apPanelArmedPath = path
-        // FR-35①：把「离开 App 那一刻」的 WLAN 状态一起落日志。没有这一行，
-        // 「面板里点了热点、回来没连上」就分不清是手机没 join 上、相机 AP 没放行、
-        // 还是我们没看见回连（ap_panel 原先只有 phase/path，看不出当时有没有 WiFi 网络）。
-        eventLogger.event(
-            "ap_panel", "phase" to "armed", "path" to path,
-            "wlan_on" to runCatching { wifiManager.isWifiEnabled() }.getOrDefault(false),
-            "has_wifi_net" to apGatewayResolver.isOnCameraAp(),
-            "ssid_len" to (apGatewayResolver.connectedSsid()?.length ?: 0)
-        )
-        // 用户回连这段时间正是「谁砍的 wlan0」的现场（FR-31 RC-A）：面板点完热点后手机
-        // 若立刻报 disconnected，才能证明是手机/系统侧先断，而不是相机侧。
-        // 监听器本来就由 WifiDirectConnector 起止，但那条链路此刻还没跑起来，所以这里补一次
-        // 注册（start/stop 均幂等，且受 WLAN_DROP_REASON 闸门管）。
-        wifiDropWatcher.start()
-    }
-
-    fun isApPanelArmed(): Boolean =
-        apPanelArmedAt > 0 && System.currentTimeMillis() - apPanelArmedAt < AP_PANEL_ARM_TTL_MS
-
-    /**
-     * FR-34①：AP 模式无扫描候选时直接以兜底地址起轮次。
-     * `learnFirst` 分支会用 ApGatewayResolver 学出真网关，扫描一步都不需要 ——
-     * 同款语义（其 dex 里 endpoint 默认就是 192.168.1.1，零扫描）。
-     */
-    fun connectApDirect() {
-        connectToWifiCamera(DEFAULT_FALLBACK_HOST, caller = ConnFunnel.Caller.USER_TAP)
-    }
-
-    /**
-     * FR-35④：手上有 BLE 下发的 WiFi 凭证时，免系统面板一键连热点。
-     *
-     * 走 v2.2 就实现的 `WifiNetworkSpecifier` 通路（`wifi-ap/WifiManager.kt` 的
-     * `buildCameraApRequest`）：系统弹一次「允许连接该网络」确认框，用户不必再进
-     * WLAN 列表翻 NIKON_xxx；且不依赖 SSID 可读、不受热点改名影响（凭证自带名字与密码）。
-     * 连上后由 [observeApPanelJoin] / [tryStartArmedApConnect] 起 PTP/IP 轮次。
-     *
-     * 代价是系统确认框必须由用户点一次「允许」，且专属网络随请求注销即断 ——
-     * 免确认自动连网对普通应用并不可得，所以这条单独设闸 [ConnFlags.AP_CRED_SPECIFIER]。
-     *
-     * @param onFailed specifier 失败/超时回调（闸门关、无凭证时**不会**调用），UI 据此回落面板。
-     * @return true = 已发起（结果异步回来）；false = 闸门关或无凭证，调用方应立刻走面板。
-     */
-    fun connectApWithCredential(onFailed: () -> Unit): Boolean {
-        if (!connFlags.isEnabled(ConnFlags.AP_CRED_SPECIFIER)) return false
-        val credential = bleManager.wifiCredential.replayCache.firstOrNull()
-            ?.takeIf { it.ssid.isNotBlank() }
-            ?: return false
-        val sc = scope ?: return false
-        if (apSpecifierJob?.isActive == true) {
-            eventLogger.event("ap_join", "path" to "specifier", "phase" to "busy")
-            return true
-        }
-        val prefer5G = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getBoolean(PREFS_WIFI_5G_PREFER, false)
-        armApPanelConnect("specifier")
-        apSpecifierJob = sc.launch(Dispatchers.IO) {
-            val ok = runCatching { wifiManager.connectToCamera(credential, prefer5G) }.getOrDefault(false)
-            eventLogger.event(
-                "ap_join", "path" to "specifier", "ok" to ok,
-                // 只记长度/有无密码：SSID 名与口令不落日志（AGENTS.md 隐私条）
-                "ssid_len" to credential.ssid.length, "has_pw" to credential.password.isNotEmpty()
-            )
-            if (ok) {
-                tryStartArmedApConnect()
-            } else {
-                apPanelArmedAt = 0L
-                withContext(Dispatchers.Main) { onFailed() }
-            }
-        }
-        return true
-    }
-
-    /**
-     * 武装状态下尝试起一轮 AP 连接（面板回连检测、specifier 成功、onResume 兜底都调这里）。
-     *
-     * FR-35①：判定从 `isOnCameraAp()`（只认 SSID 命中 NIKON 规则）换成
-     * [ApGatewayResolver.isOnApNetwork]。旧判据有两处必然落空：Android 13+ 没给
-     * 「附近的设备」权限时 SSID 是 `<unknown ssid>`；机身热点名被用户改过。
-     * 落空时连武装标记都不消费，表现为「面板里点了热点、回 App 没反应、再点还是弹面板」——
-     * 这正是 FR-34① 在真机上没达成「一键」的死角。
-     *
-     * @return true = 已消费武装标记并发起连接
-     */
-    fun tryStartArmedApConnect(): Boolean {
-        if (!isApPanelArmed()) return false
-        if (!apGatewayResolver.isOnApNetwork()) return false
-        apPanelArmedAt = 0L
-        eventLogger.event(
-            "ap_panel", "phase" to "joined", "path" to apPanelArmedPath,
-            "host" to DEFAULT_FALLBACK_HOST
-        )
-        connectApDirect()
-        return true
-    }
-
-    /** 用户没走面板而是回到 App 时，onResume 的同步检查也走这个观察者的逻辑。 */
-    private fun observeApPanelJoin() {
-        scope?.launch(Dispatchers.IO) {
-            wifiManager.networkAvailable.collect {
-                if (!isApPanelArmed()) return@collect
-                // connectionInfo 的 SSID 比 onAvailable 晚就绪零点几秒，等一下再判
-                delay(1000)
-                tryStartArmedApConnect()
-            }
-        }
-    }
 
     /**
      * 监听状态机变化，更新 UI 状态
@@ -1519,6 +1338,13 @@ class ConnectionManager @Inject constructor(
 
     private fun recoverWifiSession(network: android.net.Network? = null) {
         val endpoint = pairedDeviceAddress?.let { WifiEndpoint.parse(it) } ?: return
+        // 旧 AP 连接链路已删除：恢复路径绕过 connectToWifiCamera 直连 connector，
+        // 若放行 AP 目标会在工作树 AP 会话刚建立时抢建第二条 PTP/IP 连接，
+        // 把 kit 会话从相机唯一的客户端槽里踢掉（表现为「连上不到 1 秒即断」）。
+        if (endpoint.host == DEFAULT_FALLBACK_HOST) {
+            eventLogger.event("wifi_recover_start", "host" to endpoint.host, "skip" to "ap_owned_by_apikit")
+            return
+        }
         // RC-1：恢复走 connector 单一入口，避免与配对循环并发双写会话
         if (connector.isActive) return
 
@@ -1570,23 +1396,7 @@ class ConnectionManager @Inject constructor(
         }
     }
 
-    /**
-     * WiFi 通道升级
-     * PRD 3.1: BLE→WiFi 通道升级
-     */
-    private suspend fun upgradeToWifi(credential: WifiCredential) {
-        if (wifiManager.isConnected()) return
-        if (wifiManager.wifiState.value == com.nikonlink.app.device.wifi_ap.WifiChannelState.CONNECTING) return
-        stateMachine.dispatch(ConnectionEvent.WifiUpgradeRequested)
-        // 设置页「5GHz 优先」开关：双频相机 AP 时优先连接 5GHz，失败自动回退 2.4GHz
-        val prefer5G = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getBoolean(PREFS_WIFI_5G_PREFER, false)
-        val success = wifiManager.connectToCamera(credential, preferBand5GHz = prefer5G)
-        if (!success) {
-            Timber.tag(TAG).w("WiFi upgrade failed, staying on BLE only")
-            stateMachine.dispatch(ConnectionEvent.WifiDisconnected)
-        }
-    }
+    // 旧 AP 连接链路已删除：upgradeToWifi（BLE→相机热点 specifier 加入）随链路移除。
 
     /**
      * 建立 PTP/IP 会话
