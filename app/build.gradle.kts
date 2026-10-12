@@ -114,7 +114,6 @@ dependencies {
     implementation(libs.work.hilt)
 
     // Image Loading
-    implementation(libs.coil)
 
     // EXIF metadata (预览页拍摄信息)
     implementation(libs.androidx.exifinterface)

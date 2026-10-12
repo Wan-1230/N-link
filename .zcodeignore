@@ -1,0 +1,120 @@
+# Built application files
+*.apk
+*.aar
+*.ap_
+*.aab
+*.idsig
+
+# Files for the ART/Dalvik VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated files
+bin/
+gen/
+out/
+release/
+
+# Gradle files
+.gradle/
+build/
+.kotlin/
+
+# Local media / reverse-engineering material
+.tmp_bili/
+release_extract/
+.tools/
+videos/
+
+# 发版本地产物与第三方 APK 逆向资料（含解包内容，不入库）
+/dist/
+/_apk_re/
+/tools/apk-analysis/
+
+# Local configuration file (sdk path, etc)
+local.properties
+
+# Android Studio
+*.iml
+.idea/
+.DS_Store
+
+# Log files
+*.log
+
+# Local debugging screenshots / UI dumps
+/a3.xml
+/a4.xml
+/album.xml
+/album2.xml
+/lv.xml
+/lv2.xml
+/yingxi.xml
+/yx_album.xml
+/live_debug.log
+/yingxi_ops.log
+/yingxi_past.log
+/*_connection_log*.txt
+/*_wifi_connection_log*.txt
+screen-*.png
+screen_*.png
+
+# Signing files
+.signing/
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.key
+
+# Environment / secrets
+.env
+*.env
+
+# Memory dumps / captures
+*.hprof
+captures/
+
+# OS-specific files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# External native build
+.cxx/
+.externalNativeBuild/
+/.gradle-home/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+node_modules/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）
