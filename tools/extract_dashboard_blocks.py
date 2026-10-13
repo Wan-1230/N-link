@@ -18,7 +18,7 @@ def find_block(s, idname):
         if 'android:id="@+id/%s"' % idname in m.group(0):
             open_end = m.end()
             depth = 1
-            # 注意：块内存在自闭合 <LinearLayout ... />（如 apCandidateList），
+            # 注意：块内可能混有自闭合 <LinearLayout ... /> 的空容器（候选/列表类占位），
             # group(3)=='/' 的标签不计深度，否则深度泄漏永不归零
             for t in re.finditer(r'<(/?)LinearLayout\b([^>]*?)(/?)>', s[open_end:]):
                 if t.group(3) == '/':

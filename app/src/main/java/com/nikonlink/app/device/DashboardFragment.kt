@@ -432,13 +432,13 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.wifiDeviceList.collect { devices ->
                 wifiDevices = devices
-                renderWifiCandidates(binding.panelWifiAp.apCandidateList, devices, ConnectMode.WIFI_AP)
+                // 只有 STA 一栏吃扫描结果。AP 页签的候选区已撤掉（见 view_panel_wifi_ap.xml
+                // 头注）：AP 链路上只有一台相机、地址靠 App 自行学习，候选栏恒为空。
                 // FR-37：STA 那一栏的行内「连接」按钮按所选架构分流——FTP 推送架构下手机侧
                 // 没有可连的对象，点一下却发起 PTP/IP 直连，正是用户报的「切了没切」。
                 renderWifiCandidates(
                     binding.panelWifiSta.staCandidateList,
                     devices,
-                    ConnectMode.WIFI_STA,
                     staArch
                 )
                 if (devices.isNotEmpty()) {
@@ -1345,8 +1345,9 @@ class DashboardFragment : Fragment(), GlassInsetAware {
      */
     private val FTP_GUIDE: String
         get() = buildString {
-            append("原理：相机主动把照片推给本机，全程不做主机注册 —— ")
-            append("这是尼康官方菜单里的另一条路，绕开了 STA 模式对未注册主机的门控。\n\n")
+            // 2026-10-13：删掉开头的「原理：相机主动推送…绕开 STA 门控」整段。
+            // 教程只讲怎么做（相机侧 / 手机侧），机制解释对操作零帮助，
+            // 却把折叠区第一屏占满了 —— 用户要看的是下一步点哪里。
             append("【相机侧】菜单 →「连接到 FTP 服务器」→ 网络设定 → 创建配置文件 → 连接向导\n")
             append("  · 服务器地址 / 端口 / 用户名 / 密码：按下方的值填，一个都不能错\n")
             append("  · 登录方式：被动（PASV）\n")
@@ -1513,6 +1514,13 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         }
         val builder = NlGlass.dialog(requireContext())
             .setTitle(R.string.dialog_ap_wifi_title)
+            // ⚠ 这行 setMessage 不是冗余：AlertDialog 的 message 视图是**构造期**按
+            // 「builder 有没有 message」决定是否装载的，create() 之后再调 dialog.setMessage()
+            // 只能改到已存在的视图，空的那次会被静默丢掉（无异常、无日志）。
+            // 结果就是 [refreshApWifiDialog] 天天在刷文案，界面上却一个字都没有 ——
+            // 这个弹窗此前一直是这样：只有标题和按钮，三步引导从未显示过。
+            // 保留它、让 refresh 去改内容，是这套「按在网状态换文案」逻辑成立的前提。
+            .setMessage(R.string.dialog_ap_wifi_message_not_on_ap)
             .setPositiveButton(R.string.dialog_ap_wifi_open_panel) { _, _ ->
                 openApWifiPanelFromDialog()
             }
@@ -1521,10 +1529,6 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 dismissApWifiDialog()
                 binding.cardDevice.tvStatusMessage.text = "正在连接相机…"
                 viewModel.connectAp()
-            }
-            .setNegativeButton(R.string.dialog_ap_wifi_manual_ip) { _, _ ->
-                dismissApWifiDialog()
-                showManualIpDialog(ConnectMode.WIFI_AP)
             }
             .setOnDismissListener { apWifiPollJob?.cancel() }
         apWifiDialog = builder.create()
@@ -1568,11 +1572,20 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         if (apWifiPollJob?.isActive != true) startApWifiPolling()
     }
 
-    /** 拉起系统 WLAN 入口；两条 Intent 都拉不起来才退回手动 IP 旧入口。 */
+    /**
+     * 拉起系统 WLAN 入口。
+     *
+     * 两条 Intent 都拉不起来时**不再**退回「手动输入相机 IP」：AP 链路上相机地址本就由
+     * App 自己学习（[DashboardViewModel.connectAp] 的默认/已学地址），让用户去相机的
+     * 网络菜单抄一个 IP 来手填，是把自动化的成果又交回给人，且给了地址也未必连得上。
+     * 这里只做一件事——把用户明确指到系统设置里自建连接，路还是通的。
+     */
     private fun launchApWifiPanel() {
         val path = launchWifiPanel()
         if (path == "none") {
-            showManualIpDialog(ConnectMode.WIFI_AP)
+            val hint = getString(R.string.ap_wifi_panel_unavailable)
+            NlFeedback.show(requireContext(), hint)
+            binding.cardDevice.tvStatusMessage.text = hint
             return
         }
         Timber.tag("Dashboard").i("Wi-Fi 入口命中：$path")
@@ -1711,7 +1724,8 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     // 视修复 D（STA 单按钮，参考实现对齐）：点「连接相机」= 自动搜索 +
                     // 自动接续，不再要求先按「扫描相机」。无候选时空态给「手动输入 IP」。
                     staAutoConnectArmed = true
-                    binding.cardDevice.tvStatusMessage.text = "正在搜索相机（mDNS + 网段探测，约 8 秒）…"
+                    // 只报「多久」，不报「怎么实现的」：用户需要的是等多久，不是 mDNS 还是网段探测。
+                    binding.cardDevice.tvStatusMessage.text = "正在搜索相机（约 8 秒）…"
                     viewModel.scanWifi()
                 }
             }
@@ -1770,13 +1784,16 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     }
 
     /**
-     * 扫描候选列表。[arch] 只在 STA 那一栏传（AP 栏用默认值）：
-     * FR-37 之后行内「连接」按钮按所选架构分流，FTP 推送架构下不再发起 PTP/IP 直连。
+     * STA 扫描候选列表。[arch] 决定行内「连接」按钮的行为：
+     * FR-37 之后 FTP 推送架构下不再发起 PTP/IP 直连。
+     *
+     * 只服务 STA 一栏。AP 的候选区已随连接页精简撤掉（见 view_panel_wifi_ap.xml 头注），
+     * 因此本函数不再需要区分 mode —— 这里的空态文案与「手动输入相机 IP」兜底都是给
+     * 「相机在局域网里、但没被扫出来」这条 STA 路径用的。
      */
     private fun renderWifiCandidates(
         container: LinearLayout,
         devices: List<WifiCameraCandidate>,
-        mode: ConnectMode,
         arch: String = AppSettings.STA_ARCH_PTP
     ) {
         container.removeAllViews()
@@ -1784,14 +1801,13 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             // v1.3.2（STA 反馈修复）：三重信息，用户不必猜
             // ① 明确错误（未连 WiFi / WiFi 没拿到 IP / 扫描异常）
             // ② 自我定位（本机网段 + 当前 SSID + ARP 可读性 + 探测结论分布）
-            // ③ 可操作建议（手动输入 IP）
+            // ③ 可操作建议（手动输入 IP —— 由下面的行动按钮承担，不再写进诊断串）
             val explicitError = viewModel.wifiScanError.value
             val stats = viewModel.wifiScanStats.value
             // 视S2：明确的短文案走设计级空态组件（图标容器 + 标题）；
             // 长诊断串保持轻量纯文本 —— 大段 12sp 诊断不该被放大加粗
             val diagnosticText: String? = when {
                 explicitError != null -> explicitError
-                mode == ConnectMode.WIFI_AP -> null
                 stats == null -> null
                 else -> buildString {
                             append("未发现相机 · 已探测 ")
@@ -1848,25 +1864,25 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                             append(stats.probeTcpOpenNoPtp)
                             append(" · 无响应 ")
                             append(stats.probeTimeout)
-                            append("\n可点「连接」手动输入相机 IP（相机机身菜单可查）")
                         }
                     }
+                // 空态与诊断**并存**：行动按钮必须一直在（手动 IP 是 STA 最后的兜底），
+                // 诊断只是按钮下面的一段补充。旧写法是二选一 —— 一旦有诊断串按钮就消失，
+                // 用户只能靠诊断尾句「可点「连接」手动输入相机 IP」去找入口，而那个入口
+                // 早已随扫描按钮退役。现在按钮恒在，不再需要那句指路。
                 container.addView(
-                    if (diagnosticText != null) emptyHint(diagnosticText)
-                    else emptyState(
-                        // FR-35②：AP 链路早已免扫描（方案 A 下扫描按钮亦已隐藏），
-                        // 这句旧提示「先连接相机 WiFi 后再扫描」会把用户引回老路。
-                        if (mode == ConnectMode.WIFI_AP)
-                            "热点模式不需要扫描：直接点「连接相机」；" +
-                                "手机未连相机热点时，先点上方「连接相机 Wi-Fi」配网"
-                        else "未发现相机，请确认相机与手机在同一网络",
+                    emptyState(
+                        "未发现相机，请确认相机与手机在同一网络",
                         iconRes = R.drawable.ic_camera_hero,
                         // 视修复 D：单按钮流程里手动 IP 是最后的兜底入口，
                         // 收进空态的行动按钮（原来挂在已退役的扫描按钮旁）
                         actionText = "手动输入相机 IP",
-                        onAction = { showManualIpDialog(mode) }
+                        onAction = { showManualIpDialog() }
                     )
                 )
+                if (diagnosticText != null) {
+                    container.addView(emptyHint(diagnosticText))
+                }
             return
         }
         devices.forEach { candidate ->
@@ -1878,7 +1894,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             item.btnCandidateConnect.setOnClickListener {
                 // FR-37：STA + FTP 推送架构下相机是**主动推送方**，手机侧没有可连的对象。
                 // 旧代码这里恒走 PTP/IP 直连，等于把用户刚选的架构当场作废（本次用户报障的成因）。
-                if (mode == ConnectMode.WIFI_STA && arch == AppSettings.STA_ARCH_FTP) {
+                if (arch == AppSettings.STA_ARCH_FTP) {
                     binding.cardDevice.tvStatusMessage.text =
                         "FTP 推送架构：手机只接收，不直连。请启动下方 FTP 服务器并在相机里填同一地址"
                     return@setOnClickListener
@@ -1963,9 +1979,15 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         }
     }
 
-    private fun showManualIpDialog(mode: ConnectMode) {
+    /**
+     * 手动输入相机 IP：STA 链路「相机在局域网里、却没被扫出来」时的正牌兜底。
+     *
+     * AP 侧已无此入口（见 view_panel_wifi_ap.xml 头注）：热点上有且仅有一台相机，
+     * 地址由「连接相机」自行学习，多一步手抄只会制造「填错了更连不上」的新问题。
+     */
+    private fun showManualIpDialog() {
         val input = EditText(requireContext()).apply {
-            hint = if (mode == ConnectMode.WIFI_AP) "192.168.1.1" else "192.168.1.1 或 192.168.1.1:15740"
+            hint = "192.168.1.1 或 192.168.1.1:15740"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
         val container = LinearLayout(requireContext()).apply {
@@ -1973,15 +1995,11 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             addView(input)
         }
         NlGlass.dialog(requireContext())
-            .setTitle("手动连接 WiFi 相机")
+            .setTitle("手动输入相机 IP")
             .setMessage(
-                if (mode == ConnectMode.WIFI_AP) {
-                    "请确认手机已连接相机发出的 WiFi，输入相机默认地址"
-                } else {
-                    // B4：补 IP 查看路径，降低 STA 用户找不到 IP 的门槛
-                    "STA 模式下请输入相机在同一局域网中的 IP 地址\n" +
-                        "（相机机身菜单「网络设置」可查看当前 IP，端口默认 15740 可省略）"
-                }
+                // B4：补 IP 查看路径，降低 STA 用户找不到 IP 的门槛
+                "STA 模式下请输入相机在同一局域网中的 IP 地址\n" +
+                    "（相机机身菜单「网络设置」可查看当前 IP，端口默认 15740 可省略）"
             )
             .setView(container)
             .setPositiveButton("连接") { _, _ ->
@@ -1992,14 +2010,9 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     return@setPositiveButton
                 }
                 binding.cardDevice.tvStatusMessage.text = "连接 ${endpoint.display}"
-                if (mode == ConnectMode.WIFI_AP) {
-                    // AP 手动地址同样只走工作树连接方案
-                    viewModel.connectAp(endpoint.host, endpoint.port)
-                } else {
-                    viewModel.connectToWifiCamera(
-                        WifiCameraCandidate(endpoint.host, endpoint.port, "手动相机", "manual")
-                    )
-                }
+                viewModel.connectToWifiCamera(
+                    WifiCameraCandidate(endpoint.host, endpoint.port, "手动相机", "manual")
+                )
             }
             .setNegativeButton("取消", null)
             .show()

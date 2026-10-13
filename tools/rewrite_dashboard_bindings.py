@@ -12,7 +12,9 @@ import re
 
 P = 'app/src/main/java/com/nikonlink/app/device/DashboardFragment.kt'
 PANEL = {
-    'panelWifiAp': ['tvApGuide', 'tvApCandidatesHeader', 'apCandidateList'],
+    # 2026-10-13 连接页精简：AP 页签的候选区（tvApCandidatesHeader / apCandidateList）已删，
+    # 这里随之收缩 —— 本表是「子 id 属于哪个面板」的唯一出处，留死名字会误导后续改动。
+    'panelWifiAp': ['tvApGuide'],
     'panelWifiSta': [
         'staArchPill', 'staArchIndicator', 'tabStaArchPtp', 'tabStaArchFtp',
         'layoutStaPtp', 'tvStaGuide', 'staModeRow', 'chipStaSameWifi',
