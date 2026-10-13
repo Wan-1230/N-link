@@ -109,6 +109,28 @@ class AppSettings @Inject constructor(
         set(value) = prefs.edit().putBoolean("waveform_enabled", value).apply()
 
     /**
+     * 斑马纹（Zebra）开关（C1）：把亮度超过阈值的区域画成黑白斜纹。
+     *
+     * 默认关，同 [histogramEnabled]：进阶工具，默认铺开会挡取景。
+     * 与波形/伪彩**不共用** `UiFlags.TONE_TOOLS` 闸门——那一条管的是"影调"类
+     * （给画面染色、看分布），斑马纹与安全区是**曝光/构图**类，绑在一起会让
+     * "只想开安全区"的用户被迫打开影调工具那一整套。
+     */
+    var zebraEnabled: Boolean
+        get() = prefs.getBoolean("zebra_enabled", false)
+        set(value) = prefs.edit().putBoolean("zebra_enabled", value).apply()
+
+    /** 峰值对焦（Peaking）开关（C1）：把梯度最大的像素描边，用于手动对焦。默认关，理由同上。 */
+    var peakingEnabled: Boolean
+        get() = prefs.getBoolean("peaking_enabled", false)
+        set(value) = prefs.edit().putBoolean("peaking_enabled", value).apply()
+
+    /** 安全区双框（Safe Area）开关（C1）：动作安全 93% + 字幕安全 90%。默认关，理由同上。 */
+    var safeAreaEnabled: Boolean
+        get() = prefs.getBoolean("safe_area_enabled", false)
+        set(value) = prefs.edit().putBoolean("safe_area_enabled", value).apply()
+
+    /**
      * 成对下载的默认方式（v2.5 FR-17）。常量在类顶部的 companion 里。
      *
      * 默认「成对」：合并显示的意义就是"这一格代表这一次拍摄"，

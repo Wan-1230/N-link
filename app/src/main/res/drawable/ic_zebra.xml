@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    斑马纹图标：过曝区域叠加的斜向交替纹。
+    刻意做成斜线而不是横线——横线在方框里就是 ic_lv_disp，两个开关挨着会被认成同一个；
+    斜向的走向与真实斑马纹一致（ZebraMask 画的也是 45° 斜纹）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeAlpha="0.45"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:pathData="M3.5,6.5h17v11h-17z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeWidth="1.7"
+        android:pathData="M6.8,16.4L10.2,9.6M10.9,16.4L14.3,9.6M15,16.4L18.4,9.6" />
+</vector>

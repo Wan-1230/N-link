@@ -809,6 +809,38 @@
                         app:toolIcon="@drawable/ic_lv_disp"
                         app:toolLabel="DISP" />
                 </LinearLayout>
+
+                <!-- C1 第三个三列行：斑马纹 / 峰值对焦 / 安全框。
+                     ID 必须与 portrait 完全一致（tools/check_lv_layout_ids.py 会拦）。 -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <com.nikonlink.app.shared.ui.widget.ToolItemView
+                        android:id="@+id/toolZebra"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        app:toolIcon="@drawable/ic_zebra"
+                        app:toolLabel="斑马纹" />
+
+                    <com.nikonlink.app.shared.ui.widget.ToolItemView
+                        android:id="@+id/toolPeaking"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        app:toolIcon="@drawable/ic_peaking"
+                        app:toolLabel="峰值" />
+
+                    <com.nikonlink.app.shared.ui.widget.ToolItemView
+                        android:id="@+id/toolSafeArea"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        app:toolIcon="@drawable/ic_safe_area"
+                        app:toolLabel="安全框" />
+                </LinearLayout>
             </LinearLayout>
 
             <LinearLayout

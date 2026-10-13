@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    峰值对焦图标：一段被点亮的轮廓。
+    画法是「整圈淡描 + 一段粗描」——含义正是峰值对焦在做的事（合焦边缘高亮，
+    其余边缘不亮）。不用放大镜：那是"检查"，不是"标出合焦处"。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeAlpha="0.45"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:pathData="M12,3.25A8.75,8.75 0 1,0 12,20.75A8.75,8.75 0 1,0 12,3.25" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeWidth="2.4"
+        android:pathData="M12,3.25A8.75,8.75 0 0,1 20.75,12" />
+</vector>
