@@ -32,6 +32,10 @@ class MdnsCameraDiscovery(
     private val nsdManager: NsdManager? =
         context.applicationContext.getSystemService(Context.NSD_SERVICE) as? NsdManager
 
+    /** 组播锁用：部分 ROM 默认丢弃 mDNS 组播，不持锁收不到任何服务广播 */
+    private val wifiManager: android.net.wifi.WifiManager? =
+        context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+
     fun discover(): Flow<CameraEndpoint> = callbackFlow {
         val manager = nsdManager
             ?: throw CameraError.Protocol("系统不支持 NSD/mDNS 服务发现")
@@ -100,6 +104,18 @@ class MdnsCameraDiscovery(
                 }
             }
 
+        // 部分 ROM 默认丢弃 mDNS 组播：发现期间必须持组播锁，否则服务发现
+        // 启动正常却全程零命中（真机日志实证）。发现结束即释放。
+        val multicastLock = wifiManager?.createMulticastLock("camerakit-mdns")?.apply {
+            setReferenceCounted(false)
+            try {
+                acquire()
+                log("mDNS 组播锁已获取")
+            } catch (e: Exception) {
+                log("mDNS 组播锁获取失败：${e.message}")
+            }
+        }
+
         // 双服务类型并行注册；单个类型注册失败不放弃另一个
         for (type in listOf(NIKON_SERVICE_TYPE, PtpConsts.MDNS_SERVICE_TYPE)) {
             val listener = buildListener(type)
@@ -118,6 +134,9 @@ class MdnsCameraDiscovery(
                     manager.stopServiceDiscovery(listener)
                 } catch (_: Exception) {
                 }
+            }
+            runCatching {
+                if (multicastLock?.isHeld == true) multicastLock.release()
             }
         }
     }

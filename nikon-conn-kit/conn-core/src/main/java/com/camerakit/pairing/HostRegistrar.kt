@@ -22,23 +22,23 @@ class HostRegistrar(
         confirmWaitMs: Long = PtpConsts.HOST_CONFIRM_WAIT_MS,
         retries: Int = 3,
     ): String {
-        log("正在建立 PC 主机注册会话…")
+        log("[注册] 正在建立 PC 主机注册会话…")
         val prepare = session.hostRegisterPrepare()
-        log("host-register phase=prepare 响应=$prepare")
+        log("[注册] phase=prepare 响应=「$prepare」（${prepare.length} 字符）")
         onAwaitConfirm(prepare)
 
-        log("host-register phase=confirm-wait ms=$confirmWaitMs")
+        log("[注册] phase=confirm-wait ms=$confirmWaitMs（等相机端按确认）")
         delay(confirmWaitMs)
 
         var lastError: Exception? = null
         repeat(retries) { attempt ->
             try {
                 session.hostRegisterConfirm()
-                log("PC 主机注册完成：预备响应 $prepare；确认命令成功")
+                log("[注册] phase=confirm ✓ 注册完成（预备响应「$prepare」）")
                 return prepare
             } catch (e: Exception) {
                 lastError = e
-                log("host-register confirm 失败（第 ${attempt + 1}/$retries 次）：${e.message}")
+                log("[注册] phase=confirm 失败（第 ${attempt + 1}/$retries 次）：${e.message}")
                 if (attempt < retries - 1) delay(1_500)
             }
         }

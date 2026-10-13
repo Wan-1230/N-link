@@ -129,8 +129,14 @@ def send_data(conn, tx, data):
 
 
 def ptp_str(text):
-    encoded = text.encode("utf-16-le")
-    return bytes([len(text)]) + encoded
+    # PTP string：u8 字符数（含结尾 \0）+ UTF-16LE 字符 + \0
+    chars = text + "\x00"
+    return bytes([len(chars)]) + chars.encode("utf-16-le")
+
+
+def u16_array(values):
+    # PTP 数组：u32 元素个数 + 元素（此前误用 u16 个数，解析端按 u32 读会整体错位）
+    return struct.pack("<I", len(values)) + struct.pack("<%dH" % len(values), *values)
 
 
 def build_device_info(model):
@@ -143,10 +149,14 @@ def build_device_info(model):
     props = [0x5001, 0x5007, 0x500D, 0x500F, 0x5010]
     capture_formats = []
     image_formats = [0x3801, 0x300D]
-    buf = struct.pack("<HIHHH", 100, 0x00000006, 100, 0, 0)
+    # DeviceInfo 数据集（小端）：
+    # u16 标准版本、u32 厂商扩展 ID、u16 厂商扩展版本、字符串厂商扩展描述、
+    # u16 功能模式、5 个数组（u32 个数 + u16 元素）、4 个字符串
+    buf = struct.pack("<HIH", 100, 0x00000006, 100)
+    buf += ptp_str("microsoft.com: 1.0")
+    buf += struct.pack("<H", 0)  # FunctionalMode
     for values in (operations, events, props, capture_formats, image_formats):
-        buf += struct.pack("<H", len(values))
-        buf += struct.pack("<%dH" % len(values), *values)
+        buf += u16_array(values)
     buf += ptp_str("Nikon Corporation")
     buf += ptp_str(model)
     buf += ptp_str("1.00")
@@ -154,14 +164,38 @@ def build_device_info(model):
     return buf
 
 
+def build_storage_info():
+    # GetStorageInfo：u16×3、u64×2、u32(占位,与解析端对齐)、描述、卷标
+    max_cap = 64 * 1024 ** 3
+    free = 32 * 1024 ** 3
+    return (
+        struct.pack("<HHHQQ", 0, 1, 0, max_cap, free)
+        + struct.pack("<I", 0)
+        + ptp_str("SD Card")
+        + ptp_str("NIKON")
+    )
+
+
 def build_object_info():
     filename = "DSC_0001.JPG"
+    # ObjectInfo：ThumbCompressedSize 是 u32（此前误写 u16，其后字段全体错位）
     result = struct.pack(
-        "<IHHIHHIIIIIIHII",
+        "<IHHIHIIIIIIIHII",
         0x00010001, 0x3801, 0, 12345, 0x3801, 0,
         160, 120, 6000, 4000, 24, 0, 0, 0, 0,
     )
-    return result + bytes([len(filename)]) + filename.encode("utf-16-le")
+    return result + ptp_str(filename) + ptp_str("20261013T120000") + ptp_str("20261013T120000")
+
+
+def build_dir_info():
+    # DCIM 目录（association 0x3001，无尺寸）：真机对象列表首个通常就是它，
+    # 用来回归「读取测试要跳过目录对象」的逻辑
+    result = struct.pack(
+        "<IHHIHIIIIIIIHII",
+        0x00010001, 0x3001, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 1, 0, 0,
+    )
+    return result + ptp_str("DCIM") + ptp_str("20261013T120000") + ptp_str("20261013T120000")
 
 
 def mdns_response(ip, port, camera_name):
@@ -190,6 +224,7 @@ class MockCamera:
         self.advertise = advertise
         self.device_info = build_device_info(camera_name)
         self.object_info = build_object_info()
+        self.dir_info = build_dir_info()
         self.event_conn = None
         self.running = True
         self.pending_set_tx = None
@@ -304,14 +339,21 @@ class MockCamera:
             conn.sendall(cmd_response(tx, RESPONSE_OK))
         elif op == 0x1001:
             send_data(conn, tx, self.device_info)
+        elif op == 0x952B:
+            # 主机注册预备：data-in 前 8 字节为头，其后为相机侧展示字符串（UTF-16LE，NUL 结尾）
+            send_data(conn, tx, struct.pack("<II", 0, 0) + "CameraKit Host".encode("utf-16-le") + b"\x00\x00")
+        elif op == 0x935A:
+            conn.sendall(cmd_response(tx, RESPONSE_OK))
         elif op == 0x1004:
             send_data(conn, tx, struct.pack("<II", 1, 0x00010001))
         elif op == 0x1005:
-            send_data(conn, tx, struct.pack("<HHHQQI", 0, 1, 0, 0, 0, 0))
+            send_data(conn, tx, build_storage_info())
         elif op == 0x1007:
-            send_data(conn, tx, struct.pack("<II", 1, 0x00010001))
+            # 两个对象：0x00010000 = DCIM 目录（在前），0x00010001 = 照片
+            send_data(conn, tx, struct.pack("<III", 2, 0x00010000, 0x00010001))
         elif op == 0x1008:
-            send_data(conn, tx, self.object_info)
+            handle = params[0] if params else 0
+            send_data(conn, tx, self.dir_info if handle == 0x00010000 else self.object_info)
         elif op in (0x1009, 0x100A, 0x101B):
             send_data(conn, tx, FAKE_JPEG)
         elif op == 0x1015:

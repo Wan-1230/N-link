@@ -10,6 +10,7 @@ import com.camerakit.api.CameraState
 import com.camerakit.api.ConnectionMethod
 import com.camerakit.discovery.ApEndpointResolver
 import com.camerakit.discovery.MdnsCameraDiscovery
+import com.camerakit.discovery.StaSubnetProber
 import com.camerakit.net.NetworkBinder
 import com.camerakit.pairing.HostIdentityStore
 import com.camerakit.pairing.HostRegistrar
@@ -60,11 +61,20 @@ class NikonCameraClient internal constructor(
         /** 基准实现 实证：注册流事件通道稳定等待（首试 350ms / 重试 650ms） */
         const val REG_SETTLE_FIRST_MS = 350L
         const val REG_SETTLE_RETRY_MS = 650L
+
+        /**
+         * 注册完成后的配置保存等待。基准实现在配置保存后等 15s 才自动连接
+         * （相机在应用配置、可能重启 PTP 服务）；注册场景保存更快，取 8s。
+         */
+        const val REG_POST_REGISTER_SETTLE_MS = 8_000L
     }
 
     // 惰性获取：避免构造期强转系统服务（无 USB host / NSD 的设备上为 null 会启动崩溃）
     private val usbDiscovery by lazy { UsbCameraDiscovery(context, log) }
     private val mdnsDiscovery by lazy { MdnsCameraDiscovery(context, log) }
+    private val staSubnetProber by lazy { StaSubnetProber(log) }
+    private val staCache by lazy { StaEndpointCache(context) }
+    @Volatile private var staTopologyActive = false
 
     private val _state = MutableStateFlow<CameraState>(CameraState.Disconnected)
     override val state: StateFlow<CameraState> = _state
@@ -143,12 +153,13 @@ class NikonCameraClient internal constructor(
 
                 is ConnectionMethod.WifiAp -> {
                     val ep = endpoint ?: ApEndpointResolver.defaultEndpoint(method.host, method.port)
-                    connectWireless(ep, autoPair)
+                    // AP 路径保持 3.1.0 原样（无握手延迟/无子网过滤），staTopology=false
+                    connectWireless(ep, autoPair, staTopology = false)
                 }
 
                 is ConnectionMethod.WifiSta -> {
                     val ep = endpoint ?: method.endpoint ?: discoverStaEndpoint()
-                    connectWireless(ep, autoPair)
+                    connectWireless(ep, autoPair, staTopology = true)
                 }
             }
         } catch (e: Throwable) {
@@ -161,6 +172,15 @@ class NikonCameraClient internal constructor(
 
     private suspend fun discoverStaEndpoint(): CameraEndpoint {
         _state.value = CameraState.Discovering
+        // 快速重连（基准实现语义）：上次连过的地址经路由校验且端口通 → 直接用，跳过发现
+        val cached = staCache.endpoint()
+        if (cached != null) {
+            if (staCache.isRoutableTo(cached.host) && staSubnetProber.probeHost(cached.host)) {
+                log("[发现] 使用缓存地址 ${cached.host}:${cached.port}（快速重连）")
+                return cached
+            }
+            log("[发现] 缓存地址 ${cached.host} 不可用（路由不通或端口无响应），转入全量发现")
+        }
         // 基准实现 实证：STA 发现窗口 6s 且取首个结果。这里发现首个端点即返回，
         // 窗口只作上限——旧版无条件收满整窗，相机秒到也要白等十几秒。
         val found = try {
@@ -168,14 +188,33 @@ class NikonCameraClient internal constructor(
         } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
             null
         }
-        return found
-            ?: throw CameraError.NoCameraFound(
-                "mDNS 未发现相机。请确认相机已进入 STA 连接状态，且手机与相机在同一非访客 Wi-Fi（关闭 AP 隔离）。",
-            )
+        if (found != null) {
+            staCache.saveEndpoint(found)
+            return found
+        }
+
+        // mDNS 兜底：网段探测。真机实证部分网络/ROM 组合收不到组播
+        // （服务发现启动正常却零命中），而相机的 PTP/IP 端口一定在线。
+        _state.value = CameraState.Connecting("mDNS 无结果，网段探测中…")
+        staSubnetProber.findFirst()?.let {
+            staCache.saveEndpoint(it)
+            return it
+        }
+
+        throw CameraError.NoCameraFound(
+            "未发现相机。请确认相机已进入 STA 连接状态，且手机与相机在同一非访客 Wi-Fi（关闭 AP 隔离）；" +
+                "仍不行可用「STA 手动IP」直接输入相机 IP 连接。",
+        )
     }
 
-    private suspend fun connectWireless(endpoint: CameraEndpoint, autoPair: Boolean) {
+    private suspend fun connectWireless(
+        endpoint: CameraEndpoint,
+        autoPair: Boolean,
+        staTopology: Boolean = false,
+    ) {
         currentEndpoint = endpoint
+        // 记录本次会话拓扑：断线自动恢复时保持同一时序（AP=原样 / STA=稳定间隔）
+        staTopologyActive = staTopology
 
         // 路由就绪门（基准实现 策略）：本地接口须已有到相机网段的直连路由才开始 PTP。
         // 不做一次性 TCP 探测——探测连接会打扰相机 PTP 服务（实测 ECONNREFUSED/复位）。
@@ -190,7 +229,12 @@ class NikonCameraClient internal constructor(
             }
         }
 
-        val binder = NetworkBinder(context, log).also { networkBinder = it }
+        // 子网过滤只在 STA 启用（双网手机防绑错网口）；AP 保持 3.1.0 行为不过滤
+        val binder = NetworkBinder(
+            context,
+            if (staTopology) endpoint.host else null,
+            log,
+        ).also { networkBinder = it }
         val factory = binder.cameraSocketFactory()
         currentSocketFactory = factory
 
@@ -201,21 +245,36 @@ class NikonCameraClient internal constructor(
         var paired = false
         while (true) {
             try {
-                openWirelessSession(endpoint, factory)
+                openWirelessSession(endpoint, factory, staTopology)
                 val storages = ptpSession?.listStorages() ?: emptyList()
                 if (storages.isEmpty()) {
-                    if (autoPair && !paired) {
+                    if (autoPair && !paired && !(staTopology && staCache.isRegistered())) {
                         log("相机未开放存储卡，尝试主机配对后重连")
                         closeSessionQuietly()
                         paired = true
                         runRegistration(endpoint, factory)
                         continue
                     }
-                    throw CameraError.StorageUnavailable("相机未开放可读取的存储卡（不可用存储：0）")
+                    throw CameraError.StorageUnavailable(
+                        if (staTopology && staCache.isRegistered()) {
+                            "相机未开放可读取的存储卡。本机已注册过 STA 主机，" +
+                                "若相机更换了配置或恢复出厂，请重新执行「STA 主机注册」。"
+                        } else {
+                            "相机未开放可读取的存储卡（不可用存储：0）"
+                        },
+                    )
                 }
                 onConnected()
                 return
             } catch (e: CameraError.CameraRejected) {
+                // 基准实现语义：已注册过的 STA 主机不再自动重做注册（用户多半不在
+                // 注册向导，注册必败且报错难懂）——引导显式重新注册
+                if (staTopology && staCache.isRegistered() && autoPair && !paired) {
+                    throw CameraError.PairingRejected(
+                        "相机拒绝连接（0x${e.failCode.toString(16)}）。本机已注册过 STA 主机，" +
+                            "若相机更换了配置或恢复出厂，请重新执行「STA 主机注册」。",
+                    )
+                }
                 if (autoPair && !paired) {
                     log("相机拒绝该主机（0x${e.failCode.toString(16)}），尝试主机配对")
                     closeSessionQuietly()
@@ -233,14 +292,22 @@ class NikonCameraClient internal constructor(
      * - 端口未开放（ECONNREFUSED）：相机 Wi-Fi/PTP 服务未就绪；
      * - Connection reset：相机正在释放上一条无线会话（基准实现 同款场景），稍候重试即可。
      */
-    private suspend fun openWirelessSession(endpoint: CameraEndpoint, factory: SocketFactory) {
+    private suspend fun openWirelessSession(
+        endpoint: CameraEndpoint,
+        factory: SocketFactory,
+        staTopology: Boolean = false,
+    ) {
         var lastError: CameraError? = null
         repeat(3) { attempt ->
             _state.value = CameraState.Connecting("PTP/IP 握手（${attempt + 1}/3）")
             try {
-                val l = PtpIpLink(endpoint, identity.guid, identity.hostName, factory, log) { reason ->
-                    handleTransportLost(reason)
-                }
+                val l = PtpIpLink(
+                    endpoint, identity.guid, identity.hostName, factory, log,
+                    onTransportLost = { reason -> handleTransportLost(reason) },
+                    // STA 才加事件通道稳定间隔（重试轮取更大值）；AP = 0 保持 3.1.0 时序
+                    eventSettleMs = if (!staTopology) 0L
+                    else if (attempt == 0) 350L else 650L,
+                )
                 link = l
                 l.open()
                 log("PTP/IP 握手完成 connection=${l.connectionId} camera=${l.cameraName}")
@@ -264,7 +331,15 @@ class NikonCameraClient internal constructor(
         throw lastError ?: CameraError.TransportLost("PTP/IP 握手失败")
     }
 
-    /** 主机配对（PC 主机注册）：独立注册会话，相机须停留在主机配置向导。 */
+    /**
+     * 主机配对（PC 主机注册）：独立注册会话，相机须停留在主机配置向导。
+     *
+     * 错误分两段（基准实现 阶段判定语义）：
+     * - 握手段（建链/初始化/事件通道）失败 → 抛 [RegistrationHandshakeException]，
+     *   调用方可重试——InitFail 也属此段（上一条会话残留占位时稍候重试即过）；
+     * - 注册段（0x952B→0x935A）失败 → 抛 [CameraError.PairingRejected]，
+     *   相机明确未确认，重试整个流程没有意义。
+     */
     private suspend fun runRegistration(
         endpoint: CameraEndpoint,
         factory: SocketFactory,
@@ -273,24 +348,37 @@ class NikonCameraClient internal constructor(
         _state.value = CameraState.Connecting("建立 PC 主机注册会话")
         _events.tryEmit(CameraEvent.PairingProgress("正在建立 PC 主机注册会话…"))
         if (preSettleMs > 0) delay(preSettleMs)
-        val regLink = PtpIpLink(endpoint, identity.guid, identity.hostName, factory, log) {}
+        val regLink = PtpIpLink(
+            endpoint, identity.guid, identity.hostName, factory, log,
+            onTransportLost = {},
+            // 注册流程是 STA 专属动作（AP 不走这里），保持稳定间隔
+            eventSettleMs = if (preSettleMs > 0) 650L else 350L,
+        )
         try {
-            regLink.open()
-            val regSession = PtpSession(regLink, log = log)
-            regSession.open()
-            registrar.register(
-                regSession,
-                onAwaitConfirm = { prepare ->
-                    _state.value = CameraState.AwaitingHostConfirm(prepare)
-                    _events.tryEmit(
-                        CameraEvent.PairingProgress("请在相机的主机确认界面确认 ${identity.hostName}，并等待相机完成保存。"),
-                    )
-                },
-            )
-        } catch (e: CameraError.CameraRejected) {
-            throw CameraError.PairingRejected(
-                "主机注册握手被拒绝（0x${e.failCode.toString(16)}）。请让相机停留在 STA/PC 主机配置向导后重试。",
-            )
+            val regSession = try {
+                regLink.open()
+                PtpSession(regLink, log = log).also { it.open() }
+            } catch (e: Exception) {
+                throw RegistrationHandshakeException(e)
+            }
+            try {
+                registrar.register(
+                    regSession,
+                    onAwaitConfirm = { prepare ->
+                        _state.value = CameraState.AwaitingHostConfirm(prepare)
+                        _events.tryEmit(
+                            CameraEvent.PairingProgress("请在相机的主机确认界面确认 ${identity.hostName}，并等待相机完成保存。"),
+                        )
+                    },
+                )
+            } catch (e: CameraError.PairingRejected) {
+                throw e
+            } catch (e: Exception) {
+                throw CameraError.PairingRejected(
+                    "主机注册未获相机确认：${e.message ?: e.javaClass.simpleName}。" +
+                        "请让相机停留在 STA/PC 主机配置向导后重试。",
+                )
+            }
         } finally {
             regLink.close(graceful = true)
         }
@@ -348,14 +436,26 @@ class NikonCameraClient internal constructor(
                 val l = link ?: break
                 try {
                     l.sendKeepalive()
-                    if (System.currentTimeMillis() - l.lastReceiveAt() > PtpConsts.KEEPALIVE_DEAD_MS) {
+                    val silenceMs = System.currentTimeMillis() - l.lastReceiveAt()
+                    if (silenceMs > PtpConsts.KEEPALIVE_DEAD_MS) {
+                        // 判死前先做一次往返事务探测：部分机身空闲时既不回 Ping 也不发
+                        // 任何包，纯静默判死会把好链路错杀（真机实证：错杀后的恢复期整段
+                        // 挂在事件通道上，表现为「连着连着自己断开且重连失败」）。
+                        val probed = runCatching { ptpSession?.getDeviceInfo() }.getOrNull() != null
+                        if (probed) {
+                            log("[保活] 静默 ${silenceMs}ms 但往返探测通过——链路正常（相机空闲不回包），不判死")
+                            _events.tryEmit(
+                                CameraEvent.KeepaliveFailed("空闲 ${silenceMs}ms 无回包，事务探测通过，连接正常"),
+                            )
+                            continue
+                        }
                         _events.tryEmit(
-                            CameraEvent.KeepaliveFailed("超过 ${PtpConsts.KEEPALIVE_DEAD_MS}ms 未收到相机响应"),
+                            CameraEvent.KeepaliveFailed("静默 ${silenceMs}ms 且往返探测无响应"),
                         )
-                        throw CameraError.TransportLost("保活失败：无响应")
+                        throw CameraError.TransportLost("静默 ${silenceMs}ms，往返探测无响应")
                     }
                 } catch (e: Exception) {
-                    handleTransportLost("保活失败：${e.message}")
+                    handleTransportLost("保活失败：${e.message ?: e.javaClass.simpleName}")
                     break
                 }
             }
@@ -388,11 +488,14 @@ class NikonCameraClient internal constructor(
                 if (recovered) return@repeat
                 try {
                     closeSessionQuietly()
-                    delay(1_500L * (attempt + 1))
-                    openWirelessSession(ep, factory)
+                    // 相机端释放旧会话/事件槽位需要时间（真机实证：残留期间事件通道
+                    // 持续被复位），恢复轮次间隔拉长到 5s/10s/15s，别在残留期里打光子弹
+                    delay(5_000L * (attempt + 1))
+                    log("[恢复] 第 ${attempt + 1}/3 次重建会话（${ep.host}）")
+                    openWirelessSession(ep, factory, staTopologyActive)
                     recovered = true
                 } catch (e: Exception) {
-                    log("无线会话自动恢复失败（第 ${attempt + 1}/3 次）：${e.message}")
+                    log("[恢复] 第 ${attempt + 1}/3 次失败：${e.message}")
                 }
             }
 
@@ -445,7 +548,7 @@ class NikonCameraClient internal constructor(
             }
         }
 
-        val binder = NetworkBinder(context, log).also { networkBinder = it }
+        val binder = NetworkBinder(context, ep.host, log).also { networkBinder = it }
         val factory = binder.cameraSocketFactory()
         currentEndpoint = ep
         currentSocketFactory = factory
@@ -462,7 +565,13 @@ class NikonCameraClient internal constructor(
                     factory,
                     preSettleMs = if (attempt == 0) REG_SETTLE_FIRST_MS else REG_SETTLE_RETRY_MS,
                 )
+                // 注册完成 ≠ 马上能连：相机要保存主机配置、可能重启 PTP 服务，
+                // 立刻连接大概率撞上「拒绝/无响应」（基准实现：建档后同样等相机应用配置再连）。
+                _events.tryEmit(CameraEvent.PairingProgress("PC 主机注册完成，等待相机保存配置…"))
+                delay(REG_POST_REGISTER_SETTLE_MS)
                 _events.tryEmit(CameraEvent.PairingProgress("PC 主机注册完成，可发起 STA 连接"))
+                // 注册态入档（基准实现：注册成功记 host+registered，重连走直连入口）
+                staCache.markRegistered(ep)
                 disconnectInternal(emitState = false)
                 _state.value = CameraState.Disconnected
                 return@withLock
@@ -475,7 +584,10 @@ class NikonCameraClient internal constructor(
                 log("主机注册握手失败（第 ${attempt + 1}/${REGISTRATION_BACKOFF_MS.size} 次）：${e.message}")
             }
         }
-        val err = CameraError.PairingRejected("主机注册未完成：${lastError?.message ?: "无响应"}")
+        val err = CameraError.PairingRejected(
+            "主机注册未完成（已重试 ${REGISTRATION_BACKOFF_MS.size} 次）：${lastError?.message ?: "无响应"}。" +
+                "请确认相机停在 STA 主机配置向导的等待画面后重试。",
+        )
         disconnectInternal(emitState = false)
         _state.value = CameraState.Failed(err)
         throw err
@@ -523,3 +635,6 @@ object CameraConnectionFactory {
     fun create(context: Context, log: (String) -> Unit = {}): CameraConnection =
         NikonCameraClient(context, log)
 }
+
+/** 注册握手段（建链/初始化/事件通道）失败——可按退避重试（含 InitFail 型残留占位）。 */
+private class RegistrationHandshakeException(cause: Throwable) : Exception(cause)

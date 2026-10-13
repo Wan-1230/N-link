@@ -1,23 +1,31 @@
 package com.camerakit.demo
 
+import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
+import android.text.InputType
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.camerakit.api.CameraConnection
+import com.camerakit.api.CameraEndpoint
 import com.camerakit.api.CameraError
 import com.camerakit.api.CameraEvent
 import com.camerakit.api.CameraState
@@ -47,10 +55,35 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         // 先初始化 UI 再创建 client：client 构造期会同步回调日志
         buildUi()
+        ensureDiscoveryPermissions()
         client = CameraConnectionFactory.create(this) { msg -> runOnUiThread { log(msg) } }
         registerUsbReceiver()
         observeClient()
         log("启动完成 · 三通道：USB / Wi-Fi AP / Wi-Fi STA")
+    }
+
+    /**
+     * mDNS 发现所需运行时权限（Android 13+ 为「附近设备」，此前为定位）。
+     * 未授权时部分 ROM 的 NSD 表现为「发现已启动却零回调」——不报错、也没结果。
+     */
+    private fun ensureDiscoveryPermissions() {
+        val needed = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                needed.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            }
+        } else {
+            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                needed.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            }
+        }
+        if (needed.isNotEmpty()) {
+            requestPermissions(needed.toTypedArray(), 1)
+        }
     }
 
     override fun onDestroy() {
@@ -120,7 +153,7 @@ class MainActivity : Activity() {
             doAsync {
                 client.registerStaHost()
                 log("PC 主机注册完成，自动发起 STA 连接…")
-                client.connect(ConnectionMethod.WifiSta())
+                connectWithRetry(ConnectionMethod.WifiSta())
                 readTest()
             }
         }, matchWrap().apply { topMargin = dp(6) })
@@ -133,6 +166,13 @@ class MainActivity : Activity() {
             smallButton("断开") { client.disconnect(); log("已断开") },
             smallButton("清空日志") { logView.text = "" },
         ))
+        root.addView(
+            row2(
+                smallButton("复制日志") { copyLog() },
+                smallButton("STA 手动IP") { showManualIpDialog() },
+            ),
+            matchWrap().apply { topMargin = dp(6) },
+        )
 
         // 日志区
         root.addView(sectionTitle("日志"))
@@ -157,9 +197,21 @@ class MainActivity : Activity() {
 
     private fun onConnect(method: ConnectionMethod) {
         doAsync {
-            client.connect(method)
+            connectWithRetry(method)
             // 连接成功后自动做一次读取验证
             readTest()
+        }
+    }
+
+    /** STA 连接带一次自动重试：注册/建档后相机服务可能仍在重启，首次失败多为瞬时。 */
+    private suspend fun connectWithRetry(method: ConnectionMethod) {
+        try {
+            client.connect(method)
+        } catch (e: Exception) {
+            if (method !is ConnectionMethod.WifiSta) throw e
+            log("首次连接失败（${e.message}），5s 后自动重试一次…")
+            kotlinx.coroutines.delay(5_000)
+            client.connect(method)
         }
     }
 
@@ -168,25 +220,31 @@ class MainActivity : Activity() {
     private suspend fun readTest() {
         val s = client.requireSession()
         val info = s.getDeviceInfo()
-        log("设备：${info.manufacturer} ${info.model} ${info.deviceVersion}")
+        log("[业务] 设备：${info.manufacturer} ${info.model} ${info.deviceVersion} ops=${info.operationsSupported.size}")
 
         val storages = s.listStorages()
-        log("存储卡：${storages.joinToString { "${it.volumeLabel} ${it.freeSpace / 1024 / 1024}MB" }}")
-        val storage = storages.firstOrNull() ?: run { log("（无存储卡）"); return }
+        log("[业务] 存储卡：${storages.joinToString { "${it.volumeLabel} ${it.freeSpace / 1024 / 1024}MB" }}")
+        val storage = storages.firstOrNull() ?: run { log("[业务] （无存储卡）"); return }
 
         val handles = s.listObjectHandles(storage.storageId)
-        log("对象数：${handles.size}")
-        val handle = handles.firstOrNull() ?: run { log("（卡内无文件）"); return }
+        log("[业务] 对象数：${handles.size}")
+        // 列表首个常是 DCIM 目录（association，无尺寸）：跳过目录类对象，取第一个真实文件
+        val obj = handles.firstNotNullOfOrNull { h ->
+            runCatching { s.getObjectInfo(h) }.getOrNull()?.takeIf { it.compressedSize > 0 }
+        }
+        if (obj == null) {
+            log("[业务] （卡内无可用文件，或全为目录对象）")
+            return
+        }
+        log("[业务] 首个文件：${obj.filename} ${obj.compressedSize}B ${obj.imageWidth}x${obj.imageHeight}")
 
-        val obj = s.getObjectInfo(handle)
-        log("首个对象：${obj.filename} ${obj.compressedSize}B ${obj.imageWidth}x${obj.imageHeight}")
-
-        val thumb = s.getThumbnail(handle)
-        log("缩略图：${thumb.size}B ✓")
+        runCatching { s.getThumbnail(obj.handle) }
+            .onSuccess { log("[业务] 缩略图：${it.size}B ✓") }
+            .onFailure { log("[业务] 缩略图失败（${it.message}），跳过") }
 
         val want = minOf(256 * 1024L, obj.compressedSize).toInt().coerceAtLeast(1)
-        val head = s.readRange(handle, 0, want)
-        log("分段读：${head.size}/${want}B ✓")
+        val head = s.readRange(obj.handle, 0, want)
+        log("[业务] 分段读：${head.size}/${want}B ✓")
     }
 
     // ---------------- 客户端观察 ----------------
@@ -276,6 +334,14 @@ class MainActivity : Activity() {
             }
         }
 
+    private fun row2(a: Button, b: Button): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            listOf(a, b).forEach {
+                addView(it, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(6) })
+            }
+        }
+
     private fun matchWrap(): LinearLayout.LayoutParams =
         LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
@@ -295,10 +361,56 @@ class MainActivity : Activity() {
         }
     }
 
+    private val logTimeFormat =
+        java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
+
     private fun log(msg: String) {
         if (!::logView.isInitialized) return
-        logView.append("$msg\n")
-        logScroll.post { logScroll.fullScroll(ScrollView.FOCUS_DOWN) }
+        // 每行带毫秒时间戳：真机排查要靠时间差判断卡在哪一段（发现/握手/注册/保活）
+        val line = "${logTimeFormat.format(java.util.Date())} $msg"
+        // 业务协程在 IO 线程，视图只能主线程碰：统一投回主线程再追加
+        runOnUiThread {
+            logView.append("$line\n")
+            logScroll.post { logScroll.fullScroll(ScrollView.FOCUS_DOWN) }
+        }
+    }
+
+    /** 复制全部日志到剪贴板（反馈问题时直接粘贴发出）。 */
+    private fun copyLog() {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("CameraKit 日志", logView.text))
+        log("已复制全部日志到剪贴板")
+    }
+
+    /**
+     * STA 手动 IP 连接（基准实现 实证同款兜底）：mDNS 发现不到相机时
+     * 直接按 IP 连接，端口固定 15740。
+     */
+    private fun showManualIpDialog() {
+        val input = EditText(this).apply {
+            hint = "相机 IP（如 192.168.1.35）"
+            inputType = InputType.TYPE_CLASS_TEXT
+            setPadding(dp(20), dp(8), dp(20), dp(8))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("STA 手动 IP 连接")
+            .setMessage("mDNS 发现不到相机时的兜底：手机与相机同一网络后，输入相机 IP 直连（端口 15740）")
+            .setView(input)
+            .setPositiveButton("连接") { _, _ ->
+                val ip = input.text.toString().trim()
+                if (ip.isEmpty()) return@setPositiveButton
+                log("手动 IP 连接：$ip:15740")
+                doAsync {
+                    client.connect(
+                        ConnectionMethod.WifiSta(
+                            CameraEndpoint("手动输入", ip, 15740, "manual"),
+                        ),
+                    )
+                    readTest()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     // ---------------- USB 广播 ----------------
