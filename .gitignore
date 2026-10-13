@@ -33,6 +33,9 @@ videos/
 /_apk_re/
 /tools/apk-analysis/
 
+# 原型构建产物（prototype/build.mjs 零依赖产出的静态站点，源在 prototype/ 下）
+/prototype/dist/
+
 # ── 外部产品调研与竞品分析（依据 docs/CONTRIBUTING.md，一律不入库）──
 # 这些内容只在本地工作副本保留，不随仓库分发。
 /docs/竞品*
@@ -67,6 +70,9 @@ local.properties
 /*_wifi_connection_log*.txt
 screen-*.png
 screen_*.png
+
+# 真机/模拟器走查截图目录（本地验收证据，不入库；文档里的引用指向工作区文件）
+/docs/*-shots/
 
 # Signing files
 .signing/
