@@ -5,7 +5,6 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
-import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -89,12 +88,27 @@ class LiveViewFragment : Fragment() {
     private val toneOn: Boolean get() = settings.pseudoColorEnabled && toneAvailable
     private val waveformOn: Boolean get() = settings.waveformEnabled && toneAvailable
 
+    /**
+     * C1 三个工具**不走** [toneAvailable]（UiFlags.TONE_TOOLS）闸门。
+     * 那一条管的是影调类工具；斑马纹/安全区是曝光与构图类，绑过去会让
+     * "只想看安全框"的用户被迫打开整套影调工具。
+     */
+    private val zebraOn: Boolean get() = settings.zebraEnabled
+    private val peakingOn: Boolean get() = settings.peakingEnabled
+    private val safeAreaOn: Boolean get() = settings.safeAreaEnabled
+
+    /** 斑马纹与峰值共用一次降采样，所以合并成一个"要不要喂分析帧"的判断 */
+    private val analysisOn: Boolean get() = zebraOn || peakingOn
+
     private var controlsVisible = true
     private var gridVisible = true
     private var levelVisible = false
 
     private lateinit var panels: LiveViewPanelsController
     private var zoomController: LiveViewZoomController? = null
+
+    /** B1：帧解码器（解码跑在专属单线程，不占主线程） */
+    private var frameDecoder: LvFrameDecoder? = null
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentLiveviewBinding.inflate(inflater, container, false)
@@ -104,7 +118,13 @@ class LiveViewFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         requireActivity().window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        // 顺序契约：applyGlassHud 会取 panels.panelRoots()，控制器必须先于玻璃接线构造
+        // A5：登记为监看宿主。VM 在旋屏中保留，重复 attach 幂等，不会被判成「接管」。
+        viewModel.attachAsHost(LiveViewHostRegistry.HOST_FULLSCREEN)
+        // 顺序契约（v3.0 5.3 修正）：panels 必须先构造并 setup()，
+        // 因为 setupControls() 会把 panels.toggle(...) 直接绑进工具栏点击回调（L198-202），
+        // 且 onOpenStateChanged 要在首次状态回流前挂好，否则首帧面板互斥会漏一次。
+        // 原注释写的是「applyGlassHud 会取 panels.panelRoots()」——玻璃 HUD 已于 07e2b9e 下线，
+        // 全仓无此符号，注释失实，按真实契约重写。
         panels = LiveViewPanelsController(
             binding = binding,
             params = paramsViewModel,
@@ -213,9 +233,9 @@ class LiveViewFragment : Fragment() {
         binding.toolGrid.setOnClickListener {
             gridVisible = !gridVisible
             binding.viewGridOverlay.setGridVisible(gridVisible)
-            // 伪彩与网格线同在这一层：只看 gridVisible 会让"关掉网格"顺手把伪彩也带走
-            binding.viewGridOverlay.visibility =
-                if (gridVisible || toneOn) View.VISIBLE else View.GONE
+            // 伪彩/斑马/峰值/安全框与网格线同在这一层：只看 gridVisible 会让"关掉网格"
+            // 顺手把其余四个也带走，所以可见性一律交给 syncOverlayVisibility 统一算。
+            syncOverlayVisibility()
             updateToolStates()
         }
         binding.toolLevel.setOnClickListener {
@@ -260,10 +280,72 @@ class LiveViewFragment : Fragment() {
 
         binding.toolDisp.setOnClickListener { toggleControls() }
 
+        // C1 三个监看工具。与伪彩/波形**不同**：它们不挂 UiFlags.TONE_TOOLS 闸门，
+        // 因此不需要 toneAvailable 判断，条目恒可见（关掉闸门也照样能用）。
+        listOf(binding.toolZebra, binding.toolPeaking, binding.toolSafeArea)
+            .forEach { it.pressEffect() }
+        binding.toolZebra.setOnClickListener {
+            val enabled = !settings.zebraEnabled
+            settings.zebraEnabled = enabled
+            applyZebraToggle(enabled)
+            NlFeedback.show(
+                requireContext(),
+                if (enabled) getString(R.string.zebra_note) else "已关闭斑马纹"
+            )
+        }
+        binding.toolPeaking.setOnClickListener {
+            val enabled = !settings.peakingEnabled
+            settings.peakingEnabled = enabled
+            applyPeakingToggle(enabled)
+            NlFeedback.show(
+                requireContext(),
+                if (enabled) getString(R.string.peaking_note) else "已关闭峰值对焦"
+            )
+        }
+        binding.toolSafeArea.setOnClickListener {
+            val enabled = !settings.safeAreaEnabled
+            settings.safeAreaEnabled = enabled
+            applySafeAreaToggle(enabled)
+            NlFeedback.show(
+                requireContext(),
+                if (enabled) getString(R.string.safe_area_note) else "已隐藏安全框"
+            )
+        }
+
         applyHistogramToggle(settings.histogramEnabled)
         applyPseudoColorToggle(settings.pseudoColorEnabled)
         applyWaveformToggle(settings.waveformEnabled)
+        applyZebraToggle(settings.zebraEnabled)
+        applyPeakingToggle(settings.peakingEnabled)
+        applySafeAreaToggle(settings.safeAreaEnabled)
         updateToolStates()
+    }
+
+    // ── C1 三个监看工具的开关接线 ────────────────────────────────────
+    // 三者都画在 viewGridOverlay 上（与伪彩同一层），所以可见性判断都要带上它们，
+    // 否则"关掉网格线"会顺手把安全框也藏了。
+    private fun applyZebraToggle(enabled: Boolean) {
+        binding.viewGridOverlay.setZebraVisible(enabled)
+        syncOverlayVisibility()
+        updateToolStatesIfReady()
+    }
+
+    private fun applyPeakingToggle(enabled: Boolean) {
+        binding.viewGridOverlay.setPeakingVisible(enabled)
+        syncOverlayVisibility()
+        updateToolStatesIfReady()
+    }
+
+    private fun applySafeAreaToggle(enabled: Boolean) {
+        binding.viewGridOverlay.setSafeAreaVisible(enabled)
+        syncOverlayVisibility()
+        updateToolStatesIfReady()
+    }
+
+    /** 叠加层只在"还有东西要画"时才可见——空层盖在画面上会吃掉触摸事件 */
+    private fun syncOverlayVisibility() {
+        binding.viewGridOverlay.visibility =
+            if (gridVisible || toneOn || analysisOn || safeAreaOn) View.VISIBLE else View.GONE
     }
 
     private fun toggleLiveView() {
@@ -283,6 +365,10 @@ class LiveViewFragment : Fragment() {
         )
         binding.toolPseudo.setState(if (toneOn) "ON" else null, toneOn)
         binding.toolWaveform.setState(if (waveformOn) "ON" else null, waveformOn)
+        // C1 三项：斑马纹/峰值/安全框。角标同样用 ON，与上面六个保持同一套读法
+        binding.toolZebra.setState(if (zebraOn) "ON" else null, zebraOn)
+        binding.toolPeaking.setState(if (peakingOn) "ON" else null, peakingOn)
+        binding.toolSafeArea.setState(if (safeAreaOn) "ON" else null, safeAreaOn)
         binding.toolDisp.setState(null, controlsVisible)
     }
 
@@ -295,8 +381,7 @@ class LiveViewFragment : Fragment() {
     private fun applyPseudoColorToggle(enabled: Boolean) {
         val on = enabled && toneAvailable
         binding.viewGridOverlay.setToneVisible(on)
-        binding.viewGridOverlay.visibility =
-            if (gridVisible || on) View.VISIBLE else View.GONE
+        syncOverlayVisibility()
         updateToolStatesIfReady()
     }
 
@@ -544,8 +629,7 @@ class LiveViewFragment : Fragment() {
     private fun showControls() {
         controlsVisible = true
         fadeIn(binding.topBar, binding.bottomCluster)
-        binding.viewGridOverlay.visibility =
-            if (gridVisible || toneOn) View.VISIBLE else View.GONE
+        syncOverlayVisibility()
         applyHistogramToggle(settings.histogramEnabled)
         applyWaveformToggle(settings.waveformEnabled)
         applyLvCard(viewModel.liveViewState.value)
@@ -714,19 +798,31 @@ class LiveViewFragment : Fragment() {
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.latestFrame.collect { frame ->
-                val data = frame.data
-                val start = findJpegStart(data)
-                val bitmap = BitmapFactory.decodeByteArray(data, start, data.size - start)
-                if (bitmap != null) {
-                    binding.ivLiveView.setImageBitmap(bitmap)
-                    // 模块 1：分辨率变化时重算 fitCenter 基准并保持缩放状态
-                    zoomController?.onFrameChanged()
-                    binding.viewGridOverlay.invalidate()
-                    if (settings.histogramEnabled) binding.viewHistogram.setFrame(bitmap)
-                    if (toneOn) binding.viewGridOverlay.setToneFrame(bitmap)
-                    if (waveformOn) binding.viewWaveform.setFrame(bitmap)
-                }
+                // B1：这里只投递字节，解码与上屏都在解码器里做，主线程不再解 JPEG
+                frameDecoder?.submit(frame.data)
             }
+        }
+
+        // B1：解码器回调已在主线程，直接上屏 + 喂工具视图（同一张 Bitmap，不二次解码）
+        frameDecoder = LvFrameDecoder(viewLifecycleOwner.lifecycleScope) { bitmap ->
+            val b = _binding ?: return@LvFrameDecoder
+            b.ivLiveView.setImageBitmap(bitmap)
+            // 模块 1：分辨率变化时重算 fitCenter 基准并保持缩放状态
+            zoomController?.onFrameChanged()
+            b.viewGridOverlay.invalidate()
+            if (settings.histogramEnabled) b.viewHistogram.setFrame(bitmap)
+            if (toneOn) b.viewGridOverlay.setToneFrame(bitmap)
+            if (waveformOn) b.viewWaveform.setFrame(bitmap)
+            // C1：斑马纹与峰值共用这一次降采样。关着时零开销（与直方图同一约定）；
+            // 用 analysisOn 而不是分别判断，避免两个都开时把同一张位图采两遍。
+            if (analysisOn) b.viewGridOverlay.setAnalysisFrame(bitmap)
+        }
+        frameDecoder?.start()
+        binding.ivLiveView.post { updateDecodeTargetSize() }
+
+        // 缩放变化时同步解码目标尺寸：放大到 5x 就该解更多像素，否则放大处是糊的
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.zoomLevel.collect { updateDecodeTargetSize() }
         }
 
         viewLifecycleOwner.lifecycleScope.launch {
@@ -826,22 +922,34 @@ class LiveViewFragment : Fragment() {
         else -> full.ifBlank { "AF-S" }
     }
 
-    /** 定位 JPEG 起始标记 0xFF 0xD8（兼容 Nikon 1024 字节帧头） */
-    private fun findJpegStart(data: ByteArray): Int {
-        for (i in 0 until data.size - 1) {
-            if (data[i].toInt() and 0xFF == 0xFF && data[i + 1].toInt() and 0xFF == 0xD8) {
-                return i
-            }
-        }
-        return 0
-    }
-
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
 
+    /**
+     * B1：把 ImageView 的**实际显示尺寸 × 当前缩放**告诉解码器，据此算 `inSampleSize`。
+     *
+     * 视图还没测量完时（首次进页面）先挂到下一帧再取，避免拿到 0 而退化成全尺寸解码。
+     */
+    private fun updateDecodeTargetSize() {
+        val view = _binding?.ivLiveView ?: return
+        val w = view.width
+        val h = view.height
+        if (w <= 0 || h <= 0) {
+            view.post { updateDecodeTargetSize() }
+            return
+        }
+        val zoom = (zoomController?.currentZoom() ?: 1f).coerceAtLeast(1f)
+        frameDecoder?.setTargetSize((w * zoom).toInt(), (h * zoom).toInt())
+    }
+
     override fun onDestroyView() {
+        frameDecoder?.stop()
+        frameDecoder = null
         _binding?.root?.removeCallbacks(autoHideControls)
         requireActivity().window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        viewModel.stopLiveView()
+        // A5/X1：**这里不再停流**。onDestroyView 在旋屏时同样会触发，而旋屏时
+        // Fragment 的 ViewModel 是被保留的——正是「旋屏 → 停流 → 重建后重启」造成
+        // 那 1-2s 黑屏（X1）。停流改由 ViewModel.onCleared 判定：只有页面真的走了
+        // （VM 被回收）才 detach 宿主，且仅当最后一个宿主离开时才真正停流。
         super.onDestroyView()
         _binding = null
     }

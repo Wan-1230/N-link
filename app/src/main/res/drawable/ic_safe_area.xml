@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    安全框图标：外框 + 内缩的一圈。
+    两个同心矩形的含义就是画面上那两道框（动作安全 / 字幕安全），
+    与 ic_lv_disp 的「框内两条横线」在形状上没有歧义。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeAlpha="0.45"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:pathData="M3,3h18v18h-18z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.7"
+        android:pathData="M6.2,6.2h11.6v11.6h-11.6z" />
+</vector>

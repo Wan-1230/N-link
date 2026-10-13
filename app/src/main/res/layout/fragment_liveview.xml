@@ -754,8 +754,10 @@
                     android:layout_height="44dp" />
             </LinearLayout>
 
-            <!-- 显示辅助面板：六个显示类开关（顶栏入口）。
-                 原先是工具栏第二页，翻页时 5 项/6 项宽度会跳变，这里两行三列固定排布。 -->
+            <!-- 显示辅助面板：九个显示类开关（顶栏入口）。
+                 原先是工具栏第二页，翻页时 5 项/6 项宽度会跳变，这里三行三列固定排布。
+                 第三行是 C1 的斑马纹/峰值/安全框——它们是曝光与构图类辅助，
+                 与「网格/水平仪」同属"看清画面"，所以并进这一面板而不是另开入口。 -->
             <LinearLayout
                 android:id="@+id/panelOverlays"
                 android:layout_width="match_parent"
@@ -832,6 +834,36 @@
                         android:layout_weight="1"
                         app:toolIcon="@drawable/ic_lv_disp"
                         app:toolLabel="DISP" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <com.nikonlink.app.shared.ui.widget.ToolItemView
+                        android:id="@+id/toolZebra"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/lv_tool_h"
+                        android:layout_weight="1"
+                        app:toolIcon="@drawable/ic_zebra"
+                        app:toolLabel="斑马纹" />
+
+                    <com.nikonlink.app.shared.ui.widget.ToolItemView
+                        android:id="@+id/toolPeaking"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/lv_tool_h"
+                        android:layout_weight="1"
+                        app:toolIcon="@drawable/ic_peaking"
+                        app:toolLabel="峰值" />
+
+                    <com.nikonlink.app.shared.ui.widget.ToolItemView
+                        android:id="@+id/toolSafeArea"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/lv_tool_h"
+                        android:layout_weight="1"
+                        app:toolIcon="@drawable/ic_safe_area"
+                        app:toolLabel="安全框" />
                 </LinearLayout>
             </LinearLayout>
 

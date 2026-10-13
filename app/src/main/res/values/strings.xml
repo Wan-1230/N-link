@@ -38,6 +38,11 @@
     <string name="pseudo_color_note">按亮度给画面分档上色：越暗越蓝、越亮越红，白＝已溢出</string>
     <string name="waveform_toggle">RGB 分量波形开关</string>
     <string name="waveform_note">按画面左右位置铺开三通道电平：看亮在哪一边、哪个通道单独溢出</string>
+    <!-- C1 监看工具组：斑马纹 / 峰值对焦 / 安全框。三者与伪彩/波形不同，
+         不挂 UiFlags.TONE_TOOLS 闸门，属曝光与构图类辅助，恒可用。 -->
+    <string name="zebra_note">把接近过曝的亮部画上斜纹：出现斜纹就说明这块要压一点曝光</string>
+    <string name="peaking_note">把合焦的边缘描红：红边越多、越密，说明这里越实</string>
+    <string name="safe_area_note">画出动作安全框与字幕安全框：主体与字幕别越过这两道线</string>
 
     <string name="param_input_hint">手动输入</string>
     <string name="param_input_hint_shutter">可填 1/250、250、0.6 或 30s；无此档位时自动切到最接近档</string>

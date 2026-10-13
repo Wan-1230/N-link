@@ -35,6 +35,32 @@ class ViewfinderOverlayView @JvmOverloads constructor(
     private var toneSample: Bitmap? = null
     private var tonePixels: IntArray? = null
 
+    // ── C1 监看工具：斑马纹 / 峰值对焦 / 安全区 ──────────────────────
+    // 与伪彩同一条降采样管线，但**采样更宽**：峰值是靠梯度找边缘，
+    // 降到 128 宽会把细边缘先抹平，描出来的就不是真正的合焦轮廓了。
+    private var zebraVisible = false
+    private var peakingVisible = false
+    private var safeAreaVisible = false
+
+    private var analysisSample: Bitmap? = null
+    private var analysisPixels: IntArray? = null
+    private var analysisMask: PeakingMask? = null
+
+    /** 最近一帧被斑马纹圈住的像素占比（0–1），供上层做"过曝"读数 */
+    var zebraRatio = 0f
+        private set
+
+    /** 最近一帧的最大梯度（合焦程度读数），-1 表示还没算过 */
+    var peakingGrade = -1
+        private set
+
+    private val guidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        alpha = 110
+        strokeWidth = dp(0.9f)
+        style = Paint.Style.STROKE
+    }
+
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         alpha = 150
@@ -115,13 +141,100 @@ class ViewfinderOverlayView @JvmOverloads constructor(
         invalidate()
     }
 
+    // ── C1 三个工具的开关 ────────────────────────────────────────
+    // 三个都默认关：它们是专业测量工具，默认铺开会挡取景，且与伪彩同一条纪律
+    // （进阶工具默认关，用户开哪个才付哪个的开销）。
+    fun setZebraVisible(visible: Boolean) {
+        if (zebraVisible == visible) return
+        zebraVisible = visible
+        if (!visible) {
+            zebraRatio = 0f
+            // 只有两个都关了才能放掉采样位图——否则会把峰值正在用的那张回收掉
+            if (!peakingVisible) releaseAnalysis()
+        }
+        invalidate()
+    }
+
+    fun setPeakingVisible(visible: Boolean) {
+        if (peakingVisible == visible) return
+        peakingVisible = visible
+        if (!visible) {
+            peakingGrade = -1
+            if (!zebraVisible) releaseAnalysis()
+        }
+        invalidate()
+    }
+
+    fun setSafeAreaVisible(visible: Boolean) {
+        if (safeAreaVisible == visible) return
+        safeAreaVisible = visible
+        invalidate()
+    }
+
+    /**
+     * 用最新一帧刷新斑马纹 + 峰值对焦。
+     *
+     * **两者共用一次降采样**：各自采一遍就是两次缩放 + 两份位图，
+     * 而且两份采样对不齐时描边与条纹会互相错位。调用方保证至少有一个开关是开的。
+     */
+    fun setAnalysisFrame(source: Bitmap) {
+        if (!zebraVisible && !peakingVisible) return
+        val sw = ANALYSIS_SAMPLE_WIDTH
+        val sh = max(1, source.height * sw / max(1, source.width))
+        val sample = ensureAnalysis(sw, sh) ?: return
+        val pixels = ensureAnalysisPixels(sw * sh) ?: return
+
+        toneCanvas.setBitmap(sample)
+        toneCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+        toneDst.set(0f, 0f, sw.toFloat(), sh.toFloat())
+        toneCanvas.drawBitmap(source, null, toneDst, samplePaint)
+        sample.getPixels(pixels, 0, sw, 0, 0, sw, sh)
+
+        // 先斑马再峰值：斑马纹是"整块区域"，峰值是"描边缘"，
+        // 后者盖在前者之上才不至于让条纹把合焦轮廓切碎。
+        if (zebraVisible) {
+            val marked = ZebraMask.mark(pixels, sw, sh)
+            zebraRatio = marked.toFloat() / (sw * sh)
+        }
+        if (peakingVisible) {
+            val mask = ensureMask(sw, sh) ?: return
+            mask.mark(pixels)
+            peakingGrade = mask.peakGradient
+        }
+
+        sample.setPixels(pixels, 0, sw, 0, 0, sw, sh)
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val rect = displayedRect() ?: return
         // 伪彩先画：它是"给画面染色"，网格与水平仪是"在画面之上量东西"，顺序反了会被色块盖掉
         if (toneVisible) toneSample?.let { canvas.drawBitmap(it, null, rect, tonePaint) }
+        if (zebraVisible || peakingVisible) analysisSample?.let { canvas.drawBitmap(it, null, rect, tonePaint) }
         if (gridVisible) drawThirdsGrid(canvas, rect)
         if (levelVisible) drawLevel(canvas, rect)
+        // 安全框画在最上面：它是"构图边界"，被网格或色块压住就失去意义
+        if (safeAreaVisible) drawSafeArea(canvas, rect)
+    }
+
+    /**
+     * 安全区双框：外层动作安全（主体别出），内层字幕安全（文字别出）。
+     * 画在画面实际显示矩形内，横竖屏与缩放都跟着走。
+     */
+    private fun drawSafeArea(canvas: Canvas, rect: RectF) {
+        val outer = insetRect(rect, SafeArea.ACTION_SAFE)
+        canvas.drawRect(outer, guidePaint)
+        canvas.drawRect(insetRect(rect, SafeArea.TITLE_SAFE), guidePaint)
+    }
+
+    private fun insetRect(rect: RectF, ratio: Float): RectF = RectF().apply {
+        val dx = SafeArea.inset(rect.width(), ratio)
+        val dy = SafeArea.inset(rect.height(), ratio)
+        left = rect.left + dx
+        top = rect.top + dy
+        right = rect.right - dx
+        bottom = rect.bottom - dy
     }
 
     private fun displayedRect(): RectF? {
@@ -179,6 +292,50 @@ class ViewfinderOverlayView @JvmOverloads constructor(
         }
     }
 
+    // ── C1 工具的复用缓冲（与上面同一套"不每帧新建"的做法）────────────
+
+    private fun ensureAnalysis(w: Int, h: Int): Bitmap? {
+        val current = analysisSample
+        if (current != null && current.width == w && current.height == h && !current.isRecycled) return current
+        current?.recycle()
+        return try {
+            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { analysisSample = it }
+        } catch (e: Throwable) {
+            analysisSample = null
+            null
+        }
+    }
+
+    private fun ensureAnalysisPixels(size: Int): IntArray? {
+        val current = analysisPixels
+        if (current != null && current.size >= size) return current
+        return try {
+            IntArray(size).also { analysisPixels = it }
+        } catch (e: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * 峰值算子持有自己的梯度缓冲。尺寸对不上必须重建——
+     * 复用一个按旧尺寸开的缓冲会在分辨率变化后读越界或漏算。
+     */
+    private fun ensureMask(w: Int, h: Int): PeakingMask? {
+        val current = analysisMask
+        if (current != null && current.width == w && current.height == h) return current
+        return try {
+            PeakingMask(w, h).also { analysisMask = it }
+        } catch (e: Throwable) {
+            analysisMask = null
+            null
+        }
+    }
+
+    private fun releaseAnalysis() {
+        analysisSample?.recycle()
+        analysisSample = null
+    }
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         invalidate()
@@ -193,5 +350,15 @@ class ViewfinderOverlayView @JvmOverloads constructor(
 
         /** 上色采样宽度：640 宽降到 128 是 1/25 的像素量，分档边界肉眼不受影响 */
         private const val TONE_SAMPLE_WIDTH = 128
+
+        /**
+         * C1 斑马纹/峰值的采样宽度，比伪彩宽一档（192 vs 128）。
+         *
+         * 峰值是靠**梯度**找边缘，采样太粗会把细边缘先抹平，描出来的就不是真正的合焦轮廓；
+         * 但再往上加就是纯 CPU 开销（192×127 ≈ 2.4 万像素/帧，15fps 下约 36 万次/秒的
+         * 亮度与差分运算），在中低端机上会吃掉 B1 好不容易省出来的主线程时间。
+         * 192 是"看得见细边"与"不拖慢帧率"之间的取点，真机标定后可再调。
+         */
+        private const val ANALYSIS_SAMPLE_WIDTH = 192
     }
 }
