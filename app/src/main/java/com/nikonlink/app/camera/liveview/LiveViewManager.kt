@@ -69,7 +69,22 @@ class LiveViewManager @Inject constructor(
         private const val AF_AREA_SETTLE_MS = 150L
     }
 
-    private var scope: CoroutineScope? = null
+    /**
+     * Manager 自持的协程作用域（A5/S1）。
+     *
+     * **为什么不再用宿主（页面 VM）的 scope**：旧实现 `start(scope)` 把页面的
+     * `viewModelScope` 存下来，后者直接覆盖前者——遥控页与全屏页共享本单例，
+     * 于是「谁最后进来谁持有帧循环」，先来的那个页面随时可能因为 scope 被顶掉
+     * 而拿不到帧（黑屏），而顶掉它的页面退出时又会停流，把还活着的页面一起带走。
+     *
+     * 帧循环改为跑在 Manager 自己的作用域上：宿主只决定「有没有人在看」，
+     * 不再决定「协程跑在哪」。宿主离开 → 没人看了 → 由 [detachHost] 停流。
+     */
+    private val managerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** 宿主登记表（A5）：显式回答「现在谁在看着画面」 */
+    private val hostRegistry = LiveViewHostRegistry()
+
     private var frameJob: Job? = null
     private var consecutiveErrors = 0
 
@@ -149,10 +164,45 @@ class LiveViewManager @Inject constructor(
     /** 进入无线控制模式前的曝光程序模式，停止监看时恢复（wireless control mode exited） */
     private var savedExposureMode: ByteArray? = null
 
-    fun start(scope: CoroutineScope) {
-        this.scope = scope
-        Timber.tag(TAG).i("LiveViewManager started")
+    /**
+     * 登记一个监看宿主（A5/S1）。
+     *
+     * 遥控页与全屏页各传自己的 hostId（`"remote"` / `"fullscreen"`）。
+     * 同一 hostId 重复 attach（旋屏重建、VM 重建）只刷新登记，不算接管；
+     * 不同 hostId 接管时打一条 `lv_host_takeover`，让「画面被谁接管过」可追溯。
+     */
+    fun attachHost(hostId: String) {
+        val r = hostRegistry.attach(hostId, managerScope)
+        Timber.tag(TAG).i(
+            "attachHost=$hostId first=${r.isFirst} tookOverFrom=${r.tookOverFrom} hosts=${hostRegistry.snapshot()}"
+        )
+        if (r.tookOverFrom != null) {
+            eventLogger.event("lv_host_takeover", "from" to r.tookOverFrom, "to" to hostId)
+        }
     }
+
+    /**
+     * 注销一个监看宿主（A5/S1/S3）。
+     *
+     * **只有最后一个宿主离开才停流**——这是修掉「全屏页退出把遥控页一起带走」的关键：
+     * 旧实现在任何一页销毁时都无条件停流，而那一页可能根本不是会话的当前持有者。
+     * 非登记宿主的过期调用（重复销毁、乱序回调）直接忽略。
+     */
+    fun detachHost(hostId: String) {
+        val r = hostRegistry.detach(hostId)
+        Timber.tag(TAG).i(
+            "detachHost=$hostId removed=${r.removed} remaining=${r.remaining} newOwner=${r.newOwner}"
+        )
+        if (r.shouldStop) {
+            eventLogger.event("lv_host_empty", "last" to hostId)
+            stopLiveView()
+        } else if (r.removed) {
+            eventLogger.event("lv_handover", "from" to hostId, "to" to r.newOwner)
+        }
+    }
+
+    /** 当前登记的宿主（诊断/测试用） */
+    fun activeHosts(): List<String> = hostRegistry.snapshot()
 
     private val wifiChannel: LvChannel = WifiLvChannel(ptpSession)
     private val usbChannel: LvChannel = UsbLvChannel(usbPtpManager)
@@ -172,10 +222,8 @@ class LiveViewManager @Inject constructor(
     private fun wireless(): LvChannel =
         if (apConnection.isConnected()) apChannel else wifiChannel
 
-    fun stop() {
-        stopLiveView()
-        scope = null
-    }
+    // A5：原 stop() 只是「stopLiveView + 清 scope」，全仓无调用者（页面销毁走
+    // detachHost）。它同时是旧 scope 覆盖模型的收口动作，随该模型一起删除。
 
     /**
      * 开启 Live View
@@ -244,7 +292,7 @@ class LiveViewManager @Inject constructor(
                     startFrameLoop()
                     Timber.tag(TAG).i("✓ Live View started")
                     // 启动后一次性试读候选 AF 属性码，打日志供真机标定（只读、不阻断）
-                    scope?.launch(Dispatchers.IO) {
+                    managerScope.launch(Dispatchers.IO) {
                         runCatching { probeCameraAfProperties("af_readback_start") }
                     }
                 } else {
@@ -379,7 +427,7 @@ class LiveViewManager @Inject constructor(
         usbPtpManager.setKeepAlivePaused(false)
         if (_liveViewState.value == LiveViewState.RUNNING) {
             // 记录停止作业：startLiveView 会 join 它，保证 End 先于下一次 Start 到相机
-            stopJob = scope?.launch(Dispatchers.IO) {
+            stopJob = managerScope.launch(Dispatchers.IO) {
                 try {
                     val ok = lv().stopLiveView()
                     if (!ok) eventLogger.event("lv_stop_fail", "channel" to lv().javaClass.simpleName)
@@ -425,7 +473,7 @@ class LiveViewManager @Inject constructor(
         val restore = savedExposureMode
         savedExposureMode = null
         if (restore != null && !usbPtpManager.isConnected()) {
-            scope?.launch(Dispatchers.IO) {
+            managerScope.launch(Dispatchers.IO) {
                 val ch = wireless()
                 runCatching {
                     // 守卫：监看期间用户可能已远程切换了模式（0x500E 可写），
@@ -460,7 +508,7 @@ class LiveViewManager @Inject constructor(
         lastFpsTime = System.currentTimeMillis()
         baselineMetrics.lvSessionStarted()
 
-        frameJob = scope?.launch(Dispatchers.IO) {
+        frameJob = managerScope.launch(Dispatchers.IO) {
             while (isActive && _liveViewState.value == LiveViewState.RUNNING) {
                 val frameStart = System.currentTimeMillis()
 
@@ -741,7 +789,7 @@ class LiveViewManager @Inject constructor(
                     // 下发成功后再回读相机 AF 相关属性，尝试确认相机真实对焦点。
                     // 候选码语义尚未经真机标定，现仅打日志、不解析坐标；无法确认时
                     // 降级为「只显示点击位置」（viewFocusIndicator 本地框），绝不画不符框。
-                    scope?.launch(Dispatchers.IO) {
+                    managerScope.launch(Dispatchers.IO) {
                         runCatching { probeCameraAfProperties("af_tap") }
                     }
                 } else {
@@ -791,7 +839,7 @@ class LiveViewManager @Inject constructor(
     private fun updateFrameSize(data: ByteArray) {
         try {
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            val start = findJpegStart(data)
+            val start = LvFrame.findJpegStart(data)
             BitmapFactory.decodeByteArray(data, start, data.size - start, opts)
             if (opts.outWidth > 0 && opts.outHeight > 0) {
                 framePixelWidth = opts.outWidth
@@ -802,13 +850,8 @@ class LiveViewManager @Inject constructor(
         }
     }
 
-    /** 在原始 JPEG 字节流中定位 SOI(0xFFD8)，容错相机可能的前导数据 */
-    private fun findJpegStart(data: ByteArray): Int {
-        for (i in 0 until data.size - 1) {
-            if ((data[i].toInt() and 0xFF) == 0xFF && (data[i + 1].toInt() and 0xFF) == 0xD8) return i
-        }
-        return 0
-    }
+    // findJpegStart 已合并到 LvFrame（A4/X2）：三个文件各有一份逐字节相同的实现，
+    // 抽出去后本文件不再自持。
 
     /**
      * 只读回读候选 AF 相关设备属性（尼康厂商 0xD0xx/0xD1xx 段），逐个试读并记录成败，
