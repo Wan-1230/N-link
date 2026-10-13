@@ -62,11 +62,14 @@ class ProtectionFilterTest {
 
         val noneProtected = protectChipOf(listOf(file(1, 0), file(2, 0)))
         assertTrue(noneProtected.shown)
-        assertEquals("已保护", noneProtected.label)
+        // v2.6.4 起该入口的文案是「已筛选」——语义已扩为 **保护键 或 评级**
+        // （见 ProtectionFilter.isScreenedInCamera / PhotoFilter.PROTECTED）。
+        // 这里不再硬编码字面量，直接引用枚举 label：以后改名不会让测试变成假红灯。
+        assertEquals(PhotoFilter.PROTECTED.label, noneProtected.label)
 
         val some = protectChipOf(listOf(file(1, 0x0001), file(2, 0), file(3, 0x8001), file(4, null)))
         assertTrue(some.shown)
-        assertEquals("已保护 2", some.label)
+        assertEquals("${PhotoFilter.PROTECTED.label} 2", some.label)
     }
 
     @Test
