@@ -171,7 +171,10 @@ def scan_file(rel):
 def main():
     argv = sys.argv[1:]
     staged = "--staged" in argv
-    explicit = [a for a in argv[1:] if not a.startswith("--")]
+    # 注意这里是 argv 而不是 argv[1:]：sys.argv 已经切过一轮，再切一次会把
+    # 第一个显式文件名静默丢掉（`check_repo_hygiene.py a.kt b.kt` 只查 b.kt，
+    # 只传一个文件时更是退化成"无显式参数"→ 直接全仓扫描）。门禁漏检比误报更危险。
+    explicit = [a for a in argv if not a.startswith("--")]
 
     if explicit:
         files = explicit
