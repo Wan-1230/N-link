@@ -70,11 +70,20 @@
         android:theme="@style/Theme.NLink"
         tools:targetApi="35">
 
-        <!-- Main Activity -->
+        <!-- Main Activity
+             screenOrientation=portrait（A1 走查修复，2026-10-13）：
+             横屏下 MainActivity 会复用竖屏布局，而拍摄页 fragment_remote.xml 的根是
+             LinearLayout 不是 ScrollView，1080px 高的横屏装不下约 1900 的竖屏内容，
+             快门行 / 定时 / 间隔拍摄全部落在屏幕外且无法滚动 —— 用户横屏时**无法拍照**。
+             四种修法里选了锁竖屏：一行、零结构改动、完全可逆（删掉这一行即恢复），
+             且横屏能力在真正需要它的页面保留 —— 全屏监看页 LiveViewActivity 仍是 sensor。
+             （被否决：① 给 fragment_remote 加 ScrollView —— 拍摄页不该需要滚动才能按快门；
+               ② 新写 layout-land/fragment_remote.xml —— 属 C 批布局合一，2-3 周量级且需真机验收。） -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
+            android:screenOrientation="portrait"
             android:theme="@style/Theme.NLink">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
