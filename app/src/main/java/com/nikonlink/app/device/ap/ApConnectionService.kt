@@ -24,9 +24,13 @@ import javax.inject.Singleton
 @Singleton
 class ApConnectionService @Inject constructor(
     @ApplicationContext context: Context,
+    private val eventLogger: com.nikonlink.app.shared.common.AppEventLogger,
 ) {
     val client: CameraConnection = CameraConnectionFactory.create(context) { msg ->
         Timber.tag("ApKit").i(msg)
+        // AP 连接全程打点写入全链路日志（设置页可导出）——此前 AP 只进 logcat，
+        // 真机出问题没现场可查
+        eventLogger.event("ap_kit", "msg" to msg)
     }
 
     val state: StateFlow<CameraState> get() = client.state
@@ -58,5 +62,14 @@ class ApConnectionService @Inject constructor(
     fun disconnect() {
         engaged = false
         client.disconnect()
+    }
+
+    /** AP 连接失败打点：把完整异常链（含握手阶段）写入全链路日志，便于真机定位。 */
+    fun logFailure(action: String, t: Throwable) {
+        Timber.tag("ApKit").w(t, "$action failed")
+        val chain = generateSequence(t) { it.cause }
+            .take(5)
+            .joinToString(" <- ") { it.javaClass.simpleName + ":" + (it.message ?: "-") }
+        eventLogger.event("link_error", "channel" to "ap", "action" to action, "chain" to chain)
     }
 }

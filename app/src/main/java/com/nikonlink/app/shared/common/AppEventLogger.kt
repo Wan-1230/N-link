@@ -47,7 +47,9 @@ class AppEventLogger @Inject constructor(
         private val NEVER_MERGE = setOf(
             "conn_attempt", "conn_stage", "conn_result", "conn_fail", "metric_conn",
             "usb_session", "usb_open", "link_state", "link_error", "setting",
-            "device_model", "device_caps", "model_raw", "ap_panel", "lv_stop", "meta_breaker"
+            "device_model", "device_caps", "model_raw", "ap_panel", "lv_stop", "meta_breaker",
+            // AP 连接全程打点：每一轮握手/重试都是独立样本，合并等于丢现场
+            "ap_kit"
         )
     }
 

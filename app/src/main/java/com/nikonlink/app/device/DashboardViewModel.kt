@@ -184,7 +184,7 @@ class DashboardViewModel @Inject constructor(
                     val storages = s.listStorages()
                     Timber.tag("ApKit").i("readCheck ok: ${info.model} storages=${storages.size}")
                 }
-            }.onFailure { Timber.tag("ApKit").w(it, "AP connect failed") }
+            }.onFailure { apConnection.logFailure("connectAp", it) }
         }
     }
 
@@ -192,7 +192,7 @@ class DashboardViewModel @Inject constructor(
     fun pairAp() {
         viewModelScope.launch {
             runCatching { apClient.pair() }
-                .onFailure { Timber.tag("ApKit").w(it, "AP pair failed") }
+                .onFailure { apConnection.logFailure("pairAp", it) }
         }
     }
 
