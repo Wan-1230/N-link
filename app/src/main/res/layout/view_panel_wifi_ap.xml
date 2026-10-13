@@ -2,6 +2,11 @@
 <!-- 视T6 自 fragment_dashboard 抽取：原块内容零改动 -->
 <!-- 2026-10-12 连接入口拆分：AP 页签新增独立「Wi-Fi 连接」入口（按钮 + 状态行），
      不再由「连接相机」弹系统面板触发；连接教程改为默认收起的折叠区（见 guideHeader）。 -->
+<!-- 2026-10-13 连接页精简：撤掉本页签的「已发现相机」候选区（标题行 + apCandidateList）。
+     理由：AP 链路上有且仅有一台相机，地址由「连接相机」自行学习，扫描从来不是本页签的
+     一步 —— 候选栏因而恒为空，只会永久摆一张空态卡 + 一个「手动输入相机 IP」按钮，
+     与真实流程无关。对应的渲染调用同步从 DashboardFragment 移除，手动 IP 入口在 AP 侧
+     一并撤掉（STA 侧保留，那才是它真正的用武之地）。 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto"
     android:orientation="vertical">
 
@@ -86,25 +91,10 @@
                                 android:layout_height="wrap_content"
                                 android:layout_marginTop="6dp"
                                 android:lineSpacingExtra="3dp"
-                                android:text="① 相机开启 WiFi 热点（AP 模式），密码见相机屏幕\n② 手机 WLAN 连上相机热点（记不记得连过都一样，直接进行下一步）\n③ 回到本页点「连接相机」即可 —— App 会直接连上热点，或自动弹出系统 Wi-Fi 面板让你点一下热点\n④ 在相机配对画面按 OK 确认\n连不上时：确认手机仍连着相机热点、相机 WiFi 已开启，再点一次「连接相机」"
+                                android:text="① 相机开启 WiFi 热点（AP 模式），密码见相机屏幕\n② 手机 WLAN 连上相机热点\n③ 回到本页点「连接相机」\n④ 在相机配对画面按 OK 确认\n连不上时：确认手机仍连着相机热点、相机 WiFi 已开启，再点一次「连接相机」"
                                 android:textColor="@color/text_secondary"
                                 android:textSize="@dimen/font_caption"
                                 android:visibility="gone" />
                         </LinearLayout>
-
-                        <TextView
-                            android:id="@+id/tvApCandidatesHeader"
-                            style="@style/NlText.GroupTitle"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="14dp"
-                            android:layout_marginBottom="@dimen/space_8"
-                            android:text="@string/tv_ap_candidates_header_text" />
-
-                        <LinearLayout
-                            android:id="@+id/apCandidateList"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="vertical" />
 
 </LinearLayout>

@@ -116,19 +116,20 @@
     <!-- 2026-10-12 连接入口拆分：AP 页签独立 Wi-Fi 连接入口（原为「连接相机」弹窗触发） -->
     <string name="btn_ap_wifi_connect_text">连接相机 Wi-Fi</string>
     <string name="tv_ap_wifi_state_default">未连接相机热点</string>
-    <string name="tv_ap_wifi_state_on_ap">已连接相机热点，可直接点「连接相机」</string>
+    <!-- 状态行只说「是什么状态」，不说「接下来点哪里」——操作路径由按钮自己表达，
+         那句附带的指路既占位又和按钮文案打架（2026-10-13 连接页精简）。 -->
+    <string name="tv_ap_wifi_state_on_ap">已连接相机热点</string>
     <string name="tv_ap_wifi_state_on_ap_ssid">已连接相机热点：%1$s</string>
-    <string name="tv_ap_wifi_state_not_on_ap">手机未连接相机热点，点上方按钮开始配网</string>
+    <string name="tv_ap_wifi_state_not_on_ap">未连接相机热点</string>
     <string name="txt_connection_guide">连接教程</string>
     <!-- Wi-Fi 连接弹窗（独立入口） -->
     <string name="dialog_ap_wifi_title">Wi-Fi 连接</string>
     <string name="dialog_ap_wifi_open_panel">打开 Wi-Fi 面板</string>
     <string name="dialog_ap_wifi_continue">已连上，继续连接</string>
-    <string name="dialog_ap_wifi_manual_ip">手动输入相机 IP</string>
     <string name="dialog_ap_wifi_message_not_on_ap">按下面三步把手机连到相机热点：\n① 点「打开 Wi-Fi 面板」\n② 在面板里点相机热点（NIKON_…，密码见相机屏幕）\n③ 返回本应用 —— 连上后自动开始连接相机\n\n连上后若没有自动继续，点「已连上，继续连接」。</string>
     <string name="dialog_ap_wifi_message_on_ap">手机已连接相机热点，可以直接连接相机。</string>
     <string name="ap_wifi_panel_opened">请在系统面板里点相机热点（NIKON_…），返回后自动继续</string>
-    <string name="ap_wifi_not_ready_hint">手机还未连接相机热点，请先点 AP 页签里的「连接相机 Wi-Fi」完成配网</string>
+    <string name="ap_wifi_panel_unavailable">打不开 Wi-Fi 面板，请到系统「设置 → WLAN」手动连接相机热点</string>
     <string name="txt_遥控拍摄">遥控拍摄</string>
     <string name="txt_查看相册">查看相册</string>
     <string name="tv_wifi_band_card_text">WiFi 频段</string>
@@ -222,7 +223,6 @@
     <string name="txt_u_s_b有线">USB 有线连接教程</string>
     <string name="tv_usb_device_text">未检测到 USB 相机</string>
     <string name="txt_wi_fi_a">WiFi AP 直连教程</string>
-    <string name="tv_ap_candidates_header_text">已发现相机</string>
     <string name="tab_sta_arch_ptp_text">PTP/IP 直连</string>
     <string name="tab_sta_arch_ftp_text">FTP 推送收图</string>
     <string name="txt_wi_fi_s">WiFi STA 连接教程</string>
