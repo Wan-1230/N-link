@@ -48,7 +48,35 @@ class PtpResponseCodeTest {
     }
 
     @Test
-    fun `unknown response codes fall back to hex`() {
-        assertEquals("0xABCD", PtpConstants.describeResponseCode(0xABCD))
+    fun `unknown non-vendor response codes fall back to hex`() {
+        // 0x1234 不在厂商私有段，保持裸十六进制（这条兜底原本就是给扩展排查用的）
+        assertEquals("0x1234", PtpConstants.describeResponseCode(0x1234))
+    }
+
+    /**
+     * A4/E2：厂商私有段（0xAxxx）此前也只给裸 hex，日志与用户提示里就是一串没有语义的数。
+     * 现在单列一句中文，至少让人知道「这是 Nikon 私有码、本项目未登记」。
+     */
+    @Test
+    fun `unknown vendor response codes get a Chinese explanation instead of bare hex`() {
+        val text = PtpConstants.describeResponseCode(0xABCD)
+        assert(text.startsWith("相机返回厂商私有错误 0xABCD")) { "实际: $text" }
+        assert(text.contains("未登记释义")) { "实际: $text" }
+    }
+
+    /**
+     * A4/E2：0xA002 —— 释义状态是「未释义」，不是编出来的中文名。
+     *
+     * 唯一可核证据是本项目日志 A `ptp_tx op=0x90c8 code=0xa002`（DeviceReady 保活被拒，
+     * 出现在监看中断前一刻）。它不在标准 PTP 响应码段内，也没有可核的公开厂商定义；
+     * 按 v3.0 §3.7「不采信未经核实的第三方常量表」的纪律，只登记复现证据与处置口径。
+     */
+    @Test
+    fun `0xA002 is described but explicitly marked as undefined`() {
+        assertEquals(0xA002, PtpConstants.RESPONSE_NIKON_UNDEFINED_A002)
+        val text = PtpConstants.describeResponseCode(PtpConstants.RESPONSE_NIKON_UNDEFINED_A002)
+        assert(text.contains("0xA002")) { "实际: $text" }
+        assert(text.contains("无权威释义")) { "必须显式标注未释义，不能假装知道它是什么。实际: $text" }
+        assert(text.contains("DeviceReady")) { "应带上唯一的复现证据。实际: $text" }
     }
 }

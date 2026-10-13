@@ -193,8 +193,22 @@ object PtpConstants {
     const val RESPONSE_NIKON_BULB_BUSY = 0xA200
 
     /**
+     * Nikon 厂商响应码 0xA002 —— **释义状态：未释义**（A4/E2 复验结论）。
+     *
+     * 可核证据只有一条，来自本项目自己的日志：连接专项 §5.3 日志 A
+     * `ptp_tx op=0x90c8 code=0xa002` —— 即 DeviceReady 保活（`OP_NIKON_DEVICE_READY`）
+     * 被相机以此码回绝，且它出现在监看中断前一刻。
+     *
+     * 它不在标准 PTP 响应码段（0x2001–0x201F）内，也没有可核的公开厂商定义。
+     * 按 v3.0 §3.7「不采信未经核实的第三方常量表」的同一纪律，这里**只登记复现证据与
+     * 处置口径，不编造中文名**——宁可留「未释义」，也不能让日志与用户提示引用一个
+     * 无法追源的语义。真机若在 DeviceReady 上再遇此码，按厂商未定义错误记录并附 op。
+     */
+    const val RESPONSE_NIKON_UNDEFINED_A002 = 0xA002
+
+    /**
      * PTP 响应码中文化描述（日志与用户提示统一使用）。
-     * 未知码返回十六进制形式，便于扩展排查。
+     * 未知码走 [describeUnknownResponseCode]，厂商私有段给中文说明而非裸十六进制。
      */
     fun describeResponseCode(code: Int): String = when (code) {
         RESPONSE_OK -> "成功"
@@ -221,7 +235,22 @@ object PtpConstants {
         RESPONSE_NIKON_INVALID_STATUS ->
             "相机当前状态不允许该操作（Nikon 0xA004）：录制请把拨盘切到视频档、监看请切到照片档，且不要停留在回放/菜单界面"
         RESPONSE_NIKON_BULB_BUSY -> "相机正在结束 B 门曝光，请稍候"
-        else -> "0x${code.toString(16).uppercase()}"
+        RESPONSE_NIKON_UNDEFINED_A002 ->
+            "相机返回厂商未定义错误 0xA002（Nikon 私有码，无权威释义；本项目仅见其回绝 DeviceReady 保活）——请重试并保持相机开机"
+        else -> describeUnknownResponseCode(code)
+    }
+
+    /**
+     * 未知响应码的中文兜底。
+     *
+     * 此前对所有未登记码都返回裸十六进制（`0xA002`），日志与用户提示里就是一串没有
+     * 语义的数。现在把 Nikon 私有段（0xAxxx）单列一句中文，至少让人知道「这是厂商
+     * 私有错误、本项目未登记」，而不是当成标准码去查表。
+     */
+    private fun describeUnknownResponseCode(code: Int): String {
+        val hex = "0x${code.toString(16).uppercase()}"
+        return if ((code ushr 12) == 0xA) "相机返回厂商私有错误 $hex（Nikon 私有码段，未登记释义；请附日志上报）"
+        else hex
     }
 
     // PTP Event Codes
