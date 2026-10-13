@@ -2,7 +2,6 @@ package com.nikonlink.app.capture
 
 import com.nikonlink.app.shared.ui.NlFeedback
 import android.annotation.SuppressLint
-import android.graphics.BitmapFactory
 import android.graphics.Outline
 import android.os.Bundle
 import android.util.TypedValue
@@ -33,6 +32,9 @@ import com.nikonlink.app.R
 import com.nikonlink.app.databinding.DialogParamPickerBinding
 import com.nikonlink.app.databinding.FragmentRemoteBinding
 import com.nikonlink.app.camera.liveview.FocusTapMapper
+import com.nikonlink.app.camera.liveview.LiveViewHostRegistry
+import com.nikonlink.app.camera.liveview.LvFrame
+import com.nikonlink.app.camera.liveview.LvFrameDecoder
 import com.nikonlink.app.camera.liveview.LiveViewState
 import com.nikonlink.app.camera.liveview.LiveViewActivity
 import com.nikonlink.app.camera.liveview.LiveViewViewModel
@@ -80,6 +82,13 @@ class RemoteFragment : Fragment(), GlassInsetAware {
     private var videoMode = false
     private var recording = false
     private var recordTimerJob: Job? = null
+
+    /**
+     * B1：帧解码器。遥控页与全屏页是**同一条渲染链**（Manager 单例出帧 → 各自上屏），
+     * 两边必须同改同验；这里用同一个 LvFrameDecoder，保证行为一致。
+     */
+    private var frameDecoder: LvFrameDecoder? = null
+
     private val paramCells = mutableMapOf<String, TextView>()
 
     /** 参数单元格容器（PRD D3：B 门曝光中统一禁用，点击与按压反馈一并关闭） */
@@ -190,12 +199,30 @@ class RemoteFragment : Fragment(), GlassInsetAware {
 
     override fun onDockSpaceChanged(dockSpace: Int) = applyDockSpace()
 
+    /**
+     * B1：按取景窗实际显示尺寸设解码目标（遥控页是内嵌小窗，降采样收益比全屏页更大）。
+     * 视图未测量完时挂到下一帧再取，避免拿到 0 退化成全尺寸解码。
+     */
+    private fun updateDecodeTargetSize() {
+        val view = _binding?.ivLiveView ?: return
+        val w = view.width
+        val h = view.height
+        if (w <= 0 || h <= 0) {
+            view.post { updateDecodeTargetSize() }
+            return
+        }
+        frameDecoder?.setTargetSize(w, h)
+    }
+
     override fun onDestroyView() {
+        frameDecoder?.stop()
+        frameDecoder = null
         UiFlags.unobserve(this)
         dockInset = null
         super.onDestroyView()
         paramsViewModel.stopModeWatch()
-        liveViewViewModel.stopLiveView()
+        // A5：不再在此停流——与全屏页同一口径，停流交给 ViewModel.onCleared 判定宿主任期。
+        // 本页切离时的停流走 onHiddenChanged（释放 PTP 通道，防断联），那条路径保留。
         recordTimerJob?.cancel()
         modePillLayoutListener = null
         _binding = null
@@ -204,6 +231,10 @@ class RemoteFragment : Fragment(), GlassInsetAware {
     // ---------------- 监看区域 ----------------
 
     private fun setupLiveViewArea() {
+        // A5：登记为监看宿主（与全屏页共用同一个 LiveViewManager 单例）。
+        // 本页是 MainActivity 的常驻 Tab，VM 长期存活，因此宿主登记也长期有效——
+        // 这正是「从全屏返回遥控页时画面还在」的前提。
+        liveViewViewModel.attachAsHost(LiveViewHostRegistry.HOST_REMOTE)
         // 监看画面圆角裁剪
         binding.liveContainer.clipToOutline = true
         binding.liveContainer.outlineProvider = object : ViewOutlineProvider() {
@@ -893,20 +924,23 @@ class RemoteFragment : Fragment(), GlassInsetAware {
     // ---------------- 状态订阅 ----------------
 
     private fun observe() {
-        // 监看帧渲染：跳过 Nikon 头部，定位 JPEG SOI 再解码
+        // 监看帧渲染：跳过 Nikon 头部定位 SOI、解码、降采样，全部交给解码器。
+        // 与全屏页同一条渲染链（B1 必须两页同改同验），这里只做投递。
         viewLifecycleOwner.lifecycleScope.launch {
             liveViewViewModel.latestFrame.collect { frame ->
-                val data = frame.data
-                val start = findJpegStart(data)
-                val bitmap = BitmapFactory.decodeByteArray(data, start, data.size - start)
-                if (bitmap != null) {
-                    binding.ivLiveView.setImageBitmap(bitmap)
-                    // 优化项 4：直方图与取景画面同一帧刷新，不存在时延差。
-                    // 开关关闭时整段跳过——降采样统计本身也不跑，零额外开销。
-                    if (settings.histogramEnabled) binding.viewHistogram.setFrame(bitmap)
-                }
+                frameDecoder?.submit(frame.data)
             }
         }
+
+        frameDecoder = LvFrameDecoder(viewLifecycleOwner.lifecycleScope) { bitmap ->
+            val b = _binding ?: return@LvFrameDecoder
+            b.ivLiveView.setImageBitmap(bitmap)
+            // 优化项 4：直方图与取景画面同一帧刷新，不存在时延差。
+            // 开关关闭时整段跳过——降采样统计本身也不跑，零额外开销。
+            if (settings.histogramEnabled) b.viewHistogram.setFrame(bitmap)
+        }
+        frameDecoder?.start()
+        binding.ivLiveView.post { updateDecodeTargetSize() }
 
         viewLifecycleOwner.lifecycleScope.launch {
             liveViewViewModel.liveViewState.collect { state ->
@@ -1073,16 +1107,6 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         recordTimerJob?.cancel()
         recordTimerJob = null
         binding.layoutRecordBadge.visibility = View.GONE
-    }
-
-    /** 定位 JPEG 起始标记 0xFF 0xD8（兼容 Nikon 1024 字节帧头） */
-    private fun findJpegStart(data: ByteArray): Int {
-        for (i in 0 until data.size - 1) {
-            if (data[i].toInt() and 0xFF == 0xFF && data[i + 1].toInt() and 0xFF == 0xD8) {
-                return i
-            }
-        }
-        return 0
     }
 
     private fun dp(value: Float): Float =

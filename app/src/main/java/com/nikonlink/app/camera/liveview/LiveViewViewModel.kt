@@ -25,17 +25,41 @@ class LiveViewViewModel @Inject constructor(
     val zoomLevel: StateFlow<Float> = liveViewManager.zoomLevel
     val errorMessage: StateFlow<String?> = liveViewManager.errorMessage
 
-    init {
-        liveViewManager.start(viewModelScope)
+    /**
+     * 本 VM 在监看会话里的宿主标识（A5/S1）。
+     *
+     * 旧实现在 `init` 里直接 `manager.start(viewModelScope)`，两页各建一个本 VM 时
+     * 后建的把先建的 scope 顶掉；现在改为显式登记宿主，宿主身份可追溯、可交接。
+     */
+    private var hostId: String? = null
+
+    /**
+     * 以 [id] 身份登记为监看宿主。页面每次 `onViewCreated` 都调，幂等：
+     * 旋屏重建时 VM 是同一个实例，重复调用不会重复登记，也不会误判成「接管」。
+     */
+    fun attachAsHost(id: String) {
+        if (hostId == id) return
+        hostId = id
+        liveViewManager.attachHost(id)
     }
 
     fun startLiveView() {
-        liveViewManager.start(viewModelScope)
         viewModelScope.launch { liveViewManager.startLiveView() }
     }
 
     fun stopLiveView() {
         liveViewManager.stopLiveView()
+    }
+
+    /**
+     * VM 被回收才是「这个页面真的走了」（旋屏不回收 VM，所以旋屏不会走到这里）。
+     * 放这里而不是 `onDestroyView`：后者在旋屏时也会触发，在那里停流正是 X1
+     * 「旋屏黑屏 1-2s」的根因。
+     */
+    override fun onCleared() {
+        hostId?.let { liveViewManager.detachHost(it) }
+        hostId = null
+        super.onCleared()
     }
 
     fun touchFocus(x: Float, y: Float) {
