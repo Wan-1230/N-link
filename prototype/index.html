@@ -2,7 +2,12 @@
 <html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<!-- P2-17：删掉 user-scalable=no（禁止双指缩放违反 WCAG 1.4.4）；
+     补 color-scheme，让深色主题下桌面滚动条/表单控件跟随，不再是浅色。 -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<!-- P2-16：内联 data-URI favicon —— 零请求，顺带消掉浏览器默认的 /favicon.ico 404 -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231A1B1E'/%3E%3Cpath d='M6 22V10l10 8 10-8v12' fill='none' stroke='%23FFE100' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <title>N-Link · 视觉升级原型 v1</title>
 <style>
 /* ============================================================
@@ -19,15 +24,23 @@
   --bg-chip-selected:#1A1B1E;   /* 选中 chip（黑，不用强调色） */
   --on-chip-selected:#FFFFFF;
   --text-primary:#1A1B1E;       /* 一级文字 */
-  --text-secondary:#5F6368;     /* 二级文字 */
-  --text-tertiary:#9AA0A6;      /* 三级文字/占位 */
+  --text-secondary:#5F6368;     /* 二级文字（白底 6.05:1） */
+  /* 三级文字：审计 D3/P0-3 由 #9AA0A6 加深。原值白底仅 2.42~2.64:1、页面底 2.42:1，
+     远低于 WCAG AA 4.5:1，且 11px 角标/副标题大面积使用（12 处）。
+     新值：白底 5.45:1、页面 #F4F5F7 4.92:1、chip #F0F1F3 4.81:1。
+     仍浅于二级文字 6.05:1，三级层级关系未被拉平。 */
+  --text-tertiary:#656A70;      /* 三级文字/占位 */
   --outline:rgba(26,27,30,.08); /* 1px 描边 */
   --divider:rgba(26,27,30,.06);
   --accent:#FFE100;             /* 尼康黄（唯一强调色） */
   --on-accent:#000000;          /* 黄上必须黑字（规范 §1.2） */
+  --knob:#FFFFFF;               /* 开关滑块：照片/取景之外，深浅各一值（P2-17 去裸 #fff） */
   --accent-soft:rgba(255,225,0,.16); /* 状态灯中间态（规范 §4-1） */
-  --ok:#1E8E3E;                 /* 仅语义状态点，不参与装饰 */
+  /* 审计 D17：--ok 全项目零引用（status 点走 --accent，成功态走 --text-primary），
+     是死 token，删掉以免误导后来者以为「成功色在这里改」。需要语义绿时再按规范 §4 登记。 */
   --danger:#D93025;
+  --logo-a:#2A2C30;             /* 顶栏 logo 渐变起点（P2-17 去裸色） */
+  --logo-b:#101113;             /* 顶栏 logo 渐变终点 */
   --glass-l1:rgba(255,255,255,.72); /* 玻璃 L1 顶栏/dock */
   --glass-l2:rgba(255,255,255,.55);
   --skeleton-a:#E8EAED;         /* 骨架屏 */
@@ -52,9 +65,11 @@
   --cam-detail:#6E747E;
   --cam-shadow:rgba(0,0,0,.12);
 
-  /* 字号阶梯（收口 12 档野字号 → 6 档） */
+  /* 字号阶梯（收口 12 档野字号 → 6 档）
+     --fs-title 曾为 17px，与 app 侧落地值 font_title 16sp 漂移（审计 D10/P0-5）：
+     原型是设计体系单一来源，故回到 16px 与 app 同值。 */
   --fs-display:24px;  /* 页面大标题/数值 */
-  --fs-title:17px;    /* 卡片标题 */
+  --fs-title:16px;    /* 卡片标题（对齐 app font_title 16sp） */
   --fs-body:14px;     /* 正文 */
   --fs-caption:13px;  /* 说明/次级 */
   --fs-foot:11px;     /* 辅助/角标 */
@@ -67,7 +82,9 @@
   /* 圆角 */
   --r-sm:10px; --r-md:14px; --r-lg:18px; --r-xl:24px; --r-full:999px;
 
-  /* 动效 token（收口 20 个裸值 → 3 档 + 1 曲线） */
+  /* 动效 token（收口 20 个裸值 → 4 档 + 1 曲线）
+     instant 档对齐 app Motion.kt 的 INSTANT 80ms（闪光/按压这类物理感反馈，150ms 显拖沓）。 */
+  --motion-instant:80ms;
   --motion-fast:150ms;
   --motion-base:220ms;
   --motion-slow:380ms;
@@ -82,14 +99,20 @@
   --on-chip-selected:#1A1B1E;
   --text-primary:#F1F3F4;
   --text-secondary:#A8ADB4;
-  --text-tertiary:#6B7076;
+  /* 三级文字：审计 D3/P0-3 由 #6B7076 提亮。原值在卡片底仅 3.56:1、页面底 3.92:1，
+     未过 AA 4.5:1。新值：卡片 5.47:1、页面 5.70:1、chip 4.72:1；
+     仍暗于二级 7.88:1，层级关系不变。 */
+  --text-tertiary:#8A8F96;
   --outline:rgba(241,243,244,.09);
   --divider:rgba(241,243,244,.07);
   --accent:#FFE100;             /* 深色模式不另调黄（规范 §1.3） */
   --on-accent:#000000;
+  --knob:#F1F3F4;               /* 深色下滑块用近白而非纯白，避免刺眼 */
   --accent-soft:rgba(255,225,0,.14);
-  --ok:#81C995;
   --danger:#F28B82;
+  /* logo 是品牌固定色，深浅同值（不随主题翻转），故显式声明而非依赖 :root 继承 */
+  --logo-a:#2A2C30;
+  --logo-b:#101113;
   --glass-l1:rgba(22,24,27,.78);
   --glass-l2:rgba(22,24,27,.60);
   --skeleton-a:#22252A;
@@ -131,7 +154,7 @@ body{
   border-bottom:1px solid var(--divider);
 }
 .topbar .logo{width:34px;height:34px;border-radius:var(--r-sm);
-  background:linear-gradient(135deg,#2A2C30,#101113);display:grid;place-items:center;flex:none;
+  background:linear-gradient(135deg,var(--logo-a),var(--logo-b));display:grid;place-items:center;flex:none;
   box-shadow:inset 0 0 0 1px var(--outline)}
 .topbar .logo svg{width:20px;height:20px}
 .topbar .titles{flex:1;min-width:0}
@@ -171,6 +194,13 @@ body{
   transition:background var(--motion-base) ease;
 }
 .section-gap{margin-top:var(--sp-4)}
+/* 审计 D4/P0-4（续）：分段常驻之后，四页顶边仍差 4px——根因不是分段，而是外边距塌陷。
+   main 没有内边距/边框，页内首块的 margin-top 会塌陷穿出 main，于是「页容器顶边」
+   被首块的外边距牵着走：设备/传输/设置页首块是 .card（16px），相册页首块 #albumBody
+   自己没有 margin、靠内部 .list-head 的 20px 撑开，塌陷值不同 → 顶边差 4px。
+   display:flow-root 让 main 自成一个 BFC，子元素的 margin 不再穿出去，
+   页容器顶边与页内容彻底解耦；配合下面 .list-head:first-child 归零，四页节奏统一。 */
+main{display:flow-root}
 .page{display:none;padding:0 var(--page-margin)}
 .page.on{display:block;animation:pageIn var(--motion-base) var(--ease-glass)}
 @keyframes pageIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -198,12 +228,13 @@ body{
 /* 状态徽章：底色 + 灯色 + 字重三重区分，不引入彩色状态色（规范 §1.1）。
    已连接=实心反相、连接中=灰底+呼吸灯、失败=空心描边、未连接=灰底灰灯。 */
 .hero-badge{
+  /* 审计 D11/P1-10：演示钩子下线后，徽章是纯状态展示（role=status），
+     不再是点击目标——cursor:pointer 与 transform 按压反馈一并去掉，免得看起来可点。 */
   height:26px;display:inline-flex;align-items:center;gap:6px;flex:none;
-  padding:0 12px 0 10px;border-radius:var(--r-full);cursor:pointer;
+  padding:0 12px 0 10px;border-radius:var(--r-full);
   font-size:var(--fs-nav);font-weight:600;border:1px solid transparent;
   background:var(--bg-chip);color:var(--text-secondary);
-  transition:background var(--motion-base) ease,color var(--motion-base) ease,
-             transform var(--motion-fast) var(--ease-glass);
+  transition:background var(--motion-base) ease,color var(--motion-base) ease;
 }
 .hero-badge .bdot{width:6px;height:6px;border-radius:50%;flex:none;background:var(--status-off);
   transition:background var(--motion-base) ease}
@@ -214,7 +245,6 @@ body{
 .hero-badge.failed{background:transparent;color:var(--text-primary);border-color:var(--text-primary)}
 .hero-badge.failed .bdot{background:var(--text-primary)}
 .hero-badge.idle{background:var(--bg-chip);color:var(--text-secondary)}
-.hero-badge:active{transform:scale(.94)}
 @keyframes dotPulse{from{opacity:1}to{opacity:.25}}
 @media (prefers-reduced-motion:reduce){.hero-badge.busy .bdot{animation:none}}
 .primary-btn{
@@ -240,6 +270,8 @@ body{
   background:var(--bg-chip);color:var(--text-secondary);border:1px solid var(--outline);
 }
 .badge.ok{color:var(--text-primary)}
+/* 审计 D7/P1-8：对勾原本是字符 ✓，不同字体基线不同、小字号下糊成一团，换成矢量 */
+.badge svg{width:12px;height:12px;display:block}
 
 /* 快捷入口 2×2 */
 .quick{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-3);margin-top:var(--sp-3)}
@@ -249,37 +281,55 @@ body{
   transition:transform var(--motion-fast) var(--ease-glass),background var(--motion-fast) ease;
 }
 .quick .qcard:active{transform:scale(.97);background:var(--bg-card-2)}
-.quick .qcard .qi{font-size:20px;display:flex;align-items:center;justify-content:center}
-.quick .qcard svg.qi{width:22px;height:22px;font-size:0}
+/* 审计 D11：删掉 emoji 时代的遗留（font-size:20px / font-size:0 两条都是为了压制字符图标） */
+.quick .qcard .qi{display:flex;align-items:center;justify-content:center}
+.quick .qcard svg.qi{width:22px;height:22px}
 .quick .qcard .qt{font-size:var(--fs-caption);font-weight:600}
 .quick .qcard .qs{font-size:var(--fs-foot);color:var(--text-tertiary)}
 
 /* ── 相册：分组头 + 网格 + 骨架屏 ───────────────── */
 .list-head{display:flex;align-items:baseline;justify-content:space-between;margin:var(--sp-5) 0 var(--sp-2)}
+/* 每组的第一行不带上边距：顶部节奏交给容器（.section-gap 的 16px）统一出，
+   组间距仍由 .list-head 自己的 20px 给。两处都出就会出现 16+20 的叠加。 */
+.list-head:first-child{margin-top:0}
 .list-head .d{font-size:var(--fs-caption);font-weight:700}
 .list-head .n{font-size:var(--fs-foot);color:var(--text-tertiary)}
+/* 审计 D18：gap 3px 不是「漏用 4 倍数栅格」，是刻意决策——
+   相册网格是照片墙，格与格之间要的是一道细缝（分隔线语义），不是布局留白；
+   用 --sp-1(4px) 会让照片墙出现明显空隙，观感从「一整面照片」散成「九张卡片」。
+   间距 token 只约束布局留白，不约束这种装饰性细缝。 */
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;border-radius:var(--r-sm);overflow:hidden}
 .tile{aspect-ratio:1;position:relative;cursor:pointer;overflow:hidden}
-.tile .ph{position:absolute;inset:0}
+/* P2-17：inset 简写 Safari <14.1 不支持，展开为四边（旧 Safari 上照片占位会整块错位） */
+.tile .ph{position:absolute;top:0;right:0;bottom:0;left:0}
 .tile:active .ph{filter:brightness(.9)}
 .tile .sel{
   position:absolute;top:6px;right:6px;width:20px;height:20px;border-radius:50%;
+  /* 半透遮罩压在照片上，与主题无关（照片亮度不可控），故用固定值而非 token */
   border:2px solid rgba(255,255,255,.9);background:rgba(0,0,0,.25);
-  display:grid;place-items:center;font-size:11px;color:transparent;
+  display:grid;place-items:center;font-size:var(--fs-foot);color:transparent;
   transition:all var(--motion-fast) var(--ease-glass);
 }
-.tile.picked .sel{background:var(--accent);border-color:var(--accent);color:#000;font-weight:800}
+.tile.picked .sel{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:800}
+/* 选中对勾改矢量：20px 圆圈里塞字符 ✓，字号只有 11px，抗锯齿后边缘发虚 */
+.tile .sel svg{width:12px;height:12px;display:block}
 .tile.picked .ph{box-shadow:inset 0 0 0 2px var(--accent)}
 /* 骨架屏：shimmer */
 .skeleton{position:relative;overflow:hidden;background:var(--skeleton-a)}
 .skeleton::after{
-  content:"";position:absolute;inset:0;transform:translateX(-100%);
+  content:"";position:absolute;top:0;right:0;bottom:0;left:0;transform:translateX(-100%);
   background:linear-gradient(90deg,transparent,var(--skeleton-b),transparent);
   animation:shimmer 1.4s infinite;
 }
 @keyframes shimmer{to{transform:translateX(100%)}}
 .sk-line{height:12px;border-radius:6px}
 .sk-line.w40{width:40%}.sk-line.w60{width:60%}.sk-line.w80{width:80%}
+/* 骨架屏里的行内占位块（审计 D7/P1-8：原本用 ▓▓ 字符堆出来的方块，换成实体块） */
+.sk-ph{display:inline-block;height:12px;border-radius:6px;background:var(--skeleton-a);vertical-align:middle}
+/* 宽度按真实文案的视觉尺寸取，骨架与实体切换时不跳动：
+   「10 月 2 日」13px 粗体约 56px；「3 张 · 121 MB」11px 约 76px。 */
+.sk-d{width:56px}
+.sk-n{width:76px}
 
 /* 多选操作栏 */
 .multibar{
@@ -310,7 +360,8 @@ body{
 .tx .fn{font-size:var(--fs-caption);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tx .st{font-size:var(--fs-foot);color:var(--text-tertiary);margin-top:2px}
 .pbar{height:4px;border-radius:2px;background:var(--bg-chip);margin-top:6px;overflow:hidden}
-.pbar i{display:block;height:100%;border-radius:2px;background:var(--text-primary);width:0;transition:width .6s var(--ease-glass)}
+/* P1-12：width 动画改 transform（避免每帧 layout），.6s 裸值收口进 motion-slow */
+.pbar i{display:block;height:100%;width:100%;border-radius:2px;background:var(--text-primary);transform:scaleX(0);transform-origin:left center;transition:transform var(--motion-slow) var(--ease-glass)}
 .tx.done .pbar i{background:var(--text-tertiary)}
 .tx.err .fn{color:var(--danger)}
 .act{
@@ -326,7 +377,7 @@ body{
   background:conic-gradient(var(--text-primary) calc(var(--p)*1%),var(--bg-chip) 0);
   position:relative;
 }
-.tx-head .ring::before{content:"";position:absolute;inset:5px;border-radius:50%;background:var(--bg-card)}
+.tx-head .ring::before{content:"";position:absolute;top:5px;right:5px;bottom:5px;left:5px;border-radius:50%;background:var(--bg-card)}
 .tx-head .ring b{position:relative;font-size:var(--fs-foot)}
 .tx-head .tt{flex:1}
 .tx-head .tt .a{font-size:var(--fs-body);font-weight:700}
@@ -342,14 +393,16 @@ body{
 }
 .row:last-child{border-bottom:none}
 .row:active{background:var(--bg-card-2)}
-.row .ri{width:28px;height:28px;border-radius:8px;background:var(--bg-chip);display:grid;place-items:center;font-size:13px;flex:none;color:var(--text-secondary)}
+.row .ri{width:28px;height:28px;border-radius:8px;background:var(--bg-chip);display:grid;place-items:center;font-size:var(--fs-caption);flex:none;color:var(--text-secondary)}
 .row .ri svg{width:16px;height:16px;display:block}
 .row .rt{flex:1;min-width:0}
 .row .rt .a{font-size:var(--fs-body);font-weight:600}
 .row .rt .b{font-size:var(--fs-foot);color:var(--text-tertiary);margin-top:1px}
 .row .rv{font-size:var(--fs-caption);color:var(--text-tertiary);display:flex;align-items:center;gap:4px}
+/* 审计 D7/P1-8：设置行的指示箭头由字符 › 换成矢量图，与其余 24 viewBox 图标同风格 */
+.row .rv svg.chev{width:14px;height:14px;flex:none;display:block}
 .switch{width:46px;height:28px;border-radius:var(--r-full);background:var(--bg-chip);position:relative;border:1px solid var(--outline);cursor:pointer;flex:none;transition:background var(--motion-base) ease}
-.switch i{position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform var(--motion-base) var(--ease-glass)}
+.switch i{position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;background:var(--knob);box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform var(--motion-base) var(--ease-glass)}
 .switch.on{background:var(--bg-chip-selected)}
 .switch.on i{transform:translateX(18px)}
 .chips{display:flex;gap:var(--sp-2);flex-wrap:wrap;padding:var(--sp-2) var(--sp-4) var(--sp-4)}
@@ -413,19 +466,90 @@ body{
 .dock .di{width:20px;height:20px;display:block}
 
 /* ── Snackbar ─────────────────────────────────── */
+/* 门控三件套（审计 D1/P0-1）：此前 .snack 只有 transform 位移，没有 visibility/opacity，
+   于是「隐藏态」只是一枚被推到下方、仍然可见的纯色药丸——浅色主题是黑药丸、深色是白药丸，
+   四页全部常驻悬浮（真实渲染才暴露，静态读代码看不出来）。现在与 .multibar 同构。
+   位置（D12）：底缘对齐 dock 上方 16px，多选栏展开时由 --snack-lift 整体上抬，
+   不再是一个写死的 170px 同时迁就「有多选栏/没有多选栏」两种场景。 */
 .snack{
-  position:fixed;left:50%;transform:translate(-50%,180%);bottom:calc(170px + env(safe-area-inset-bottom,0px));
+  position:fixed;left:50%;transform:translate(-50%,140%);
+  bottom:calc(96px + var(--snack-lift,0px) + env(safe-area-inset-bottom,0px));
   z-index:70;max-width:calc(100% - 48px);
   background:var(--bg-chip-selected);color:var(--on-chip-selected);
   font-size:var(--fs-caption);padding:11px var(--sp-4);border-radius:var(--r-full);
-  box-shadow:var(--shadow-key);transition:transform var(--motion-slow) var(--ease-glass);
-  display:flex;gap:var(--sp-3);align-items:center;white-space:nowrap;
+  box-shadow:var(--shadow-key);
+  display:flex;gap:var(--sp-3);align-items:center;justify-content:center;
+  /* D2/P0-2：去掉 white-space:nowrap——长文案（660px vs 盒宽 342px）会被 body 的
+     overflow-x:hidden 从两端裁掉首尾，关键信息整个丢失。 */
+  text-align:center;line-height:1.4;
+  visibility:hidden;opacity:0;pointer-events:none;
+  transition:transform var(--motion-slow) var(--ease-glass),
+             opacity var(--motion-base) ease,
+             bottom var(--motion-slow) var(--ease-glass),
+             visibility var(--motion-base);
 }
-.snack.on{transform:translate(-50%,0)}
+.snack.on{transform:translate(-50%,0);visibility:visible;opacity:1;pointer-events:auto}
+/* 多选栏展开时整体上抬，保持与 dock 的相对关系（原实现靠 170px 硬编码兼就两种场景） */
+body.has-multibar{--snack-lift:72px}
 .snack b{color:var(--accent)}
 
-/* 展示辅助 */
-.demo-note{margin:var(--sp-6) var(--page-margin) var(--sp-3);font-size:var(--fs-foot);color:var(--text-tertiary);text-align:center}
+/* 展示辅助（审计 D11/P1-10：三条「原型 · 数据为演示」类页脚已移除，规则随之删除） */
+
+/* ── 分段常驻禁用态（审计 D4/P0-4）──────────────────────
+   此前非设备页把分段整条 display:none，切页时设备页与其它页的首卡顶部相差 57px
+   （分段 41 + margin 16）——底部导航一切就「跳一下」，是大厂质感里明确的扣分项。
+   现在分段常驻，非设备页降级为灰显不可点：模式语境不丢，位置也不动。 */
+.segment.muted{opacity:.35;pointer-events:none}
+.segment.muted button{cursor:default}
+
+/* ── 触达补齐（审计 D5/P1-7）───────────────────────────
+   实测不达标：hero-badge 26 / errbar 按钮 30 / .act 34 / .chip 34 / .mb 38 /
+   .switch 28 / .segment button 33 / .iconbtn 40（dock 50 / primary-btn 50 / row 68 已达标）。
+   做法：视觉尺寸一律不动（保持「紧凑」观感），用透明热区把可点区撑到 44dp。 */
+/* hero-badge 不在此列：它已是纯状态展示（role=status），给它铺一层透明热区
+   反而会吃掉上下 9px 范围内的点击，旁边元素的点击会被挡掉。 */
+.errbar button,.act,.chip,.mb,.switch,.iconbtn{position:relative}
+.errbar button::after{content:"";position:absolute;left:0;right:0;top:-7px;bottom:-7px}
+.act::after,.chip::after{content:"";position:absolute;left:0;right:0;top:-5px;bottom:-5px}
+.mb::after{content:"";position:absolute;left:0;right:0;top:-3px;bottom:-3px}
+.switch::after{content:"";position:absolute;left:-8px;right:-8px;top:-8px;bottom:-8px}
+/* 不用 inset 简写：Safari 14.1 以下不认 inset 属性，会整条声明丢弃 */
+.iconbtn::after{content:"";position:absolute;top:-2px;right:-2px;bottom:-2px;left:-2px}
+.segment button{padding:0;min-height:44px;display:flex;align-items:center;justify-content:center}
+
+/* ── 桌面悬停与键盘焦点（审计 D6/P1-11）────────────────
+   此前 0 条 :hover、0 条 :focus-visible：桌面端无任何悬停反馈，
+   键盘用户看不到焦点落点（叠加 45 个 onclick 元素零 tabindex，见 P1-19 事件委托）。
+   悬停态只在支持 hover 的设备生效，不会污染移动端。 */
+@media (hover:hover){
+  .iconbtn:hover,.dock button:hover,.segment button:not(.on):hover{background:var(--bg-chip)}
+  .quick .qcard:hover,.row:hover{background:var(--bg-card-2)}
+  .chip:hover{border-color:var(--text-tertiary)}
+  .primary-btn:hover,.multibar .mb:hover,.act:hover{filter:brightness(1.06)}
+}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--r-sm)}
+/* 键盘可达的网格项（事件委托后统一补 tabindex，见脚本） */
+.tile:focus-visible{outline-offset:-2px}
+
+/* ── 系统「减少动态效果」全覆盖（审计 D9/P1-9）──────────
+   此前 @media 只接管了状态灯 dotPulse 一处；实测系统关动画后仍有 9 个动画在跑
+   （相册骨架 shimmer ×9 + 页面入场 pageIn + 主题过渡 + 多选栏 + 分段胶囊）。
+   统一压到 1ms（保留动画终态，避免出现「停在半透明」这类半成品状态）。 */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{
+    animation-duration:1ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:1ms !important;
+    scroll-behavior:auto !important;
+  }
+}
+
+/* ── 桌面端两侧留白（审计 D16/P2-18）────────────────────
+   ≥481px 时 body 居中 480 宽，原先两侧是纯黑大面积留白，画面「秃」。
+   补一层极淡的页面底纹边界，把原型框成一张卡片（移动端零影响）。 */
+@media (min-width:481px){
+  body{box-shadow:0 0 0 1px var(--outline),0 24px 64px rgba(0,0,0,.18);min-height:100vh}
+}
 </style>
 </head>
 <body>
@@ -485,28 +609,40 @@ body{
     <div class="t1">我的设备</div>
     <div class="t2">N-LINK · Z 6II</div>
   </div>
-  <button class="iconbtn" onclick="toast('预检全部通过 · 无 VPN / 无省电限制')" title="预检">✓</button>
-  <button class="iconbtn" onclick="toggleTheme()" id="themeBtn" title="切换深浅主题">◐</button>
+  <!-- 审计 D7/P1-8：两处字符图标（✓ ◐）换成矢量图，并补 aria-label（此前 16 个 button
+       全无 aria-label，图标类按钮对读屏是完全空白）。其余 button 由文字内容自动标注。 -->
+  <button class="iconbtn" id="btnPrefs" data-act="preflight" aria-label="运行连接预检">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:22px;height:22px"><path d="M4.5,12.5 L9.5,17.5 L19.5,6.5"/></svg>
+  </button>
+  <button class="iconbtn" id="themeBtn" data-act="theme" aria-label="切换深浅主题">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true" style="width:22px;height:22px"><circle cx="12" cy="12" r="8.5"/><path fill="currentColor" d="M12,3.5 a8.5,8.5 0 0,0 0,17 z"/></svg>
+  </button>
 </header>
 
 <!-- 模式分段：液态胶囊指示器 -->
 <nav class="segment" id="seg">
   <div class="pill" id="segPill"></div>
-  <button class="on" onclick="segTo(0,this)">WiFi AP</button>
-  <button onclick="segTo(1,this)">WiFi STA</button>
-  <button onclick="segTo(2,this)">USB</button>
+  <button class="on" data-act="seg" data-i="0">WiFi AP</button>
+  <button data-act="seg" data-i="1">WiFi STA</button>
+  <button data-act="seg" data-i="2">USB</button>
 </nav>
 
 <!-- ═══ 页 1 · 设备（首页）═══ -->
-<main class="page on" id="p0">
+<!-- 审计 D15/P2：此前是 4 个并列 <main>，语义上「主内容区」只能有一个；
+     改为 1 个 main 作容器、4 个 section 作页签。切页逻辑走 .page 类，不受标签名影响。 -->
+<main>
+  <section class="page on" id="p0">
   <section class="card connect-hero">
     <div class="camera-visual s-connected" id="cameraVisual">
       <svg class="cam-hero" viewBox="0 0 132 92" aria-hidden="true"><use href="#nl-cam"/></svg>
-      <div class="hero-badge connected" id="heroBadge" onclick="cycleHeroState()" title="点击循环切换四态（原型演示）">
+      <!-- 审计 D11/P1-10：徽章原本挂着「点击循环四态」的演示钩子（cursor:pointer + onclick），
+           在正式界面里它是一个状态标签却长得像按钮——属于误导性可点性。演示入口撤掉，
+           四态仍由连接流程（idle→busy→connected/failed）真实驱动。 -->
+      <div class="hero-badge connected" id="heroBadge" role="status" aria-live="polite">
         <span class="bdot"></span><span id="camState">已连接</span>
       </div>
     </div>
-    <button class="primary-btn" id="connectBtn" onclick="doConnect()">⟶ 连接相机</button>
+    <button class="primary-btn" id="connectBtn" data-act="connect">连接相机</button>
     <div class="hint">手机连上相机热点后点击，后续自动完成</div>
   </section>
 
@@ -520,20 +656,20 @@ body{
   </section>
 
   <div class="quick">
-    <div class="qcard" onclick="go('p1')">
+    <div class="qcard" data-go="p1">
       <svg class="qi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
         <path d="M5,4.5 H19 A1.5,1.5 0 0 1 20.5,6 V18 A1.5,1.5 0 0 1 19,19.5 H5 A1.5,1.5 0 0 1 3.5,18 V6 A1.5,1.5 0 0 1 5,4.5 Z"/>
         <path d="M4,15.5 L9,10.5 L13,14.5 L16,11.5 L20,15.5"/>
         <path fill="currentColor" stroke="none" d="M9,9.25a1.25,1.25 0 1,0 0,-2.5 1.25,1.25 0 0,0 0,2.5z"/>
       </svg><span class="qt">查看相册</span><span class="qs">24 张新照片</span>
     </div>
-    <div class="qcard" onclick="go('p2')">
+    <div class="qcard" data-go="p2">
       <svg class="qi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12,4 V15"/><path d="M7.5,11 L12,15.5 L16.5,11"/><path d="M5,19 H19"/></svg><span class="qt">传输队列</span><span class="qs">2 张传输中</span>
     </div>
-    <div class="qcard" onclick="go('p3')">
+    <div class="qcard" data-go="p3">
       <svg class="qi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4,8 H20"/><path d="M4,16 H20"/><circle cx="9" cy="8" r="2.2"/><circle cx="15" cy="16" r="2.2"/></svg><span class="qt">传输设置</span><span class="qs">保存路径 · 自动下载</span>
     </div>
-    <div class="qcard" onclick="toast('进入遥控拍摄（实时取景）')">
+    <div class="qcard" data-act="toast" data-msg="进入遥控拍摄（实时取景）">
       <svg class="qi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12,21 a9,9 0 1,1 0,-18 a9,9 0 0,1 0,18 z"/><path fill="currentColor" stroke="none" d="M12,15a3,3 0 1,1 0,-6 3,3 0 0,1 0,6z"/></svg><span class="qt">遥控拍摄</span><span class="qs">监看 · 参数 · 快门</span>
     </div>
   </div>
@@ -544,15 +680,14 @@ body{
       <div class="et">连接相机超时</div>
       <div class="ed">相机 WiFi 可能已关闭。请重新开启相机热点后再试</div>
     </div>
-    <button onclick="doConnect()">重试</button>
+    <button data-act="retry">重试</button>
   </div>
-  <div class="demo-note">原型 · FR-视1 设计体系提案 · 数据为演示</div>
-</main>
+  </section>
 
 <!-- ═══ 页 2 · 相册（核心列表：骨架屏 / 网格 / 空态）═══ -->
-<main class="page" id="p1">
+  <section class="page" id="p1">
   <div id="albumSkeleton" class="section-gap">
-    <div class="list-head"><span class="d">▓▓▓▓</span><span class="n">▓▓</span></div>
+    <div class="list-head" aria-hidden="true"><span class="d"><span class="sk-ph sk-d"></span></span><span class="n"><span class="sk-ph sk-n"></span></span></div>
     <div class="grid">
       <div class="tile skeleton"></div><div class="tile skeleton"></div><div class="tile skeleton"></div>
       <div class="tile skeleton"></div><div class="tile skeleton"></div><div class="tile skeleton"></div>
@@ -560,7 +695,7 @@ body{
     </div>
   </div>
 
-  <div id="albumBody" style="display:none">
+  <div id="albumBody" class="section-gap" style="display:none">
     <div class="list-head"><span class="d">今天</span><span class="n">12 张 · 486 MB</span></div>
     <div class="grid" id="g1"></div>
     <div class="list-head"><span class="d">昨天</span><span class="n">9 张 · 402 MB</span></div>
@@ -574,12 +709,12 @@ body{
     <div class="eicon"><svg viewBox="0 0 132 92" aria-hidden="true"><use href="#nl-cam"/></svg></div>
     <div class="et">暂无相机照片</div>
     <div class="ed">连接相机后，在这里浏览与下载</div>
-    <button class="ea" onclick="go('p0')">去连接相机</button>
+    <button class="ea" data-go="p0">去连接相机</button>
   </div>
-</main>
+  </section>
 
 <!-- ═══ 页 3 · 传输（详情/进度）═══ -->
-<main class="page" id="p2">
+  <section class="page" id="p2">
   <section class="card section-gap" style="display:flex;align-items:center;gap:16px">
     <div class="tx-head" style="margin:0">
       <div class="ring" id="ring" style="--p:68"><b>68%</b></div>
@@ -588,21 +723,21 @@ body{
       <div class="a">正在下载 12 / 24 张</div>
       <div class="b">18.4 MB/s · 剩余约 26 秒 · 5GHz</div>
     </div>
-    <button class="act ghost" onclick="toast('已暂停')">暂停</button>
+    <button class="act ghost" data-act="toast" data-msg="已暂停">暂停</button>
   </section>
 
   <section class="card section-gap">
     <div class="tx done">
       <div class="thumb" style="background:linear-gradient(135deg,#8A93A5,#4A5160)"></div>
       <div class="mid"><div class="fn">DSC_4512.NEF → JPG</div><div class="st">已完成 · 24.6 MB</div></div>
-      <span class="badge ok">✓</span>
+      <span class="badge ok" role="img" aria-label="已完成"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20,6 L9,17 L4,12"/></svg></span>
     </div>
     <div class="tx">
       <div class="thumb" style="background:linear-gradient(135deg,#A8B47A,#5C6B3A)"></div>
       <div class="mid">
         <div class="fn">DSC_4513.NEF</div>
         <div class="st">16.8 / 24.7 MB</div>
-        <div class="pbar"><i id="pb" style="width:68%"></i></div>
+        <div class="pbar"><i id="pb" style="transform:scaleX(.68)"></i></div>
       </div>
     </div>
     <div class="tx">
@@ -612,31 +747,30 @@ body{
     <div class="tx err">
       <div class="thumb" style="background:linear-gradient(135deg,#B87F7F,#683D3D)"></div>
       <div class="mid"><div class="fn">DSC_4515.MOV</div><div class="st">失败 · 相机中断连接</div></div>
-      <button class="act" onclick="toast('已重新入队')">重试</button>
+      <button class="act" data-act="toast" data-msg="已重新入队">重试</button>
     </div>
   </section>
 
-  <div class="demo-note">进度环 / 速度 / 队列 · 失败项内联重试</div>
-</main>
+  </section>
 
 <!-- ═══ 页 4 · 设置（分组表单）═══ -->
-<main class="page" id="p3">
+  <section class="page" id="p3">
   <section class="card group section-gap">
     <div class="gh">下载</div>
-    <div class="row" onclick="toast('选择保存路径')">
+    <div class="row" data-act="toast" data-msg="选择保存路径">
       <div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M3,6.5 C3,5.67 3.67,5 4.5,5 H9 L11,7 H19.5 C20.33,7 21,7.67 21,8.5 V17.5 C21,18.33 20.33,19 19.5,19 H4.5 C3.67,19 3,18.33 3,17.5 Z"/></svg></div>
       <div class="rt"><div class="a">保存路径</div><div class="b">DCIM/N-Link</div></div>
-      <div class="rv">›</div>
+      <div class="rv"><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9,5 L16,12 L9,19"/></svg></div>
     </div>
-    <div class="row" onclick="toast('已切换：只下 JPG')">
+    <div class="row" data-act="toast" data-msg="已切换：只下 JPG">
       <div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M12,3 L3,8 L12,13 L21,8 Z"/><path d="M3,13 L12,18 L21,13"/></svg></div>
       <div class="rt"><div class="a">RAW 策略</div><div class="b">RAW+JPG 同时拍摄时的取法</div></div>
-      <div class="rv">只下 JPG ›</div>
+      <div class="rv">只下 JPG<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9,5 L16,12 L9,19"/></svg></div>
     </div>
     <div class="row">
       <div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M13,3 L6,13.5 H11 L10,21 L18,10.5 H13 Z"/></svg></div>
       <div class="rt"><div class="a">连拍自动下载</div><div class="b">拍到即入队，无需手动</div></div>
-      <div class="switch on" onclick="this.classList.toggle('on');toast('自动下载已' + (this.classList.contains('on')?'开启':'关闭'))"><i></i></div>
+      <div class="switch on" data-act="switch" data-on="自动下载已开启" data-off="自动下载已关闭" role="switch" aria-label="连拍自动下载"><i></i></div>
     </div>
   </section>
 
@@ -645,15 +779,15 @@ body{
     <div class="row">
       <div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3,5.5 H21 A1.5,1.5 0 0 1 22.5,7 V15 A1.5,1.5 0 0 1 21,16.5 H3 A1.5,1.5 0 0 1 1.5,15 V7 A1.5,1.5 0 0 1 3,5.5 Z"/><path d="M9,21 H15"/><path d="M12,16.5 V21"/></svg></div>
       <div class="rt"><div class="a">目标帧率</div></div>
-      <div class="rv">15 fps ›</div>
+      <div class="rv">15 fps<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9,5 L16,12 L9,19"/></svg></div>
     </div>
     <div class="chips">
       <span class="chip">12</span><span class="chip on">15</span><span class="chip">24</span><span class="chip">30</span>
     </div>
     <div class="row" style="border-top:1px solid var(--divider)">
-      <div class="ri">◐</div>
+      <div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path fill="currentColor" d="M12,3.5 a8.5,8.5 0 0,0 0,17 z"/></svg></div>
       <div class="rt"><div class="a">伪彩辅助</div><div class="b">12 档分档上色</div></div>
-      <div class="switch" onclick="this.classList.toggle('on')"><i></i></div>
+      <div class="switch" data-act="switch" role="switch" aria-label="伪彩辅助"><i></i></div>
     </div>
   </section>
 
@@ -662,22 +796,22 @@ body{
     <div class="row">
       <div class="ri"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="currentColor" d="M12,3 a9,9 0 0,0 0,18 z"/></svg></div>
       <div class="rt"><div class="a">深浅主题</div><div class="b">跟随系统，也可手动切换</div></div>
-      <div class="switch on" id="themeSwitch" onclick="toggleTheme(true)"><i></i></div>
+      <div class="switch on" id="themeSwitch" data-act="theme" role="switch" aria-label="深浅主题"><i></i></div>
     </div>
-    <div class="row" onclick="toast('N-Link v3.0.0 (27) · release 4.1 MB')">
-      <div class="ri">ℹ</div>
+    <div class="row" data-act="toast" data-msg="N-Link v3.0.0 (27) · release 4.1 MB">
+      <div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12,11 V16.5"/><circle cx="12" cy="7.8" r="1.05" fill="currentColor" stroke="none"/></svg></div>
       <div class="rt"><div class="a">关于</div></div>
-      <div class="rv">v3.0.0 ›</div>
+      <div class="rv">v3.0.0<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9,5 L16,12 L9,19"/></svg></div>
     </div>
   </section>
-  <div class="demo-note">分组表单 · 48dp 触达 · 开关动效 220ms</div>
+  </section>
 </main>
 
 <!-- 多选操作栏（微交互示例） -->
 <div class="multibar" id="multibar">
   <span class="cnt" id="mbCnt">已选 0 张</span>
-  <button class="mb ghost" onclick="clearPick()">取消</button>
-  <button class="mb" onclick="toast('已加入下载队列');clearPick()">下载</button>
+  <button class="mb ghost" data-act="clear">取消</button>
+  <button class="mb" data-act="download">下载</button>
 </div>
 
 <!-- Snackbar（同文案去重 + 3s 自动收） -->
@@ -685,23 +819,23 @@ body{
 
 <!-- 底部 dock：玻璃 L1 -->
 <nav class="dock">
-  <button class="on" onclick="go('p0',this)">
+  <button class="on" data-go="p0">
     <svg class="di" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
       <path d="M8.5,4 L7,6 H4.5 C3.67,6 3,6.67 3,7.5 V18 C3,18.83 3.67,19.5 4.5,19.5 H19.5 C20.33,19.5 21,18.83 21,18 V7.5 C21,6.67 20.33,6 19.5,6 H17 L15.5,4 Z"/>
       <path d="M12,16.25 a3.75,3.75 0 1,1 0,-7.5 a3.75,3.75 0 0,1 0,7.5 z"/>
     </svg>设备</button>
-  <button onclick="go('p1',this)">
+  <button data-go="p1">
     <svg class="di" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
       <path d="M5,4.5 H19 A1.5,1.5 0 0 1 20.5,6 V18 A1.5,1.5 0 0 1 19,19.5 H5 A1.5,1.5 0 0 1 3.5,18 V6 A1.5,1.5 0 0 1 5,4.5 Z"/>
       <path d="M4,15.5 L9,10.5 L13,14.5 L16,11.5 L20,15.5"/>
       <path fill="currentColor" stroke="none" d="M9,9.25a1.25,1.25 0 1,0 0,-2.5 1.25,1.25 0 0,0 0,2.5z"/>
     </svg>相机照片</button>
-  <button onclick="go('p2',this)">
+  <button data-go="p2">
     <svg class="di" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
       <path d="M12,21 a9,9 0 1,1 0,-18 a9,9 0 0,1 0,18 z"/>
       <path fill="currentColor" stroke="none" d="M12,15a3,3 0 1,1 0,-6 3,3 0 0,1 0,6z"/>
     </svg>拍摄</button>
-  <button onclick="go('p3',this)">
+  <button data-go="p3">
     <svg class="di" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
       <path d="M19.14,12.94c0.04,-0.3 0.06,-0.61 0.06,-0.94 0,-0.32 -0.02,-0.64 -0.07,-0.94l2.03,-1.58c0.18,-0.14 0.23,-0.41 0.12,-0.61l-1.92,-3.32c-0.12,-0.22 -0.37,-0.29 -0.59,-0.22l-2.39,0.96c-0.5,-0.38 -1.03,-0.7 -1.62,-0.94L14.4,2.81c-0.04,-0.24 -0.24,-0.41 -0.48,-0.41h-3.84c-0.24,0 -0.43,0.17 -0.47,0.41L9.25,5.35C8.66,5.59 8.12,5.92 7.63,6.29L5.24,5.33c-0.22,-0.08 -0.47,0 -0.59,0.22L2.74,8.87C2.62,9.08 2.66,9.34 2.86,9.48l2.03,1.58C4.84,11.36 4.8,11.69 4.8,12s0.02,0.64 0.07,0.94l-2.03,1.58c-0.18,0.14 -0.23,0.41 -0.12,0.61l1.92,3.32c0.12,0.22 0.37,0.29 0.59,0.22l2.39,-0.96c0.5,0.38 1.03,0.7 1.62,0.94l0.36,2.54c0.05,0.24 0.24,0.41 0.48,0.41h3.84c0.24,0 0.44,-0.17 0.47,-0.41l0.36,-2.54c0.59,-0.24 1.13,-0.56 1.62,-0.94l2.39,0.96c0.22,0.08 0.47,0 0.59,-0.22l1.92,-3.32c0.12,-0.22 0.07,-0.47 -0.12,-0.61L19.14,12.94zM12,15.6c-1.98,0 -3.6,-1.62 -3.6,-3.6s1.62,-3.6 3.6,-3.6 3.6,1.62 3.6,3.6 -1.62,3.6 -3.6,3.6z"/>
     </svg>设置</button>
@@ -719,9 +853,10 @@ function fillGrid(id,n,offset){
   const g=document.getElementById(id);let h='';
   for(let i=0;i<n;i++){
     const p=PALETTES[(i+offset)%PALETTES.length];
-    h+=`<div class="tile" onclick="pick(this)">
+    // P1-19：tile 走 data-act 委托 + tabindex/role/aria-pressed（此前键盘完全不可达）
+    h+=`<div class="tile" data-act="pick" tabindex="0" role="button" aria-pressed="false" aria-label="照片 ${i+1}">
       <div class="ph" style="background:linear-gradient(${135+(i*37)%90}deg,${p[0]},${p[1]})"></div>
-      <span class="sel">✓</span></div>`;
+      <span class="sel" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20,6 L9,17 L4,12"/></svg></span></div>`;
   }
   g.innerHTML=h;
 }
@@ -740,30 +875,51 @@ function albumEmptyToggle(){
 
 /* ── 多选 ─────────────────────────────────────────── */
 let picks=0;
+/** 多选栏展开时给 <body> 置类：Snackbar 靠 CSS 变量整体上抬（审计 D12，
+    此前靠 bottom:170px 一个硬编码同时迁就「有/无多选栏」两种场景） */
+function syncMultibar(){
+  const on=picks>0;
+  document.getElementById('multibar').classList.toggle('on',on);
+  document.body.classList.toggle('has-multibar',on);
+  document.getElementById('mbCnt').textContent=`已选 ${picks} 张`;
+}
 function pick(el){
   el.classList.toggle('picked');
-  picks+=el.classList.contains('picked')?1:-1;
-  document.getElementById('mbCnt').textContent=`已选 ${picks} 张`;
-  document.getElementById('multibar').classList.toggle('on',picks>0);
+  const picked=el.classList.contains('picked');
+  el.setAttribute('aria-pressed',picked?'true':'false');
+  picks+=picked?1:-1;
+  syncMultibar();
 }
 function clearPick(){
-  document.querySelectorAll('.tile.picked').forEach(t=>t.classList.remove('picked'));
-  picks=0;document.getElementById('multibar').classList.remove('on');
+  document.querySelectorAll('.tile.picked').forEach(t=>{
+    t.classList.remove('picked');t.setAttribute('aria-pressed','false');
+  });
+  picks=0;syncMultibar();
 }
 
 /* ── 页面/分段导航（胶囊滑动） ─────────────────────── */
 function go(id,btn){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
   document.getElementById(id).classList.add('on');
-  document.querySelectorAll('.dock button').forEach(b=>b.classList.remove('on'));
-  if(btn)btn.classList.add('on');
-  else document.querySelectorAll('.dock button').forEach((b,i)=>{
-    if((id==='p0'&&i===0)||(id==='p1'&&i===1)||(id==='p2'&&i===2)||(id==='p3'&&i===3))b.classList.add('on');
+  document.querySelectorAll('.dock button').forEach(b=>{
+    const on = btn ? b===btn : b.dataset.go===id;
+    b.classList.toggle('on',on);
+    if(on)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');
   });
-  // 模式分段仅设备页有意义
-  document.getElementById('seg').style.display=(id==='p0')?'grid':'none';
+  // P0-4：分段常驻，非设备页降级为灰显不可点。
+  // 此前用 display:none 让非设备页少掉 41+16=57px，切页时首卡顶部上下跳一下。
+  document.getElementById('seg').classList.toggle('muted',id!=='p0');
   window.scrollTo({top:0,behavior:'smooth'});
   clearPick();
+  // 进入传输页时重放进度条（原实现用全树 MutationObserver 监听 class，见 P1-12）
+  if(id==='p2')replayProgress();
+}
+/** 进度条重放：transform 动画（合成层），不再走 width（layout） */
+function replayProgress(){
+  const pb=document.getElementById('pb');
+  if(!pb)return;
+  pb.style.transform='scaleX(0)';
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{pb.style.transform='scaleX(.68)';}));
 }
 function segTo(i,btn){
   document.getElementById('segPill').style.transform=`translateX(${i*100}%)`;
@@ -772,21 +928,43 @@ function segTo(i,btn){
   toast(['AP 直连：一键连接，无需扫描','STA：同一 WiFi / 手机热点','USB：即插即用'][i]);
 }
 
-/* ── 主题切换（浅/深，动效 220ms） ─────────────────── */
-function toggleTheme(fromSwitch){
-  const r=document.documentElement;
-  const dark=r.getAttribute('data-theme')==='dark';
-  r.setAttribute('data-theme',dark?'light':'dark');
-  toast(dark?'已切换到浅色主题':'已切换到深色主题');
+/* ── 主题（浅/深，动效 220ms） ───────────────────────
+   审计 D8/P1-6：此前 <html> 上写死 data-theme="dark"，刷新必回深色，
+   也从不读系统偏好；而设置页那行文案写的是「跟随系统，也可手动切换」——言行不一。
+   现在：显式选择（localStorage）优先，未选择时跟随 prefers-color-scheme。 */
+const THEME_KEY='nl-theme';
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme',t);
+  const sw=document.getElementById('themeSwitch');
+  if(sw){
+    sw.classList.toggle('on',t==='dark');
+    sw.setAttribute('aria-checked',t==='dark'?'true':'false');
+  }
 }
+function toggleTheme(){
+  const dark=document.documentElement.getAttribute('data-theme')==='dark';
+  const next=dark?'light':'dark';
+  applyTheme(next);
+  try{localStorage.setItem(THEME_KEY,next);}catch(_){}
+  toast(next==='light'?'已切换到浅色主题':'已切换到深色主题');
+}
+(function initTheme(){
+  let saved=null;
+  try{saved=localStorage.getItem(THEME_KEY);}catch(_){}
+  if(saved==='light'||saved==='dark'){applyTheme(saved);return;}
+  const sys=(window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches)?'light':'dark';
+  applyTheme(sys);
+})();
 
 /* ── 英雄图四态（与 app 的 DashboardFragment.HeroStatus 一一对应）──────
    四态 = 徽章底色 + 状态灯 + 相机图明暗 三重表达，不引入彩色状态色。
-   点徽章可循环切换，方便逐态验收。 */
-const HERO_ORDER=['idle','busy','connected','failed'];
+   审计 D11/P1-10：徽章上「点击循环四态」的演示钩子已下线（原型要按真实产品行为走），
+   随之删除 cycleHeroState 与只被它引用的 HERO_ORDER——留着就是死代码。 */
 const HERO_LABEL={idle:'未连接',busy:'连接中',connected:'已连接',failed:'连接失败'};
 let heroState='connected';
 function setHeroState(s){
+  /* 同态直接返回：连接流程里 busy 会被重复下发，省掉这一轮 5 次 DOM 写入 */
+  if(s===heroState)return;
   heroState=s;
   document.getElementById('cameraVisual').className='camera-visual s-'+s;
   document.getElementById('heroBadge').className='hero-badge '+s;
@@ -795,11 +973,12 @@ function setHeroState(s){
   document.getElementById('devBadge').textContent=
     s==='connected'?'已连接':(s==='failed'?'连接失败':'已配对');
 }
-function cycleHeroState(){
-  setHeroState(HERO_ORDER[(HERO_ORDER.indexOf(heroState)+1)%HERO_ORDER.length]);
-}
 
 /* ── 连接演示：按钮 → 骨架 → 完成/失败（对应 AP 档时序）── */
+/* 审计 D7/P1-8：按钮文案原本带字符箭头 ⟶，与「已矢量化的其余图标」不是同一种东西；
+   主按钮是全宽实心块，箭头不承载信息，去掉。
+   复原态文案从 HTML 初值抓一次，HTML 就是唯一来源，不存在两处漂移。 */
+const CONNECT_LABEL=document.getElementById('connectBtn').textContent.trim();
 function doConnect(){
   const btn=document.getElementById('connectBtn');
   if(btn.disabled)return;
@@ -809,7 +988,7 @@ function doConnect(){
   setTimeout(()=>{ btn.textContent='正在绑定网络…';},900);
   setTimeout(()=>{ btn.textContent='等待相机响应…';},2100);
   setTimeout(()=>{
-    btn.disabled=false;btn.textContent='⟶ 连接相机';
+    btn.disabled=false;btn.textContent=CONNECT_LABEL;
     if(Math.random()<0.35){
       setHeroState('failed');
       document.getElementById('errbar').style.display='flex';
@@ -817,29 +996,83 @@ function doConnect(){
     }else{
       setHeroState('connected');
       document.getElementById('devSub').textContent='AP 直连 · 192.168.1.2 · 5GHz · 24MB/s';
-      toast('配对完成，请在相机上按 <b>OK</b> 确认');
+      toast('配对完成，请在相机上按 OK 确认','OK');
     }
   },3400);
 }
 
 /* ── Snackbar（同文案去重 + 自动收） ────────────────── */
 let snackTimer=null,lastMsg='';
-function toast(msg){
+/**
+ * P1-12：不再吃 innerHTML —— 那是 XSS 面，也逼着 CSP 开 unsafe-inline。
+ * 需要强调的词走第二个参数：toast('请在相机上按 OK 确认','OK')。
+ */
+function toast(msg,highlight){
   const s=document.getElementById('snack');
-  if(msg===lastMsg&&s.classList.contains('on'))return;
-  lastMsg=msg;s.innerHTML=msg;s.classList.add('on');
+  const key=msg+'|'+(highlight||'');
+  if(key===lastMsg&&s.classList.contains('on'))return;
+  lastMsg=key;
+  s.textContent='';
+  if(highlight&&msg.indexOf(highlight)>=0){
+    const i=msg.indexOf(highlight);
+    s.append(msg.slice(0,i));
+    const b=document.createElement('b');b.textContent=highlight;s.append(b);
+    s.append(msg.slice(i+highlight.length));
+  }else{
+    s.textContent=msg;
+  }
+  s.classList.add('on');
   clearTimeout(snackTimer);
   snackTimer=setTimeout(()=>{s.classList.remove('on');lastMsg='';},2600);
 }
 
-/* 传输进度条微动效（进入页面时） */
-const pbObserver=new MutationObserver(()=>{
-  const pb=document.getElementById('pb');
-  if(pb&&document.getElementById('p2').classList.contains('on')){
-    pb.style.width='0%';requestAnimationFrame(()=>requestAnimationFrame(()=>pb.style.width='68%'));
+/* ── 事件委托（审计 D6 / P1-19）───────────────────────
+   此前 45 处内联 onclick：键盘零可达、CSP 要开 unsafe-inline。
+   统一收敛为 data-go（翻页）/ data-act（动作）+ 文档级委托，
+   非 button 的可点元素由 a11yPass() 补 tabindex/role，回车与空格等效点击。 */
+document.addEventListener('click',(e)=>{
+  const el=e.target.closest('[data-go],[data-act]');
+  if(!el)return;
+  if(el.dataset.go){
+    // 只有 dock 内的按钮才作为「当前项」高亮；快捷卡片翻页时回落到按 data-go 匹配
+    go(el.dataset.go, el.closest('.dock')?el:null);
+    return;
+  }
+  switch(el.dataset.act){
+    case 'preflight': toast('预检全部通过 · 无 VPN / 无省电限制'); break;
+    case 'theme':     toggleTheme(); break;
+    case 'connect':   doConnect(); break;
+    case 'retry':     doConnect(); break;
+    case 'pick':      pick(el); break;
+    case 'clear':     clearPick(); break;
+    case 'download':  toast('已加入下载队列'); clearPick(); break;
+    case 'seg':       segTo(+el.dataset.i,el); break;
+    case 'toast':     toast(el.dataset.msg); break;
+    case 'switch': {
+      el.classList.toggle('on');
+      const on=el.classList.contains('on');
+      el.setAttribute('aria-checked',on?'true':'false');
+      if(el.dataset.on)toast(on?el.dataset.on:el.dataset.off);
+      break;
+    }
   }
 });
-pbObserver.observe(document.body,{attributes:true,subtree:true,attributeFilter:['class']});
+/** 键盘：原生 button 自带激活，这里只补委托元素（div/span）的回车与空格 */
+document.addEventListener('keydown',(e)=>{
+  if(e.key!=='Enter'&&e.key!==' ')return;
+  const el=e.target.closest&&e.target.closest('[data-go],[data-act]');
+  if(!el||el.tagName==='BUTTON')return;
+  e.preventDefault();el.click();
+});
+/** 给可点的非 button 元素补语义与键盘可达性 */
+function a11yPass(){
+  document.querySelectorAll('[data-go],[data-act]').forEach(el=>{
+    if(el.tagName==='BUTTON')return;
+    if(!el.hasAttribute('tabindex'))el.setAttribute('tabindex','0');
+    if(!el.getAttribute('role'))el.setAttribute('role','button');
+  });
+}
+a11yPass();
 </script>
 </body>
 </html>

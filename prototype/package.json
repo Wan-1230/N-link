@@ -1,0 +1,11 @@
+{
+  "name": "nlink-prototype",
+  "version": "1.0.0",
+  "private": true,
+  "description": "N-Link 视觉升级原型（零依赖单文件 HTML），构建脚本见 build.mjs",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "python ../tools/check_proto_ui.py"
+  }
+}
