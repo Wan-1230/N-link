@@ -75,9 +75,10 @@ class RemoteFragment : Fragment(), GlassInsetAware {
     /** 优化项 4：直方图开关状态持久化（顺手保持跨页面/重启一致） */
     @Inject lateinit var settings: AppSettings
 
-    /** 相机连接判定（USB / WiFi PTP 任一通道连通即视为可远程控制） */
+    /** 相机连接判定（USB / AP 直连 / WiFi PTP 任一通道连通即视为可远程控制） */
     @Inject lateinit var connectionManager: ConnectionManager
     @Inject lateinit var usbPtpManager: UsbPtpManager
+    @Inject lateinit var apConnection: com.nikonlink.app.device.ap.ApConnectionService
 
     private var videoMode = false
     private var recording = false
@@ -514,9 +515,11 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         }
     }
 
-    /** 相机 PTP 通道是否可用（USB 或 WiFi PTP 任一连通） */
+    /** 相机命令通道是否可用（USB / AP 直连 / WiFi PTP 任一连通） */
     private fun isCameraPtpConnected(): Boolean =
-        usbPtpManager.isConnected() || connectionManager.getPtpSession().isConnected()
+        usbPtpManager.isConnected() ||
+            connectionManager.getPtpSession().isConnected() ||
+            apConnection.isConnected()
 
     /**
      * 根据连接状态 / B 门锁定 / 切换中标记 / 模式列表是否为空，更新「模式」入口可用性。
@@ -1060,12 +1063,15 @@ class RemoteFragment : Fragment(), GlassInsetAware {
             }
         }
 
-        // 连接状态联动「模式」入口可用性（USB / WiFi PTP 任一通道变化都重新评估）
+        // 连接状态联动「模式」入口可用性（USB / AP / WiFi PTP 任一通道变化都重新评估）
         viewLifecycleOwner.lifecycleScope.launch {
             connectionManager.connectionState.collect { updateModeCellState() }
         }
         viewLifecycleOwner.lifecycleScope.launch {
             usbPtpManager.usbState.collect { updateModeCellState() }
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            apConnection.state.collect { updateModeCellState() }
         }
 
     }

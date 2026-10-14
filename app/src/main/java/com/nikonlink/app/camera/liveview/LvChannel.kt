@@ -39,6 +39,22 @@ internal interface LvChannel {
     suspend fun changeAfArea(x: Int, y: Int): Boolean
 
     suspend fun manualFocusDrive(direction: Int, speed: Int): Boolean
+
+    // ---- 遥控拍摄命令面（快门 / 对焦 / 录像 / 存储，三通道同语义）----
+
+    /** 释放快门（InitiateCapture）。 */
+    suspend fun capture(): Boolean
+
+    /** 停止对焦（AF_DRIVE_CANCEL）。 */
+    suspend fun afDriveCancel(): Boolean
+
+    /** 存储 ID 列表（B 门开曝光命令的候选参数来源）。 */
+    suspend fun getStorageIds(): List<Int>
+
+    /** 录像命令带响应码（被拒时调用方给中文化提示）。 */
+    suspend fun startMovieRec(): LvCmdResult
+
+    suspend fun stopMovieRec(): LvCmdResult
 }
 
 /** 命令响应（是否成功 + PTP 响应码；传输失败时 code = -1）。 */
@@ -66,6 +82,15 @@ internal class WifiLvChannel(
 
     override suspend fun manualFocusDrive(direction: Int, speed: Int): Boolean =
         ptp.sendCommand(PtpConstants.OP_NIKON_MF_DRIVE, listOf(direction, speed)).isOk
+
+    override suspend fun capture(): Boolean = ptp.initiateCapture()
+    override suspend fun afDriveCancel(): Boolean = ptp.afDriveCancel()
+    override suspend fun getStorageIds(): List<Int> = ptp.getStorageIds()
+    override suspend fun startMovieRec(): LvCmdResult =
+        ptp.startMovieRecordingResult().let { LvCmdResult(it.first, it.second) }
+
+    override suspend fun stopMovieRec(): LvCmdResult =
+        ptp.stopMovieRecordingResult().let { LvCmdResult(it.first, it.second) }
 }
 
 /** USB 有线通道：对 [UsbPtpManager] 的原样转发。 */
@@ -90,6 +115,15 @@ internal class UsbLvChannel(
     override suspend fun changeAfArea(x: Int, y: Int): Boolean = usb.changeAfArea(x, y)
     override suspend fun manualFocusDrive(direction: Int, speed: Int): Boolean =
         usb.manualFocusDrive(direction, speed)
+
+    override suspend fun capture(): Boolean = usb.capture()
+    override suspend fun afDriveCancel(): Boolean = usb.afDriveCancel()
+    override suspend fun getStorageIds(): List<Int> = usb.getStorageIds()
+    override suspend fun startMovieRec(): LvCmdResult =
+        usb.startMovieRecordingResult().let { LvCmdResult(it.first, it.second) }
+
+    override suspend fun stopMovieRec(): LvCmdResult =
+        usb.stopMovieRecordingResult().let { LvCmdResult(it.first, it.second) }
 }
 
 /**
@@ -131,4 +165,28 @@ internal class ApLvChannel(
 
     override suspend fun manualFocusDrive(direction: Int, speed: Int): Boolean =
         command(PtpConstants.OP_NIKON_MF_DRIVE, listOf(direction, speed)).isOk
+
+    override suspend fun capture(): Boolean =
+        command(PtpConstants.OP_INITIATE_CAPTURE, listOf(0, 0)).isOk
+
+    override suspend fun afDriveCancel(): Boolean =
+        command(PtpConstants.OP_NIKON_AF_DRIVE_CANCEL).isOk
+
+    override suspend fun getStorageIds(): List<Int> {
+        val data = ap.ptpSession()
+            ?.let { runCatching { it.rawTransact(PtpConstants.OP_GET_STORAGE_IDS) }.getOrNull()?.dataIn }
+            ?: return emptyList()
+        if (data.size < 4) return emptyList()
+        val buf = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        val count = buf.int
+        return (0 until count).mapNotNull {
+            if (buf.remaining() >= 4) buf.int else null
+        }
+    }
+
+    override suspend fun startMovieRec(): LvCmdResult =
+        command(PtpConstants.OP_NIKON_START_MOVIE_REC_IN_CARD)
+
+    override suspend fun stopMovieRec(): LvCmdResult =
+        command(PtpConstants.OP_NIKON_END_MOVIE_REC)
 }
