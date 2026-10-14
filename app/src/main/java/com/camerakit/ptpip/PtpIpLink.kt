@@ -42,12 +42,24 @@ class PtpIpLink(
     private val socketFactory: SocketFactory = SocketFactory.getDefault(),
     private val log: (String) -> Unit = {},
     private val onTransportLost: (String) -> Unit = {},
+    /**
+     * InitCommandAck 与事件通道建链之间的稳定间隔。
+     *
+     * 真机日志全量统计（2026-10-14 全天）：**成功点全部发生在稳定间隔 ≥650ms 的轮次**
+     * （22:23:14 成功轮 settle=650ms；17:35/17:39 成功轮 settle=2000ms），
+     * 而 0ms 立即建事件通道的首试从未成功过（事件通道建链后 6~12ms 即被相机复位）。
+     * 与基准实现实证一致（重试轮 350/650ms 稳定间隔）。默认 650ms，所有轮次统一。
+     */
+    private val eventSettleMs: Long = 650,
 ) : PtpLink {
 
     companion object {
         private const val CONNECT_TIMEOUT_MS = 5_000
         private const val HANDSHAKE_TIMEOUT_MS = 15_000
         private const val SO_TIMEOUT_MS = 1_000
+
+        /** 事件通道 PING 等 Pong 的窗口（旧链路同值；Pong 超时仅容错，不判死）。 */
+        private const val EVENT_PING_TIMEOUT_MS = 1_500
     }
 
     private var cmdSocket: Socket? = null
@@ -107,6 +119,12 @@ class PtpIpLink(
                 else -> throw CameraError.Protocol("PTP/IP 初始化响应无效（type=${ackPacket.type}）")
             }
 
+            // 所有轮次统一稳定间隔（真机统计：成功全部发生在 settle≥650ms 轮次）
+            if (eventSettleMs > 0) {
+                log("PTP/IP 事件通道稳定等待 ${eventSettleMs}ms")
+                kotlinx.coroutines.delay(eventSettleMs)
+            }
+
             val e = socketFactory.createSocket()
             e.tcpNoDelay = true
             e.keepAlive = true
@@ -133,6 +151,25 @@ class PtpIpLink(
                 throw CameraError.Protocol("相机没有接受 PTP/IP 事件通道（type=${ev.type}）")
             }
             log("PTP/IP init-event-ack")
+
+            // 旧链路实证步骤（本项目 STA/AP 旧栈在同机型上稳定复用）：InitEventAck 后
+            // 立即在事件通道发 PING。缺少这一握手的相机会在数秒后把连接判定为失败
+            // 并断开（真机现象：连成后 ~4s 被断、后续连接被严拒）。Pong 不强制——
+            // 旧栈同款容错：发出去即满足相机侧握手预期，回不回 Pong 都继续。
+            runCatching {
+                val oldTimeout = e.soTimeout
+                e.soTimeout = EVENT_PING_TIMEOUT_MS
+                writeEventPacket(PtpConsts.IP_PING, ByteArray(0))
+                val pong = readPacketOrNull(evtIn!!)
+                if (pong != null && pong.type == PtpConsts.IP_PONG) {
+                    log("PTP/IP 事件通道 PING→PONG ✓")
+                } else {
+                    log("PTP/IP 事件通道 PING 已发，Pong 未回（got=${pong?.type}）——按旧栈容错继续")
+                }
+                e.soTimeout = oldTimeout
+            }.onFailure {
+                log("PTP/IP 事件通道 PING 异常（容错继续）：${it.message}")
+            }
 
             open = true
             lastRx = System.currentTimeMillis()

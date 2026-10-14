@@ -1,6 +1,11 @@
 package com.nikonlink.app.capture
 
 import com.nikonlink.app.camera.liveview.LiveViewManager
+import com.nikonlink.app.camera.liveview.LvChannel
+import com.nikonlink.app.camera.liveview.ApLvChannel
+import com.nikonlink.app.camera.liveview.UsbLvChannel
+import com.nikonlink.app.camera.liveview.WifiLvChannel
+import com.nikonlink.app.device.ap.ApConnectionService
 import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpSessionManager
 import com.nikonlink.app.device.usb.UsbPtpManager
@@ -29,9 +34,25 @@ import javax.inject.Singleton
 class RemoteShootingManager @Inject constructor(
     private val ptpSession: PtpSessionManager,
     private val usbPtpManager: UsbPtpManager,
+    private val apConnection: ApConnectionService,
     private val liveViewManager: LiveViewManager,
     private val settings: AppSettings
 ) {
+    /**
+     * 遥控命令通道（与监看同一套三通道抽象）：USB 有线 / AP 直连 / WiFi(PTP/IP)。
+     * AP 模式下旧栈未连通，命令必须走 [apConnection] 会话 —— 旧实现只认
+     * USB/旧栈两路，AP 连上了也判「未连接」、快门无响应。
+     */
+    private val usbChannel: LvChannel = UsbLvChannel(usbPtpManager)
+    private val wifiChannel: LvChannel = WifiLvChannel(ptpSession)
+    private val apChannel: LvChannel = ApLvChannel(apConnection)
+
+    /** 当前遥控通道：USB 优先，其次 AP 直连，最后 WiFi(PTP/IP)。 */
+    private fun ch(): LvChannel = when {
+        usbPtpManager.isConnected() -> usbChannel
+        apConnection.isConnected() -> apChannel
+        else -> wifiChannel
+    }
     companion object {
         private const val TAG = "RemoteShooting"
 
@@ -174,11 +195,7 @@ class RemoteShootingManager @Inject constructor(
         if (!isRemoteReady()) return false
         return withContext(Dispatchers.IO) {
             try {
-                if (usbPtpManager.isConnected()) {
-                    usbPtpManager.afDrive()
-                } else {
-                    ptpSession.afDrive()
-                }
+                ch().afDrive()
             } catch (e: Exception) {
                 Timber.tag(TAG).e(e, "Half press focus failed")
                 false
@@ -210,12 +227,8 @@ class RemoteShootingManager @Inject constructor(
                     Timber.tag(TAG).d("Waiting ${focusWaitMs}ms for AF to settle")
                     delay(focusWaitMs)
                 }
-                // 第三步: 释放快门
-                val success = if (usbPtpManager.isConnected()) {
-                    usbPtpManager.capture()
-                } else {
-                    ptpSession.initiateCapture()
-                }
+                // 第三步: 释放快门（走当前通道：USB / AP / WiFi）
+                val success = ch().capture()
                 if (success) {
                     _shotCount.value++
                     // 通知相册自动同步（优化项 3）
@@ -244,8 +257,7 @@ class RemoteShootingManager @Inject constructor(
         focusJob = managerScope.launch {
             // 按下立即启动对焦
             try {
-                if (usbPtpManager.isConnected()) usbPtpManager.afDrive()
-                else ptpSession.afDrive()
+                ch().afDrive()
                 Timber.tag(TAG).i("Continuous AF: initial drive sent")
             } catch (e: Exception) {
                 Timber.tag(TAG).w(e, "Continuous AF initial drive failed")
@@ -255,8 +267,7 @@ class RemoteShootingManager @Inject constructor(
                 delay(AF_HOLD_INTERVAL_MS)
                 if (!isActive) break
                 try {
-                    if (usbPtpManager.isConnected()) usbPtpManager.afDrive()
-                    else ptpSession.afDrive()
+                    ch().afDrive()
                 } catch (e: Exception) {
                     Timber.tag(TAG).w(e, "Continuous AF re-drive failed")
                 }
@@ -269,10 +280,7 @@ class RemoteShootingManager @Inject constructor(
         focusJob?.cancel()
         focusJob = null
         managerScope.launch {
-            runCatching {
-                if (usbPtpManager.isConnected()) usbPtpManager.afDriveCancel()
-                else ptpSession.afDriveCancel()
-            }
+            runCatching { ch().afDriveCancel() }
         }
         Timber.tag(TAG).i("Continuous focus stopped")
     }
@@ -371,37 +379,24 @@ class RemoteShootingManager @Inject constructor(
     private var previousShutterRaw: Int? = null
     private var openCaptureStarted = false
 
-    /** 双通道读 0x500D ExposureTime（4 字节 u32 LE）；读不到返回 null */
+    /** 读 0x500D ExposureTime（4 字节 u32 LE）；读不到返回 null */
     private suspend fun readShutterRaw(): Int? {
-        val data = if (usbPtpManager.isConnected()) {
-            usbPtpManager.getDevicePropValue(PtpConstants.PROP_EXPOSURE_TIME)
-        } else {
-            ptpSession.getDevicePropValue(PtpConstants.PROP_EXPOSURE_TIME)
-        }
+        val data = ch().getDevicePropValue(PtpConstants.PROP_EXPOSURE_TIME)
         if (data == null || data.size < 4) return null
         return java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN).int
     }
 
-    /** 双通道写 0x500D；返回是否成功 */
+    /** 写 0x500D；返回是否成功 */
     private suspend fun writeShutterRaw(value: Int): Boolean {
         val data = java.nio.ByteBuffer.allocate(4)
             .order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(value).array()
-        return if (usbPtpManager.isConnected()) {
-            usbPtpManager.setDevicePropValue(PtpConstants.PROP_EXPOSURE_TIME, data)
-        } else {
-            ptpSession.setDevicePropValue(PtpConstants.PROP_EXPOSURE_TIME, data)
-        }
+        return ch().setDevicePropValue(PtpConstants.PROP_EXPOSURE_TIME, data)
     }
 
-    /** 按通道发一条开启/收门命令，返回 (是否成功, 响应码) */
+    /** 按当前通道发一条开启/收门命令，返回 (是否成功, 响应码) */
     private suspend fun bulbCommand(opcode: Int, params: List<Int>): Pair<Boolean, Int> {
-        return if (usbPtpManager.isConnected()) {
-            val response = usbPtpManager.sendCommand(opcode, params)
-            if (response == null) false to 0 else (response.isOk) to response.responseCode
-        } else {
-            val response = ptpSession.sendCommand(opcode, params)
-            response.isOk to response.responseCode
-        }
+        val r = ch().command(opcode, params)
+        return r.isOk to r.code
     }
 
     /**
@@ -447,11 +442,7 @@ class RemoteShootingManager @Inject constructor(
                     runCatching {
                         val modeData = java.nio.ByteBuffer.allocate(2)
                             .order(java.nio.ByteOrder.LITTLE_ENDIAN).putShort(1).array()
-                        if (usbPtpManager.isConnected()) {
-                            usbPtpManager.setDevicePropValue(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE, modeData)
-                        } else {
-                            ptpSession.setDevicePropValue(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE, modeData)
-                        }
+                        ch().setDevicePropValue(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE, modeData)
                     }
                     delay(BULB_APPLY_DELAY_MS)
                 }
@@ -475,15 +466,11 @@ class RemoteShootingManager @Inject constructor(
                 // ---- 开启曝光：多级降级 + busy 重试 ----
                 // v1.0.2 真机"存储 ID 无效"：部分机身把 0x9207 的第一参数按存储 ID 解释，
                 // 不接受 0xFFFFFFFF——把 GetStorageIDs 的真实值加入候选重试。
-                val storageIds = runCatching {
-                    if (usbPtpManager.isConnected()) {
-                        usbPtpManager.getStorageIds()
-                    } else {
-                        ptpSession.getStorageIds()
-                    }
-                }.getOrDefault(emptyList())
-                val channel =
-                    if (usbPtpManager.isConnected()) BulbPolicy.Channel.USB else BulbPolicy.Channel.WIFI
+                val storageIds = runCatching { ch().getStorageIds() }.getOrDefault(emptyList())
+                val channel = when {
+                    usbPtpManager.isConnected() -> BulbPolicy.Channel.USB
+                    else -> BulbPolicy.Channel.WIFI
+                }
                 var lastCode = 0
                 var firstCode = 0
                 var firstLabel = ""
@@ -660,18 +647,9 @@ class RemoteShootingManager @Inject constructor(
     private suspend fun changeCameraModeResult(enter: Boolean): Boolean {
         val param = if (enter) 1 else 0
         return runCatching {
-            val response = if (usbPtpManager.isConnected()) {
-                usbPtpManager.sendCommand(PtpConstants.OP_NIKON_CHANGE_CAMERA_MODE, listOf(param))
-            } else {
-                ptpSession.sendCommand(PtpConstants.OP_NIKON_CHANGE_CAMERA_MODE, listOf(param))
-            }
-            val code = when (response) {
-                is com.nikonlink.app.device.usb.UsbPtpResponse -> response.responseCode
-                is com.nikonlink.app.device.ptp.CommandResponsePacket -> response.responseCode
-                else -> null
-            }
-            Timber.tag(TAG).d("ChangeCameraMode($param) response=${code?.toString(16)}")
-            code == PtpConstants.RESPONSE_OK || code == null
+            val r = ch().command(PtpConstants.OP_NIKON_CHANGE_CAMERA_MODE, listOf(param))
+            Timber.tag(TAG).d("ChangeCameraMode($param) response=${Integer.toHexString(r.code)}")
+            r.isOk
         }.getOrDefault(false)
     }
 
@@ -927,43 +905,23 @@ class RemoteShootingManager @Inject constructor(
         }
     }
 
-    /** 双通道发 0x9435 ChangeApplicationMode（1=进入应用模式，0=退出）；失败不抛出 */
+    /** 发 0x9435 ChangeApplicationMode（1=进入应用模式，0=退出）；失败不抛出 */
     private suspend fun changeApplicationMode(enter: Boolean) {
         val param = if (enter) 1 else 0
         runCatching {
-            if (usbPtpManager.isConnected()) {
-                usbPtpManager.sendCommand(PtpConstants.OP_NIKON_CHANGE_APPLICATION_MODE, listOf(param))
-            } else {
-                ptpSession.sendCommand(PtpConstants.OP_NIKON_CHANGE_APPLICATION_MODE, listOf(param))
-            }
-        }.onSuccess { response ->
-            val code = when (response) {
-                is com.nikonlink.app.device.usb.UsbPtpResponse -> response.responseCode
-                is com.nikonlink.app.device.ptp.CommandResponsePacket -> response.responseCode
-                else -> null
-            }
-            Timber.tag(TAG).d("ChangeApplicationMode($param) response=${code?.toString(16)}")
+            val r = ch().command(PtpConstants.OP_NIKON_CHANGE_APPLICATION_MODE, listOf(param))
+            Timber.tag(TAG).d("ChangeApplicationMode($param) response=${Integer.toHexString(r.code)}")
         }.onFailure { e ->
             Timber.tag(TAG).w(e, "ChangeApplicationMode($param) failed")
         }
     }
 
-    /** 双通道发 0x90C2 ChangeCameraMode（1=进入控制模式，0=退出）；失败不抛出 */
+    /** 发 0x90C2 ChangeCameraMode（1=进入控制模式，0=退出）；失败不抛出 */
     private suspend fun changeCameraMode(enter: Boolean) {
         val param = if (enter) 1 else 0
         runCatching {
-            if (usbPtpManager.isConnected()) {
-                usbPtpManager.sendCommand(PtpConstants.OP_NIKON_CHANGE_CAMERA_MODE, listOf(param))
-            } else {
-                ptpSession.sendCommand(PtpConstants.OP_NIKON_CHANGE_CAMERA_MODE, listOf(param))
-            }
-        }.onSuccess { response ->
-            val code = when (response) {
-                is com.nikonlink.app.device.usb.UsbPtpResponse -> response.responseCode
-                is com.nikonlink.app.device.ptp.CommandResponsePacket -> response.responseCode
-                else -> null
-            }
-            Timber.tag(TAG).d("ChangeCameraMode($param) response=${code?.toString(16)}")
+            val r = ch().command(PtpConstants.OP_NIKON_CHANGE_CAMERA_MODE, listOf(param))
+            Timber.tag(TAG).d("ChangeCameraMode($param) response=${Integer.toHexString(r.code)}")
         }.onFailure { e ->
             Timber.tag(TAG).w(e, "ChangeCameraMode($param) failed")
         }
@@ -971,13 +929,8 @@ class RemoteShootingManager @Inject constructor(
 
     /** 按当前通道发录像命令，返回 (是否成功, 响应码) */
     private suspend fun movieRecordingCommand(start: Boolean): Pair<Boolean, Int> {
-        return if (usbPtpManager.isConnected()) {
-            if (start) usbPtpManager.startMovieRecordingResult()
-            else usbPtpManager.stopMovieRecordingResult()
-        } else {
-            if (start) ptpSession.startMovieRecordingResult()
-            else ptpSession.stopMovieRecordingResult()
-        }
+        val r = if (start) ch().startMovieRec() else ch().stopMovieRec()
+        return r.isOk to r.code
     }
 
     /** 录像被拒绝时给用户可操作的提示 */
@@ -1008,21 +961,13 @@ class RemoteShootingManager @Inject constructor(
         withContext(Dispatchers.IO) {
             try {
                 // 读取电池电量
-                val batteryData = if (usbPtpManager.isConnected()) {
-                    usbPtpManager.getDevicePropValue(PtpConstants.PROP_BATTERY_LEVEL)
-                } else {
-                    ptpSession.getDevicePropValue(PtpConstants.PROP_BATTERY_LEVEL)
-                }
+                val batteryData = ch().getDevicePropValue(PtpConstants.PROP_BATTERY_LEVEL)
                 if (batteryData != null && batteryData.isNotEmpty()) {
                     _batteryLevel.value = batteryData[0].toInt() and 0xFF
                 }
 
                 // 读取剩余存储
-                val storageIds = if (usbPtpManager.isConnected()) {
-                    usbPtpManager.getStorageIds()
-                } else {
-                    ptpSession.getStorageIds()
-                }
+                val storageIds = ch().getStorageIds()
                 if (storageIds.isNotEmpty()) {
                     // 暂未实现 GetStorageInfo 解析，不展示虚构的剩余张数
                     _remainingShots.value = -1
@@ -1038,7 +983,7 @@ class RemoteShootingManager @Inject constructor(
     }
 
     private fun isRemoteReady(): Boolean {
-        return ptpSession.isConnected() || usbPtpManager.isConnected()
+        return ptpSession.isConnected() || usbPtpManager.isConnected() || apConnection.isConnected()
     }
 }
 

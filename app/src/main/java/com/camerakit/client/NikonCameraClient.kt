@@ -60,6 +60,13 @@ class NikonCameraClient internal constructor(
         /** 基准实现 实证：注册流事件通道稳定等待（首试 350ms / 重试 650ms） */
         const val REG_SETTLE_FIRST_MS = 350L
         const val REG_SETTLE_RETRY_MS = 650L
+
+        /**
+         * 无线连接失败后的冷却时长（真机日志实证）。
+         * 相机侧半开会话清理窗口约 10s，期间再次发起握手会把相机锤进
+         * 拒绝新连接的残留态（日志表现为 connection 号单调递增、全部秒败）。
+         */
+        const val CONNECT_FAIL_COOLDOWN_MS = 10_000L
     }
 
     // 惰性获取：避免构造期强转系统服务（无 USB host / NSD 的设备上为 null 会启动崩溃）
@@ -82,6 +89,10 @@ class NikonCameraClient internal constructor(
     private var activeMethod: ConnectionMethod? = null
     private var currentEndpoint: CameraEndpoint? = null
     private var currentSocketFactory: SocketFactory? = null
+
+    /** 最近一次无线连接失败的时间戳（0=无失败），供 [CONNECT_FAIL_COOLDOWN_MS] 冷却门使用 */
+    @Volatile
+    private var lastConnectFailAt = 0L
 
     init {
         log(
@@ -134,6 +145,20 @@ class NikonCameraClient internal constructor(
         endpoint: CameraEndpoint?,
         autoPair: Boolean,
     ) = connectMutex.withLock {
+        // 失败冷却门（真机日志实证：快速连点把相机锤进永久拒绝态）。
+        // 冷却期内的点击直接提示等待，不发起新的握手。
+        val failAt = lastConnectFailAt
+        if (failAt > 0 && method !is ConnectionMethod.Usb) {
+            val remaining = (failAt + CONNECT_FAIL_COOLDOWN_MS) - System.currentTimeMillis()
+            if (remaining > 0) {
+                val err = CameraError.Protocol(
+                    "上次连接失败，相机约需 10s 释放残留连接。" +
+                        "请等待 ${remaining / 1000 + 1}s 后再试（连续快速点击会延长恢复时间）。",
+                )
+                _state.value = CameraState.Failed(err)
+                throw err
+            }
+        }
         disconnectInternal(emitState = false)
         activeMethod = method
         _state.value = CameraState.Connecting("准备连接")
@@ -190,7 +215,7 @@ class NikonCameraClient internal constructor(
             }
         }
 
-        val binder = NetworkBinder(context, log).also { networkBinder = it }
+        val binder = NetworkBinder(context, endpoint.host, log).also { networkBinder = it }
         val factory = binder.cameraSocketFactory()
         currentSocketFactory = factory
 
@@ -229,18 +254,33 @@ class NikonCameraClient internal constructor(
     }
 
     /**
-     * PTP/IP 握手 + 会话建立，带退避重试：
-     * - 端口未开放（ECONNREFUSED）：相机 Wi-Fi/PTP 服务未就绪；
-     * - Connection reset：相机正在释放上一条无线会话（基准实现 同款场景），稍候重试即可。
+     * PTP/IP 握手 + 会话建立（基准实现 AP 双通道编排语义）：
+     * - **只试 2 次**（与基准实现一致）：失败 → 全清场 + 静置 → 再试 1 次 → 仍败
+     *   立即收口报错，由用户按自己的节奏再点。真机日志证明：快速连续重试
+     *   （每 8~10s 一轮、轮内 2s/4s）会把相机锤进「拒绝新连接」的残留态
+     *   （connection 号连续递增 21→34 全败），而用户 20s+ 间隔的慢节奏点击能成；
+     * - 全部轮次统一 650ms 事件通道稳定间隔（真机统计：成功全部发生在
+     *   settle≥650ms 轮次，0ms 首试从未成功）；
+     * - 失败后全清场（释放并重建 NetworkBinder，旧 Network 复用会 EPERM）。
      */
     private suspend fun openWirelessSession(endpoint: CameraEndpoint, factory: SocketFactory) {
         var lastError: CameraError? = null
-        repeat(3) { attempt ->
-            _state.value = CameraState.Connecting("PTP/IP 握手（${attempt + 1}/3）")
+        var currentFactory = factory
+        repeat(2) { attempt ->
+            // 路由复查（基准实现：路由不可用直接报「请重新绑定后连接」）
+            if (attempt > 0 &&
+                !ApEndpointResolver.awaitLocalRoute(endpoint.host, totalTimeoutMs = 1_500)
+            ) {
+                throw CameraError.NoCameraFound(
+                    "到 ${endpoint.host} 的网络路由不可用（相机 Wi-Fi 可能已断开）。请重新连接相机 Wi-Fi 后再试。",
+                )
+            }
+            _state.value = CameraState.Connecting("PTP/IP 握手（${attempt + 1}/2）")
             try {
-                val l = PtpIpLink(endpoint, identity.guid, identity.hostName, factory, log) { reason ->
-                    handleTransportLost(reason)
-                }
+                val l = PtpIpLink(
+                    endpoint, identity.guid, identity.hostName, currentFactory, log,
+                    onTransportLost = { reason -> handleTransportLost(reason) },
+                )
                 link = l
                 l.open()
                 log("PTP/IP 握手完成 connection=${l.connectionId} camera=${l.cameraName}")
@@ -253,14 +293,22 @@ class NikonCameraClient internal constructor(
                 if (e !is CameraError.TransportLost && e !is CameraError.Timeout) throw e
                 closeSessionQuietly()
                 lastError = e
-                if (attempt < 2) {
-                    val waitMs = 2_000L * (attempt + 1)
-                    log("握手失败：${e.message}；${waitMs / 1000}s 后自动重试（相机可能未开放端口，或正在释放上一条无线会话）")
-                    _state.value = CameraState.Connecting("等待相机就绪（${waitMs / 1000}s）…")
-                    delay(waitMs)
+                if (attempt < 1) {
+                    log("握手失败：${e.message}；全清场后 1s 再试一次（基准实现节奏）")
+                    _state.value = CameraState.Connecting("清理残留连接（1s）…")
+                    // 全清场（基准实现语义）：释放旧 NetworkBinder 并重建
+                    networkBinder?.release()
+                    networkBinder = null
+                    delay(1_000)
+                    val binder = NetworkBinder(context, endpoint.host, log).also { networkBinder = it }
+                    currentFactory = binder.cameraSocketFactory()
+                    currentSocketFactory = currentFactory
                 }
             }
         }
+        // 失败冷却：快速连续点击会把相机锤进永久拒绝态（真机日志实证）。
+        // 记录失败时刻，下一次 connect 入口会等冷却结束再发起。
+        lastConnectFailAt = System.currentTimeMillis()
         throw lastError ?: CameraError.TransportLost("PTP/IP 握手失败")
     }
 
@@ -273,7 +321,10 @@ class NikonCameraClient internal constructor(
         _state.value = CameraState.Connecting("建立 PC 主机注册会话")
         _events.tryEmit(CameraEvent.PairingProgress("正在建立 PC 主机注册会话…"))
         if (preSettleMs > 0) delay(preSettleMs)
-        val regLink = PtpIpLink(endpoint, identity.guid, identity.hostName, factory, log) {}
+        val regLink = PtpIpLink(
+            endpoint, identity.guid, identity.hostName, factory, log,
+            onTransportLost = {},
+        )
         try {
             regLink.open()
             val regSession = PtpSession(regLink, log = log)
@@ -387,9 +438,15 @@ class NikonCameraClient internal constructor(
             repeat(3) { attempt ->
                 if (recovered) return@repeat
                 try {
+                    // 全清场 + 重建绑定（基准实现语义）：旧 Network 被系统回收后复用会 EPERM
                     closeSessionQuietly()
+                    networkBinder?.release()
+                    networkBinder = null
                     delay(1_500L * (attempt + 1))
-                    openWirelessSession(ep, factory)
+                    val binder = NetworkBinder(context, ep.host, log).also { networkBinder = it }
+                    val freshFactory = binder.cameraSocketFactory()
+                    currentSocketFactory = freshFactory
+                    openWirelessSession(ep, freshFactory)
                     recovered = true
                 } catch (e: Exception) {
                     log("无线会话自动恢复失败（第 ${attempt + 1}/3 次）：${e.message}")
@@ -445,7 +502,7 @@ class NikonCameraClient internal constructor(
             }
         }
 
-        val binder = NetworkBinder(context, log).also { networkBinder = it }
+        val binder = NetworkBinder(context, ep.host, log).also { networkBinder = it }
         val factory = binder.cameraSocketFactory()
         currentEndpoint = ep
         currentSocketFactory = factory

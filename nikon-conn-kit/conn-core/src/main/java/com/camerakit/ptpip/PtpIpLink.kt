@@ -19,7 +19,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
@@ -43,15 +42,24 @@ class PtpIpLink(
     private val socketFactory: SocketFactory = SocketFactory.getDefault(),
     private val log: (String) -> Unit = {},
     private val onTransportLost: (String) -> Unit = {},
-    // 默认 0 = 与 3.1.0 完全同款时序（AP 链路必须保持原样，实测插入延迟会被相机复位）；
-    // 仅 STA 显式传入稳定间隔（350/650ms）
-    private val eventSettleMs: Long = 0,
+    /**
+     * InitCommandAck 与事件通道建链之间的稳定间隔。
+     *
+     * 真机日志全量统计（2026-10-14 全天）：**成功点全部发生在稳定间隔 ≥650ms 的轮次**
+     * （22:23:14 成功轮 settle=650ms；17:35/17:39 成功轮 settle=2000ms），
+     * 而 0ms 立即建事件通道的首试从未成功过（事件通道建链后 6~12ms 即被相机复位）。
+     * 与基准实现实证一致（重试轮 350/650ms 稳定间隔）。默认 650ms，所有轮次统一。
+     */
+    private val eventSettleMs: Long = 650,
 ) : PtpLink {
 
     companion object {
         private const val CONNECT_TIMEOUT_MS = 5_000
         private const val HANDSHAKE_TIMEOUT_MS = 15_000
         private const val SO_TIMEOUT_MS = 1_000
+
+        /** 事件通道 PING 等 Pong 的窗口（旧链路同值；Pong 超时仅容错，不判死）。 */
+        private const val EVENT_PING_TIMEOUT_MS = 1_500
     }
 
     private var cmdSocket: Socket? = null
@@ -85,10 +93,7 @@ class PtpIpLink(
 
     /** 完成 PTP/IP 握手（命令 + 事件双通道）。 */
     suspend fun open() = withContext(Dispatchers.IO) {
-        val t0 = System.currentTimeMillis()
-        val deadline = t0 + HANDSHAKE_TIMEOUT_MS
-        // 阶段标记：失败时错误信息必须说清挂在握手哪一步（真机排查主要靠这个定位）
-        var stage = "命令通道建链"
+        val deadline = System.currentTimeMillis() + HANDSHAKE_TIMEOUT_MS
         try {
             val s = socketFactory.createSocket()
             s.tcpNoDelay = true
@@ -98,9 +103,8 @@ class PtpIpLink(
             cmdSocket = s
             cmdIn = s.getInputStream()
             cmdOut = s.getOutputStream()
-            log("[握手] 命令通道建链 ${s.localAddress?.hostAddress ?: "-"} -> ${endpoint.host}:${endpoint.port}（${System.currentTimeMillis() - t0}ms）")
+            log("PTP/IP 命令通道已连接 ${s.localAddress?.hostAddress ?: "-"} -> ${endpoint.host}:${endpoint.port}")
 
-            stage = "InitCommand"
             writePacket(PtpConsts.IP_INIT_COMMAND, PtpIpCodec.initCommandPayload(hostGuid, hostName))
             val ackPacket = awaitPacket(cmdIn!!, deadline)
             when (ackPacket.type) {
@@ -110,16 +114,17 @@ class PtpIpLink(
                     val ack = PtpIpCodec.parseInitCommandAck(ackPacket.payload)
                     connectionId = ack.connectionId
                     cameraName = ack.cameraName.ifEmpty { endpoint.displayName }
-                    log("[握手] InitCommandAck connection=$connectionId camera=$cameraName（${System.currentTimeMillis() - t0}ms）")
+                    log("PTP/IP init-command-ack connection=$connectionId camera=$cameraName")
                 }
                 else -> throw CameraError.Protocol("PTP/IP 初始化响应无效（type=${ackPacket.type}）")
             }
 
-            // 基准实现：InitCommandAck 与事件通道之间留稳定间隔，赶太紧会被相机复位
-            // （真机实证：事件通道建链后立刻被 Connection reset / 断开的失败集中在这一段）
-            if (eventSettleMs > 0) delay(eventSettleMs)
+            // 所有轮次统一稳定间隔（真机统计：成功全部发生在 settle≥650ms 轮次）
+            if (eventSettleMs > 0) {
+                log("PTP/IP 事件通道稳定等待 ${eventSettleMs}ms")
+                kotlinx.coroutines.delay(eventSettleMs)
+            }
 
-            stage = "事件通道建链"
             val e = socketFactory.createSocket()
             e.tcpNoDelay = true
             e.keepAlive = true
@@ -139,26 +144,42 @@ class PtpIpLink(
             evtSocket = e
             evtIn = e.getInputStream()
             evtOut = e.getOutputStream()
-            log("[握手] 事件通道建链 local=${e.localAddress?.hostAddress ?: "-"} forced=$forced settle=${eventSettleMs}ms（${System.currentTimeMillis() - t0}ms）")
-
-            stage = "InitEvent"
+            log("PTP/IP 事件通道已连接 local=${e.localAddress?.hostAddress ?: "-"} forced=$forced")
             writeEventPacket(PtpConsts.IP_INIT_EVENT, PtpIpCodec.initEventPayload(connectionId))
             val ev = awaitPacket(evtIn!!, deadline)
             if (ev.type != PtpConsts.IP_INIT_EVENT_ACK) {
                 throw CameraError.Protocol("相机没有接受 PTP/IP 事件通道（type=${ev.type}）")
             }
-            log("[握手] InitEventAck ✓ 双通道就绪（总耗时 ${System.currentTimeMillis() - t0}ms）")
+            log("PTP/IP init-event-ack")
+
+            // 旧链路实证步骤（本项目 STA/AP 旧栈在同机型上稳定复用）：InitEventAck 后
+            // 立即在事件通道发 PING。缺少这一握手的相机会在数秒后把连接判定为失败
+            // 并断开（真机现象：连成后 ~4s 被断、后续连接被严拒）。Pong 不强制——
+            // 旧栈同款容错：发出去即满足相机侧握手预期，回不回 Pong 都继续。
+            runCatching {
+                val oldTimeout = e.soTimeout
+                e.soTimeout = EVENT_PING_TIMEOUT_MS
+                writeEventPacket(PtpConsts.IP_PING, ByteArray(0))
+                val pong = readPacketOrNull(evtIn!!)
+                if (pong != null && pong.type == PtpConsts.IP_PONG) {
+                    log("PTP/IP 事件通道 PING→PONG ✓")
+                } else {
+                    log("PTP/IP 事件通道 PING 已发，Pong 未回（got=${pong?.type}）——按旧栈容错继续")
+                }
+                e.soTimeout = oldTimeout
+            }.onFailure {
+                log("PTP/IP 事件通道 PING 异常（容错继续）：${it.message}")
+            }
 
             open = true
             lastRx = System.currentTimeMillis()
             eventJob = scope.launch { readEventLoop() }
-        } catch (e: CameraError.CameraRejected) {
-            // 相机显式拒绝（InitFail）：保留语义供上层分流（自动配对 / 注册重试）
+        } catch (e: CameraError) {
             closeInternal()
             throw e
         } catch (e: Exception) {
             closeInternal()
-            throw CameraError.TransportLost("握手阶段「$stage」失败：${e.message}", e)
+            throw CameraError.TransportLost("PTP/IP 握手失败：${e.message}", e)
         }
     }
 
@@ -341,7 +362,6 @@ class PtpIpLink(
                         _events.tryEmit(PtpCameraEvent(code, evParams))
                     }
                     PtpConsts.IP_PING -> writeEventPacket(PtpConsts.IP_PONG, ByteArray(0))
-                    PtpConsts.IP_PONG -> { /* 保活响应（部分机身回在事件通道上），lastRx 已刷新 */ }
                     PtpConsts.IP_INIT_EVENT_ACK -> { /* 重复 ack，忽略 */ }
                     else -> log("PTP/IP 事件通道未知包类型 ${pkt.type}")
                 }

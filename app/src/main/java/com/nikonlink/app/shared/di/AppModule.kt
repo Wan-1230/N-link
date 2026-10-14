@@ -122,10 +122,11 @@ object AppModule {
     fun provideRemoteShootingManager(
         ptpSessionManager: PtpSessionManager,
         usbPtpManager: UsbPtpManager,
+        apConnection: com.nikonlink.app.device.ap.ApConnectionService,
         liveViewManager: LiveViewManager,
         settings: AppSettings
     ): RemoteShootingManager =
-        RemoteShootingManager(ptpSessionManager, usbPtpManager, liveViewManager, settings)
+        RemoteShootingManager(ptpSessionManager, usbPtpManager, apConnection, liveViewManager, settings)
 
     @Provides
     @Singleton
