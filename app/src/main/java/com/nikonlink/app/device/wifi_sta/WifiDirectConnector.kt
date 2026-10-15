@@ -211,13 +211,11 @@ class WifiDirectConnector @Inject constructor(
     /**
      * 会话是否已建立（连接成功后置 true）。
      *
-     * STA 根因之一：旧实现在连接循环的 `finally` 里无条件
-     * `bindProcessTo(null)`，导致**刚连上就把进程级绑网解掉**——
-     * 后续 PTP 数据通道重新走系统默认路由（双卡机上多半是蜂窝网），
-     * 表现为"连接成功但立刻断流/指令无响应"。成功路径必须保持绑网，
-     * 直到 [cancelActive] / [stop] 才对称解绑。
+     * 成功后保留网络请求和锁；STA 的实际路由由两个 socket 自身持有。
+     * 仅旧 apTiming 调用保留历史进程绑定行为，不改 AP 专用引擎。
      */
     @Volatile private var sessionBound = false
+    private var sessionProcessBound = false
 
     /** 是否有连接循环在跑（含配对与恢复）。上层用它做幂等守卫。 */
     val isActive: Boolean get() = activeJob?.isActive == true
@@ -251,7 +249,8 @@ class WifiDirectConnector @Inject constructor(
         if (!sessionBound) return
         sessionBound = false
         networkMonitor.releaseRetained()
-        networkMonitor.bindProcessTo(null)
+        if (sessionProcessBound) networkMonitor.bindProcessTo(null)
+        sessionProcessBound = false
         dropWatcher.stop()   // FR-34⑦：会话结束，掉线原因码监听与 start 对称归还
         networkRequester.release()
         Timber.tag(TAG).i("STA session resources released")
@@ -514,9 +513,8 @@ class WifiDirectConnector @Inject constructor(
                         fellBackToCellularBlackhole = isPrivateLanIp(endpoint.host) &&
                             networkMonitor.probeWouldUseCellular(endpoint.host)
                     }
-                    // 明确回到默认路由：清掉可能残留的进程级绑网，
-                    // 让 socket 完全交给内核按路由表选择出口。
-                    networkMonitor.bindProcessTo(null)
+                    // STA 不改进程路由；仅旧 AP 时序调用保留历史解绑行为。
+                    if (apTiming) networkMonitor.bindProcessTo(null)
                     if (connFlags.isEnabled(ConnFlags.STA_LINK_DIAG)) {
                         eventLogger.event(
                             "net_unbind", "gen" to gen, "attempt" to attempt,
@@ -567,17 +565,13 @@ class WifiDirectConnector @Inject constructor(
                     onFail(reason)
                     return
                 }
-                // 进程级绑定到 WiFi 网络，杜绝双卡手机蜂窝默认路由
-                // 抢走 PTP/IP 通道（socket 级绑定无法覆盖所有创建点）。
-                // RC-6：defaultRouteFallback 时句柄为 null，此时**不绑**，
-                // 交由内核按路由表选出口（热点接口有正常直连路由）。
-                // FR-20：这里只绑过了子网校验的 `usable`，并把绑定决策本身打进日志
-                // ——「最终绑到了哪张网」此前一行都没记过，是排查绑错网的最大空白。
+                // STA 命令和事件 socket 都显式绑定出口，无需改动整个进程。
                 usable?.let {
-                    val bound = networkMonitor.bindProcessTo(it)
+                    val bound = if (apTiming) networkMonitor.bindProcessTo(it) else true
                     eventLogger.event(
                         "net_bind", "gen" to gen, "attempt" to attempt, "bound" to bound,
-                        "covers" to true, "host" to endpoint.host, "route" to "process",
+                        "covers" to true, "host" to endpoint.host,
+                        "route" to if (apTiming) "process" else "socket",
                         // FR-32 R3：绑网时刻的本机网卡快照。2026-10-02 悬案「谁杀了 wlan0」
                         // 需要把 bind 时刻与 network_lost 时刻的 ifaces 对齐才能答。
                         "ifaces" to if (connFlags.isEnabled(ConnFlags.STA_LINK_DIAG)) {
@@ -675,16 +669,22 @@ class WifiDirectConnector @Inject constructor(
                     network = usable,
                     // FR-38：AP 档用 6s connect 超时（快失败 + 明确文案）；
                     // STA/恢复档传 0 维持默认 lane 判定。
-                    connectTimeoutMs = if (apZdrop) AP_CONNECT_TIMEOUT_MS else 0
+                    connectTimeoutMs = if (apZdrop) AP_CONNECT_TIMEOUT_MS else 0,
+                    staMode = !apTiming,
+                    localAddress = if (!apTiming) {
+                        StaSocketRouteResolver.selectLocalAddress(
+                            endpoint.host, localInterfaces.wifiLikeAddresses()
+                        )?.address
+                    } else null
                 ) {
                     onWaitingCameraOk?.invoke()
                 }
 
                 if (gen != generation) return                    // RC-7: 二次校验
                 if (ok) {
-                    // 会话级持有：进程级绑网 + WifiLock 在整个监看/传输期间保持，
-                    // 不再由本循环的 finally 解掉（见 [sessionBound] 的说明）
+                    // 网络请求和 WifiLock 持有至显式断开，STA 不持有进程绑定。
                     sessionBound = true
+                    sessionProcessBound = apTiming
                     networkMonitor.retainLocks()
                     eventLogger.event(
                         "sta_ok",
@@ -913,10 +913,9 @@ class WifiDirectConnector @Inject constructor(
         } finally {
             // 归还"连接尝试"这一次持锁（会话持有另算，引用计数保证不误放）
             networkMonitor.releaseLocks()
-            // 仅在**未连上**时恢复默认路由并释放网络申请；
-            // 连上后必须保持，否则数据通道会被系统默认路由抢走（STA 断流根因）
+            // 失败时释放网络申请；仅旧 AP 时序调用恢复其历史进程绑定。
             if (!sessionBound) {
-                networkMonitor.bindProcessTo(null)
+                if (apTiming) networkMonitor.bindProcessTo(null)
                 dropWatcher.stop()   // FR-34⑦：失败收口与 start 对称
                 if (connFlags.isEnabled(ConnFlags.STA_LINK_DIAG)) {
                     eventLogger.event(

@@ -39,7 +39,8 @@ import javax.inject.Singleton
 class UsbPtpManager @Inject constructor(
     private val context: Context,
     private val eventLogger: AppEventLogger,
-    private val connFlags: com.nikonlink.app.device.connect.ConnFlags
+    private val connFlags: com.nikonlink.app.device.connect.ConnFlags,
+    private val apConnection: com.nikonlink.app.device.ap.ApConnectionService
 ) {
     companion object {
         private const val TAG = "UsbPtp"
@@ -86,8 +87,13 @@ class UsbPtpManager @Inject constructor(
         /** 拆会话前的确认探测超时 */
         private const val KEEPALIVE_CONFIRM_TIMEOUT_MS = 8000
 
-        /** bulk IN 单次读取窗口。容器可跨多次读取到达，由事务层负责重组/流式消费 */
-        private const val READ_CHUNK_SIZE = 64 * 1024
+        /**
+         * Android UsbDeviceConnection 在不同系统版本/驱动上对单次 bulk 传输的
+         * 最大长度并不一致。使用 16 KiB 分块与系统 MTP/AOSP 实现保持兼容，
+         * 容器边界由事务层重组，不依赖一次读取拿到完整消息。
+         */
+        private const val READ_CHUNK_SIZE = 16 * 1024
+        private const val WRITE_CHUNK_SIZE = 16 * 1024
 
         private const val EVENT_POLL_INTERVAL_MS = 200L
     }
@@ -98,6 +104,7 @@ class UsbPtpManager @Inject constructor(
     private var bulkOut: UsbEndpoint? = null   // 命令/数据发送
     private var bulkIn: UsbEndpoint? = null    // 响应/数据接收
     private var interruptIn: UsbEndpoint? = null  // 事件接收
+    private var transport: UsbPtpTransport? = null
 
     private val transactionId = AtomicInteger(0)
     private val commandMutex = Mutex()
@@ -154,9 +161,17 @@ class UsbPtpManager @Inject constructor(
     /** FR-28：最近一次事务失败的原因（短写 / 连接已关 / txid 不符 / 流损坏），成功时清空。 */
     @Volatile
     private var lastTransactError: String? = null
+    @Volatile
+    private var sessionOpen = false
 
     /** 失败后的退避重连任务（1s/2s/4s 三次）；物理拔出或手动断开时撤销 */
     private var reconnectJob: Job? = null
+    private var detachGraceJob: Job? = null
+    private var connectJob: Job? = null
+    private val connectionMutex = Mutex()
+    @Volatile private var connectionGeneration = 0
+    @Volatile private var activeDeviceName: String? = null
+    @Volatile private var permissionDeviceName: String? = null
 
     private val _deviceInfo = MutableStateFlow<UsbCameraInfo?>(null)
     val deviceInfo: StateFlow<UsbCameraInfo?> = _deviceInfo.asStateFlow()
@@ -184,18 +199,20 @@ class UsbPtpManager @Inject constructor(
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                    Timber.tag(TAG).w("USB device detached")
                     val detached = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+                    if (detached == null ||
+                        (detached.deviceName != activeDeviceName && detached.deviceName != permissionDeviceName)
+                    ) return
+                    Timber.tag(TAG).w("USB 相机已拔出")
                     eventLogger.event(
                         "usb_detach",
-                        "vid" to detached?.vendorId, "pid" to detached?.productId,
-                        "is_camera" to (detached != null && UsbPtpProtocol.isNikonCamera(
-                            detached.vendorId, detached.productId)),
+                        "vid" to detached.vendorId, "pid" to detached.productId,
+                        "is_camera" to UsbPtpProtocol.isNikonCamera(
+                            detached.vendorId, detached.productId),
                         "grace" to connFlags.isEnabled(
                             com.nikonlink.app.device.connect.ConnFlags.USB_GRACE)
                     )
-                    // v2.2（T-U1）：先进宽限窗轮询，不立刻拆会话。相机休眠唤醒 / 线材瞬断
-                    // 会在 3s 内以同一 VID/PID 重新出现，命中就直接重连，用户无感。
+                    // 宽限窗保留连接中的界面状态，但先释放已经拔出设备的旧句柄。
                     if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_GRACE)) {
                         enterDetachGraceWindow()
                     } else {
@@ -209,7 +226,11 @@ class UsbPtpManager @Inject constructor(
                 ACTION_USB_PERMISSION -> {
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                     val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
-                    if (granted && device != null) {
+                    if (device == null || permissionDeviceName == null ||
+                        device.deviceName != permissionDeviceName || !started
+                    ) return
+                    permissionDeviceName = null
+                    if (granted) {
                         Timber.tag(TAG).i("USB permission granted")
                         openConnection(device)
                     } else {
@@ -217,6 +238,7 @@ class UsbPtpManager @Inject constructor(
                         // 模块 6：无权限 ≠ 未检测到相机，单独提示
                         _usbErrorMessage.value =
                             "USB 权限被拒绝：请在弹窗中允许访问 USB 设备，或到系统设置授予"
+                        _usbFailCode.value = "permission_denied"
                         _usbState.value = UsbConnectionState.PERMISSION_DENIED
                     }
                 }
@@ -261,6 +283,10 @@ class UsbPtpManager @Inject constructor(
      *   只有用户**主动点了 USB 的连接按钮**（[DashboardViewModel.connectUsb]）才传 true。
      */
     fun checkExistingDevice(notifyWhenAbsent: Boolean = false) {
+        if (apConnection.engaged) {
+            if (notifyWhenAbsent) _usbErrorMessage.value = "AP 链路使用中，请先显式断开 AP，再连接 USB"
+            return
+        }
         val deviceList = usbManager.deviceList
         for ((_, device) in deviceList) {
             if (UsbPtpProtocol.isNikonCamera(device.vendorId, device.productId)) {
@@ -292,10 +318,18 @@ class UsbPtpManager @Inject constructor(
     /**
      * 请求 USB 权限并连接
      */
+    @Synchronized
     private fun requestPermissionAndConnect(device: UsbDevice) {
+        if (!started) return
+        if (apConnection.engaged) return
+        if (activeDeviceName == device.deviceName &&
+            (connectJob?.isActive == true || isConnected())
+        ) return
         if (usbManager.hasPermission(device)) {
             openConnection(device)
         } else {
+            if (permissionDeviceName == device.deviceName) return
+            permissionDeviceName = device.deviceName
             _usbState.value = UsbConnectionState.REQUESTING_PERMISSION
             // Fix P0-3: Android 12+ 必须用 FLAG_MUTABLE，系统才能向广播附加
             // EXTRA_PERMISSION_GRANTED/EXTRA_DEVICE 结果，否则永远判定拒绝
@@ -318,117 +352,122 @@ class UsbPtpManager @Inject constructor(
      * 模块 6：每个失败点写入 [usbErrorMessage] 分类提示，并安排带退避的重连
      * （OTG 枚举延迟 / 相机休眠等瞬时失败 1s/2s/4s 内自动恢复）。
      */
+    @Synchronized
     private fun openConnection(device: UsbDevice) {
+        val host = scope ?: return
+        if (!started) return
+        if (apConnection.engaged) return
+        if (activeDeviceName == device.deviceName &&
+            (connectJob?.isActive == true || isConnected())
+        ) return
         reconnectJob?.cancel()
         reconnectJob = null
+        detachGraceJob?.cancel()
+        detachGraceJob = null
+        connectJob?.cancel()
+        val generation = ++connectionGeneration
+        activeDeviceName = device.deviceName
+        permissionDeviceName = null
         _usbState.value = UsbConnectionState.CONNECTING
+        val job = host.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            connectionMutex.withLock {
+                ensureCurrentConnection(generation)
+                connectDevice(device, generation)
+            }
+        }
+        connectJob = job
+        job.start()
+    }
 
-        // v1.3.0（需求 6）重连卫生：先释放上一次遗留的接口/端点/连接句柄。
-        // 旧版重连时不清场，第二次 claimInterface 会因"接口已被本进程占用"直接失败，
-        // 用户表现为"要插拔好几次才连得上"。silent=true 只清资源、不动 UI 状态。
-        runCatching { disconnect(silent = true) }
+    private suspend fun ensureCurrentConnection(generation: Int) {
+        currentCoroutineContext().ensureActive()
+        requireCurrentConnection(generation)
+    }
 
+    private fun requireCurrentConnection(generation: Int) {
+        if (generation != connectionGeneration || !started || apConnection.engaged) {
+            throw CancellationException("USB 连接已失效")
+        }
+    }
+
+    private suspend fun connectDevice(device: UsbDevice, generation: Int) {
+        if (sessionOpen) {
+            endSessionQuietly()
+        }
+        releaseConnection()
+        var opened: UsbDeviceConnection? = null
+        var openedTransport: UsbPtpTransport? = null
         try {
-            val connection = usbManager.openDevice(device) ?: run {
+            val connection = usbManager.openDevice(device)
+            opened = connection
+            ensureCurrentConnection(generation)
+            if (connection == null) {
                 Timber.tag(TAG).e("Failed to open USB device")
                 eventLogger.event("usb_open", "ok" to false, "reason" to "openDevice_null")
                 _usbErrorMessage.value =
                     "USB 设备打开失败：OTG 线/供电异常，请重新插拔数据线后重试"
+                _usbFailCode.value = "open_null"
                 _usbState.value = UsbConnectionState.ERROR
                 scheduleReconnect()
                 return
             }
 
-            // 查找 PTP 接口 (Class 0x06 = Image, SubClass 0x01 = Still Image, Protocol 0x01 = PTP)
-            var ptpInterface: UsbInterface? = null
-            var outEndpoint: UsbEndpoint? = null
-            var inEndpoint: UsbEndpoint? = null
-            var interruptEndpoint: UsbEndpoint? = null
-
-            for (i in 0 until device.interfaceCount) {
-                val intf = device.getInterface(i)
-                if (intf.interfaceClass == UsbConstants.USB_CLASS_STILL_IMAGE &&
-                    intf.interfaceSubclass == 0x01 &&
-                    intf.interfaceProtocol == 0x01
-                ) {
-                    ptpInterface = intf
-                    for (j in 0 until intf.endpointCount) {
-                        val ep = intf.getEndpoint(j)
-                        when {
-                            ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK &&
-                                    ep.direction == UsbConstants.USB_DIR_OUT -> outEndpoint = ep
-                            ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK &&
-                                    ep.direction == UsbConstants.USB_DIR_IN -> inEndpoint = ep
-                            ep.type == UsbConstants.USB_ENDPOINT_XFER_INT &&
-                                    ep.direction == UsbConstants.USB_DIR_IN -> interruptEndpoint = ep
-                        }
-                    }
-                    break
+            val openedLink = try {
+                UsbPtpTransport.open(connection, device)
+            } catch (e: UsbPtpTransportException) {
+                val (code, message) = when (e.failure) {
+                    UsbPtpTransportFailure.CLAIM_FAILED ->
+                        "claim_failed" to "USB 接口被占用：请关闭其它正在使用相机的应用后重新插拔"
+                    UsbPtpTransportFailure.NO_PTP_INTERFACE,
+                    UsbPtpTransportFailure.MISSING_BULK_IN,
+                    UsbPtpTransportFailure.MISSING_BULK_OUT ->
+                        "no_ptp_interface" to
+                            "未识别到相机 PTP 接口：请使用数据线并确认相机 USB 模式为 PTP/MTP"
                 }
-            }
-
-            if (ptpInterface == null || outEndpoint == null || inEndpoint == null) {
-                Timber.tag(TAG).e("PTP interface/endpoints not found")
-                eventLogger.event("usb_open", "ok" to false, "reason" to "no_ptp_interface")
-                _usbErrorMessage.value =
-                    "未识别到相机 PTP 接口：请使用数据线（非仅充电线）连接，并确认相机 USB 模式为 PTP/MTP"
-                connection.close()
+                eventLogger.event("usb_open", "ok" to false, "reason" to e.failure.name)
+                _usbFailCode.value = code
+                _usbErrorMessage.value = message
+                runCatching { connection.close() }
                 _usbState.value = UsbConnectionState.ERROR
                 scheduleReconnect()
                 return
             }
+            openedTransport = openedLink
 
-            // FR-28①：claimInterface 返回 boolean 且不抛异常（本机 android.jar 实证），
-            // 旧写法 runCatching{}.onFailure{} 接不住 false —— 接口没claim成功也会一路走到
-            // 发 OpenSession，表现就是"openDevice 成功、机身一个字节不回"。
-            val claimed = runCatching { connection.claimInterface(ptpInterface, true) }
-                .onFailure { e -> Timber.tag(TAG).e(e, "Claim USB interface threw") }
-                .getOrDefault(false)
-            if (!claimed) {
-                Timber.tag(TAG).e("claimInterface returned false — 接口未真正占用，后续 bulkTransfer 必然失败")
-                if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_CLAIM_CHECK)) {
-                    eventLogger.event("usb_open", "ok" to false, "reason" to "claim_returned_false")
-                    _usbFailCode.value = "usb_claim_failed"
-                    _usbErrorMessage.value =
-                        "USB 接口被占用：请关闭其它正在使用相机的应用（电脑端等）后重新插拔"
-                    runCatching { connection.close() }
-                    _usbState.value = UsbConnectionState.ERROR
-                    scheduleReconnect()
-                    return
-                }
+            ensureCurrentConnection(generation)
+            synchronized(this) {
+                requireCurrentConnection(generation)
+                transport = openedLink
+                usbConnection = openedLink.connection
+                usbInterface = openedLink.usbInterface
+                bulkOut = openedLink.bulkOut
+                bulkIn = openedLink.bulkIn
+                interruptIn = openedLink.interruptIn
+
+                _deviceInfo.value = UsbCameraInfo(
+                    deviceName = device.deviceName,
+                    vendorId = device.vendorId,
+                    productId = device.productId,
+                    cameraModel = UsbPtpProtocol.getCameraName(device.productId),
+                    // 部分 OEM 读取序列号会抛出权限异常，退化为 VID:PID 身份键。
+                    serialNumber = runCatching { device.serialNumber }.getOrNull()
+                        ?: "no-permission-${device.vendorId}:${device.productId}"
+                )
+                eventLogger.event(
+                    "usb_open",
+                    "ok" to true,
+                    "model" to (_deviceInfo.value?.cameraModel ?: "unknown"),
+                    // 传输对象只有在 claim 成功后才会创建。
+                    "claim" to true,
+                    "cfg_total" to device.configurationCount,
+                    "if_total" to device.interfaceCount
+                )
             }
-
-            usbConnection = connection
-            usbInterface = ptpInterface
-            bulkOut = outEndpoint
-            bulkIn = inEndpoint
-            interruptIn = interruptEndpoint
-
-            _deviceInfo.value = UsbCameraInfo(
-                deviceName = device.deviceName,
-                vendorId = device.vendorId,
-                productId = device.productId,
-                cameraModel = UsbPtpProtocol.getCameraName(device.productId),
-                // 部分 OEM 在未授权/隐私策略下读 serialNumber 直接抛 SecurityException，
-                // 那会把整个连接流程带崩（v2.2 T-U1）；退化为 VID:PID 身份键。
-                serialNumber = runCatching { device.serialNumber }.getOrNull()
-                    ?: "no-permission-${device.vendorId}:${device.productId}"
-            )
-            eventLogger.event(
-                "usb_open",
-                "ok" to true,
-                "model" to (_deviceInfo.value?.cameraModel ?: "unknown"),
-                // FR-28：把"到底claim成没成、命中第几个接口、设备一共几个配置"记进导出日志。
-                // 此前 claim 的返回值不进日志、配置数不进日志，"机身不应答"就只能靠耗时反推。
-                // 只记编号与类码，不记序列号。
-                "claim" to claimed,
-                "cfg_total" to device.configurationCount,
-                "if_total" to device.interfaceCount
-            )
 
             // 打开 PTP 会话
-            scope?.launch {
+            run {
                 val sessionOk = openPtpSession()
+                ensureCurrentConnection(generation)
                 // v1.3.0（需求 6）：首次会话失败时做一次「残留会话恢复」再判定，
                 // 而不是直接报错重连 —— 见 recoverStaleSession() 说明。
                 //
@@ -442,6 +481,7 @@ class UsbPtpManager @Inject constructor(
                 val skipRecovery = lastOpenSessionNoAnswer &&
                     connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_SKIP_RECOVERY)
                 val connected = sessionOk || (!skipRecovery && recoverStaleSession())
+                ensureCurrentConnection(generation)
                 if (!sessionOk && skipRecovery) {
                     eventLogger.event(
                         "usb_session", "ok" to false, "reason" to "no_answer_skip_recovery"
@@ -477,21 +517,19 @@ class UsbPtpManager @Inject constructor(
                     // 会话建立后向相机反馈，保持相机处于持续连接状态
                     val ready = sendCommand(PtpConstants.OP_NIKON_DEVICE_READY)
                     Timber.tag(TAG).d("USB DeviceReady response=${ready?.responseCode}")
-                    // 模块 6：取流管线预初始化——会话就绪即下发 LiveView 图像配置
-                    // （0xD1AC=3，与 LiveViewManager.startLiveView 同一口径），
-                    // 解决「显示连接成功但监看无画面」的首帧时序竞争
-                    runCatching {
-                        setDevicePropValue(PtpConstants.PROP_NIKON_LV_IMAGE_PROFILE, byteArrayOf(3))
-                    }.onSuccess { ok ->
-                        Timber.tag(TAG).i("USB LV pipeline pre-init 0xD1AC=3: $ok")
+                    // 图像配置由 LiveViewManager 在启动监看时设置，基础建链不改机身参数。
+                    ensureCurrentConnection(generation)
+                    synchronized(this) {
+                        requireCurrentConnection(generation)
+                        _usbErrorMessage.value = null
+                        _usbFailCode.value = null
+                        // 连接成功后重置退避，下次瞬断从最短间隔开始。
+                        reconnectRound = 0
+                        _usbState.value = UsbConnectionState.CONNECTED
+                        startEventPolling()
+                        startKeepAlive()
                     }
-                    _usbErrorMessage.value = null
-                    _usbFailCode.value = null
-                    // FR-27：连上了就把退避轮次清零，下次瞬断仍从最短间隔起跳
-                    reconnectRound = 0
-                    _usbState.value = UsbConnectionState.CONNECTED
-                    startEventPolling()
-                    startKeepAlive()
+                    sessionOpen = true
                     Timber.tag(TAG).i("✓ USB PTP connected: ${_deviceInfo.value?.cameraModel}")
                 } else {
                     eventLogger.event("usb_session", "ok" to false)
@@ -504,35 +542,56 @@ class UsbPtpManager @Inject constructor(
                     _usbErrorMessage.value =
                         "PTP 会话打开失败：相机无响应，请点亮相机屏幕并确认 USB 模式为 PTP/MTP 后重试"
                     _usbState.value = UsbConnectionState.ERROR
-                    disconnect(silent = true)
+                    releaseConnection()
                     scheduleReconnect()
                 }
             }
 
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
+            runCatching { opened?.close() }
+            runCatching { openedTransport?.close() }
+            ensureCurrentConnection(generation)
+            releaseConnection()
             Timber.tag(TAG).e(e, "USB connection failed")
             _usbFailCode.value = "exception"
             _usbErrorMessage.value = "USB 连接异常：${e.message ?: "未知错误"}（接口可能被占用，请重新插拔）"
             _usbState.value = UsbConnectionState.ERROR
             scheduleReconnect()
+        } finally {
+            if (!currentCoroutineContext().isActive ||
+                generation != connectionGeneration || apConnection.engaged
+            ) {
+                runCatching { opened?.close() }
+                runCatching { openedTransport?.close() }
+                synchronized(this) {
+                    if (generation == connectionGeneration) {
+                        releaseConnection()
+                        _usbState.value = UsbConnectionState.DISCONNECTED
+                    }
+                }
+            }
         }
     }
 
     /**
      * v2.2（PRD §5.3 T-U1）：拔出后的宽限窗口。
      *
-     * 窗口内不做任何拆除动作，只轮询总线；相机以同一 VID/PID 重新出现就静默重连。
+     * 先释放已拔出设备的句柄，再轮询总线；相机重新出现时静默重连。
      * 窗口耗尽仍未出现才按真实拔出来处理（保持与旧版一致的终态）。
      */
     private fun enterDetachGraceWindow() {
-        reconnectJob?.cancel()
+        disconnect(silent = true)
         val host = this.scope ?: run { disconnect(); return }
         _usbState.value = UsbConnectionState.CONNECTING
-        host.launch {
+        val generation = connectionGeneration
+        detachGraceJob = host.launch {
             val deadline = System.currentTimeMillis() + DETACH_GRACE_MS
             var revived = false
             while (System.currentTimeMillis() < deadline) {
                 delay(GRACE_POLL_MS)
+                if (generation != connectionGeneration) return@launch
                 val device = usbManager.deviceList.values.firstOrNull {
                     UsbPtpProtocol.isNikonCamera(it.vendorId, it.productId)
                 }
@@ -540,6 +599,7 @@ class UsbPtpManager @Inject constructor(
                     revived = true
                     Timber.tag(TAG).i("Camera returned within grace window, reconnecting")
                     eventLogger.event("usb_grace_revived")
+                    detachGraceJob = null
                     if (usbManager.hasPermission(device)) openConnection(device)
                     else requestPermissionAndConnect(device)
                     break
@@ -578,8 +638,11 @@ class UsbPtpManager @Inject constructor(
      */
     private var reconnectRound = 0
 
+    @Synchronized
     private fun scheduleReconnect() {
         if (reconnectJob?.isActive == true) return
+        if (!started || apConnection.engaged) return
+        val generation = connectionGeneration
         val scope = this.scope ?: return
         if (reconnectRound >= RECONNECT_ROUNDS_MAX) {
             // 到顶就停手，等物理重插：ATTACHED 广播会把计数清零并重新拉起。
@@ -598,8 +661,10 @@ class UsbPtpManager @Inject constructor(
             // FR-27：闸门开 → 本轮从 delays[round] 起步（跨轮次单调变长）；
             // 关 → 沿用旧行为，每轮都从 1000ms 重新开始。
             val startIdx = if (gate) round.coerceAtMost(delays.size - 1) else 0
-            delays.drop(startIdx).forEachIndexed { _, delayMs ->
+            run {
+                val delayMs = delays[startIdx]
                 delay(delayMs)
+                if (generation != connectionGeneration) return@launch
                 if (_usbState.value == UsbConnectionState.CONNECTED ||
                     _usbState.value == UsbConnectionState.CONNECTING
                 ) return@launch
@@ -611,6 +676,8 @@ class UsbPtpManager @Inject constructor(
                     return@launch
                 }
                 Timber.tag(TAG).i("USB reconnect round $round (waited ${delayMs}ms)")
+                // 先交还定时任务槽，避免 openConnection 取消正在交接的任务自身。
+                reconnectJob = null
                 if (usbManager.hasPermission(device)) {
                     openConnection(device)
                 } else {
@@ -619,14 +686,7 @@ class UsbPtpManager @Inject constructor(
                     return@launch
                 }
                 // openConnection 为异步会话建立；失败会再次 scheduleReconnect 排队
-                if (_usbState.value == UsbConnectionState.CONNECTING) return@launch
-            }
-            // 退避窗口耗尽仍未连上：给出明确指引，用户插拔后 ATTACHED 广播会重新拉起
-            if (_usbState.value != UsbConnectionState.CONNECTED &&
-                _usbState.value != UsbConnectionState.CONNECTING
-            ) {
-                _usbErrorMessage.value =
-                    "USB 自动重连未成功：请重新插拔数据线，或点亮相机屏幕后下拉刷新"
+                return@launch
             }
         }
     }
@@ -675,6 +735,7 @@ class UsbPtpManager @Inject constructor(
             // Fix P0-3: 接受 OK 或 SESSION_ALREADY_OPEN（重复连接时相机可能已开会话）
             val ok = response?.isOk == true ||
                     response?.responseCode == PtpConstants.RESPONSE_SESSION_ALREADY_OPEN
+            sessionOpen = ok
             if (!ok) {
                 Timber.tag(TAG).e("OpenSession code=0x${response?.responseCode?.toString(16)}")
                 // FR-27：这一行以前只进 Timber。而"机身回了个拒绝码"与"机身一个字都没回"
@@ -782,8 +843,10 @@ class UsbPtpManager @Inject constructor(
         allowRetry: Boolean = false
     ): TransactOutcome = withContext(Dispatchers.IO) {
         commandMutex.withLock {
-            val maxAttempts = if (allowRetry) 2 else 1
+            // 外部流无法回滚，重发会把已写出的前缀追加两遍。
+            val maxAttempts = if (allowRetry && sink == null) 2 else 1
             repeat(maxAttempts) { attempt ->
+                currentCoroutineContext().ensureActive()
                 if (attempt > 0) {
                     Timber.tag(TAG).w("transact retry op=0x${operationCode.toString(16)} attempt=$attempt")
                     clearHaltBothEndpoints()
@@ -805,7 +868,7 @@ class UsbPtpManager @Inject constructor(
     }
 
     /** 单次事务尝试（不含重试）。所有 bulkTransfer 均在 commandMutex 持有期间执行。 */
-    private fun executeTransactOnce(
+    private suspend fun executeTransactOnce(
         operationCode: Int,
         params: List<Int>,
         dataOut: ByteArray?,
@@ -813,23 +876,31 @@ class UsbPtpManager @Inject constructor(
         onProgress: ((Long, Long) -> Unit)?,
         timeoutMs: Int
     ): TransactOutcome {
+        val transactionContext = currentCoroutineContext()
+        transactionContext.ensureActive()
         val conn = usbConnection ?: throw TransactException("connection closed")
         val out = bulkOut ?: throw TransactException("bulk out endpoint missing")
         val inp = bulkIn ?: throw TransactException("bulk in endpoint missing")
 
         lastCommandAttemptAtMs = System.currentTimeMillis()
-        val txId = transactionId.incrementAndGet()
+        val txId = if (operationCode == PtpConstants.OP_OPEN_SESSION) {
+            transactionId.set(0)
+            0
+        } else {
+            transactionId.incrementAndGet()
+        }
 
         // ---- 命令阶段（+ 可选数据出阶段）----
         val strictWrite = connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_WRITE_STRICT)
         val command = UsbPtpProtocol.buildCommandContainer(txId, operationCode, params)
-        val wroteCmd = conn.bulkTransfer(out, command, command.size, timeoutMs)
+        val wroteCmd = writeBulkFully(conn, out, command, timeoutMs)
         if (usbWriteFailed(wroteCmd, command.size, strictWrite)) {
             throw TransactException("bulk out op=0x${operationCode.toString(16)} wrote=$wroteCmd/${command.size}")
         }
         if (dataOut != null) {
-            val dataContainer = UsbPtpProtocol.buildDataContainer(txId, dataOut)
-            val wroteData = conn.bulkTransfer(out, dataContainer, dataContainer.size, timeoutMs)
+            transactionContext.ensureActive()
+            val dataContainer = UsbPtpProtocol.buildDataContainer(txId, operationCode, dataOut)
+            val wroteData = writeBulkFully(conn, out, dataContainer, timeoutMs)
             if (usbWriteFailed(wroteData, dataContainer.size, strictWrite)) {
                 throw TransactException(
                     "bulk out data op=0x${operationCode.toString(16)} wrote=$wroteData/${dataContainer.size}"
@@ -843,8 +914,33 @@ class UsbPtpManager @Inject constructor(
         var receivedBytes = 0L
         var response: UsbPtpResponse? = null
         val chunk = ByteArray(READ_CHUNK_SIZE)
+        var idleReads = 0
+        var lastReadAt = System.nanoTime()
+
+        fun readChunk(): Int {
+            transactionContext.ensureActive()
+            val read = conn.bulkTransfer(inp, chunk, chunk.size, timeoutMs)
+            transactionContext.ensureActive()
+            if (read < 0) throw TransactException("USB 读取失败或超时")
+            if (read == 0) {
+                val idleMs = (System.nanoTime() - lastReadAt) / 1_000_000L
+                if (++idleReads >= 64 || idleMs >= timeoutMs.coerceAtLeast(1)) {
+                    throw TransactException("USB 数据流停滞")
+                }
+            } else {
+                idleReads = 0
+                lastReadAt = System.nanoTime()
+            }
+            return read
+        }
+
+        fun validateData(header: UsbPtpProtocol.ContainerHeader) {
+            if (header.transactionId != txId) throw TransactException("USB 数据事务号不匹配")
+            if (header.code != operationCode) throw TransactException("USB 数据操作码不匹配")
+        }
 
         fun emitPayload(buffer: ByteArray, offset: Int, length: Int) {
+            transactionContext.ensureActive()
             if (length <= 0) return
             if (sink != null) sink.write(buffer, offset, length)
             else accumulator!!.write(buffer, offset, length)
@@ -855,7 +951,7 @@ class UsbPtpManager @Inject constructor(
         fun consumeContainer(header: UsbPtpProtocol.ContainerHeader, source: ByteArray) {
             when (header.type) {
                 UsbPtpProtocol.TYPE_DATA -> {
-                    if (header.transactionId != txId) throw TransactException("data txid mismatch")
+                    validateData(header)
                     emitPayload(source, UsbPtpProtocol.HEADER_SIZE, header.length - UsbPtpProtocol.HEADER_SIZE)
                 }
                 UsbPtpProtocol.TYPE_RESPONSE -> {
@@ -876,6 +972,7 @@ class UsbPtpManager @Inject constructor(
         }
 
         while (response == null) {
+            transactionContext.ensureActive()
             if (pending.size >= UsbPtpProtocol.HEADER_SIZE) {
                 val header = UsbPtpProtocol.parseContainerHeader(pending)
                     ?: throw TransactException("container header unreadable")
@@ -889,20 +986,15 @@ class UsbPtpManager @Inject constructor(
                     continue
                 }
                 if (header.type == UsbPtpProtocol.TYPE_DATA) {
+                    validateData(header)
                     // 大数据容器跨读到达：头部之后的既有字节直写，随后进入流式消费，
                     // 容器结束后再出现的字节（粘连的 Response 等）截回 pending
                     emitPayload(pending, UsbPtpProtocol.HEADER_SIZE, pending.size - UsbPtpProtocol.HEADER_SIZE)
                     var consumed = pending.size.toLong()
                     pending = ByteArray(0)
-                    var idleReads = 0
                     while (consumed < header.length) {
-                        val read = conn.bulkTransfer(inp, chunk, chunk.size, timeoutMs)
-                        if (read < 0) throw TransactException("bulk in failed during data phase")
-                        if (read == 0) {
-                            if (++idleReads > 64) throw TransactException("data phase stalled")
-                            continue
-                        }
-                        idleReads = 0
+                        val read = readChunk()
+                        if (read == 0) continue
                         val take = minOf(read.toLong(), header.length - consumed).toInt()
                         emitPayload(chunk, 0, take)
                         consumed += take
@@ -913,8 +1005,7 @@ class UsbPtpManager @Inject constructor(
                 // 非数据容器未完整到达（Response/Event 都是小容器）：继续读
             }
 
-            val read = conn.bulkTransfer(inp, chunk, chunk.size, timeoutMs)
-            if (read < 0) throw TransactException("bulk in failed/timeout op=0x${operationCode.toString(16)}")
+            val read = readChunk()
             if (read > 0) {
                 pending = if (pending.isEmpty()) chunk.copyOf(read)
                 else pending + chunk.copyOfRange(0, read)
@@ -931,9 +1022,30 @@ class UsbPtpManager @Inject constructor(
         }
         return TransactOutcome(
             response = resp,
-            data = if (sink == null) accumulator?.toByteArray() else ByteArray(0),
+            data = if (!resp.isOk) null else if (sink == null) accumulator?.toByteArray() else ByteArray(0),
             receivedBytes = receivedBytes
         )
+    }
+
+    /** 以 16 KiB 分块写出一个容器，避免旧 Android USB 栈拒绝超长 bulkTransfer。 */
+    private fun writeBulkFully(
+        connection: UsbDeviceConnection,
+        endpoint: UsbEndpoint,
+        data: ByteArray,
+        timeoutMs: Int
+    ): Int {
+        var offset = 0
+        while (offset < data.size) {
+            val length = minOf(WRITE_CHUNK_SIZE, data.size - offset)
+            val sent = if (offset == 0 && length == data.size) {
+                connection.bulkTransfer(endpoint, data, length, timeoutMs)
+            } else {
+                connection.bulkTransfer(endpoint, data, offset, length, timeoutMs)
+            }
+            if (sent <= 0) return -1
+            offset += sent
+        }
+        return offset
     }
 
     /**
@@ -945,7 +1057,7 @@ class UsbPtpManager @Inject constructor(
         listOf(bulkOut, bulkIn).forEach { ep ->
             ep ?: return@forEach
             runCatching {
-                conn.controlTransfer(0x02, 0x01, 0, ep.address, null, 0, 0)
+                conn.controlTransfer(0x02, 0x01, 0, ep.address, null, 0, CLOSE_SESSION_TEARDOWN_MS)
             }
         }
     }
@@ -1300,16 +1412,37 @@ class UsbPtpManager @Inject constructor(
         val interrupt = interruptIn ?: return
 
         eventPollJob = scope?.launch(Dispatchers.IO) {
+            var pending = ByteArray(0)
             while (isActive) {
                 try {
                     val conn = usbConnection ?: break
-                    val buffer = ByteArray(64)
+                    val buffer = ByteArray(16 * 1024)
                     val read = conn.bulkTransfer(interrupt, buffer, buffer.size, 1000)
-                    if (read >= UsbPtpProtocol.HEADER_SIZE) {
-                        val event = UsbPtpProtocol.parseEventContainer(buffer.copyOf(read))
-                        if (event != null) {
-                            _events.tryEmit(event)
-                            Timber.tag(TAG).d("Event: code=0x${event.eventCode.toString(16)}")
+                    if (read > 0) {
+                        pending = if (pending.isEmpty()) {
+                            buffer.copyOf(read)
+                        } else {
+                            pending + buffer.copyOfRange(0, read)
+                        }
+                        while (pending.size >= UsbPtpProtocol.HEADER_SIZE) {
+                            val header = UsbPtpProtocol.parseContainerHeader(pending)
+                                ?: break
+                            if (header.type != UsbPtpProtocol.TYPE_EVENT ||
+                                header.length < UsbPtpProtocol.HEADER_SIZE ||
+                                header.length > UsbPtpProtocol.MAX_PAYLOAD_SIZE
+                            ) {
+                                pending = pending.copyOfRange(1, pending.size)
+                                continue
+                            }
+                            if (pending.size < header.length) break
+                            val event = UsbPtpProtocol.parseEventContainer(
+                                pending.copyOfRange(0, header.length)
+                            )
+                            pending = pending.copyOfRange(header.length, pending.size)
+                            if (event != null) {
+                                _events.tryEmit(event)
+                                Timber.tag(TAG).d("Event: code=0x${event.eventCode.toString(16)}")
+                            }
                         }
                     }
                 } catch (e: Exception) {
@@ -1402,7 +1535,7 @@ class UsbPtpManager @Inject constructor(
      */
     private suspend fun endSessionQuietly() {
         if (!connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.USB_CLOSE_SESSION_ON_TEARDOWN)) return
-        if (_usbState.value != UsbConnectionState.CONNECTED) return
+        if (!sessionOpen) return
         runCatching {
             transact(
                 operationCode = PtpConstants.OP_CLOSE_SESSION,
@@ -1410,6 +1543,7 @@ class UsbPtpManager @Inject constructor(
                 timeoutMs = CLOSE_SESSION_TEARDOWN_MS
             )
         }.onFailure { Timber.tag(TAG).w(it, "CloseSession on teardown threw") }
+        sessionOpen = false
         eventLogger.event("usb_session", "ok" to false, "reason" to "closed_on_teardown")
     }
 
@@ -1433,16 +1567,42 @@ class UsbPtpManager @Inject constructor(
      * 断开 USB 连接。
      * @param silent true = 故障路径的清理（不清错误提示、不改状态，由调用方决定 UI 呈现）
      */
+    @Synchronized
     fun disconnect(silent: Boolean = false) {
+        connectionGeneration++
+        connectJob?.cancel()
+        connectJob = null
+        reconnectJob?.cancel()
+        reconnectJob = null
+        detachGraceJob?.cancel()
+        detachGraceJob = null
+        activeDeviceName = null
+        permissionDeviceName = null
+        releaseConnection()
+        if (!silent) {
+            _usbFailCode.value = null
+            _usbErrorMessage.value = null
+            _usbState.value = UsbConnectionState.DISCONNECTED
+        }
+    }
+
+    private fun releaseConnection() {
+        sessionOpen = false
         keepAliveJob?.cancel()
         keepAliveJob = null
         eventPollJob?.cancel()
         eventPollJob = null
 
-        try {
-            usbInterface?.let { usbConnection?.releaseInterface(it) }
-            usbConnection?.close()
-        } catch (_: Exception) {}
+        val ownedTransport = transport
+        transport = null
+        if (ownedTransport != null) {
+            ownedTransport.close()
+        } else {
+            try {
+                usbInterface?.let { usbConnection?.releaseInterface(it) }
+                usbConnection?.close()
+            } catch (_: Exception) {}
+        }
 
         usbConnection = null
         usbInterface = null
@@ -1453,12 +1613,8 @@ class UsbPtpManager @Inject constructor(
         lastCommandOkAtMs = 0L
         lvFrameOkLogged = false
         _deviceInfo.value = null
-        if (!silent) {
-            _usbErrorMessage.value = null
-            _usbState.value = UsbConnectionState.DISCONNECTED
-        }
         eventLogger.event("usb_session", "ok" to false, "reason" to "disconnected")
-        Timber.tag(TAG).i("USB disconnected (silent=$silent)")
+        Timber.tag(TAG).i("USB 资源已释放")
     }
 
     fun isConnected(): Boolean = _usbState.value == UsbConnectionState.CONNECTED

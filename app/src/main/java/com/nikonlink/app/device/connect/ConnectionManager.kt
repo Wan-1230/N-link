@@ -65,7 +65,9 @@ class ConnectionManager @Inject constructor(
     private val preflight: PreflightGate,
     private val staHostRegistrar: StaHostRegistrar,
     /** FR-36①：AP 面板等待期也要盯掉线原因——这条窗口里 WifiDirectConnector 还没跑起来，它自己的注册覆盖不到。 */
-    private val wifiDropWatcher: com.nikonlink.app.device.wifi_sta.WifiDropReasonWatcher
+    private val wifiDropWatcher: com.nikonlink.app.device.wifi_sta.WifiDropReasonWatcher,
+    private val apConnection: com.nikonlink.app.device.ap.ApConnectionService,
+    private val staRoutes: com.nikonlink.app.device.wifi_sta.StaSocketRouteResolver
 ) {
     companion object {
         private const val TAG = "ConnectionMgr"
@@ -124,6 +126,8 @@ class ConnectionManager @Inject constructor(
     private var recoveryJob: Job? = null
     /** STA 直连场景：WiFi 路由器断网标记（网络恢复后触发 PTP 重建） */
     private var staNetworkLost = false
+    private val staRegistrationActive = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var staProfileReadyAt = 0L
 
     /**
      * P0：本轮/会话内确认过的真实相机 IP（BLE 凭证给出、历史连接过且当前可达、或真实地址建链成功）。
@@ -283,6 +287,12 @@ class ConnectionManager @Inject constructor(
          */
         caller: ConnFunnel.Caller = ConnFunnel.Caller.USER_TAP
     ) {
+        if (apConnection.engaged || staRegistrationActive.get() ||
+            android.os.SystemClock.elapsedRealtime() < staProfileReadyAt
+        ) {
+            _connectionHint.value = ConnectionHint("请先完成当前连接或注册流程；AP 使用中请先显式断开 AP")
+            return
+        }
         // 旧 AP 连接链路已删除：AP 连接一律走工作树方案（com.camerakit.client）。
         // 旧链路不再服务相机热点网关（AP 目标），从源头杜绝争抢相机唯一的 PTP/IP 客户端槽。
         if (ipAddress == DEFAULT_FALLBACK_HOST) {
@@ -695,12 +705,13 @@ class ConnectionManager @Inject constructor(
     suspend fun scanWifiCameras(
         timeoutMs: Long = 18_000L,
         hotspotMode: Boolean = false,
-        ptpConfirm: Boolean = true,
+        ptpConfirm: Boolean = false,
         earlyExit: Boolean = false
     ): List<WifiCameraCandidate> {
+        if (apConnection.engaged) return emptyList()
         // STA: 显式拿到 WiFi Network，让 scan() 内部的 mDNS/探测 Socket 绑定到 WiFi，
         // 避免手机蜂窝数据等其它网络抢走默认路由导致扫描失败。
-        val network = wifiManager.currentWifiNetwork()
+        val network = if (hotspotMode) null else wifiManager.currentWifiNetwork()
         val candidates = wifiScanner.scan(timeoutMs, network, hotspotMode, ptpConfirm, earlyExit).toMutableList()
         // 扫描失败时直接复用历史 IP 发起 PTP/IP，避免每次都全段盲扫。
         // RC-3：地址统一走 WifiEndpoint 归一化（前导零校正、非法段拦截）
@@ -713,9 +724,13 @@ class ConnectionManager @Inject constructor(
             // FR-31③：ptpConfirm=false 时只做 TCP 确认 —— 历史 IP 若就是即将注册的相机，
             // 一次 InitCommand 探测就足以让紧随其后的注册握手被 reason=1 拒掉。
             val alive = if (ptpConfirm) {
-                PtpIpProbe.probe(lastEndpoint, timeoutMs = 1000L, network = network)
+                val route = staRoutes.resolve(lastEndpoint.host, network)
+                PtpIpProbe.probeDetailed(lastEndpoint.host, lastEndpoint.port, 1000L,
+                    route.network, route.localAddress) == PtpIpProbe.ProbeResult.OK
             } else {
-                PtpIpProbe.tcpConnectOnly(lastEndpoint.host, lastEndpoint.port, 1000L, network)
+                val route = staRoutes.resolve(lastEndpoint.host, network)
+                PtpIpProbe.tcpConnectOnly(lastEndpoint.host, lastEndpoint.port, 1000L,
+                    route.network, route.localAddress)
             }
             if (alive) {
                 candidates.add(
@@ -890,7 +905,7 @@ class ConnectionManager @Inject constructor(
      * 注册成功后，相机切 STA 模式才会放行 InitCommandRequest（否则会 InitFail 拒绝）。
      *
      * 两条路径：
-     * - **已连接**（AP 模式连上、或 STA 已连）：在当前活会话内注册，v2.6.3 以来的原路径，逻辑不变；
+     * - **STA 已连接**：保留现有会话内注册路径；AP 使用期间禁止进入本入口；
      * - **未连接**（v2.6.6 FR-30）：相机已连上本机热点/同一路由器并停在向导时，
      *   先做一轮受限发现拿到 endpoint，再交 [StaHostRegistrar] 开临时通道完成注册 ——
      *   不再要求「先通过 AP 连上相机」。2026-10-01 诊断日志的 host-register 段
@@ -898,6 +913,29 @@ class ConnectionManager @Inject constructor(
      */
     suspend fun registerStaHost(
         onProgress: ((String) -> Unit)? = null
+    ): HostRegistrationResult {
+        if (apConnection.engaged) {
+            return HostRegistrationResult.Failure("ap_active", detail = "AP 链路使用中，请先显式断开 AP，再进行 STA 注册")
+        }
+        if (!staRegistrationActive.compareAndSet(false, true)) {
+            return HostRegistrationResult.Failure("busy", detail = "主机注册正在进行")
+        }
+        try {
+            if (connector.isActive || pairingJob?.isActive == true || recoveryJob?.isActive == true) {
+                return HostRegistrationResult.Failure("busy", detail = "STA 连接正在进行，请先断开后再注册")
+            }
+            val result = registerStaHostInternal(onProgress)
+            if (result is HostRegistrationResult.Success) {
+                staProfileReadyAt = android.os.SystemClock.elapsedRealtime() + 15_000L
+            }
+            return result
+        } finally {
+            staRegistrationActive.set(false)
+        }
+    }
+
+    private suspend fun registerStaHostInternal(
+        onProgress: ((String) -> Unit)?
     ): HostRegistrationResult {
         if (!ptpSession.isConnected()) {
             return registerStaHostStandalone(onProgress)
@@ -962,6 +1000,8 @@ class ConnectionManager @Inject constructor(
         val candidates = runCatching {
             scanWifiCameras(
                 timeoutMs = REG_DISCOVERY_TIMEOUT_MS,
+                hotspotMode = prefs.getString("sta_sub_mode", "") ==
+                    com.nikonlink.app.shared.common.AppSettings.STA_MODE_PHONE_HOTSPOT,
                 ptpConfirm = false,
                 earlyExit = true
             )
@@ -982,10 +1022,9 @@ class ConnectionManager @Inject constructor(
             return HostRegistrationResult.Failure(
                 phase = "not_connected",
                 detail = "相机未连接，本地网络里也没找到可注册的相机。\n" +
-                    "两条可用路径（任选其一）：\n" +
-                    "  · STA 直接注册：让相机连上本机热点（或与手机同一路由器），停在" +
-                    "「Wi-Fi连接（STA mode）」/「连接至 PC」向导的等待画面，再点注册，本端会自动找到它；\n" +
-                    "  · AP 注册：先在「WiFi-AP」标签连上相机热点，再回到这里执行注册。"
+                    "请让相机连上本机热点（或与手机同一路由器），停在" +
+                    "「连接至 PC / 连接至计算机」向导的等待画面，再点注册。\n" +
+                    "如路由器开启了客户端隔离，请关闭隔离或改用本机热点。"
             )
         }
         eventLogger.event(
@@ -1050,11 +1089,8 @@ class ConnectionManager @Inject constructor(
      * 相机主动拒绝握手（InitFail）说明 STA 门控未解除 → 提示需要做主机注册。
      * 只在收到 InitFail 时触发，网络类失败（无 WiFi / 相机不可达）不误报。
      *
-     * **v2.6.3 R1（`ConnFlags.HOSTREG_HINT_V2`）**：原来**所有** InitFail 都算"需要注册"，
-     * 但 PTP/IP 的三个 fail reason 语义完全不同 —— reason=1 是"机身唯一的客户端槽还被
-     * 上一代会话占着"（该等，不该去注册），reason=3 是"本机已在这个连接里"
-     * （已注册的证据）。一律当"需要注册"会把用户指向一个相机根本没在等待的向导，
-     * 随后的 0x952B 必然被 0x201F 拒（2026-09-30 日志实证）。
+     * 根据拒绝阶段提供指引，但拒绝码不能证明主机注册已经生效。
+     * reason=3 保留历史提示分支，不再由它写入持久化的已注册标记。
      * 闸门关掉 = 回到"一律需要注册"的旧行为。
      */
     private fun observeHostRegistrationHint() {
@@ -1065,11 +1101,9 @@ class ConnectionManager @Inject constructor(
                 val graded = connFlags.isEnabled(ConnFlags.HOSTREG_HINT_V2)
                 when {
                     graded && reason == PtpConstants.INIT_FAIL_HOST_ALREADY_CONNECTED -> {
-                        // 机身明确说"本机已连接" = 注册是生效的，把它记为已注册而不是待注册
-                        _staHostRegistered.value = true
-                        _staRegisterNeeded.value = false
-                        prefs.edit().putBoolean(PREFS_STA_HOST_REGISTERED, true).apply()
-                        eventLogger.event("sta_hostreg_grade", "grade" to "already_connected")
+                        _statusMessage.value =
+                            "相机拒绝了握手（reason=3），请检查机身模式与配对状态；此响应不能确认注册成功"
+                        eventLogger.event("sta_hostreg_grade", "grade" to "registration_unconfirmed")
                     }
 
                     graded && reason == PtpConstants.INIT_FAIL_CONNECTION_IN_USE -> {
@@ -1357,6 +1391,9 @@ class ConnectionManager @Inject constructor(
     }
 
     private fun recoverWifiSession(network: android.net.Network? = null) {
+        if (apConnection.engaged || staRegistrationActive.get() ||
+            android.os.SystemClock.elapsedRealtime() < staProfileReadyAt
+        ) return
         val endpoint = pairedDeviceAddress?.let { WifiEndpoint.parse(it) } ?: return
         // 旧 AP 连接链路已删除：恢复路径绕过 connectToWifiCamera 直连 connector，
         // 若放行 AP 目标会在工作树 AP 会话刚建立时抢建第二条 PTP/IP 连接，
