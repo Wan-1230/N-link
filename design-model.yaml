@@ -1,0 +1,229 @@
+# N-Link 设计模型 —— finesse `document` 产物
+#
+# 真相源声明（刻意偏离 finesse 的 MASTER + pages/*.yaml 两级布局）：
+#   design-model.md:39-41 要求「一个真相源」。本项目的颜色与尺寸真相源**已经是**
+#   app/src/main/res/values/{colors,dimens,styles,themes}.xml，代码直接消费它们。
+#   再建一份 design-model/MASTER.yaml + pages/*.yaml 镜像色值，等于制造第二真相源，
+#   而项目文档已把「文档滞后于代码」列为系统病。
+#   因此本文件**只记录 XML 表达不了的东西**：register、dials 及其偏离理由、
+#   反参照、五轴坐标、每页的动效拍。具体色值/尺寸一律以 XML 为准，此处不复制。
+#
+# 生成方式：finesse-ui v0.20.0 `document` 命令（提取而非发明）。
+# 提取时发现代码违反自身系统之处，见文末 drift 段——那是 finding，不是被抹平的东西。
+
+meta:
+  name: N-Link
+  industry: 相机遥控与传图工具（尼康，第三方）
+  register: product          # 工作台/手机；非 brand，无 hero 引擎
+  surface: native-android    # 非 h5：furniture 由 OS 提供，自绘状态栏会命中
+                             # anti-cheap.md:31「重画环境 chrome」HARD BAN
+  persona: 克制的机械感 / instrument panel
+  design_read: >
+    一台仪器，不是一个营销页。浅色页面退到 #EFEFEE、卡片浮到近白，
+    全 App 只有尼康黄一处彩色且只出现在两个位置；深色面板靠明度阶梯
+    而非阴影分层；全屏监看恒黑，HUD 退到四边，中间整块是相机画面。
+    动效只发生在状态之间——快门分段反馈、参数转盘惯性吸附、
+    触点圆形扩散转场、面板错峰开合——每一拍都有静止版终态。
+
+dials:
+  soul: 6
+  spectacle: 2
+  density: 5
+  overrides:                 # 偏离默认必须写理由（design-model.md:103-127）
+    liveview:   { spectacle: 1, density: 3, reason: 画面是主角；渲染链固定 15fps，动效与取景抢主线程 }
+    transfer:   { spectacle: 2, density: 7, reason: 网格信息密集，密度服务于「一眼找到那张」 }
+    remote:     { spectacle: 2, density: 6, reason: 嵌入监看 + 参数，密度居中 }
+    dashboard:  { spectacle: 2, density: 5, reason: 连接流程页，一步一件事 }
+    settings:   { spectacle: 1, density: 6, reason: 纯操作页，workflow-ui 口径 }
+
+color:
+  source_of_truth: app/src/main/res/values/colors.xml + values-night/colors.xml
+  ramp: True Neutral（product-palettes.md:233）
+  ramp_rationale: >
+    product-palettes.md:59 要求 tint 匹配 accent 色相，黄是暖色按理配 Warm Stone；
+    但 Warm Stone 100 #F0ECE5（色相 38°、饱和 4.3%）与 anti-cheap.md:64-68 禁用的
+    #EFEAE0（40°、5.9%）几乎同值。True Neutral 50/100 色相 60°、饱和仅 0.4%，
+    方向呼应 #FFE100 的 53°，量级远低于米色线。实测数值见 docs/ADR-001。
+  accent: nikon_yellow #FFE100
+  accent_strategy: committed   # 单一强调色，锁死；不是 restrained 也不是 drenched
+  accent_placement_limit:
+    global: [status_connected 指示灯, NlButton.Primary 填充]
+    liveview_exception:        # 已登记例外，2026-10-03 拍板
+      - 刻度尺游标
+      - 分段选中段
+      - 跟焦轮驱动位
+      - 监看中状态点
+  accent_measured:             # 实算值，非估算
+    white_on_yellow: 1.31:1    # 故黄底必须近黑字
+    nearblack_on_yellow: 16.02:1
+    yellow_on_light_card: 1.28:1   # 故黄色不可作浅底文字/细线
+    yellow_on_lv_card: 13.12:1     # 监看页黄作为强调成立
+  semantic_colors_rule: >
+    Set 11 硬约束（product-palettes.md:272）：强调色承担品牌时，
+    绿/红严格保留给语义。红永远只表示异常，绝不表示品牌。
+    视频解析的多色 pastel 方案因此被否决。
+  theme:
+    light: { page: True Neutral 100, card: 近白, panel: True Neutral 50 }
+    dark:  { page: True Neutral 950, panel_step: 950 -> 900 -> 800 }
+    dark_ink3: 400 档         # 实测 TN400 5.57:1 通过、TN500 3.37:1 不通过
+    liveview: 恒黑，刻意无 values-night 对应值（已登记豁免，非遗漏）
+  border: alpha hairline，禁用硬灰 hex（product-palettes.md:21-48 要求 3–8% ALPHA）
+  border_measured:
+    divider_8pct_black: '#14000000'   # 叠白合成 #EBEBEB，与原值像素级一致
+    outline_10pct_black: '#1A000000'  # 叠白合成 #E5E5E5，原值 #E4E4E4，肉眼无差
+    dark_12pct_white: '#1FFFFFFF'
+
+type:
+  source_of_truth: app/src/main/res/values/dimens.xml 的 font_* + styles.xml 的 NlText.*
+  display: sans-serif（系统字体）
+  body: sans-serif
+  mono: 不打包任何第三方字体
+  scale: [24, 16, 14, 13, 12, 11]   # sp，全 App 只允许这 6 档
+  scale_ratio: 1.5                  # 24/16，满足 design-model.md:31 的 >=1.25
+  tabular_numerals:
+    where: 曝光参数格（快门/光圈/ISO/EV/白平衡）
+    how: android:fontFeatureSettings="tnum"
+    why: 功能理由非审美——比例数字会让并排参数格的竖线左右跳动
+  rejected: >
+    视频解析建议的衬线 Didone 数字。anti-cheap.md:59 把「因为高级所以用衬线」
+    列为反射性拒绝；打包字体增体积且与「不引外部资源」的项目约定冲突。
+
+substrate:
+  grain: none                       # brand-only 底材，product register 明确禁用
+                                    # （SKILL.md:33「Never pour grain/vignette into a dashboard」）
+  vignette: none                    # 同上
+  radius_scale:                     # 单一阶梯，锁死（anti-cheap.md:53）
+    control: 8dp
+    card: 12dp
+    overlay_panel: 16dp
+    bottom_sheet: 20dp
+  shadow: 带色相，不用无色黑（anti-cheap.md:52）
+  motion_easing: 见 motion 段；项目既有 GlassMotion 曲线为单一出口
+
+hero_engine:
+  type: none
+  reason: product register 无 hero 引擎（SKILL.md:377）。SPECTACLE 2 不允许重拍。
+
+motion:
+  budget:                           # motion.md:206-211 硬预算
+    heavy_beats_max: 1
+    total_beats_max: 4
+    distinct_families: 每拍不同族
+    heavy_beats_used: 0             # 全部落在 R1/R3 等价层，无重拍
+  route_mapping: >
+    motion.md 的六条 route 是 CSS 概念。Android 侧 R1（CSS transition）
+    对应 ViewPropertyAnimator / ObjectAnimator；R3（View Transitions/WAAPI）
+    对应 ItemAnimator + DiffUtil / LayoutTransition / TransitionManager /
+    ViewAnimationUtils.createCircularReveal。R2/R4/R5/R6 无对应物且不适用。
+    preflight.md:88「product register 只带 R3」在此译为：
+    只做状态转场类动效，不引入任何视觉引擎。
+  durations_source_of_truth: shared/ui/Motion.kt  # 四档 80/150/220/380ms，不许写裸时长
+  beat_sheet:
+    - beat: 交互·快门
+      family: state transition
+      spec: 按压 -10% 收缩 -> spring 回弹 -> 白闪；三段各自可感知
+      source: 视频解析 01（去掉粒子迸发）
+      still: 直接落「已拍摄」终态 + 白闪一帧
+    - beat: 交互·参数转盘
+      family: physics / inertia
+      spec: 惯性衰减 + 逐格吸附，步进间隔单调递增（视频实测 100->430ms，4.3 倍）
+      source: 视频解析 05
+      still: 直接吸附到最近刻度
+    - beat: 转场·页面切换
+      family: state transition
+      spec: 从触点圆形扩散；去程 ease-out、回程 ease-in-out 且更快
+      source: 视频解析 06（实测去 733ms / 回 667ms）
+      still: 瞬时切换，无补间
+    - beat: 收尾·面板开合
+      family: state transition
+      spec: 展开自上而下 80-100ms/张、收起自下而上 40ms/张且整体更快
+      source: 视频解析 03（错峰方向不对称）
+      still: 直接展开/直接收起
+  rejected:
+    - effect: 粒子迸发（视频 01 第 5 段）
+      family: particle / field
+      reason: motion.md:138 明写 product register 只带 state transition，别的都没有
+    - effect: 视频 02 的多色背景跳档
+      reason: >
+        「离散跳档而非连续渐变」这个**思路保留**（状态可辨比线性插值信息量大），
+        但用单强调色的不透明度分档 + 项目既有灰阶状态色实现，不引入新色相。
+  reduced_motion:
+    probe: Settings.Global.ANIMATOR_DURATION_SCALE
+    rule: >
+      motion.md:22-25 要求每拍都有 terminal state；h5-mobile.md:461-465 要求
+      氛围层在减弱动效下**移除**而非冻结。本项目无氛围层，故规则简化为：
+      所有动效在 scale=0 时直接置终值，圆形扩散退化为瞬时切换。
+    existing_gate: shared/ui/glass/UiFlags.kt
+
+structure:
+  shell: 单 Activity（MainActivity）+ 4 Fragment + 自定义 LinearLayout dock（非 BottomNavigationView）
+  tabs:                             # finesse-brief grammar.md:94-99 要求 4–9 个，此处 4 个合规
+    - { name: 设备, fragment: DashboardFragment, structure: registry }
+    - { name: 相册, fragment: TransferFragment,  structure: registry }
+    - { name: 拍摄, fragment: RemoteFragment,    structure: operation, primary: true }
+    - { name: 设置, fragment: SettingsFragment,  structure: registry }
+  primary_rule: >
+    finesse-brief day-two.md:155-157：恰好一个 primary。
+    四个 Tab 等权重 = 「从没决定过什么重要」的视觉形式。
+    本 App 的 primary 是「拍摄」——用户反复在做的那一件事。
+  secondary_screens: [LiveViewActivity（全屏监看）, PreviewActivity（照片回看）, SupportActivity]
+  l1_shape_rule: >
+    finesse-brief system-domain.md:167-190：L1 的 shows 必须写形状。
+    拍摄的 L1 是取景画面不是卡片阵；相册的 L1 是网格不是表格。
+    day-two.md:108-112 的「列表页地狱」禁令在此生效。
+  furniture_rule: >
+    divergence.md:29 对 h5 的豁免同样适用于原生：
+    **在配色、字体、隐喻、转场上 diverge，绝不在东西在哪儿上 diverge。**
+    TabBar 在底部、返回在左上、抽屉从底升起且带抓取把手——这些是肌肉记忆，
+    不是设计机会。
+
+divergence:
+  policy: 不轮换
+  reason: >
+    divergence.md:163-166 明写轮换「不是组件的规则」，且「不是能压过用户的规则」。
+    本项目是**一个产品的多个页面**，一致性是目标（design-model.md 的 MASTER 机制），
+    轮换会直接破坏它。五轴坐标在此仅作为**记录**存在，供审计与后续新增页面比对，
+    不作为「下次必须不同」的约束。
+  axes:
+    palette: 单强调色（尼康黄）+ True Neutral ramp
+    type: 系统 sans-serif + 参数格等宽数字
+    layout: app shell（底部 dock + 卡片流）
+    engine: 无
+    material: 仪器面板（磨砂实体表面，非玻璃拟态、非拟物金属）
+
+drift:
+  # `document` 命令要求报告代码违反自身系统之处（document.md:39-41）。
+  # 以下是提取时在**已提交基线 e2a85fa** 上发现的漂移，全部为实测数值。
+  - id: pure-white-surfaces
+    where: values/colors.xml page/background/surface = #FFFFFF；values-night page/surface = #000000
+    rule: preflight.md §B「无纯 #fff/#000，中性色向品牌色相偏移」
+    status: 本次重构修复
+  - id: hard-grey-hex-border
+    where: outline #E4E4E4、divider #EBEBEB（硬灰 hex，非 alpha）
+    rule: product-palettes.md:21-48「--border 是 3–8% ALPHA，绝不是硬 #ccc/#333」
+    status: 本次重构修复（转 alpha，叠白后与原值像素级一致）
+  - id: untinted-neutral-ramp
+    where: 整条灰阶 F5F5F5/E4E4E4/525252/8C8C8C 饱和度均为 0
+    rule: anti-cheap.md:52「tint every neutral a few points toward the brand hue」
+    status: 本次重构修复（改挂 True Neutral ramp）
+  - id: text-tertiary-contrast-fail
+    where: text_tertiary #8C8C8C on #FFFFFF = 3.36:1
+    rule: preflight.md §G 正文 >= 4.5:1
+    status: 既有无障碍缺陷，本次修复至 6.54:1
+  - id: nav-inactive-contrast-fail
+    where: nav_inactive_icon #9E9E9E on #FFFFFF = 2.37:1
+    rule: WCAG 1.4.11 非文字 UI 组件 >= 3:1
+    status: 既有无障碍缺陷，本次修复至 3.91:1
+  - id: motion-coverage-uneven
+    where: ShutterPulse 只接了 RemoteFragment，全屏监看快门只有白闪；EntranceMotion 只在 RemoteFragment
+    rule: 同一产品的动效族应一致
+    status: 本次重构补齐
+  - id: hardcoded-radius-in-style
+    where: styles.xml NlButton.Primary/Outline 的 cornerRadius 写死 8dp，未引用 dimens
+    rule: design-model.md「中途不得即兴新值；需要一个就先更新模型」
+    status: 本次重构收进 dimens
+  - id: dp-literals-in-layouts
+    where: layout XML 内裸 dp 值约 718 处（dimens.xml:12-15 已记录该债务）
+    rule: 同上
+    status: **不在本次范围**——逐值归位需逐页视觉 QA，而本机无可用真机/模拟器。
+            诚实登记为未偿债务，不假装已修。

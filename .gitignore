@@ -99,3 +99,7 @@ Desktop.ini
 .cxx/
 .externalNativeBuild/
 /.gradle-home/
+
+# finesse 构建轮换记忆（divergence.md:112 要求 gitignore：本地构建历史非项目资产，
+# 提交只带来 diff 噪音与并行构建合并冲突；stamp 随代码走，log 不随）
+.finesse/
