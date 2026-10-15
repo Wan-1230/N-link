@@ -72,6 +72,12 @@ android {
         viewBinding = true
         buildConfig = true
     }
+
+    // Robolectric 需要读取 Android 资源；不开这一项，@Config(sdk=[35]) 的用例会在
+    // 资源加载阶段失败。仅影响单元测试，不进 APK。
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 dependencies {
@@ -128,6 +134,7 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.mockk)
+    testImplementation(libs.robolectric)
 }
 
 
