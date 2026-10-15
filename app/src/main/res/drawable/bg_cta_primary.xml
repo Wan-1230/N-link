@@ -4,5 +4,5 @@
      在灰白列表里自带最高对比度。配色仍是灰阶，不违反 colors.xml:39「状态色仅灰度」。 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
     <solid android:color="@color/primary" />
-    <corners android:radius="18dp" />
+    <corners android:radius="@dimen/radius_sheet" />
 </shape>

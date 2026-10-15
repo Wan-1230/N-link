@@ -290,6 +290,7 @@
 
                     <TextView
                         android:id="@+id/tvShutterValue"
+                        android:fontFeatureSettings="tnum"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:ellipsize="end"
@@ -318,6 +319,7 @@
 
                     <TextView
                         android:id="@+id/tvApertureValue"
+                        android:fontFeatureSettings="tnum"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:ellipsize="end"
@@ -346,6 +348,7 @@
 
                     <TextView
                         android:id="@+id/tvIsoValue"
+                        android:fontFeatureSettings="tnum"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:ellipsize="end"
@@ -374,6 +377,7 @@
 
                     <TextView
                         android:id="@+id/tvEvValue"
+                        android:fontFeatureSettings="tnum"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:ellipsize="end"
@@ -402,6 +406,7 @@
 
                     <TextView
                         android:id="@+id/tvWbValue"
+                        android:fontFeatureSettings="tnum"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:ellipsize="end"
@@ -500,6 +505,7 @@
 
                     <TextView
                         android:id="@+id/tvDialValue"
+                        android:fontFeatureSettings="tnum"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_gravity="center_vertical"

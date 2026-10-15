@@ -6,8 +6,37 @@
     <dimen name="module_gap">16dp</dimen>
     <dimen name="group_gap">12dp</dimen>
     <dimen name="group_gap_small">8dp</dimen>
-    <dimen name="card_radius">12dp</dimen>
     <dimen name="divider_height">1dp</dimen>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         圆角阶梯 · **全工程唯一真相源**
+
+         改这里之前有三套重叠体系：glass_radius_xxs/s/m/l/xl（8/12/16/20/28）、
+         card_radius（12）、lv_radius_sm/md/lg（8/12/16），共 9 个 token 约 35 处引用。
+         同一个 12dp 有三个名字，等于没有阶梯——anti-cheap.md:53 把「混用圆角体系」
+         （方布局里配圆按钮）列为廉价 tell，design-model.yaml 也要求 radius_scale 锁死一档。
+
+         收敛方式：只在这里定义 6 个语义档，原有 9 个 token 全部改成**引用别名**
+         （见本文件下方与 values/glass.xml）。35 处调用点一行未动，
+         但从此改一个数字全工程生效，也不会再冒出第四个名字。
+
+         档位按「越靠近用户越圆」排：控件最方（8）、卡片次之（12）、
+         浮层更圆（16）、抽屉最圆（20）、对话框（28）、胶囊（999）。
+         h5-mobile.md:443 的依据：小圆角读作网页，大圆角读作 app——
+         但那是给 390px 固定框的建议值（卡片 16–22px），原生 App 的 dp 与 CSS px
+         在 ~2.75x 密度下不是 1:1，照搬会过圆。此处沿用项目既有的 8/12 档，
+         只在浮层与抽屉上放大，保持工具类 App 的克制。
+         ══════════════════════════════════════════════════════════════════ -->
+    <dimen name="radius_control">8dp</dimen>
+    <dimen name="radius_card">12dp</dimen>
+    <dimen name="radius_overlay">16dp</dimen>
+    <dimen name="radius_sheet">20dp</dimen>
+    <dimen name="radius_dialog">28dp</dimen>
+    <dimen name="radius_pill">999dp</dimen>
+
+    <!-- 历史 token → 唯一阶梯的别名。保留名字是为了 35 处调用点零改动，
+         新增代码请直接引用上面的 radius_*。 -->
+    <dimen name="card_radius">@dimen/radius_card</dimen>
 
     <!-- 视S2/T9 间距标尺（中性名）：4/8/12/16/20/24 六档，只做**精确值归位**——
          原布局裸 dp 与档位值相同的引用本处，零视觉位移；10dp 等非栅格值维持原值
@@ -30,10 +59,12 @@
     <dimen name="font_nav">12sp</dimen>
     <dimen name="font_foot">11sp</dimen>
 
-    <!-- 全屏监看 HUD 尺寸：三档圆角梯度 + 控件高度，取代原先散落在 layout 里的硬编码 -->
-    <dimen name="lv_radius_sm">8dp</dimen>
-    <dimen name="lv_radius_md">12dp</dimen>
-    <dimen name="lv_radius_lg">16dp</dimen>
+    <!-- 全屏监看 HUD 圆角：改为引用唯一阶梯（原 8/12/16 三档与阶梯同值，视觉零变化）。
+         保留 lv_ 前缀是因为监看页尺寸族自成一组（lv_bar_h_padding / lv_tool_h …），
+         按前缀检索时不该断链。 -->
+    <dimen name="lv_radius_sm">@dimen/radius_control</dimen>
+    <dimen name="lv_radius_md">@dimen/radius_card</dimen>
+    <dimen name="lv_radius_lg">@dimen/radius_overlay</dimen>
 
     <dimen name="lv_bar_h_padding">12dp</dimen>
     <dimen name="lv_bar_v_padding">8dp</dimen>

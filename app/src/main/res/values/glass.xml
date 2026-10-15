@@ -5,12 +5,16 @@
   彩色只允许从被透射的内容里来（colors.xml:39「状态色仅灰度」不受影响）。
 -->
 <resources>
-    <!-- ===== 半径 ===== -->
-    <dimen name="glass_radius_xxs">8dp</dimen>
-    <dimen name="glass_radius_s">12dp</dimen>
-    <dimen name="glass_radius_m">16dp</dimen>
-    <dimen name="glass_radius_l">20dp</dimen>
-    <dimen name="glass_radius_xl">28dp</dimen>
+    <!-- ===== 半径 =====
+         改为引用 values/dimens.xml 的**唯一圆角阶梯**（radius_control/card/overlay/sheet/dialog）。
+         原值 8/12/16/20/28 与阶梯逐档同值，故视觉零变化；变的是从此只有一个地方定义圆角。
+         保留 glass_ 前缀是为了玻璃材质的检索连续性——本文件其余 token（blur/tint/edge/shadow）
+         都按 glass_ 前缀成组，断掉半径这一组会让「玻璃用了哪些 token」查不全。 -->
+    <dimen name="glass_radius_xxs">@dimen/radius_control</dimen>
+    <dimen name="glass_radius_s">@dimen/radius_card</dimen>
+    <dimen name="glass_radius_m">@dimen/radius_overlay</dimen>
+    <dimen name="glass_radius_l">@dimen/radius_sheet</dimen>
+    <dimen name="glass_radius_xl">@dimen/radius_dialog</dimen>
 
     <!-- ===== 模糊半径（dp；实现层在 1/8 降采样的纹理上施算，故开销与密度无关） ===== -->
     <item name="glass_blur_s" format="float" type="dimen">12</item>
