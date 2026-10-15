@@ -1,45 +1,87 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 黑白双色设计系统 · 日间模式 -->
+<!-- finesse · register=product · A=single-accent-nikon-yellow+true-neutral · B=system-sans+tnum
+     C=app-shell · D=none · E=instrument-panel · SOUL=6 SPECTACLE=2 DENSITY=5
+     ↑ 构建 stamp（divergence.md:118-129）。原规范定义为「CSS 首个非空行」，
+       本工程无 CSS，按 ADR-001 §1.1 的迁移约定改置于令牌真相源文件的文件头。
+       配套记忆：PRODUCT.md（锁什么）· design-model.yaml（为什么）· .finesse/log.json（本地、已 gitignore）
+
+     ── 中性色体系：True Neutral ramp（product-palettes.md:233）────────────────────
+     选它而不选 Warm Stone 的理由是数值性的：黄是暖色，按 product-palettes.md:59
+     「tint 匹配 accent 色相」本该配 Warm Stone，但 Warm Stone 100 = #F0ECE5
+     （色相 38°、饱和度 4.3%）与 anti-cheap.md:64-68 明令禁用的米色 #EFEAE0
+     （40°、5.9%）几乎同值。True Neutral 50/100 色相 60°、饱和度仅 0.4%——
+     方向呼应 #FFE100 的 53°，量级远低于米色线。实测见 docs/ADR-001 §2.3。
+
+     ramp 对照（本项目用到 50/100/200/300/400/600/700/800/900/950）：
+       50 #F7F7F6 · 100 #EFEFEE · 200 #E2E2E0 · 300 #CBCBC8 · 400 #9D9D99
+       500 #777773 · 600 #5C5C59 · 700 #4A4A47 · 800 #373736 · 900 #262625 · 950 #171716
+     另有 #FCFCFB = ramp 向上外插的近白（色相 60°、饱和度 0.4%，与 ramp 同族），
+     用于「卡片浮起、页面退后」（product-palettes.md:94-105）。
+
+     ── 表面明度序（浅色必须递减，卡片浮起 / 页面退后 / 内嵌下沉）──────────────
+       surface #FCFCFB (L=.9728) > page #F7F7F6 (.9295) > variant #EFEFEE (.8626) > chip #E2E2E0 (.7594)
+     深色相反（明度递增才是景深线索，暗底上阴影几乎无用）——见 values-night。
+
+     ── 对比度实测（非估算；WCAG 2.1，脚本见 docs/ADR-001）──────────────────────
+       text_primary   #171716 / 卡片 17.48:1  AAA
+       text_secondary #4A4A47 / 卡片  8.66:1  AAA
+       text_tertiary  #5C5C59 / 卡片  6.54:1  AA   ← 原 #8C8C8C 仅 3.36:1，正文不达标，本次修复
+       nav_inactive   #777773 / page  4.19:1  ≥3:1 ← 原 #9E9E9E 仅 2.68:1，图形不达标，本次修复
+       on_nikon_yellow #171716 / 黄   13.69:1  AAA  ← 白字在黄上仅 1.31:1，故黄底必须近黑
+       黄 / 浅底               1.28:1  ← 黄色绝不可作浅底上的文字或细线，只能做大图形/指示灯
+-->
 <resources>
-    <!-- 背景层：纯白主背景，浅灰次级背景 -->
-    <color name="page">#FFFFFF</color>
-    <color name="background">#FFFFFF</color>
-    <color name="surface">#FFFFFF</color>
-    <color name="surface_variant">#F5F5F5</color>
-    <color name="panel_2">#F5F5F5</color>
-    <color name="outline">#E4E4E4</color>
-    <color name="divider">#EBEBEB</color>
+    <!-- 背景层：页面退后（ramp 50），卡片浮起（近白），内嵌面下沉（ramp 100/200）。
+         page 与 background 同值：page 是历史遗留 token，全工程 0 引用，保留只为
+         values-night 的成对军规；实际取色一律走 background。 -->
+    <color name="page">#F7F7F6</color>
+    <color name="background">#F7F7F6</color>
+    <color name="surface">#FCFCFB</color>
+    <color name="surface_variant">#EFEFEE</color>
+    <color name="panel_2">#EFEFEE</color>
+    <!-- 边框改 alpha hairline（product-palettes.md:21-48 要求 3–8% ALPHA，禁硬灰 hex）。
+         选值经过实算，不是随手取整：
+           divider 8% 黑叠白 = #EBEBEB，与原硬编码值**像素级一致**；
+           outline 10% 黑叠白 = #E5E5E5，原值 #E4E4E4，肉眼无差。
+         换成 alpha 的收益不在白卡上（那里视觉不变），而在 variant/chip 等有色表面上——
+         同一支 border 坐在 page 与 panel_2 上都成立，硬灰 hex 做不到这点。 -->
+    <color name="outline">#1A000000</color>
+    <color name="divider">#14000000</color>
 
-    <!-- 对比卡片（日间=纯黑底白字；夜间=纯白底黑字） -->
-    <color name="dark_card">#000000</color>
-    <color name="dark_card_inner">#1A1A1A</color>
-    <color name="dark_card_surface">#262626</color>
-    <color name="on_dark_card">#FFFFFF</color>
-    <color name="on_dark_card_variant">#A3A3A3</color>
+    <!-- 对比卡片（日间=近黑底白字；夜间=近白底黑字）。
+         不用纯 #000000：craft floor 要求每个中性色都向品牌色相偏一点。 -->
+    <color name="dark_card">#171716</color>
+    <color name="dark_card_inner">#1F1F1E</color>
+    <color name="dark_card_surface">#2A2A28</color>
+    <color name="on_dark_card">#FCFCFB</color>
+    <color name="on_dark_card_variant">#9D9D99</color>
 
-    <!-- 文字层：一级纯黑 / 二级深灰 / 辅助中灰 -->
-    <color name="text_primary">#000000</color>
-    <color name="text_secondary">#525252</color>
-    <color name="text_tertiary">#8C8C8C</color>
-    <color name="on_background">#000000</color>
-    <color name="on_surface">#000000</color>
-    <color name="on_surface_variant">#737373</color>
+    <!-- 文字层：三级墨（ramp 950 / 700 / 600）。
+         三级不用 500：#777773 在卡片上 4.38:1，正文差 0.12 不达标；600 档 6.54:1 稳过。 -->
+    <color name="text_primary">#171716</color>
+    <color name="text_secondary">#4A4A47</color>
+    <color name="text_tertiary">#5C5C59</color>
+    <color name="on_background">#171716</color>
+    <color name="on_surface">#171716</color>
+    <color name="on_surface_variant">#5C5C59</color>
 
-    <!-- 组件层：主按钮/选中态纯黑填充 -->
-    <color name="primary">#000000</color>
-    <color name="primary_variant">#1A1A1A</color>
-    <color name="accent">#000000</color>
-    <color name="accent_soft">#F5F5F5</color>
-    <color name="on_primary">#FFFFFF</color>
+    <!-- 组件层：主按钮/选中态近黑填充（ramp 950） -->
+    <color name="primary">#171716</color>
+    <color name="primary_variant">#1F1F1E</color>
+    <color name="accent">#171716</color>
+    <color name="accent_soft">#EFEFEE</color>
+    <color name="on_primary">#FCFCFB</color>
 
-    <color name="secondary">#262626</color>
-    <color name="secondary_variant">#404040</color>
-    <color name="on_secondary">#FFFFFF</color>
+    <color name="secondary">#262625</color>
+    <color name="secondary_variant">#373736</color>
+    <color name="on_secondary">#FCFCFB</color>
 
-    <!-- 状态色：仅灰度表达（规范：除下方品牌强调色外不引入彩色） -->
-    <color name="status_disconnected">#BFBFBF</color>
-    <color name="ble_indicator">#525252</color>
-    <color name="wifi_indicator">#000000</color>
+    <!-- 状态色：仅灰度表达（规范：除下方品牌强调色外不引入彩色）。
+         disconnected 从 #BFBFBF(1.84:1) 提到 #777773(4.19:1)——原值在白底上几乎看不见，
+         一个读不出来的状态指示灯等于没有指示灯。 -->
+    <color name="status_disconnected">#777773</color>
+    <color name="ble_indicator">#4A4A47</color>
+    <color name="wifi_indicator">#171716</color>
 
     <!-- ══════════════════════════════════════════════════════════════════
          v2.6.5 品牌强调色（尼康黄）—— **唯一** 的彩色，且**只允许**用在两处：
@@ -47,16 +89,25 @@
            ② 主功能按钮（NlButton.Primary 的填充）
          其它任何控件、图标、文字、选中态一律继续走黑白灰。
          这条约束是刻意收紧的：强调色一旦铺开就不再是强调，界面会重新变得嘈杂。
-         回退方式：把下面两个 token 改回 #000000/#FFFFFF 即可整体还原为纯黑白。
+         回退方式：把下面两个 token 改回 #171716/#FCFCFB 即可整体还原为纯黑白灰。
+
+         与 finesse 规范的关系（ADR-001 §2.2）：
+           · 饱和度 100% 超 anti-cheap.md:78 的 80% 上限，依 divergence.md:203
+             「观察到的品牌事实永远压倒禁令表」豁免——这是尼康真实品牌色，非模型默认。
+           · 命中 product-palettes.md:254/352「lime 与 amber 填充上必须用近黑字」，
+             本项目一直是黑字，**已合规**。
+           · 受 Set 11 硬约束（:272）：黄承担品牌，则绿/红严格保留给语义，
+             红色永远只表示异常、绝不表示品牌。视频解析的五色 pastel 方案因此被否决。
          ══════════════════════════════════════════════════════════════════ -->
     <color name="nikon_yellow">#FFE100</color>
-    <!-- 黄底上的文字/图标：必须用黑，白字在黄底上对比度不足（≈1.5:1） -->
-    <color name="on_nikon_yellow">#000000</color>
-    <!-- 连接状态指示灯·已连接 -->
+    <!-- 黄底上的文字/图标：必须用近黑，白字在黄底上实测仅 1.31:1 -->
+    <color name="on_nikon_yellow">#171716</color>
+    <!-- 连接状态指示灯·已连接。黄点在深色各面实测 8.18–13.69:1，均 ≥3:1 -->
     <color name="status_connected">#FFE100</color>
 
-    <!-- 点击反馈 / 遮罩 -->
-    <color name="chip_unselected">#F0F0F0</color>
+    <!-- 点击反馈 / 遮罩。chip 是最深的内嵌面（ramp 200），
+         与 variant(100) 保持一档差，用于 switch OFF 轨道 / chip 底 / 骨架屏。 -->
+    <color name="chip_unselected">#E2E2E0</color>
 
     <!-- ══════════════════════════════════════════════════════════════════
          v2.7 连接英雄图（drawable/ic_camera_hero.xml）专用色板。
@@ -65,6 +116,10 @@
            夜间 · 舞台是近黑（#121212）                → 机身整体提亮一档，靠亮灰浮出黑底。
          两档都保留 hero_cam_edge 描边，保证轮廓在任何底色上都立得住。
          改色只需动这 10 个 token（两处 colors.xml 同步），不用碰矢量图。
+
+         刻意**不并入 True Neutral ramp**：这是一张插画的专用色板，
+         机身金属需要冷灰蓝（色相 ~215°）才读作金属，套暖中性 ramp 会读作塑料。
+         它是「材质色」不是「界面中性色」，不在 craft floor 的管辖范围内。
          ══════════════════════════════════════════════════════════════════ -->
     <color name="hero_cam_body_top">#4C525B</color>
     <color name="hero_cam_body_mid">#33383F</color>
@@ -77,20 +132,32 @@
     <color name="hero_cam_detail">#6E747E</color>
     <color name="hero_cam_shadow">#1F000000</color>
 
-    <!-- Switch 开关：OFF 轨道中性灰（深浅色主题均可见），滑块白色内嵌 -->
-    <color name="switch_track_off">#8F8F8F</color>
-    <color name="switch_thumb_off">#FFFFFF</color>
+    <!-- Switch 开关：OFF 轨道中性灰（深浅色主题均可见），滑块近白内嵌。
+         轨道从 #8F8F8F 提到 #777773：OFF 态是可交互组件，WCAG 1.4.11 要求 ≥3:1，
+         原值在浅色卡片上不足。 -->
+    <color name="switch_track_off">#777773</color>
+    <color name="switch_thumb_off">#FCFCFB</color>
 
     <!-- Live View 专用 -->
     <color name="liveview_scrim">#99000000</color>
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         white / black 是**绝对值工具色**，刻意保持纯 #FFFFFF / #000000，
+         不并入 True Neutral ramp。这不是漏改，理由很硬：
+
+         它们的 54+6 处引用几乎全在 LiveView / Preview 语境——取景器背板、
+         快门环、快门内芯、照片查看器底色。给取景背板加暖色偏会**直接骗到
+         正在判断曝光与色彩的人**：摄影师靠那块黑判断画面有没有死黑，
+         靠快门白判断有没有过曝。这两个值必须是绝对的。
+
+         因此它们与 lv_* 全族属同一类已登记豁免（见下方夜间豁免声明），
+         craft floor 的「无纯 #fff/#000」针对的是**界面中性色**，
+         不针对专业监看面上的绝对参考值。
+         ══════════════════════════════════════════════════════════════════ -->
     <color name="white">#FFFFFF</color>
     <color name="black">#000000</color>
     <color name="liveview_text">#E6FFFFFF</color>
 
-    <!-- 全屏监看（专业监看工具通用范式）：纯黑底 + 灰阶层级 + 单一琥珀强调色。
-         强调色只承担「当前值 / 激活态」语义，全屏可见处不超过 4 个：
-         刻度尺游标、分段选中段、跟焦轮驱动位、监看中状态点。
-         其余层级一律用灰度，避免多色堆叠。 -->
     <!-- 全屏监看（专业监看工具通用范式）：纯黑底 + 灰阶层级 + 单一强调色。
          强调色只承担「当前值 / 激活态」语义，全屏可见处不超过 4 个：
          刻度尺游标、分段选中段、跟焦轮驱动位、监看中状态点。
@@ -98,14 +165,18 @@
 
          色值直接引用品牌色 nikon_yellow（v2.6.5 规范）：监看页的取景画面亮度不可控，
          选中态只用灰度会读不出来，因此这里是有意为之的例外（小万 2026-10-03 拍板）。
-         想让它彻底回归 §1.1 的「只两处」，把本行改成 @color/white 即可，无需动布局。 -->
+         想让它彻底回归 §1.1 的「只两处」，把本行改成 @color/white 即可，无需动布局。
+
+         实测：lv_accent 黄在 lv_card #1B1B1D 上 13.12:1（AAA），
+         lv_text_dim 55% 白在同底上 5.97:1（AA）——监看页灰阶层级本就合规，本次不动。 -->
     <color name="lv_accent">@color/nikon_yellow</color>
     <color name="lv_accent_soft">#26FFE100</color>
     <!-- v2.7.2 玻璃下线：全部实体化。层次靠色阶（面板最暗 → 卡片居中 → 芯片最亮）
          与 1dp 描边区分，不再靠透出画面
-     夜间豁免声明（视觉规范军规「每个颜色必须有 night 对应值」的例外登记）：
-     监看页是恒黑专业界面（背后是取景画面，无日间形态），lv_* 全族**刻意不设
-     values-night 对应值**——日夜间同值即正确行为，不属遗漏（前端优化规划 §1 #9） -->
+         夜间豁免声明（视觉规范军规「每个颜色必须有 night 对应值」的例外登记）：
+         监看页是恒黑专业界面（背后是取景画面，无日间形态），lv_* 全族**刻意不设
+         values-night 对应值**——日夜间同值即正确行为，不属遗漏（前端优化规划 §1 #9）。
+         同一豁免覆盖上方的 white / black / liveview_text 与 photo_scrim_* 族。 -->
     <color name="lv_panel">#F5141416</color>
     <color name="lv_card">#F21B1B1D</color>
     <color name="lv_card_solid">#F21B1B1D</color>
@@ -121,16 +192,18 @@
     <color name="lv_on_solid">#000000</color>
 
     <!-- 视S1：照片叠加遮罩族 —— 恒定覆盖在照片内容上，主题无关
-         （原 layout 内硬编码 #33/#AA/#CC 黑 与 #44 白，2026-10-04 收进 token） -->
+         （原 layout 内硬编码 #33/#AA/#CC 黑 与 #44 白，2026-10-04 收进 token）
+         本身已是 alpha 值，符合 hairline 规范，本次不动。 -->
     <color name="photo_scrim_select">#33000000</color>
     <color name="photo_scrim_badge">#AA000000</color>
     <color name="photo_scrim_name">#CC000000</color>
     <color name="photo_scrim_track">#44FFFFFF</color>
 
-    <!-- 底部导航：背景与页面底色一致 -->
-    <color name="nav_background">#FFFFFF</color>
-    <!-- 选中项背后的胶囊：玻璃 dock 上用轻微下沉的暗色，实体 dock 上同样成立 -->
+    <!-- 底部导航：背景与页面底色一致（dock 不切开页面） -->
+    <color name="nav_background">#F7F7F6</color>
+    <!-- 选中项背后的胶囊：玻璃 dock 上用轻微下沉的暗色，实体 dock 上同样成立。
+         已是 alpha 值，符合规范。 -->
     <color name="nav_selected_bg">#14000000</color>
-    <color name="nav_active_icon">#000000</color>
-    <color name="nav_inactive_icon">#9E9E9E</color>
+    <color name="nav_active_icon">#171716</color>
+    <color name="nav_inactive_icon">#777773</color>
 </resources>

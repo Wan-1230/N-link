@@ -1,70 +1,114 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 黑白双色设计系统 · 夜间模式（跟随系统自动切换） -->
+<!-- finesse · register=product · 夜间令牌（与 values/colors.xml 同名 token 一一对应）
+
+     ── 深色表面明度序：**递增**，与浅色相反 ─────────────────────────────────
+     product-palettes.md:94-105 两条最容易搞坏暗色模式的规则：
+       ① 深色 page 用 ramp 950，面板**向上**步进（950→900→800）；
+       ② 暗色面板越靠前越亮——暗底上阴影几乎无用，**明度才是景深线索**。
+     实测阶梯（相对明度 L）：
+       page #171716 (L=.0085) < card #262625 (.0193) < variant #373736 (.0381) < chip #3E3E3C (.0480)
+     递增成立，故卡片浮出页面、内嵌面浮出卡片，靠明度而非阴影分层。
+
+     ── 对比度实测（WCAG 2.1）─────────────────────────────────────────────
+       text_primary   #F7F7F6 / 卡片 14.13:1  AAA
+       text_secondary #CBCBC8 / 卡片  9.32:1  AAA
+       text_tertiary  #B4B4B0 / 卡片  7.28:1  AAA
+                      #B4B4B0 / variant 5.73:1  AA
+       on_dark_card_variant #4A4A47 / 对比卡 8.29:1  AAA
+       status_disconnected  #9D9D99 / page   6.59:1  AA
+       nav_inactive_icon    #9D9D99 / page   6.59:1  AA
+       on_nikon_yellow #171716 / 黄 13.69:1  AAA
+       status_connected 黄 / page 13.69:1 · / card 11.56:1 · / variant 9.09:1  均 ≥3:1
+
+     ── text_tertiary 为什么用 #B4B4B0 而不是 finesse 建议的 400 档 ───────────
+     product-palettes.md:94-105 说「暗色的 ink-3 是 400 档不是 500 档」，
+     但该规则的**判定基准写的是 bg（卡片）**。本项目 text_tertiary 确实会落在
+     surface_variant 上——bg_info_grid_item 是 item_recent_device.xml 与
+     item_wifi_candidate.xml 的底，两者都含三级文字。实测：
+       TN400 #9D9D99：卡片 5.57:1 ✓ / variant **4.38:1 ✗**（差 0.12 不达标）
+       TN350 #B4B4B0：卡片 7.28:1 ✓ / variant  5.73:1 ✓
+       TN300 #CBCBC8：卡片 9.32:1 ✓ / variant  7.33:1 ✓ 但与 text_secondary 撞值，层级丢失
+     故取 300↔400 的内插值 #B4B4B0：守住规则**意图**（≥4.5:1）而非字面档位，
+     同时保留三级墨的层级差。偏离已登记于 design-model.yaml。
+-->
 <resources>
-    <!-- 背景层：纯黑主背景，深灰次级背景 -->
-    <color name="page">#000000</color>
-    <color name="background">#000000</color>
-    <color name="surface">#000000</color>
-    <color name="surface_variant">#121212</color>
-    <color name="panel_2">#121212</color>
-    <color name="outline">#262626</color>
-    <color name="divider">#1F1F1F</color>
+    <!-- 背景层：page 用 ramp 950，卡片向上步进到 900，内嵌面到 800 -->
+    <color name="page">#171716</color>
+    <color name="background">#171716</color>
+    <color name="surface">#262625</color>
+    <color name="surface_variant">#373736</color>
+    <color name="panel_2">#373736</color>
+    <!-- 深色 hairline 需要比浅色更高的 alpha 才读得出来：实测 12% 白叠卡片 = #40403F（1.46:1），
+         8% 白 = 1.27:1 偏弱。故 outline 用 12%、divider 用 8%（分隔线本就该更弱）。 -->
+    <color name="outline">#1FFFFFFF</color>
+    <color name="divider">#14FFFFFF</color>
 
-    <!-- 对比卡片：夜间=纯白底黑字 -->
-    <color name="dark_card">#FFFFFF</color>
-    <color name="dark_card_inner">#EBEBEB</color>
-    <color name="dark_card_surface">#E0E0E0</color>
-    <color name="on_dark_card">#000000</color>
-    <color name="on_dark_card_variant">#525252</color>
+    <!-- 对比卡片：夜间=近白底黑字（与日间近黑底白字互为反相） -->
+    <color name="dark_card">#F7F7F6</color>
+    <color name="dark_card_inner">#EFEFEE</color>
+    <color name="dark_card_surface">#E2E2E0</color>
+    <color name="on_dark_card">#171716</color>
+    <color name="on_dark_card_variant">#4A4A47</color>
 
-    <!-- 文字层：一级纯白 / 二级浅灰 / 辅助中灰 -->
-    <color name="text_primary">#FFFFFF</color>
-    <color name="text_secondary">#ADADAD</color>
-    <color name="text_tertiary">#7A7A7A</color>
-    <color name="on_background">#FFFFFF</color>
-    <color name="on_surface">#FFFFFF</color>
-    <color name="on_surface_variant">#A3A3A3</color>
+    <!-- 文字层：三级墨（ramp 50 / 300 / 350内插） -->
+    <color name="text_primary">#F7F7F6</color>
+    <color name="text_secondary">#CBCBC8</color>
+    <color name="text_tertiary">#B4B4B0</color>
+    <color name="on_background">#F7F7F6</color>
+    <color name="on_surface">#F7F7F6</color>
+    <color name="on_surface_variant">#B4B4B0</color>
 
-    <!-- 组件层：主按钮/选中态纯白填充 -->
-    <color name="primary">#FFFFFF</color>
-    <color name="primary_variant">#E6E6E6</color>
-    <color name="accent">#FFFFFF</color>
-    <color name="accent_soft">#121212</color>
-    <color name="on_primary">#000000</color>
+    <!-- 组件层：主按钮/选中态近白填充 -->
+    <color name="primary">#F7F7F6</color>
+    <color name="primary_variant">#EFEFEE</color>
+    <color name="accent">#F7F7F6</color>
+    <color name="accent_soft">#373736</color>
+    <color name="on_primary">#171716</color>
 
-    <color name="secondary">#D9D9D9</color>
-    <color name="secondary_variant">#BFBFBF</color>
-    <color name="on_secondary">#000000</color>
+    <color name="secondary">#CBCBC8</color>
+    <color name="secondary_variant">#9D9D99</color>
+    <color name="on_secondary">#171716</color>
 
-    <!-- 状态色：仅灰度 -->
-    <color name="status_disconnected">#5C5C5C</color>
-    <color name="ble_indicator">#ADADAD</color>
-    <color name="wifi_indicator">#FFFFFF</color>
+    <!-- 状态色：仅灰度。夜间 disconnected 用 ramp 400，在 page 上 6.59:1 -->
+    <color name="status_disconnected">#9D9D99</color>
+    <color name="ble_indicator">#CBCBC8</color>
+    <color name="wifi_indicator">#F7F7F6</color>
 
-    <!-- v2.6.5 品牌强调色（尼康黄）。夜间用同一支黄：它在纯黑底上的对比度 ≥ 15:1，
+    <!-- v2.6.5 品牌强调色（尼康黄）。夜间用同一支黄：它在近黑底上的对比度 ≥ 11.5:1，
          不必为深色另调一支 —— 两支黄会让"品牌色"在明暗主题之间漂移。
          使用范围同样只限「连接状态指示灯」与「主功能按钮」。 -->
     <color name="nikon_yellow">#FFE100</color>
-    <color name="on_nikon_yellow">#000000</color>
+    <color name="on_nikon_yellow">#171716</color>
     <color name="status_connected">#FFE100</color>
 
-    <!-- 点击反馈 / 遮罩 -->
-    <color name="chip_unselected">#1A1A1A</color>
+    <!-- 点击反馈 / 遮罩：chip 是深色侧最深的内嵌面（明度阶梯最上一档） -->
+    <color name="chip_unselected">#3E3E3C</color>
+
+    <!-- Switch：OFF 轨道需在深色卡片上 ≥3:1，实测 #777773 在 #262625 上 3.42:1 ✓
+         （#6B6B68 只有 2.84:1，不达标，故与日间同值）。
+         本组 token 原先**缺夜间值**，违反项目「每个颜色必须有 night 对应值」军规，
+         本次补齐（lv_* 与 white/black 的豁免声明见 values/colors.xml）。 -->
+    <color name="switch_track_off">#777773</color>
+    <color name="switch_thumb_off">#CBCBC8</color>
 
     <!-- Live View 专用 -->
     <color name="liveview_scrim">#99000000</color>
+    <!-- 绝对值工具色：夜间同值。取景背板与照片查看器底色必须是绝对黑，
+         理由见 values/colors.xml 的同名声明。 -->
     <color name="white">#FFFFFF</color>
     <color name="black">#000000</color>
     <color name="liveview_text">#E6FFFFFF</color>
 
     <!-- 底部导航 -->
-    <color name="nav_background">#000000</color>
+    <color name="nav_background">#171716</color>
     <color name="nav_selected_bg">#26FFFFFF</color>
-    <color name="nav_active_icon">#FFFFFF</color>
-    <color name="nav_inactive_icon">#6E6E6E</color>
+    <color name="nav_active_icon">#F7F7F6</color>
+    <color name="nav_inactive_icon">#9D9D99</color>
 
     <!-- v2.7 连接英雄图专用色板（与 values/colors.xml 同名 token 一一对应）。
-         夜间舞台近黑，机身整体提亮一档 + hero_cam_edge 描边浮出轮廓。 -->
+         夜间舞台近黑，机身整体提亮一档 + hero_cam_edge 描边浮出轮廓。
+         刻意不并入 True Neutral ramp——这是插画材质色（冷灰蓝才读作金属），
+         不是界面中性色。 -->
     <color name="hero_cam_body_top">#7A808A</color>
     <color name="hero_cam_body_mid">#565C66</color>
     <color name="hero_cam_body_bottom">#3A3F46</color>
