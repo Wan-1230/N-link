@@ -44,7 +44,7 @@ class PtpIpCodecTest {
 
     @Test
     fun cmdRequestPayload_layout() {
-        // 基准实现 实证：DataOut 恒为 1；opcode u16；transId u32；params n×u32
+        // dataPhaseInfo：无数据相位=1、有数据相位=2；opcode u16；transId u32；params n×u32
         val payload = PtpIpCodec.cmdRequestPayload(1, 0x1001, 7, listOf(1L, 2L))
         val buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
         assertEquals(1, buf.int)
@@ -88,9 +88,9 @@ class PtpIpCodecTest {
 
     @Test
     fun startData_isNotDataSection() {
-        // StartData(type9) 载荷 = transId + 总长，绝不能当数据段收集（会多出 4 字节垃圾）
+        // StartData(type9) 载荷 = transId u32 + 总长 u64（12 字节），绝不能当数据段收集
         val payload = PtpIpCodec.startDataPayload(7, 383)
-        assertEquals(8, payload.size)
+        assertEquals(12, payload.size)
         assertEquals(7, PtpIpCodec.payloadTransId(payload))
         assertEquals(383L, PtpIpCodec.payloadStartDataLen(payload))
     }

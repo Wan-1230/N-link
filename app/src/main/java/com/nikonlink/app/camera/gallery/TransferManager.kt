@@ -1924,7 +1924,8 @@ private class ApTransport(
         ap.session()?.listObjectHandles(storageId, 0)?.map { it.toInt() } ?: emptyList()
 
     override suspend fun objectInfo(handle: Int): ByteArray? =
-        ap.ptpSession()?.rawObjectInfo(handle.toLong())?.takeIf { it.isNotEmpty() }
+        ap.bridge()?.rawTransact(PtpConstants.OP_GET_OBJECT_INFO, listOf(handle))
+            ?.takeIf { it.isOk }?.dataIn?.takeIf { it.isNotEmpty() }
 
     override suspend fun objectPropList(): List<MtpObjectProps>? = null
 
@@ -1949,7 +1950,8 @@ private class ApTransport(
         ap.session()?.getThumbnail(handle.toLong())?.takeIf { it.isNotEmpty() }
 
     override suspend fun largeThumbnail(handle: Int): ByteArray? =
-        ap.ptpSession()?.getLargeThumbnail(handle.toLong())?.takeIf { it.isNotEmpty() }
+        ap.bridge()?.rawTransact(PtpConstants.OP_NIKON_GET_LARGE_THUMB, listOf(handle))
+            ?.takeIf { it.isOk }?.dataIn?.takeIf { it.isNotEmpty() }
 
     override suspend fun partialObject(
         handle: Int,

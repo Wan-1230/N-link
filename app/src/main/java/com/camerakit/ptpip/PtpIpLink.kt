@@ -196,18 +196,22 @@ class PtpIpLink(
 
         writePacket(
             PtpConsts.IP_CMD_REQUEST,
-            // 基准实现 实证：DataOut 字段恒为 1（gphoto 文档示例一致）
-            PtpIpCodec.cmdRequestPayload(1, opcode, transId, params),
+            // 旧链路/基准实现 实证：dataPhaseInfo 无数据相位=1、有数据相位=2；
+            // 恒写 1 会让相机忽略数据相位（SetDevicePropValue 等写入类命令全部失效）
+            PtpIpCodec.cmdRequestPayload(if (dataOut == null) 1 else 2, opcode, transId, params),
         )
         if (dataOut != null) {
+            // 旧链路/基准实现 的 data-out 序列：StartData(总长) → EndData(载荷)，
+            // 不发中间 Data 包；EndData 载荷携带完整数据
             writePacket(PtpConsts.IP_START_DATA, PtpIpCodec.startDataPayload(transId, dataOut.size.toLong()))
-            writePacket(PtpConsts.IP_DATA, PtpIpCodec.dataPayload(transId, dataOut))
-            writePacket(PtpConsts.IP_END_DATA, PtpIpCodec.dataPayload(transId, ByteArray(0)))
+            writePacket(PtpConsts.IP_END_DATA, PtpIpCodec.dataPayload(transId, dataOut))
         }
 
         val chunks = ArrayList<ByteArray>()
         var total = 0L
         var result: PtpResult? = null
+        var dataExpected: Long? = null
+        var dataEnded = false
         while (result == null) {
             val pkt = readPacketOrNull(cmdIn!!)
             if (pkt == null) {
@@ -227,6 +231,14 @@ class PtpIpLink(
                         log("PTP/IP 事务编号不匹配 expect=$transId got=${resp.transId}，忽略该响应")
                         continue
                     }
+                    // 完整性校验（基准实现 同款防御）：响应 OK 但数据相位不完整
+                    // 直接判失败，防止截断帧/截断数据被当成成功（监看黑屏、相册坏图的源头）
+                    val expect = dataExpected
+                    if (resp.code == PtpConsts.RC_OK && expect != null && (!dataEnded || (expect >= 0 && total != expect))) {
+                        throw CameraError.Protocol(
+                            "PTP/IP 数据不完整：$total / ${expect} 字节（opcode=0x${opcode.toString(16)}）"
+                        )
+                    }
                     val aggregated = if (sink == null && chunks.isNotEmpty()) {
                         val out = ByteArray(total.toInt())
                         var off = 0
@@ -243,7 +255,8 @@ class PtpIpLink(
                     val t = PtpIpCodec.payloadTransId(pkt.payload)
                     if (t != transId) throw CameraError.Protocol("PTP/IP 数据事务编号不匹配 expect=$transId got=$t")
                     // 载荷 = transId + 数据总长，不是数据；误收集会让 data-in 多 4 字节垃圾
-                    log("PTP/IP StartData 总长=${PtpIpCodec.payloadStartDataLen(pkt.payload)}")
+                    dataExpected = PtpIpCodec.payloadStartDataLen(pkt.payload)
+                    log("PTP/IP StartData 总长=$dataExpected")
                 }
 
                 PtpConsts.IP_DATA, PtpConsts.IP_END_DATA -> {
@@ -251,16 +264,17 @@ class PtpIpLink(
                     if (t != transId) throw CameraError.Protocol("PTP/IP 数据事务编号不匹配 expect=$transId got=$t")
                     val data = PtpIpCodec.payloadData(pkt.payload)
                     if (data.isNotEmpty()) {
+                        total += data.size
                         if (sink != null) {
                             sink(data)
                         } else {
-                            total += data.size
                             if (total > PtpConsts.MAX_PACKET_BYTES) {
                                 throw CameraError.Protocol("data-in 超过聚合上限，请改用流式读取")
                             }
                             chunks.add(data)
                         }
                     }
+                    if (pkt.type == PtpConsts.IP_END_DATA) dataEnded = true
                 }
 
                 PtpConsts.IP_EVENT -> {

@@ -127,32 +127,30 @@ internal class UsbLvChannel(
 }
 
 /**
- * AP 直连通道（工作树连接方案会话）。
- * 命令语义与 WiFi 通道一致；会话即链路，会话丢失即判死。
+ * AP 直连通道（AP 引擎桥）。命令语义与 WiFi 通道一致；会话即链路，会话丢失即判死。
  */
 internal class ApLvChannel(
     private val ap: ApConnectionService
 ) : LvChannel {
     override val isWireless: Boolean get() = true
     override fun isConnected(): Boolean = ap.isConnected()
-    override fun isLinkDead(): Boolean = ap.ptpSession() == null
+    override fun isLinkDead(): Boolean = ap.bridge() == null
 
     override suspend fun getDevicePropValue(code: Int): ByteArray? =
-        ap.ptpSession()?.getDevicePropValue(code)
+        ap.bridge()?.getDevicePropValue(code)
 
     override suspend fun setDevicePropValue(code: Int, value: ByteArray): Boolean =
-        ap.ptpSession()?.setDevicePropValue(code, value) == true
+        ap.bridge()?.setDevicePropValue(code, value) == true
 
     override suspend fun command(opcode: Int, params: List<Int>): LvCmdResult {
-        val s = ap.ptpSession() ?: return LvCmdResult(false, -1)
+        val b = ap.bridge() ?: return LvCmdResult(false, -1)
         return runCatching {
-            s.rawTransact(opcode, params.map { it.toLong() })
-                .let { LvCmdResult(it.isOk, it.code) }
+            b.command(opcode, params).let { LvCmdResult(it.isOk, it.code) }
         }.getOrDefault(LvCmdResult(false, -1))
     }
 
     override suspend fun getLiveViewImage(): ByteArray? =
-        ap.ptpSession()?.getLiveViewImage()
+        ap.bridge()?.liveViewFrame()
 
     override suspend fun stopLiveView(): Boolean =
         command(PtpConstants.OP_NIKON_END_LIVE_VIEW).isOk
@@ -167,15 +165,30 @@ internal class ApLvChannel(
         command(PtpConstants.OP_NIKON_MF_DRIVE, listOf(direction, speed)).isOk
 
     override suspend fun capture(): Boolean =
-        command(PtpConstants.OP_INITIATE_CAPTURE, listOf(0, 0)).isOk
+        captureViaMediaFirst()
+
+    /**
+     * 快门命令多级降级（基准实现 实证语义）：无线机身优先 0x9207 CaptureMedia，
+     * 部分机身把第一参数按存储 ID 解释（-1 被拒时回退 0x100E InitiateCapture）。
+     * 只改 AP 通道，STA/USB 通道保持原样。
+     */
+    private suspend fun captureViaMediaFirst(): Boolean {
+        val media = PtpConstants.OP_NIKON_INITIATE_CAPTURE_REC_IN_MEDIA
+        val r1 = command(media, listOf(-1, 0))
+        if (r1.isOk) return true
+        if (r1.code == PtpConstants.RESPONSE_PARAMETER_NOT_SUPPORTED) {
+            val r2 = command(media, listOf(-1))
+            if (r2.isOk) return true
+        }
+        return command(PtpConstants.OP_INITIATE_CAPTURE, listOf(0, 0)).isOk
+    }
 
     override suspend fun afDriveCancel(): Boolean =
         command(PtpConstants.OP_NIKON_AF_DRIVE_CANCEL).isOk
 
     override suspend fun getStorageIds(): List<Int> {
-        val data = ap.ptpSession()
-            ?.let { runCatching { it.rawTransact(PtpConstants.OP_GET_STORAGE_IDS) }.getOrNull()?.dataIn }
-            ?: return emptyList()
+        val r = ap.bridge()?.rawTransact(PtpConstants.OP_GET_STORAGE_IDS) ?: return emptyList()
+        val data = r.dataIn ?: return emptyList()
         if (data.size < 4) return emptyList()
         val buf = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
         val count = buf.int

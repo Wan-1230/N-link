@@ -1266,7 +1266,7 @@ class CameraParameterManager @Inject constructor(
     private suspend fun readDeviceProp(propCode: Int): ByteArray? {
         // AP 直连会话在线时读 AP 通道（与相册/监看同一会话），否则走原有双通道
         if (apConnection.isConnected()) {
-            return apConnection.ptpSession()?.getDevicePropValue(propCode)
+            return apConnection.bridge()?.getDevicePropValue(propCode)
         }
         return if (usbPtpManager.isConnected()) {
             usbPtpManager.getDevicePropValue(propCode)
@@ -1277,7 +1277,7 @@ class CameraParameterManager @Inject constructor(
 
     private suspend fun writeDeviceProp(propCode: Int, value: ByteArray): Boolean {
         if (apConnection.isConnected()) {
-            return apConnection.ptpSession()?.setDevicePropValue(propCode, value) == true
+            return apConnection.bridge()?.setDevicePropValue(propCode, value) == true
         }
         return if (usbPtpManager.isConnected()) {
             usbPtpManager.setDevicePropValue(propCode, value)

@@ -278,7 +278,7 @@ class NikonCameraClient internal constructor(
             _state.value = CameraState.Connecting("PTP/IP 握手（${attempt + 1}/2）")
             try {
                 val l = PtpIpLink(
-                    endpoint, identity.guid, identity.hostName, currentFactory, log,
+                    endpoint, handshakeGuid(), identity.hostName, currentFactory, log,
                     onTransportLost = { reason -> handleTransportLost(reason) },
                 )
                 link = l
@@ -311,6 +311,21 @@ class NikonCameraClient internal constructor(
         lastConnectFailAt = System.currentTimeMillis()
         throw lastError ?: CameraError.TransportLost("PTP/IP 握手失败")
     }
+
+    /**
+     * 握手 GUID 选择（基准实现 AP 实证：每次握手用新随机 GUID）。
+     *
+     * 相机对「同 GUID 残留会话」做冲突清理时会掐掉新会话的事件通道
+     * （真机现象：事件通道刚建即被复位、InitEventAck 收不到）；每次换新 GUID
+     * 可避开该冲突。AP 直连不校验主机注册，GUID 不需要稳定；
+     * **STA 与主机注册路径必须用持久身份**（注册把 GUID 绑进相机主机白名单）。
+     */
+    private fun handshakeGuid(): ByteArray =
+        if (activeMethod is ConnectionMethod.WifiAp) {
+            ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
+        } else {
+            identity.guid
+        }
 
     /** 主机配对（PC 主机注册）：独立注册会话，相机须停留在主机配置向导。 */
     private suspend fun runRegistration(
