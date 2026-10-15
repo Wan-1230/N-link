@@ -6,7 +6,6 @@ import com.camerakit.api.CameraEvent
 import com.camerakit.api.CameraSession
 import com.camerakit.api.CameraState
 import com.camerakit.api.ConnectionMethod
-import com.camerakit.client.CameraConnectionFactory
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,12 +25,15 @@ class ApConnectionService @Inject constructor(
     @ApplicationContext context: Context,
     private val eventLogger: com.nikonlink.app.shared.common.AppEventLogger,
 ) {
-    val client: CameraConnection = CameraConnectionFactory.create(context) { msg ->
+    /** AP 引擎连接（整体替换版：开源 PTP/IP 引擎 + 网络绑定；失败直接自动重试）。 */
+    val ap: com.camerakit.ap.ApCameraConnection = com.camerakit.ap.ApCameraConnection(context) { msg ->
         Timber.tag("ApKit").i(msg)
         // AP 连接全程打点写入全链路日志（设置页可导出）——此前 AP 只进 logcat，
         // 真机出问题没现场可查
         eventLogger.event("ap_kit", "msg" to msg)
     }
+
+    val client: CameraConnection get() = ap
 
     val state: StateFlow<CameraState> get() = client.state
     val events: SharedFlow<CameraEvent> get() = client.events
@@ -50,11 +52,10 @@ class ApConnectionService @Inject constructor(
     }
 
     /** 当前会话（未连接为 null）。 */
-    fun session(): CameraSession? = client.session()
+    fun session(): CameraSession? = ap.session()
 
-    /** 底层 PTP 会话（监看等需要扩展命令时使用）。 */
-    fun ptpSession(): com.camerakit.ptp.PtpSession? =
-        client.session() as? com.camerakit.ptp.PtpSession
+    /** AP 引擎桥（监看 / 遥控 / 参数 / 相册的命令面；未连接为 null）。 */
+    fun bridge(): com.camerakit.ap.ApEngineBridge? = ap.bridge()
 
     fun isConnected(): Boolean = client.state.value is CameraState.Connected
 

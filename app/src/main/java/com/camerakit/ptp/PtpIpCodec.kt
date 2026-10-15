@@ -102,9 +102,13 @@ object PtpIpCodec {
         return buf.array()
     }
 
+    /**
+     * StartData(type9) 载荷 = transId u32 + 数据总长 u64（共 12 字节，高 4 字节恒 0）。
+     * 旧链路与基准实现的 data-out 均为此布局；8 字节写法会让相机解析错位。
+     */
     fun startDataPayload(transId: Int, totalLength: Long): ByteArray =
-        ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
-            .putInt(transId).putInt(totalLength.toInt()).array()
+        ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(transId).putLong(totalLength).array()
 
     fun cancelPayload(transId: Int): ByteArray =
         ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(transId).array()
@@ -172,12 +176,16 @@ object PtpIpCodec {
     }
 
     /**
-     * StartData(type9) 载荷 = transId u32@0 + 数据总长 u32@4。
+     * StartData(type9) 载荷 = transId u32@0 + 数据总长 u64@4（12 字节）。
      * 注意：这不是数据段——误收集会使 data-in 多出 4 字节垃圾。
      */
     fun payloadStartDataLen(payload: ByteArray): Long {
         require(payload.size >= 8) { "StartData payload too short" }
-        return ByteBuffer.wrap(payload, 4, 4).order(ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xFFFFFFFFL
+        return if (payload.size >= 12) {
+            ByteBuffer.wrap(payload, 4, 8).order(ByteOrder.LITTLE_ENDIAN).long
+        } else {
+            ByteBuffer.wrap(payload, 4, 4).order(ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xFFFFFFFFL
+        }
     }
 
     /** Data/EndData 载荷去掉事务号后的数据段 */
