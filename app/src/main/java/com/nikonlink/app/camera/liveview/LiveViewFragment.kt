@@ -27,6 +27,7 @@ import com.nikonlink.app.camera.params.CameraParamsViewModel
 import com.nikonlink.app.device.connect.ConnectionManager
 import com.nikonlink.app.device.usb.UsbPtpManager
 import com.nikonlink.app.shared.common.AppSettings
+import com.nikonlink.app.shared.ui.ShutterFeedback
 import com.nikonlink.app.shared.ui.pressEffect
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.combine
@@ -215,11 +216,12 @@ class LiveViewFragment : Fragment() {
             binding.toolFocus, binding.toolExposure, binding.toolWb,
             binding.toolMetering, binding.toolMore
         ).forEach { it.pressEffect() }
-        binding.toolFocus.setOnClickListener { panels.toggle(binding.panelFocus) }
-        binding.toolExposure.setOnClickListener { panels.openExposure() }
-        binding.toolWb.setOnClickListener { panels.toggle(binding.panelWb) }
-        binding.toolMetering.setOnClickListener { panels.toggle(binding.panelMetering) }
-        binding.toolMore.setOnClickListener { panels.toggle(binding.panelMore) }
+        // origin 传被点的工具项：面板从触点扩散，五个并排图标才不会「看不出点了哪个」
+        binding.toolFocus.setOnClickListener { panels.toggle(binding.panelFocus, it) }
+        binding.toolExposure.setOnClickListener { panels.openExposure(it) }
+        binding.toolWb.setOnClickListener { panels.toggle(binding.panelWb, it) }
+        binding.toolMetering.setOnClickListener { panels.toggle(binding.panelMetering, it) }
+        binding.toolMore.setOnClickListener { panels.toggle(binding.panelMore, it) }
         binding.toolExposure.setState(null, true)
         binding.toolWb.setState(null, true)
         binding.toolMetering.setState(null, true)
@@ -276,7 +278,7 @@ class LiveViewFragment : Fragment() {
         // 顶栏「显示辅助」入口：六个显示类开关（网格/水平仪/直方图/伪彩/波形/DISP）收在这里。
         // 原先放在工具栏第二页，翻页时 5 项 / 6 项列宽会跳变，且翻页本身是额外的交互负担。
         binding.btnOverlays.pressEffect()
-        binding.btnOverlays.setOnClickListener { panels.toggle(binding.panelOverlays) }
+        binding.btnOverlays.setOnClickListener { panels.toggle(binding.panelOverlays, it) }
 
         binding.toolDisp.setOnClickListener { toggleControls() }
 
@@ -508,20 +510,24 @@ class LiveViewFragment : Fragment() {
         binding.btnShutter.setOnTouchListener { v, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    v.animate().cancel()
-                    v.animate().scaleX(0.88f).scaleY(0.88f).setDuration(Motion.INSTANT).start()
+                    ShutterFeedback.onPressDown(v)
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    v.animate().cancel()
-                    v.animate().scaleX(1f).scaleY(1f).setDuration(Motion.FAST).start()
-                    flashScreen()
+                    // capture() 必须**立即**下发，不能等回弹结束——那会给快门加 230ms 延迟，
+                    // 对相机来说是不可接受的快门时滞。
+                    // 分段反馈只推迟**白闪**：闪是「已经拍到了」的视觉确认，
+                    // 放在回弹落定之后才构成第三个独立可感知的确认点。
+                    // 顺序错了就退化成「按下→同时弹+闪」两段，分段的意义就没了。
                     shootingViewModel.capture()
+                    ShutterFeedback.release(v) {
+                        if (_binding != null) flashScreen()
+                    }
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    v.animate().cancel()
-                    v.animate().scaleX(1f).scaleY(1f).setDuration(Motion.FAST).start()
+                    // 手势被父容器拦截：复位但**不**拍摄、不闪
+                    ShutterFeedback.reset(v)
                     true
                 }
                 else -> false

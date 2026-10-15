@@ -9,7 +9,9 @@ import com.nikonlink.app.camera.liveview.LiveViewZoomController
 import com.nikonlink.app.camera.params.CameraParamsViewModel
 import com.nikonlink.app.camera.params.resolvePickerIndex
 import com.nikonlink.app.databinding.FragmentLiveviewBinding
+import com.nikonlink.app.shared.ui.CircleReveal
 import com.nikonlink.app.shared.ui.NlFeedback
+import com.nikonlink.app.shared.ui.StaggerMotion
 import com.nikonlink.app.shared.ui.pressEffect
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -66,8 +68,21 @@ class LiveViewPanelsController(
         current = null
     }
 
-    /** 同一面板再点一次 = 收起；换面板 = 互斥切换 */
-    fun toggle(panel: View, onOpen: (() -> Unit)? = null) {
+    /**
+     * 面板圆形扩散是否启用。**一行回退开关**：置 false 即退回「只有逐行错峰、无圆形扩散」。
+     * 见 docs/ADR-001 §3.2。本机无可用真机/模拟器，视觉效果未经实测，
+     * 故把这一项做成可单独关闭，不与错峰绑死。
+     */
+    private val panelRevealEnabled = true
+
+    /**
+     * 同一面板再点一次 = 收起；换面板 = 互斥切换。
+     *
+     * @param origin 触发本次打开的那个工具项。用于「从你点的地方长出来」的圆形扩散——
+     *   工具栏五个图标并排、面板又是一整条宽 sheet，不给位置反馈的话
+     *   用户看不出自己刚激活的是哪一个。传 null 则只做逐行错峰。
+     */
+    fun toggle(panel: View, origin: View? = null, onOpen: (() -> Unit)? = null) {
         if (current === panel) {
             closeAll()
             return
@@ -76,11 +91,69 @@ class LiveViewPanelsController(
         panel.visibility = View.VISIBLE
         current = panel
         onOpenStateChanged?.invoke(true)
+        // 顺序要紧：先让位（onOpenStateChanged）再放动画，
+        // 反过来会在动画第一帧撞上布局位移，读作抖一下
+        arrivePanel(panel, origin)
         onOpen?.invoke()
     }
 
     /** 曝光面板入口：打开时顺带按当前焦距刷新光圈档位 */
-    fun openExposure() = toggle(binding.panelExposure) { refreshApertureOptions() }
+    fun openExposure(origin: View? = null) =
+        toggle(binding.panelExposure, origin) { refreshApertureOptions() }
+
+    /**
+     * 面板到场 = 圆形扩散（第 3 拍）+ 内容逐行错峰（第 4 拍）。
+     *
+     * 收起刻意**不做**动画：`closeInternal` 直接 GONE。原因是收起会触发
+     * [onOpenStateChanged] 让参数条与工具栏复位，动画与布局位移同时进行的效果
+     * 在无真机验证的前提下不可判定；而「收起要利落」（视频解析 03 的结论）
+     * 本身就以瞬时为极限情形，不算妥协。
+     */
+    private fun arrivePanel(panel: View, origin: View?) {
+        val rows = directRows(panel)
+
+        if (!panelRevealEnabled || origin == null) {
+            StaggerMotion.expand(rows)
+            return
+        }
+
+        // 等一帧让面板完成布局：panel 刚从 GONE 变 VISIBLE，
+        // 此时 getLocationOnScreen 拿到的还是上一次的旧坐标，圆心会算错
+        panel.post {
+            if (panel.width == 0 || panel.height == 0) {
+                StaggerMotion.expand(rows)
+                return@post
+            }
+            val o = IntArray(2)
+            origin.getLocationOnScreen(o)
+            val q = IntArray(2)
+            panel.getLocationOnScreen(q)
+            // 工具项在面板**上方**，纵坐标差为负会被钳到 0——
+            // 这是想要的：圆从面板上边缘、正对被点的那个工具的横位置长出来。
+            // 横向才是这里唯一有意义的位置信息（点的哪一列工具）。
+            val cx = (o[0] + origin.width / 2 - q[0]).coerceIn(0, panel.width)
+            val cy = (o[1] + origin.height / 2 - q[1]).coerceIn(0, panel.height)
+            CircleReveal.reveal(panel, cx, cy)
+            StaggerMotion.expand(rows)
+        }
+    }
+
+    /**
+     * 取面板里参与错峰的「行」。
+     *
+     * 只取直接子 View 里的可见项，不递归：面板内部还有嵌套容器（如 panelExposure
+     * 的三条尺子各自带标题），递归会把尺子的每个子 View 都当成一行错峰，
+     * 结果是尺子自己一段段浮现——那不是列表到场，是控件在抽搐。
+     */
+    private fun directRows(panel: View): List<View> {
+        if (panel !is android.view.ViewGroup) return listOf(panel)
+        val out = ArrayList<View>(panel.childCount)
+        for (i in 0 until panel.childCount) {
+            val c = panel.getChildAt(i)
+            if (c.visibility != View.GONE) out.add(c)
+        }
+        return if (out.isEmpty()) listOf(panel) else out
+    }
 
     /** 供玻璃 HUD 挂载：全部面板根视图 */
     fun panelRoots(): List<View> = allPanels
@@ -101,7 +174,7 @@ class LiveViewPanelsController(
         // 快门/光圈/ISO 三格都打开曝光面板（三条尺子各自定位到对应参数）
         listOf(binding.cellShutter, binding.cellAperture, binding.cellIso).forEach { cell ->
             cell.pressEffect()
-            cell.setOnClickListener { openExposure() }
+            cell.setOnClickListener { openExposure(cell) }
         }
         // EV 只读：与旧版一致，点击给明确提示
         binding.cellEv.pressEffect()
@@ -109,7 +182,7 @@ class LiveViewPanelsController(
             NlFeedback.show(context, "EV 请通过相机机内拨盘调整")
         }
         binding.cellWb.pressEffect()
-        binding.cellWb.setOnClickListener { toggle(binding.panelWb) }
+        binding.cellWb.setOnClickListener { toggle(binding.panelWb, binding.cellWb) }
     }
 
     // ---------------- 曝光面板（快门/光圈/ISO 刻度尺） ----------------
