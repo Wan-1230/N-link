@@ -70,13 +70,13 @@ object UsbPtpProtocol {
     /**
      * 构建 USB PTP 数据容器
      */
-    fun buildDataContainer(transactionId: Int, data: ByteArray): ByteArray {
+    fun buildDataContainer(transactionId: Int, operationCode: Int, data: ByteArray): ByteArray {
         val totalLength = HEADER_SIZE + data.size
         val buffer = ByteBuffer.allocate(totalLength).order(ByteOrder.LITTLE_ENDIAN)
 
         buffer.putInt(totalLength)
         buffer.putShort(TYPE_DATA.toShort())
-        buffer.putShort(0)  // no code for data
+        buffer.putShort(operationCode.toShort())
         buffer.putInt(transactionId)
         buffer.put(data)
 
@@ -104,6 +104,7 @@ object UsbPtpProtocol {
         if (data.size < HEADER_SIZE) return null
         val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
         val length = buffer.int
+        if (length < HEADER_SIZE || length > MAX_PAYLOAD_SIZE) return null
         val type = buffer.short.toInt() and 0xFFFF
         val code = buffer.short.toInt() and 0xFFFF
         val transactionId = buffer.int
@@ -114,7 +115,7 @@ object UsbPtpProtocol {
      * 解析 USB PTP 响应容器
      */
     fun parseResponseContainer(data: ByteArray): UsbPtpResponse? {
-        if (data.size < HEADER_SIZE) return null
+        val limit = validContainerLength(data) ?: return null
         val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
 
         val length = buffer.int
@@ -126,7 +127,7 @@ object UsbPtpProtocol {
 
         // 读取响应参数（最多5个）
         val params = mutableListOf<Int>()
-        val remaining = (length - HEADER_SIZE) / 4
+        val remaining = (limit - HEADER_SIZE) / 4
         repeat(remaining.coerceAtMost(5)) {
             if (buffer.remaining() >= 4) params.add(buffer.int)
         }
@@ -142,7 +143,7 @@ object UsbPtpProtocol {
      * 解析 USB PTP 数据容器
      */
     fun parseDataContainer(data: ByteArray): UsbPtpData? {
-        if (data.size < HEADER_SIZE) return null
+        val limit = validContainerLength(data) ?: return null
         val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
 
         val length = buffer.int
@@ -152,7 +153,7 @@ object UsbPtpProtocol {
 
         if (type != TYPE_DATA) return null
 
-        val payloadSize = length - HEADER_SIZE
+        val payloadSize = limit - HEADER_SIZE
         val payload = ByteArray(payloadSize)
         buffer.get(payload)
 
@@ -166,7 +167,7 @@ object UsbPtpProtocol {
      * 解析 USB PTP 事件容器
      */
     fun parseEventContainer(data: ByteArray): UsbPtpEvent? {
-        if (data.size < HEADER_SIZE) return null
+        val limit = validContainerLength(data) ?: return null
         val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
 
         val length = buffer.int
@@ -177,7 +178,7 @@ object UsbPtpProtocol {
         if (type != TYPE_EVENT) return null
 
         val params = mutableListOf<Int>()
-        val remaining = (length - HEADER_SIZE) / 4
+        val remaining = (limit - HEADER_SIZE) / 4
         repeat(remaining.coerceAtMost(3)) {
             if (buffer.remaining() >= 4) params.add(buffer.int)
         }
@@ -187,6 +188,14 @@ object UsbPtpProtocol {
             transactionId = transactionId,
             parameters = params
         )
+    }
+
+    private fun validContainerLength(data: ByteArray): Int? {
+        if (data.size < HEADER_SIZE) return null
+        val length = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).int
+        return length.takeIf {
+            it in HEADER_SIZE..MAX_PAYLOAD_SIZE && it <= data.size
+        }
     }
 
     /**

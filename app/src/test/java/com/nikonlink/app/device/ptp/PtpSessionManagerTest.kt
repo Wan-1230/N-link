@@ -36,13 +36,18 @@ class PtpSessionManagerTest {
                 val connected = session.connect(
                     host = "127.0.0.1",
                     port = camera.port,
-                    pairingMode = true
+                    pairingMode = true,
+                    staMode = true,
+                    localAddress = "127.0.0.1"
                 )
                 assertTrue("PTP/IP connect should succeed against mock camera", connected)
             }
 
             assertEquals(PtpSessionState.CONNECTED, session.sessionState.value)
             assertTrue(session.isConnected())
+            assertTrue("STA 事件通道应等待稳定窗口", camera.eventDelayMs >= 600L)
+            assertEquals(PtpConstants.OP_OPEN_SESSION, camera.commands.first().operationCode)
+            assertEquals(0, camera.commands.first().transactionId)
 
             val deviceInfo = session.getDeviceInfo()
             assertArrayEquals(MockPtpCamera.DEVICE_INFO, deviceInfo)
@@ -76,6 +81,7 @@ class PtpSessionManagerTest {
                 session.connect("127.0.0.1", camera.port, pairingMode = true)
             }
             assertFalse(connected)
+            assertTrue("握手失败必须关闭命令通道", camera.closed.get(2, java.util.concurrent.TimeUnit.SECONDS))
             // v0.1.4：连接阶段失败回 DISCONNECTED 而非 ERROR——
             // ERROR 会被健康检查当「链路死亡需重建」触发重连风暴，
             // 只留给运行期 markLinkError（RC-2 配套语义）
@@ -126,6 +132,8 @@ private class MockPtpCamera {
     private val serverSocket = ServerSocket(0, 2, InetAddress.getByName("127.0.0.1"))
     val port: Int = serverSocket.localPort
     private var thread: Thread? = null
+    @Volatile var eventDelayMs = 0L
+    val commands = java.util.concurrent.CopyOnWriteArrayList<CommandRequestPacket>()
 
     fun start() {
         thread = Thread {
@@ -149,8 +157,10 @@ private class MockPtpCamera {
         val init = PtpPacket.fromStream(commandIn) as? InitCommandPacket ?: return
         commandOut.write(initResponse(init))
         commandOut.flush()
+        val ackAt = System.nanoTime()
 
         val event = serverSocket.accept()
+        eventDelayMs = (System.nanoTime() - ackAt) / 1_000_000L
         val eventIn = event.getInputStream()
         val eventOut = event.getOutputStream()
         val eventInit = PtpPacket.fromStream(eventIn)
@@ -170,6 +180,7 @@ private class MockPtpCamera {
             val packet = PtpPacket.fromStream(commandIn) ?: break
             when (packet) {
                 is CommandRequestPacket -> {
+                    commands.add(packet)
                     if (packet.operationCode == PtpConstants.OP_SET_DEVICE_PROP_VALUE) {
                         pendingSetResponseTx = packet.transactionId
                     } else {
@@ -191,6 +202,9 @@ private class MockPtpCamera {
 
     private fun handleCommand(packet: CommandRequestPacket, out: OutputStream) {
         val tx = packet.transactionId
+        if (packet.operationCode == PtpConstants.OP_INITIATE_CAPTURE) {
+            out.write(commandResponse(tx - 1, PtpConstants.RESPONSE_OK))
+        }
         when (packet.operationCode) {
             PtpConstants.OP_OPEN_SESSION,
             PtpConstants.OP_NIKON_DEVICE_READY,
@@ -271,15 +285,15 @@ private class RejectingPtpCamera {
     private val serverSocket = ServerSocket(0, 2, InetAddress.getByName("127.0.0.1"))
     val port: Int = serverSocket.localPort
     private var thread: Thread? = null
+    val closed = java.util.concurrent.CompletableFuture<Boolean>()
 
     fun start() {
         thread = Thread {
             runCatching {
-                val socket = serverSocket.accept()
-                socket.getInputStream().use { input ->
-                    input.readNBytes(48) // drain the init command
-                }
-                socket.getOutputStream().use { out ->
+                serverSocket.accept().use { socket ->
+                    socket.soTimeout = 3000
+                    PtpPacket.fromStream(socket.getInputStream())
+                    val out = socket.getOutputStream()
                     out.write(
                         ByteBuffer.allocate(12)
                             .order(ByteOrder.LITTLE_ENDIAN)
@@ -289,6 +303,7 @@ private class RejectingPtpCamera {
                             .array()
                     )
                     out.flush()
+                    closed.complete(socket.getInputStream().read() == -1)
                 }
             }
         }.apply {

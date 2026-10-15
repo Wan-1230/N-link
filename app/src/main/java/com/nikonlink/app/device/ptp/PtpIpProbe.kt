@@ -85,7 +85,8 @@ object PtpIpProbe {
         host: String,
         port: Int = PtpConstants.DEFAULT_PORT,
         timeoutMs: Long = 1200L,
-        network: Network? = null
+        network: Network? = null,
+        localAddress: String? = null
     ): ProbeResult = withContext(Dispatchers.IO) {
         // v2.6.4：只探测"值得探测"的地址。
         // 真机日志里出现过 mDNS/NSD 把 **IPv6 链路本地地址**（`fe80::…%ap0`）当成候选，
@@ -97,6 +98,7 @@ object PtpIpProbe {
         try {
             val socket = if (network != null) network.socketFactory.createSocket() else Socket()
             socket.use {
+                localAddress?.let { address -> it.bind(InetSocketAddress(address, 0)) }
                 it.connect(InetSocketAddress(host, port), effective)
                 it.soTimeout = effective
                 it.tcpNoDelay = true
@@ -157,8 +159,9 @@ object PtpIpProbe {
         host: String,
         port: Int = PtpConstants.DEFAULT_PORT,
         timeoutMs: Long = 500L,
-        network: Network? = null
-    ): Boolean = tcpScreen(host, port, timeoutMs, network).open
+        network: Network? = null,
+        localAddress: String? = null
+    ): Boolean = tcpScreen(host, port, timeoutMs, network, localAddress).open
 
     /**
      * [tcpConnectOnly] 的带档位版本（FR-18b）：连接流程要用它，
@@ -169,7 +172,8 @@ object PtpIpProbe {
         host: String,
         port: Int = PtpConstants.DEFAULT_PORT,
         timeoutMs: Long = 500L,
-        network: Network? = null
+        network: Network? = null,
+        localAddress: String? = null
     ): TcpScreen = withContext(Dispatchers.IO) {
         // v2.6.4：同 probeDetailed —— 非 IPv4 / 特殊用途地址（含 IPv6 链路本地）不探
         if (!WifiEndpoint.isProbeCandidate(host)) {
@@ -179,6 +183,7 @@ object PtpIpProbe {
         try {
             val socket = if (network != null) network.socketFactory.createSocket() else Socket()
             socket.use {
+                localAddress?.let { address -> it.bind(InetSocketAddress(address, 0)) }
                 it.connect(InetSocketAddress(host, port), effective)
                 TcpScreen(true, ProbeResult.OK, null)
             }

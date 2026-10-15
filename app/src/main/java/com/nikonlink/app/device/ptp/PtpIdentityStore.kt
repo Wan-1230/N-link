@@ -20,9 +20,10 @@ class PtpIdentityStore @Inject constructor(
     private val prefs = context.getSharedPreferences("ptp_identity", Context.MODE_PRIVATE)
 
     override val clientGuid: ByteArray
+        @Synchronized
         get() {
             val cached = prefs.getString(KEY_GUID, null)
-            if (cached != null && cached.length == 32) {
+            if (cached != null && cached.length == 32 && cached.all { it.digitToIntOrNull(16) != null }) {
                 return hexToBytes(cached)
             }
             val guid = generateGuid()

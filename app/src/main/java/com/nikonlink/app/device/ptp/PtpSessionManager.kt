@@ -306,6 +306,8 @@ class PtpSessionManager @Inject constructor(
          * 注意排在 `onWifiConnected` 之前 —— Kotlin 尾随 lambda 绑定最后一个形参。
          */
         connectTimeoutMs: Int = 0,
+        staMode: Boolean = false,
+        localAddress: String? = null,
         onWifiConnected: (() -> Unit)? = null
     ): Boolean = withContext(Dispatchers.IO) {
         if (isConnected()) return@withContext true
@@ -326,6 +328,9 @@ class PtpSessionManager @Inject constructor(
             Timber.tag(TAG).i("phase=connecting host=%s:%d", host, port)
             eventLogger.event("connect", "phase" to "socket", "host" to host, "port" to port, "pairing" to pairingMode)
             commandSocket = connectSocketWithRetry(network, host, port, label = "command", timeoutOverrideMs = connectTimeoutMs) {
+                if (staMode && localAddress != null) {
+                    bind(InetSocketAddress(java.net.InetAddress.getByName(localAddress), 0))
+                }
                 tcpNoDelay = true
                 keepAlive = true
                 receiveBufferSize = 4 * 1024 * 1024  // 放大 TCP 接收窗口，提升大文件传输吞吐
@@ -378,17 +383,23 @@ class PtpSessionManager @Inject constructor(
             _lastInitFailReason.value = null
             lastFailPhase = "init_event"
 
+            if (staMode) {
+                // 附件参考实现的 STA 稳定窗口；不改 AP 专用引擎或旧调用默认值。
+                delay(650L)
+                transactionId.set(-1)
+            }
             // 建立 Event 通道
             Timber.tag(TAG).i("phase=event connecting")
             eventSocket = connectSocketWithRetry(network, host, port, label = "event", timeoutOverrideMs = connectTimeoutMs) {
                 // 工作树 kit 移植（参考实现 forced 语义实证）：事件通道绑定到与命令通道
                 // 相同的本地地址，防止双网手机上 event socket 漂到其它网络 —— 两条通道
                 // 源地址不一致时，相机可能在 InitEvent 阶段直接复位连接。
-                runCatching {
+                val bindEvent = {
                     commandSocket?.localAddress
                         ?.takeIf { !it.isAnyLocalAddress }
                         ?.let { bind(java.net.InetSocketAddress(it, 0)) }
                 }
+                if (staMode) bindEvent() else runCatching { bindEvent() }
                 // 官方对 data / event 两条通道都设 TCP_NODELAY。PTP/IP 是
                 // 小包一问一答，Nagle 会把 event 包压在缓冲区里等待累积，
                 // 白白叠加几十毫秒——原来这里漏了，只 command 通道设了。
@@ -458,7 +469,7 @@ class PtpSessionManager @Inject constructor(
             //   可能仍占着 1 号，导致 OpenSession 被拒/复位）。
             // 关 = Fix P0-2 序（默认，逐位等价现状）：GetDeviceInfo → OpenSession(固定 1)，
             //   让相机屏幕提前显示连接状态；固定 1 是从 connectionNumber 回退后标定的口径。
-            val baselineOrder = connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.AP_ZDROP_SESSION)
+            val baselineOrder = staMode || connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.AP_ZDROP_SESSION)
             val openSessionId = if (baselineOrder) (1..0x7FFFFFFF).random() else 1
 
             suspend fun openSessionOrFail(): Boolean {
@@ -551,12 +562,16 @@ class PtpSessionManager @Inject constructor(
             funnel.stage(com.nikonlink.app.device.connect.ConnFunnel.Stage.FIRST_COMMAND, detail = "session=$sessionId")
             eventLogger.event("connect", "phase" to "established", "session" to sessionId)
             true
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Connection failed")
             // 连接异常回 DISCONNECTED（ERROR 只留给 markLinkError 的运行期链路死亡）
             _sessionState.value = PtpSessionState.DISCONNECTED
             closeSession()
             false
+        } finally {
+            if (!isConnected()) closeSession()
         }
     }
 
@@ -582,18 +597,22 @@ class PtpSessionManager @Inject constructor(
                     }
                     sendPacket(packet)
                     // 等待命令响应（可能先收到数据包）
-                    var response: PtpPacket?
-                    do {
-                        response = PtpPacket.fromStream(commandInput!!)
-                        if (response is CommandResponsePacket && response.transactionId != txId) {
-                            Timber.tag(TAG).w(
-                                "Ignoring stale response: expected tx=$txId, got tx=${response.transactionId}"
-                            )
-                            response = null
+                    var response: CommandResponsePacket? = null
+                    while (response == null) {
+                        when (val packet = PtpPacket.fromStream(commandInput!!) ?: break) {
+                            is PingPacket -> sendPacket(PongPacket)
+                            is CommandResponsePacket -> if (packet.transactionId == txId) {
+                                response = packet
+                            } else {
+                                Timber.tag(TAG).w(
+                                    "忽略旧响应：期望事务号=$txId，收到=${packet.transactionId}"
+                                )
+                            }
+                            else -> Unit
                         }
-                    } while (response != null && response !is CommandResponsePacket)
+                    }
 
-                    val finalResp = (response as? CommandResponsePacket)
+                    val finalResp = response
                         ?: CommandResponsePacket(txId, PtpConstants.RESPONSE_GENERAL_ERROR)
                     // FR-32 R3：opcode 级收发诊断（不含 payload）。2026-10-02 的悬案
                     // 「相机断热点前我们最后发出去的是哪条包」只有这个字段能回答 ——

@@ -59,10 +59,10 @@ object AppModule {
     @Singleton
     fun provideWifiScanner(
         @ApplicationContext context: Context,
-        networkRequester: StaNetworkRequester,
         localInterfaces: LocalNetworkInterfaceResolver,
-        connFlags: com.nikonlink.app.device.connect.ConnFlags
-    ): WifiScanner = WifiScanner(context, networkRequester, localInterfaces, connFlags)
+        connFlags: com.nikonlink.app.device.connect.ConnFlags,
+        routes: com.nikonlink.app.device.wifi_sta.StaSocketRouteResolver
+    ): WifiScanner = WifiScanner(context, localInterfaces, connFlags, routes)
 
     @Provides
     @Singleton
@@ -96,7 +96,9 @@ object AppModule {
         funnel: com.nikonlink.app.device.connect.ConnFunnel,
         preflight: com.nikonlink.app.device.connect.PreflightGate,
         staHostRegistrar: com.nikonlink.app.device.wifi_sta.StaHostRegistrar,
-        wifiDropWatcher: com.nikonlink.app.device.wifi_sta.WifiDropReasonWatcher
+        wifiDropWatcher: com.nikonlink.app.device.wifi_sta.WifiDropReasonWatcher,
+        apConnection: com.nikonlink.app.device.ap.ApConnectionService,
+        staRoutes: com.nikonlink.app.device.wifi_sta.StaSocketRouteResolver
     ): ConnectionManager = ConnectionManager(
         context,
         bleManager,
@@ -114,7 +116,9 @@ object AppModule {
         funnel,
         preflight,
         staHostRegistrar,
-        wifiDropWatcher
+        wifiDropWatcher,
+        apConnection,
+        staRoutes
     )
 
     @Provides
@@ -215,8 +219,9 @@ object AppModule {
     fun provideUsbPtpManager(
         @ApplicationContext context: Context,
         eventLogger: AppEventLogger,
-        connFlags: com.nikonlink.app.device.connect.ConnFlags
-    ): UsbPtpManager = UsbPtpManager(context, eventLogger, connFlags)
+        connFlags: com.nikonlink.app.device.connect.ConnFlags,
+        apConnection: com.nikonlink.app.device.ap.ApConnectionService
+    ): UsbPtpManager = UsbPtpManager(context, eventLogger, connFlags, apConnection)
 
     @Provides
     @Singleton

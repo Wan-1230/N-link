@@ -11,6 +11,7 @@ import com.nikonlink.app.device.ptp.InitEventRequestPacket
 import com.nikonlink.app.device.ptp.InitFailPacket
 import com.nikonlink.app.device.ptp.InitResponsePacket
 import com.nikonlink.app.device.ptp.PingPacket
+import com.nikonlink.app.device.ptp.PongPacket
 import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpDeviceInfo
 import com.nikonlink.app.device.ptp.PtpIdentityStore
@@ -26,7 +27,15 @@ import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 
@@ -42,7 +51,7 @@ import timber.log.Timber
  * 其 2026-10-01 诊断日志的标准流程）反而被判成「相机未连接」。
  *
  * 诊断日志（host-register 段）证明注册本身是一条**独立链路**，不依赖任何既有会话：
- * 发现 endpoint → 自建 command/event 双通道 → GetDeviceInfo → OpenSession →
+ * 发现 endpoint → 自建 command/event 双通道 → OpenSession → GetDeviceInfo →
  * 0x952B → 等相机确认 → 0x935A → 直接拆通道（sendCloseSession=false）。
  * 本类把这条链路落地：自有 socket、自有事务号，不碰 [com.nikonlink.app.device.ptp.PtpSessionManager]
  * 的单例会话状态（不置 CONNECTED、不起心跳/事件监听、不打连接漏斗），
@@ -55,15 +64,16 @@ import timber.log.Timber
 @Singleton
 class StaHostRegistrar @Inject constructor(
     private val identity: PtpIdentityStore,
-    private val eventLogger: AppEventLogger
+    private val eventLogger: AppEventLogger,
+    private val routes: StaSocketRouteResolver
 ) {
+    private val registrationMutex = Mutex()
     companion object {
         private const val TAG = "StaHostReg"
 
         /** 注册是用户盯着相机点的动作，建链给 10s 够跨过 DHCP 尾段，又不至让用户干等 30s。 */
         private const val CONNECT_TIMEOUT_MS = 10000
         private const val READ_TIMEOUT_MS = 15000
-        private const val EVENT_PING_TIMEOUT_MS = 1500
 
         /**
          * init-command-ack 到 event 通道建链之间的稳定窗口。
@@ -71,20 +81,8 @@ class StaHostRegistrar @Inject constructor(
          */
         private const val PRE_EVENT_SETTLE_MS = 350L
 
-        /**
-         * 相机不在主机配置向导时的引导文案。
-         * 与 ConnectionManager 预检 / PtpSessionManager 0x201F 两处文案同义：
-         * 刻意各留一份而不抽公共常量，是为了不让新链路改动已跑通的两处旧代码。
-         */
-        private const val WIZARD_GUIDANCE =
-            "相机当前模式不支持主机注册（0x952B 不在它声明的能力列表里）。\n" +
-                "多数情况是相机没在 STA 主机配置向导里 —— 普通「连接至智能设备」的 " +
-                "WiFi 热点也能连上，但它不接受注册。\n" +
-                "请在相机上重新进入「Wi-Fi连接（STA mode）」或「连接至 PC」的网络设定向导，" +
-                "停在「正在等待连接 / 等待计算机」的画面后再点注册。"
-
         private const val CANCELLED_GUIDANCE =
-            "相机拒绝了注册事务（0x201F，事务被取消）：它现在不在主机配置向导。\n" +
+            "相机取消了注册事务（0x201F）：可能尚未进入主机配置向导，或在机身上取消了确认。\n" +
                 "请在相机上重新进入「Wi-Fi连接（STA mode）」或「连接至 PC」的网络设定向导，" +
                 "停在「正在等待连接 / 等待计算机」的画面后再点注册。\n" +
                 "注意：普通的「连接至智能设备」WiFi 热点也能连上相机，但它不接受注册。"
@@ -92,11 +90,25 @@ class StaHostRegistrar @Inject constructor(
 
     /**
      * 对 [endpoint] 开一条临时 PTP/IP 链路完成主机注册，结束即拆通道。
-     * 失败一律返回 [HostRegistrationResult.Failure]（不抛），调用方可直接把 detail 展示给用户。
+     * 普通失败返回 [HostRegistrationResult.Failure]；协程取消正常向上传播。
      */
     suspend fun register(
         endpoint: WifiEndpoint,
         onProgress: ((String) -> Unit)? = null
+    ): HostRegistrationResult {
+        if (!registrationMutex.tryLock()) {
+            return HostRegistrationResult.Failure("busy", detail = "主机注册正在进行，请完成当前注册")
+        }
+        try {
+            return registerOnce(endpoint, onProgress)
+        } finally {
+            registrationMutex.unlock()
+        }
+    }
+
+    private suspend fun registerOnce(
+        endpoint: WifiEndpoint,
+        onProgress: ((String) -> Unit)?
     ): HostRegistrationResult = withContext(Dispatchers.IO) {
         eventLogger.event(
             "hostreg", "phase" to "start", "transport" to "standalone", "host" to endpoint.host
@@ -104,8 +116,20 @@ class StaHostRegistrar @Inject constructor(
         onProgress?.invoke("正在连接相机（临时通道）…")
         var commandSocket: Socket? = null
         var eventSocket: Socket? = null
+        var eventPump: Job? = null
+        // 取消时从另一协程关闭本类私有 socket，唤醒阻塞的 connect/read。
+        val cancellationCloser = launch(Dispatchers.IO, start = CoroutineStart.UNDISPATCHED) {
+            try {
+                awaitCancellation()
+            } finally {
+                runCatching { eventSocket?.close() }
+                runCatching { commandSocket?.close() }
+            }
+        }
         try {
-            val command = Socket().also { commandSocket = it }
+            val route = routes.resolve(endpoint.host)
+            val command = route.createSocket().also { commandSocket = it }
+            currentCoroutineContext().ensureActive()
             command.connect(InetSocketAddress(endpoint.host, endpoint.port), CONNECT_TIMEOUT_MS)
             command.soTimeout = READ_TIMEOUT_MS
             command.tcpNoDelay = true
@@ -145,9 +169,11 @@ class StaHostRegistrar @Inject constructor(
             eventLogger.event("hostreg", "phase" to "init_ok", "transport" to "standalone")
 
             delay(PRE_EVENT_SETTLE_MS)
-            val event = Socket().also { eventSocket = it }
+            val event = StaSocketRouteResolver.Route(route.network, command.localAddress.hostAddress)
+                .createSocket().also { eventSocket = it }
+            currentCoroutineContext().ensureActive()
             event.connect(InetSocketAddress(endpoint.host, endpoint.port), CONNECT_TIMEOUT_MS)
-            event.soTimeout = EVENT_PING_TIMEOUT_MS
+            event.soTimeout = READ_TIMEOUT_MS
             event.tcpNoDelay = true
             val eventOut = event.getOutputStream()
             val eventIn = event.getInputStream()
@@ -162,14 +188,39 @@ class StaHostRegistrar @Inject constructor(
             }
             // 与连接链路同语义：部分机身缺了 EventAck 后的 ping/pong 会判链路失败。
             // 注册链路里没等到 Pong 只记不拦——注册段日志就没有这一往返。
-            runCatching {
-                eventOut.write(PingPacket.toBytes())
-                eventOut.flush()
-                PtpPacket.fromStream(eventIn)
+            // 握手后由注册任务的清理/取消关闭 socket，避免空闲超时让事件泵提前退出。
+            event.soTimeout = 0
+            eventOut.write(PingPacket.toBytes())
+            eventOut.flush()
+            eventPump = launch(Dispatchers.IO) {
+                try {
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        when (PtpPacket.fromStream(eventIn) ?: break) {
+                            is PingPacket -> {
+                                eventOut.write(PongPacket.toBytes())
+                                eventOut.flush()
+                            }
+                            else -> Unit
+                        }
+                    }
+                } catch (e: java.io.IOException) {
+                    Timber.tag(TAG).d("注册事件通道结束：${e.javaClass.simpleName}")
+                }
             }
             eventLogger.event("hostreg", "phase" to "event_ok", "transport" to "standalone")
 
             val tx = AtomicInteger(0)
+            val open = transact(commandOut, commandIn, 0, PtpConstants.OP_OPEN_SESSION, listOf(1))
+                ?: return@withContext HostRegistrationResult.Failure(
+                    phase = "opensession", detail = "打开会话超时，请确认相机停在主机配置向导的等待画面"
+                )
+            if (!open.isOk) {
+                return@withContext HostRegistrationResult.Failure(
+                    phase = "opensession",
+                    detail = "相机拒绝打开注册会话（0x${open.responseCode.toString(16)}）"
+                )
+            }
             onProgress?.invoke("正在读取相机当前模式…")
             val ops = transactData(commandOut, commandIn, tx.incrementAndGet(), PtpConstants.OP_GET_DEVICE_INFO)
                 ?.let { PtpDeviceInfo.parseOperations(it) }
@@ -179,23 +230,9 @@ class StaHostRegistrar @Inject constructor(
                 "host_reg_0x952b" to ops?.contains(PtpConstants.OP_NIKON_HOST_REGISTRATION_PREPARE)
             )
             if (ops != null && !ops.contains(PtpConstants.OP_NIKON_HOST_REGISTRATION_PREPARE)) {
+                // 私有操作未必列入标准能力表，仅记诊断，以真实注册响应为准。
                 eventLogger.event(
-                    "hostreg", "phase" to "precheck_blocked", "transport" to "standalone", "ops" to ops.size
-                )
-                return@withContext HostRegistrationResult.Failure(phase = "precheck", detail = WIZARD_GUIDANCE)
-            }
-
-            val open = transact(commandOut, commandIn, tx.incrementAndGet(), PtpConstants.OP_OPEN_SESSION, listOf(1))
-                ?: return@withContext HostRegistrationResult.Failure(
-                    phase = "opensession",
-                    detail = "打开会话超时无响应。请确认相机停在主机配置向导的等待画面后重试"
-                )
-            if (!open.isOk) {
-                val code = "0x${open.responseCode.toString(16)}"
-                eventLogger.event("hostreg", "phase" to "opensession_fail", "transport" to "standalone", "code" to code)
-                return@withContext HostRegistrationResult.Failure(
-                    phase = "opensession",
-                    detail = "相机拒绝打开会话（$code）。请确认相机停在主机配置向导的等待画面后重试"
+                    "hostreg", "phase" to "private_op_not_advertised", "transport" to "standalone", "ops" to ops.size
                 )
             }
 
@@ -250,6 +287,8 @@ class StaHostRegistrar @Inject constructor(
             }
             eventLogger.event("hostreg", "phase" to "confirm_ok", "transport" to "standalone")
             HostRegistrationResult.Success
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "standalone host registration failed host=${endpoint.host}")
             eventLogger.event(
@@ -266,11 +305,13 @@ class StaHostRegistrar @Inject constructor(
             // 在这里等它回应只会拖慢拆链（与 sendCloseSession=false 同语义）。
             runCatching { eventSocket?.close() }
             runCatching { commandSocket?.close() }
+            eventPump?.cancel()
+            cancellationCloser.cancel()
         }
     }
 
     /** 发一条命令并等本事务的响应包；中途的数据/事件包跳过，超时报 null。 */
-    private fun transact(
+    private suspend fun transact(
         out: OutputStream,
         input: InputStream,
         txId: Int,
@@ -281,17 +322,19 @@ class StaHostRegistrar @Inject constructor(
         out.flush()
         var response: CommandResponsePacket? = null
         while (response == null) {
+            currentCoroutineContext().ensureActive()
             when (val pkt = PtpPacket.fromStream(input)) {
                 null -> break
                 is CommandResponsePacket -> if (pkt.transactionId == txId) response = pkt
+                is PingPacket -> { out.write(PongPacket.toBytes()); out.flush() }
                 else -> {}
             }
         }
         response
-    }.getOrNull()
+    }.getOrElse { if (it is CancellationException) throw it else null }
 
     /** 发一条带数据相的命令并拼回载荷（注册链路里只用于 GetDeviceInfo）；被拒或超时返回 null。 */
-    private fun transactData(
+    private suspend fun transactData(
         out: OutputStream,
         input: InputStream,
         txId: Int,
@@ -301,12 +344,25 @@ class StaHostRegistrar @Inject constructor(
         out.flush()
         val chunks = mutableListOf<ByteArray>()
         var ok = false
+        var expectedSize: Int? = null
+        var size = 0
+        fun addData(transaction: Int, data: ByteArray) {
+            check(transaction == txId) { "注册数据事务号不匹配" }
+            size += data.size
+            check(size <= 2 * 1024 * 1024) { "注册设备信息过大" }
+            chunks.add(data)
+        }
         while (true) {
+            currentCoroutineContext().ensureActive()
             when (val pkt = PtpPacket.fromStream(input)) {
                 null -> break
-                is StartDataPacket -> {}
-                is DataPacket -> chunks.add(pkt.data)
-                is EndDataPacket -> chunks.add(pkt.data)
+                is StartDataPacket -> {
+                    check(pkt.transactionId == txId) { "注册数据事务号不匹配" }
+                    expectedSize = pkt.totalSize
+                }
+                is DataPacket -> addData(pkt.transactionId, pkt.data)
+                is EndDataPacket -> addData(pkt.transactionId, pkt.data)
+                is PingPacket -> { out.write(PongPacket.toBytes()); out.flush() }
                 is CommandResponsePacket -> if (pkt.transactionId == txId) {
                     ok = pkt.isOk
                     break
@@ -315,6 +371,7 @@ class StaHostRegistrar @Inject constructor(
             }
         }
         if (!ok) return@runCatching null
+        if (expectedSize != null && expectedSize != size) return@runCatching null
         val total = chunks.fold(0) { n, c -> n + c.size }
         ByteArray(total).also { buf ->
             var offset = 0
@@ -323,7 +380,7 @@ class StaHostRegistrar @Inject constructor(
                 offset += chunk.size
             }
         }
-    }.getOrNull()
+    }.getOrElse { if (it is CancellationException) throw it else null }
 }
 
 /**

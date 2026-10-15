@@ -258,8 +258,7 @@ class DashboardViewModel @Inject constructor(
     val staRegisterNeeded: StateFlow<Boolean> = connectionManager.staRegisterNeeded
 
     /**
-     * STA 主机注册（式）：AP 模式连上相机后，把本机 GUID 注册为相机信任主机，
-     * 之后相机切 STA 模式才会放行握手。前置引导（相机进「连接至 PC」向导）由 UI 完成。
+     * STA 独立主机注册：相机与手机处于同一本地网络，并停在计算机配置向导。
      */
     fun registerStaHost() {
         if (_hostReg.value is HostRegUiState.Running) return
@@ -271,8 +270,8 @@ class DashboardViewModel @Inject constructor(
             _hostReg.value = when (result) {
                 is HostRegistrationResult.Success ->
                     HostRegUiState.Success(
-                        "相机已接受注册。现在可把相机切到 STA 模式（连接本机热点）再用 N-Link 连接；" +
-                            "若下次握手仍被相机拒绝，这里会自动退回「需要注册」"
+                        "相机已接受注册。请在相机上完成确认，等待约 15 秒应用配置，" +
+                            "保持连接本机热点或与手机同一路由器，再用 STA 连接"
                     )
                 is HostRegistrationResult.Failure ->
                     HostRegUiState.Failure(result.detail)
