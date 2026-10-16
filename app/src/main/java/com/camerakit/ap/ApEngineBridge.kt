@@ -156,6 +156,17 @@ class ApEngineBridge(val client: ApPtpClient, private val log: (String) -> Unit 
         client.transact(ApOps.OP_GET_DEVICE_PROP_VALUE, listOf(code))?.takeIf { it.isOk }?.data
     }.getOrNull()
 
+    /**
+     * 原始属性**描述符**字节（GetDevicePropDesc 0x1014）。
+     *
+     * 与 [getDevicePropValue]（取当前值）分工不同：描述符里带 dataType、可写标志与
+     * 取值范围/枚举表，是「问机身支持哪些取值」的唯一途径。当前唯一调用方是
+     * 拍摄模式远程切换的候选列表（避免向用户展示机身不支持的模式）。
+     */
+    suspend fun getDevicePropDescBytes(code: Int): ByteArray? = runCatching {
+        client.transact(ApOps.OP_GET_DEVICE_PROP_DESC, listOf(code))?.takeIf { it.isOk }?.data
+    }.getOrNull()
+
     /** 原始属性写入（data-out 帧格式由引擎处理）。 */
     suspend fun setDevicePropValue(code: Int, value: ByteArray): Boolean = runCatching {
         client.transact(
@@ -192,6 +203,7 @@ private object ApOps {
     const val OP_GET_OBJECT_HANDLES = 0x1007
     const val OP_GET_OBJECT_INFO = 0x1008
     const val OP_DELETE_OBJECT = 0x100B
+    const val OP_GET_DEVICE_PROP_DESC = 0x1014
     const val OP_GET_DEVICE_PROP_VALUE = 0x1015
     const val OP_SET_DEVICE_PROP_VALUE = 0x1016
     const val OP_GET_PARTIAL_OBJECT = 0x101B
