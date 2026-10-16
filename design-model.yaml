@@ -222,6 +222,16 @@ drift:
     where: styles.xml NlButton.Primary/Outline 的 cornerRadius 写死 8dp，未引用 dimens
     rule: design-model.md「中途不得即兴新值；需要一个就先更新模型」
     status: 本次重构收进 dimens
+  - id: unwired-motion-api
+    where: shared/ui/CircleReveal.kt 的 unreveal()；shared/ui/StaggerMotion.kt 的 collapse() / enter() / forget()
+    rule: 不交付半成品（写了但无调用方的 API）
+    evidence: >
+      v3.3.0 发版构建的 R8 usage.txt 实测把这几个方法作为死代码删除
+      （app/build/outputs/mapping/release/usage.txt）。也就是说「四拍」的
+      收起半拍与四页入场编排是我写了却没接线的接口，线上包里并不存在。
+    status: 待清理——要么接线（面板收起错峰 + 四页入场），要么删掉函数本体。
+            刻意不在 v3.3.0 发布前改：用户真机验证的是当前构建，
+            发版前动源码等于发一个没验过的包。R8 已剥离，运行时无影响。
   - id: dp-literals-in-layouts
     where: layout XML 内裸 dp 值约 718 处（dimens.xml:12-15 已记录该债务）
     rule: 同上
