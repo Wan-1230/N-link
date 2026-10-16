@@ -45,8 +45,17 @@ class CameraParamsViewModel @Inject constructor(
     /** 白平衡预设：PTP 枚举值 → 显示名 */
     val whiteBalancePresets: List<Pair<Int, String>> get() = paramManager.whiteBalancePresets
 
-    /** 可远程切换的拍摄模式（0x500E 值 → 标签） */
+    /** 可远程切换的拍摄模式（0x500E 值 → 标签），兜底全集（机身描述符读不到时用） */
     val exposureProgramModes: List<Pair<Int, String>> get() = paramManager.exposureProgramModes
+
+    /**
+     * 机身 0x500E 描述符里的真实可选模式（读不到返回 null，调用方回退 [exposureProgramModes]）。
+     *
+     * 与 [exposureProgramModes] 的区别：后者是"所有尼康机体的并集"，会让用户点到本机
+     * 并不支持的模式；前者是这台相机自己声明的取值表。
+     */
+    suspend fun readExposureProgramChoices(): List<Pair<Int, String>>? =
+        withContext(Dispatchers.IO) { paramManager.readExposureProgramChoices() }
 
     /** 设置拍摄模式（远程切换 P/S/A/M/Auto，机身不支持时以回读值为准） */
     fun setExposureProgram(mode: Int) {
