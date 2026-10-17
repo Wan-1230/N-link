@@ -110,6 +110,35 @@
     <color name="chip_unselected">#E2E2E0</color>
 
     <!-- ══════════════════════════════════════════════════════════════════
+         v2.8 交互八状态（finesse component-scope §3）—— 唯一硬门禁：可交互组件
+         八态齐备。实现三条纪律：
+           ① 状态间不改 border-width（改宽度会让相邻元素位移）→ 动 background/描边色；
+           ② 焦点环 = 常驻 2dp 透明描边换色，零几何位移（Android 描边在 bounds 内绘制，
+              本就不位移，等价 CSS 的 outline 预留 transparent）；
+           ③ disabled 三通道（alpha .5 + 不可点 + 原生 disabled），纯 alpha 不算 disabled。
+
+         hover/active 用**半透明叠层**而非换实底：primary 已是 ramp 950 近黑，
+         再填深就撞纯 #000 craft floor；叠层在任意底色上都稳定。
+         叠层方向取决于**底色明度**，而 primary/chip 的底色随主题翻转，故按「填充族」
+         分三组（不是简单 light/dark）：
+           · primary 族（cta_primary / chip_selected）：日间底近黑→提亮，夜间底近白→压深；
+           · chip 族（bg_chip）：日间底浅→压深，夜间底深→提亮；
+           · light 族（bg_lv_action，恒白无夜间翻转）：恒压深。
+         这样同一枚控件在日/夜间按压方向都正确。 -->
+    <!-- light 族：恒压深（白底控件，lv_* 恒白豁免） -->
+    <color name="state_hover_light">#0A000000</color>
+    <color name="state_active_light">#14000000</color>
+    <!-- chip 族：日间压深 / 夜间提亮 -->
+    <color name="state_hover_chip">#0A000000</color>
+    <color name="state_active_chip">#14000000</color>
+    <!-- primary 族：日间提亮 / 夜间压深 -->
+    <color name="state_hover_primary">#14FFFFFF</color>
+    <color name="state_active_primary">#0AFFFFFF</color>
+    <!-- 焦点环：≥3:1 压过相邻表面。取 mid-neutral（ramp 600）——
+         既压过浅底 #F7F7F6（6.5:1）又从近黑按钮上分离；不作文字/细线用。 -->
+    <color name="focus_ring">#5C5C59</color>
+
+    <!-- ══════════════════════════════════════════════════════════════════
          v2.7 连接英雄图（drawable/ic_camera_hero.xml）专用色板。
          同一张矢量图靠这套 token 在深浅两种主题下各自成立：
            日间 · 舞台是浅灰（surface_variant→chip_unselected）→ 机身压深灰，靠暗色压住白底；

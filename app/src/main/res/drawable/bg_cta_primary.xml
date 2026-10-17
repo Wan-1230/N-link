@@ -1,8 +1,70 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 主行动点（CTA）实体底：纯黑 + 18dp 圆角。
-     与常规卡片 bg_card（12dp 圆角、白底描边）刻意拉开两档：半径更大、无描边、纯色填充，
-     在灰白列表里自带最高对比度。配色仍是灰阶，不违反 colors.xml:39「状态色仅灰度」。 -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <solid android:color="@color/primary" />
-    <corners android:radius="@dimen/radius_sheet" />
-</shape>
+<!-- 主行动点（CTA）实体底：纯色 + 20dp 圆角。与常规卡片 bg_card（12dp 圆角、白底描边）
+     刻意拉开两档：半径更大、无描边、纯色填充，在灰白列表里自带最高对比度。
+     v2.8 起为八状态 selector（finesse component-scope §3）：常驻 2dp 透明描边换色实现焦点环零位移；
+     hover/active 叠 primary 族半透明层（日间提亮/夜间压深——primary 底随主题翻转）。
+     disabled 视觉=alpha .5（ControlStates）+ 不可点 + 原生 disabled。 -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <item android:state_enabled="false">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/primary"/>
+            <stroke android:width="2dp" android:color="@android:color/transparent"/>
+            <corners android:radius="@dimen/radius_sheet"/>
+        </shape>
+    </item>
+
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/primary"/>
+            <stroke android:width="2dp" android:color="@color/focus_ring"/>
+            <corners android:radius="@dimen/radius_sheet"/>
+        </shape>
+    </item>
+
+    <!-- active：叠层；叠加全局 PressEffect 0.95 缩放回弹 -->
+    <item android:state_pressed="true">
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/primary"/>
+                    <stroke android:width="2dp" android:color="@android:color/transparent"/>
+                    <corners android:radius="@dimen/radius_sheet"/>
+                </shape>
+            </item>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/state_active_primary"/>
+                    <corners android:radius="@dimen/radius_sheet"/>
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+
+    <item android:state_hovered="true">
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/primary"/>
+                    <stroke android:width="2dp" android:color="@android:color/transparent"/>
+                    <corners android:radius="@dimen/radius_sheet"/>
+                </shape>
+            </item>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/state_hover_primary"/>
+                    <corners android:radius="@dimen/radius_sheet"/>
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+
+    <!-- default -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/primary"/>
+            <stroke android:width="2dp" android:color="@android:color/transparent"/>
+            <corners android:radius="@dimen/radius_sheet"/>
+        </shape>
+    </item>
+</selector>

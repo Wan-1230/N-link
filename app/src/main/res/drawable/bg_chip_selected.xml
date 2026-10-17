@@ -1,6 +1,67 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 选中标签：黑底白字胶囊 -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <solid android:color="@color/primary" />
-    <corners android:radius="@dimen/radius_sheet" />
-</shape>
+<!-- 选中标签：纯色底白字胶囊。v2.8 起为八状态 selector（finesse component-scope §3）。
+     与 bg_cta_primary 同为 primary 族（底随主题翻转），故 hover/active 叠 primary 族半透明层。
+     常驻 2dp 透明描边换色实现焦点环零位移；disabled 视觉=alpha .5（ControlStates）。 -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <item android:state_enabled="false">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/primary"/>
+            <stroke android:width="2dp" android:color="@android:color/transparent"/>
+            <corners android:radius="@dimen/radius_sheet"/>
+        </shape>
+    </item>
+
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/primary"/>
+            <stroke android:width="2dp" android:color="@color/focus_ring"/>
+            <corners android:radius="@dimen/radius_sheet"/>
+        </shape>
+    </item>
+
+    <item android:state_pressed="true">
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/primary"/>
+                    <stroke android:width="2dp" android:color="@android:color/transparent"/>
+                    <corners android:radius="@dimen/radius_sheet"/>
+                </shape>
+            </item>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/state_active_primary"/>
+                    <corners android:radius="@dimen/radius_sheet"/>
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+
+    <item android:state_hovered="true">
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/primary"/>
+                    <stroke android:width="2dp" android:color="@android:color/transparent"/>
+                    <corners android:radius="@dimen/radius_sheet"/>
+                </shape>
+            </item>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/state_hover_primary"/>
+                    <corners android:radius="@dimen/radius_sheet"/>
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+
+    <!-- default -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/primary"/>
+            <stroke android:width="2dp" android:color="@android:color/transparent"/>
+            <corners android:radius="@dimen/radius_sheet"/>
+        </shape>
+    </item>
+</selector>

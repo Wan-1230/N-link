@@ -1,5 +1,6 @@
 package com.nikonlink.app.settings
 
+import com.nikonlink.app.shared.ui.ControlStates
 import com.nikonlink.app.shared.ui.NlFeedback
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -666,7 +667,7 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         checkingUpdate = true
 
         binding.tvUpdateValue.text = "检查中…"
-        binding.rowCheckUpdate.isEnabled = false
+        ControlStates.setEnabled(binding.rowCheckUpdate, false)
         eventLogger.event("setting", "key" to "check_update")
 
         viewLifecycleOwner.lifecycleScope.launch {
@@ -674,7 +675,7 @@ class SettingsFragment : Fragment(), GlassInsetAware {
             checkingUpdate = false
             // 回调可能在视图销毁后才到达，必须判空
             val b = _binding ?: return@launch
-            b.rowCheckUpdate.isEnabled = true
+            ControlStates.setEnabled(b.rowCheckUpdate, true)
             when (result) {
                 UpdateResult.UpToDate -> {
                     b.tvUpdateValue.text = "已是最新"

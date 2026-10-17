@@ -84,6 +84,18 @@
     <!-- 点击反馈 / 遮罩：chip 是深色侧最深的内嵌面（明度阶梯最上一档） -->
     <color name="chip_unselected">#3E3E3C</color>
 
+    <!-- v2.8 交互八状态（与 values/colors.xml 同名一一对应，理由见那边长注）。
+         夜间叠层方向随底色翻转：primary 底近白→压深、chip 底深→提亮、lv 恒白→恒压深。
+         focus_ring 用 ramp 300（#CBCBC8）压过近黑底 #171716（12:1）。
+         本组 token 遵守「每个颜色必须有 night 对应值」军规。 -->
+    <color name="state_hover_light">#0A000000</color>
+    <color name="state_active_light">#14000000</color>
+    <color name="state_hover_chip">#0AFFFFFF</color>
+    <color name="state_active_chip">#14FFFFFF</color>
+    <color name="state_hover_primary">#0A000000</color>
+    <color name="state_active_primary">#14000000</color>
+    <color name="focus_ring">#CBCBC8</color>
+
     <!-- Switch：OFF 轨道需在深色卡片上 ≥3:1，实测 #777773 在 #262625 上 3.42:1 ✓
          （#6B6B68 只有 2.84:1，不达标，故与日间同值）。
          本组 token 原先**缺夜间值**，违反项目「每个颜色必须有 night 对应值」军规，

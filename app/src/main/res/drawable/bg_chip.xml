@@ -1,6 +1,72 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 未选中标签：灰底胶囊 -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <solid android:color="@color/chip_unselected" />
-    <corners android:radius="@dimen/radius_sheet" />
-</shape>
+<!-- 未选中标签：灰底胶囊。v2.8 起为八状态 selector（finesse component-scope §3 硬门禁）。
+     状态纪律：①常驻 2dp 透明描边，聚焦只换 focus_ring 色，border-width 恒定零位移；
+     ②hover/active 叠 chip 族半透明层（日间压深/夜间提亮）；③disabled 三通道的视觉=alpha .5
+     （由 ControlStates 施加）+ 不可点 + 原生 disabled，这里 pinned 底色防误命中 hover/focus。 -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- disabled：原生 isEnabled=false → pinned 底色；alpha .5 由 ControlStates 给 -->
+    <item android:state_enabled="false">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/chip_unselected"/>
+            <stroke android:width="2dp" android:color="@android:color/transparent"/>
+            <corners android:radius="@dimen/radius_sheet"/>
+        </shape>
+    </item>
+
+    <!-- focus-visible：焦点环即时出现，无动效（键盘/无障碍用户需瞬时可见） -->
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/chip_unselected"/>
+            <stroke android:width="2dp" android:color="@color/focus_ring"/>
+            <corners android:radius="@dimen/radius_sheet"/>
+        </shape>
+    </item>
+
+    <!-- active（按压）：叠层加深；另有全局 PressEffect 0.95 缩放回弹叠加 -->
+    <item android:state_pressed="true">
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/chip_unselected"/>
+                    <stroke android:width="2dp" android:color="@android:color/transparent"/>
+                    <corners android:radius="@dimen/radius_sheet"/>
+                </shape>
+            </item>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/state_active_chip"/>
+                    <corners android:radius="@dimen/radius_sheet"/>
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+
+    <!-- hover：state_hovered 仅鼠标/触控笔悬停触发，触摸不粘手（等价 @media(hover:hover)） -->
+    <item android:state_hovered="true">
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/chip_unselected"/>
+                    <stroke android:width="2dp" android:color="@android:color/transparent"/>
+                    <corners android:radius="@dimen/radius_sheet"/>
+                </shape>
+            </item>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/state_hover_chip"/>
+                    <corners android:radius="@dimen/radius_sheet"/>
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+
+    <!-- default -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/chip_unselected"/>
+            <stroke android:width="2dp" android:color="@android:color/transparent"/>
+            <corners android:radius="@dimen/radius_sheet"/>
+        </shape>
+    </item>
+</selector>
