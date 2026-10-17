@@ -185,7 +185,7 @@ class LiveViewFragment : Fragment() {
 
         // 模式标签可点：监看中远程切换拍摄模式（0x500E）
         binding.tvModeTag.pressEffect()
-        binding.tvModeTag.setOnClickListener { showModePicker() }
+        binding.tvModeTag.setOnClickListener { onModeTagClicked() }
 
         // 监看会话胶囊 + 居中状态卡主按钮：旧 btnStartStop 的启停语义
         binding.tvLvState.pressEffect()
@@ -673,6 +673,23 @@ class LiveViewFragment : Fragment() {
      * 3) 下发后等 0x500E 快轮询（≤500ms）回读，3 秒内未切过去则明确提示失败，
      *    UI 仍以 exposureProgram 回读流为准（不落本地假状态）。
      */
+    /**
+     * 模式入口的点击分派。
+     *
+     * 切换中吞掉点击（重复提交在这里被挡住，不发任何请求）；
+     * 上次失败且仍可切 → 直接重发同一条指令，不让用户重新找一遍列表；
+     * 其余情况打开模式列表。
+     */
+    private fun onModeTagClicked() {
+        if (modeSwitching) return
+        val retry = lastFailedMode
+        if (retry != null && viewModel.liveViewState.value == LiveViewState.RUNNING) {
+            applyExposureProgram(retry.first, retry.second)
+            return
+        }
+        showModePicker()
+    }
+
     private fun showModePicker() {
         if (modeSwitching) return
         // 监看没在跑时，模式入口过去是被 updateModeEntryState 直接掐掉可点性的：按钮只变淡，
@@ -698,31 +715,55 @@ class LiveViewFragment : Fragment() {
             NlFeedback.show(requireContext(), "该机型不支持从 App 切换拍摄模式（相机接受指令但不改变模式），请用机身拨盘", long = true)
             return
         }
-        val modes = paramsViewModel.exposureProgramModes
-        if (modes.isEmpty()) {
-            NlFeedback.show(requireContext(), "暂无可切换的拍摄模式")
-            return
-        }
-        val current = paramsViewModel.exposureProgram.value
-        val checkedIndex = modes.indexOfFirst { it.first == current.rawValue }
-        val labels = modes.map { it.second }.toTypedArray()
-        NlGlass.dialog(requireContext())
-            .setTitle("拍摄模式（远程切换）")
-            .setMessage("当前: ${current.currentValue.ifBlank { "--" }}")
-            .setSingleChoiceItems(labels, checkedIndex) { dialog, which ->
-                if (modeSwitching) return@setSingleChoiceItems
-                dialog.dismiss()
-                applyExposureProgram(modes[which].first, modes[which].second)
+
+        // 读机身 0x500E 描述符拿「这台相机真正支持哪些模式」——那是一次 PTP 往返。
+        // 先上「读取中」弹层，避免点击到列表出现之间有一段空档（用户会以为没点上）。
+        NlFeedback.show(requireContext(), "正在读取机身支持的拍摄模式…")
+        viewLifecycleOwner.lifecycleScope.launch {
+            val modes = loadModeChoices()
+            if (_binding == null) return@launch
+            if (modes.isEmpty()) {
+                NlFeedback.show(requireContext(), "暂无可切换的拍摄模式", long = true)
+                return@launch
             }
-            .setNegativeButton("取消", null)
-            .show()
+            val current = paramsViewModel.exposureProgram.value
+            val labels = modes.map { it.second }.toTypedArray()
+            val checkedIndex = modes.indexOfFirst { it.first == current.rawValue }
+
+            val dialog = NlGlass.dialog(requireContext())
+                // ⚠ 这里**不能**再用 setMessage + setSingleChoiceItems 组合：
+                // AlertDialog 的 message 视图与列表视图会互相挤压，列表区被压成 0 高度，
+                // 表现就是「弹窗打开了但中间一片空白、只剩取消键」（真机截图实证）。
+                // 改为在标题里带当前值，列表独占剩余空间。
+                .setTitle("拍摄模式（远程切换）· 当前 ${current.currentValue.ifBlank { "--" }}")
+                .setSingleChoiceItems(labels, checkedIndex) { d, which ->
+                    if (modeSwitching) return@setSingleChoiceItems
+                    d.dismiss()
+                    applyExposureProgram(modes[which].first, modes[which].second)
+                }
+                .setNegativeButton("取消", null)
+                .create()
+            dialog.show()
+        }
+    }
+
+    /**
+     * 取本次可选的拍摄模式：优先机身 0x500E 描述符的枚举表，读不到再回退兜底全集。
+     *
+     * 读描述符失败**不提示**——它是优化而非前提，静默回退后行为与改动前完全一致。
+     */
+    private suspend fun loadModeChoices(): List<Pair<Int, String>> {
+        val fromDevice = paramsViewModel.readExposureProgramChoices()
+        return fromDevice?.takeIf { it.isNotEmpty() } ?: paramsViewModel.exposureProgramModes
     }
 
     /** 下发拍摄模式并做回读校验：写入被拒 / 写入成功但模式未变 都显式反馈 */
     private fun applyExposureProgram(target: Int, label: String) {
+        if (modeSwitching) return
         modeSwitching = true
+        lastFailedMode = target to label
         updateModeEntryState()
-        NlFeedback.show(requireContext(), "正在切换拍摄模式…")
+        NlFeedback.show(requireContext(), "正在切换拍摄模式…", long = true)
         viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val ok = paramsViewModel.setExposureProgramResult(target)
@@ -734,8 +775,10 @@ class LiveViewFragment : Fragment() {
                 val actual = paramsViewModel.confirmExposureProgram(target)
                 if (_binding == null) return@launch
                 when {
-                    actual == target ->
+                    actual == target -> {
+                        lastFailedMode = null
                         NlFeedback.show(requireContext(), "已切换到 $label")
+                    }
 
                     actual != null -> {
                         paramsViewModel.markModeSwitchUnsupported()
@@ -760,14 +803,57 @@ class LiveViewFragment : Fragment() {
      * 发现的一类失败（2026-10-11 真机反馈）。禁用态一律由 `showModePicker` 给出文字结论，
      * 视觉上的半透明仍然保留，作为"现在还不能切"的提示而不是"这个按钮坏了"。
      */
+    /**
+     * 上一次切换失败的目标模式（值 + 标签）。
+     *
+     * 存在的意义是给「重试」一个具体对象：失败后入口变成「重试 <模式>」，
+     * 用户不必重新打开列表再找一遍。成功、或改选别的目标时清空。
+     */
+    private var lastFailedMode: Pair<Int, String>? = null
+
+    /**
+     * 模式入口的三态渲染：**可切换 / 切换中 / 可重试 / 仅展示**。
+     *
+     * - 切换中：「切换中…」且吞掉点击（防止重复下发同一条指令）
+     * - 可重试：上一次失败的目标仍在，点击直接重发
+     * - 仅展示：监看未运行 / 已被判定不支持 → 半透明，但**保持可点**，
+     *   点了给一句为什么，而不是静默无反应（2026-10-11 真机反馈的核心教训）
+     */
     private fun updateModeEntryState() {
         if (_binding == null) return
-        val ready = viewModel.liveViewState.value == LiveViewState.RUNNING
-            && !modeSwitching
-            && paramsViewModel.exposureProgramModes.isNotEmpty()
-        binding.tvModeTag.isEnabled = true
-        binding.tvModeTag.isClickable = true
-        binding.tvModeTag.alpha = if (ready) 1f else 0.5f
+        val tag = binding.tvModeTag
+        val current = paramsViewModel.exposureProgram.value.currentValue.ifBlank { "P" }
+        val running = viewModel.liveViewState.value == LiveViewState.RUNNING
+        val retry = lastFailedMode
+        when {
+            modeSwitching -> {
+                tag.text = "切换中…"
+                tag.alpha = 1f
+                tag.isClickable = false
+                tag.isEnabled = false
+            }
+
+            retry != null && running -> {
+                tag.text = "重试 ${retry.second.substringBefore(" ")} ▾"
+                tag.alpha = 1f
+                tag.isClickable = true
+                tag.isEnabled = true
+            }
+
+            running && !paramsViewModel.modeSwitchUnsupported.value -> {
+                tag.text = "模式 $current ▾"
+                tag.alpha = 1f
+                tag.isClickable = true
+                tag.isEnabled = true
+            }
+
+            else -> {
+                tag.text = "模式 $current"
+                tag.alpha = 0.5f
+                tag.isClickable = true
+                tag.isEnabled = true
+            }
+        }
     }
 
     // ---------------- 状态订阅 ----------------
@@ -882,7 +968,7 @@ class LiveViewFragment : Fragment() {
                 // 从 v2.6.5 移植：单字母胶囊看上去只是个状态标签，没人会去点它，
                 // 「拍摄模式（远程切换）」等于不存在。带「模式」二字 + 下拉箭头后可点性一眼可见
                 // （与遥控页「联动画面 ▾」同一套读法）。
-                binding.tvModeTag.text = "模式 ${param.currentValue.ifBlank { "P" }} ▾"
+                updateModeEntryState()
             }
         }
     }

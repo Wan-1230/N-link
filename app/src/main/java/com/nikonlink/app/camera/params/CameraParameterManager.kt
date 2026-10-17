@@ -53,6 +53,13 @@ class CameraParameterManager @Inject constructor(
 ) {
     companion object {
         private const val TAG = "CameraParams"
+
+        /**
+         * 枚举表项数上限。PTP 的 count 是 u16，理论可到 65535，
+         * 但拍摄模式枚举实际只有个位数；设上限是为了**拒绝明显不是枚举的数据**
+         * （例如某些固件对枚举属性报了连续区间，解析错位后 count 会是个大数）。
+         */
+        private const val MAX_ENUM_COUNT = 64
     }
 
     private var scope: CoroutineScope? = null
@@ -1248,13 +1255,94 @@ class CameraParameterManager @Inject constructor(
     val commonShutterSpeeds: List<Int> get() = ShutterCatalog.VALUES
 
     /**
-     * 可远程切换的拍摄模式（0x500E 值 → 短标签）。
+     * 可远程切换的拍摄模式（0x500E 值 → 短标签）—— **机身实际支持的兜底全集**。
+     *
+     * 真正的可选列表应来自机身 0x500E 描述符的枚举表（见 [readExposureProgramChoices]），
+     * 这里只在「读不到描述符」时兜底。取值与 PTP 规范及参考实现一致：
+     * 1=M / 2=P / 3=A / 4=S / 0x8010=Auto。
      * 机身不支持远程切换时 SetDevicePropValue 会返回错误，UI 以回读值提示实际模式。
      */
     val exposureProgramModes: List<Pair<Int, String>> = listOf(
         2 to "P (程序)", 4 to "S (快门优先)", 3 to "A (光圈优先)",
         1 to "M (手动)", 0x8010 to "Auto"
     )
+
+    /**
+     * 读取机身 0x500E 描述符里的**枚举表**，得到「这台相机真正允许切到哪些模式」。
+     *
+     * 为什么必须有这一步（参考 shixisheng6174-cmyk/NikonLink 的 `CameraProperty.choices()`）：
+     * 硬编码全集会在两种机身上出错——
+     *  ① 列表里出现机身不支持的值，用户点了才被拒（表现为"相机没反应"）；
+     *  ② 机身支持全集之外的值（如部分机型的 M+1/场景模式子集），列表里根本没有。
+     * 描述符读不到时返回 null，由调用方回退 [exposureProgramModes]，行为不劣于改动前。
+     *
+     * 数据来源：GetDevicePropDesc(0x1014) 的 data-in 字节，三条链路（AP / USB / STA-PTP）
+     * 各自取字节后用同一套解析，保证同一台相机无论走哪条链路得到的列表一致。
+     */
+    suspend fun readExposureProgramChoices(): List<Pair<Int, String>>? {
+        val desc = readDevicePropDesc(PtpConstants.PROP_EXPOSURE_PROGRAM_MODE) ?: return null
+        val values = parseEnumValues(desc) ?: return null
+        if (values.isEmpty()) return null
+        val fallback = exposureProgramModes.associate { it.first to it.second }
+        return values.distinct().map { raw ->
+            // 标签优先用本地词表（中文可读），未知值用机身值兜底，不静默丢弃
+            raw to (fallback[raw] ?: (raw.toString() + " (机身模式)"))
+        }
+    }
+
+    /**
+     * 解析 GetDevicePropDesc 的 data-in 字节，取出枚举形式的取值列表。
+     *
+     * PTP 设备属性描述符结构（PTP 1.1 §5.1.5）：
+     * ```
+     * 0      u16 devicePropCode
+     * 2      u16 dataType
+     * 4      u8  get/set 标志（bit0 = 可写）
+     * 5      value factoryDefault   （宽度由 dataType 决定）
+     * 5+w    value currentValue
+     * 5+2w   u8  formFlag
+     *            0 = 无取值范围；1 = min/max/step；2 = u16 count + count 个 value（枚举）
+     * ```
+     * 只有 formFlag=2 才是枚举，其余（连续区间）返回 null —— 拍摄模式在规范上就是枚举属性，
+     * 若某固件报了区间形式，说明它对该属性的表达与预期不符，宁可回退兜底也不猜。
+     */
+    private fun parseEnumValues(desc: ByteArray): List<Int>? {
+        if (desc.size < 7) return null
+        val type = (desc[2].toInt() and 0xFF) or ((desc[3].toInt() and 0xFF) shl 8)
+        val width = dataTypeWidth(type)
+        if (width <= 0) return null
+        var offset = 5
+        fun skipValue(): Boolean {
+            if (offset + width > desc.size) return false
+            offset += width
+            return true
+        }
+        if (!skipValue()) return null          // factoryDefault
+        if (!skipValue()) return null          // currentValue
+        if (offset >= desc.size) return null   // 缺少 formFlag
+        val form = desc[offset++].toInt() and 0xFF
+        if (form != 2) return null
+        if (offset + 2 > desc.size) return null
+        val count = (desc[offset].toInt() and 0xFF) or ((desc[offset + 1].toInt() and 0xFF) shl 8)
+        offset += 2
+        if (count <= 0 || count > MAX_ENUM_COUNT) return null
+        val out = ArrayList<Int>(count)
+        repeat(count) {
+            if (offset + width > desc.size) return null
+            var v = 0
+            for (i in 0 until width) v = v or ((desc[offset + i].toInt() and 0xFF) shl (i * 8))
+            offset += width
+            out.add(v)
+        }
+        return out
+    }
+
+    /** PTP dataType → 字节宽度；未知类型返回 -1（交由调用方回退） */
+    private fun dataTypeWidth(type: Int): Int = when (type) {
+        0x0001, 0x0002, 0x0004, 0x0005 -> 2   // INT16/UINT16/INT32/UINT32 的低宽场景
+        0x0003, 0x0006, 0x0007, 0x0008, 0x0009, 0x000A -> 4
+        else -> -1
+    }
 
     val commonIsoValues = listOf(100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200)
     val whiteBalancePresets = listOf(
@@ -1273,6 +1361,31 @@ class CameraParameterManager @Inject constructor(
         } else {
             ptpSession.getDevicePropValue(propCode)
         }
+    }
+
+    /**
+     * 读设备属性**描述符**（GetDevicePropDesc 0x1014）的 data-in 字节。
+     *
+     * 与 [readDeviceProp]（0x1015 取当前值）是两个不同操作，这里只服务于「问机身支持哪些取值」
+     * 这类需求（当前唯一调用方是拍摄模式枚举）。链路选择与 [readDeviceProp] 完全一致：
+     * AP → USB → STA-PTP，保证同一台相机无论走哪条通道读到的描述符口径相同。
+     */
+    private suspend fun readDevicePropDesc(propCode: Int): ByteArray? {
+        if (apConnection.isConnected()) {
+            return apConnection.bridge()?.getDevicePropDescBytes(propCode)
+        }
+        if (usbPtpManager.isConnected()) {
+            return usbPtpManager.sendCommandWithData(
+                PtpConstants.OP_GET_DEVICE_PROP_DESC,
+                listOf(propCode),
+            )
+        }
+        // STA-PTP 通道：sendCommandWithData 返回 PtpDataResult 而非裸字节，此处取 data
+        val result = ptpSession.sendCommandWithData(
+            PtpConstants.OP_GET_DEVICE_PROP_DESC,
+            listOf(propCode),
+        )
+        return (result as? com.nikonlink.app.device.ptp.PtpDataResult.Success)?.data
     }
 
     private suspend fun writeDeviceProp(propCode: Int, value: ByteArray): Boolean {
