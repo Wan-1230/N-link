@@ -66,69 +66,11 @@
         android:layout_height="wrap_content" />
                 </LinearLayout>
 
-                <!-- v2.7 连接英雄图：常驻相机视觉 + 状态徽章。
-                     规划 §2.5「首屏零等待感」—— 无相机时页面也要有视觉重心，所以相机图与
-                     徽章恒显；扫描/连接按钮仍在其下方的 actionContainer 里，不新增 CTA。
-                     尺寸全为 dp 固定 + FrameLayout 居中：手机 / 平板 / 桌面窗口下
-                     相机图始终居中、徽章始终贴舞台右上角，表现一致。
-                     徽章**不贴角**：算过窄屏的账 —— 320dp 屏上台面宽仅 248dp，
-                     相机图右缘 185dp、徽章左缘 168dp，角标会压住快门键与辅助灯。
-                     改为「相机图居中、徽章居中置于图下方（间距 8dp）」，
-                     横向约束消失，任何屏宽下都不遮挡机身任何细节。 -->
-                <LinearLayout
-                    android:id="@+id/heroCard"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="@dimen/group_gap"
-                    android:background="@drawable/bg_card"
-                    android:orientation="vertical"
-                    android:padding="@dimen/space_12">
-
-                    <FrameLayout
-                        android:id="@+id/heroStage"
-                        android:layout_width="match_parent"
-                        android:layout_height="132dp"
-                        android:background="@drawable/bg_camera_hero">
-
-                        <ImageView
-                            android:id="@+id/ivCameraHero"
-                            android:layout_width="112dp"
-                            android:layout_height="78dp"
-                            android:layout_gravity="center_horizontal|top"
-                            android:layout_marginTop="10dp"
-                            android:contentDescription="相机"
-                            android:scaleType="fitCenter"
-                            android:src="@drawable/ic_camera_hero" />
-
-                        <LinearLayout
-                            android:id="@+id/heroBadge"
-                            android:layout_width="wrap_content"
-                            android:layout_height="26dp"
-                            android:layout_gravity="center_horizontal|bottom"
-                            android:layout_marginBottom="10dp"
-                            android:background="@drawable/bg_hero_badge"
-                            android:gravity="center_vertical"
-                            android:orientation="horizontal"
-                            android:paddingStart="10dp"
-                            android:paddingEnd="@dimen/space_12">
-
-                            <View
-                                android:id="@+id/heroBadgeDot"
-                                android:layout_width="6dp"
-                                android:layout_height="6dp"
-                                android:background="@drawable/bg_status_dot" />
-
-                            <TextView
-                                android:id="@+id/tvHeroBadge"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginStart="6dp"
-                                android:text="@string/tv_hero_badge_text"
-                                android:textColor="@color/text_secondary"
-                                android:textSize="@dimen/font_nav" />
-                        </LinearLayout>
-                    </FrameLayout>
-                </LinearLayout>
+                <!-- 2026-10-18：v2.7 的「连接英雄图」（相机示意图 + 状态徽章）整块撤掉。
+                     三个页签共用这一块，占 132dp + 卡片内边距，而它表达的"连没连上"
+                     下方设备卡的状态行本来就写（未连接 / 已连接 / 正在连接…），
+                     属于同一信息的第二遍呈现。删的是视觉，不是状态：
+                     renderStatusLine 那条出口一字未动。 -->
 
                 <!-- 扫描 / 连接 并列操作容器 -->
                 <!-- 2026-10-17 按钮合行：模式专属的那颗按钮（AP 的「连接相机 Wi-Fi」、
@@ -197,6 +139,46 @@
                         android:maxLines="1"
                         android:paddingHorizontal="@dimen/space_8"
                         android:text="@string/btn_mode_connect_text" />
+                </LinearLayout>
+
+                <!-- 2026-10-18：STA 的「最近连接设备 / 已发现相机」两栏从 WiFi STA 面板里
+                     搬到这里，落在操作行下方 —— 先给入口（手动输入 IP、连接相机），再列结果。
+                     这两栏只服务 STA + PTP/IP 直连：FTP 推送架构下手机是接收端，
+                     没有"可连的相机"；AP / USB 页签同样不显示。显隐见 applyActionRowVisibility。 -->
+                <LinearLayout
+                    android:id="@+id/staLists"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <TextView
+                        style="@style/NlText.GroupTitle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:layout_marginBottom="@dimen/space_8"
+                        android:text="@string/txt_最近连接设备" />
+
+                    <LinearLayout
+                        android:id="@+id/recentDeviceList"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical" />
+
+                    <TextView
+                        style="@style/NlText.GroupTitle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:layout_marginBottom="@dimen/space_8"
+                        android:text="@string/txt_已发现相机" />
+
+                    <LinearLayout
+                        android:id="@+id/staCandidateList"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical" />
                 </LinearLayout>
 
                 <!-- 设备核心卡片（页面视觉中心） -->

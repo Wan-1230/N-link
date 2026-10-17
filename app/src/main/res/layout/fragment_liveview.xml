@@ -270,18 +270,18 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:paddingHorizontal="@dimen/lv_cell_gap"
-            android:paddingVertical="6dp">
+            android:paddingVertical="@dimen/lv_param_pad_v">
 
             <LinearLayout
                 android:id="@+id/cellShutter"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_margin="3dp"
+                android:layout_margin="@dimen/lv_param_cell_margin"
                 android:layout_weight="1"
                 android:background="@drawable/bg_lv_chip"
                 android:gravity="center"
                 android:orientation="vertical"
-                android:paddingVertical="6dp">
+                android:paddingVertical="@dimen/lv_param_cell_pad_v">
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -308,12 +308,12 @@
                 android:id="@+id/cellAperture"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_margin="3dp"
+                android:layout_margin="@dimen/lv_param_cell_margin"
                 android:layout_weight="1"
                 android:background="@drawable/bg_lv_chip"
                 android:gravity="center"
                 android:orientation="vertical"
-                android:paddingVertical="6dp">
+                android:paddingVertical="@dimen/lv_param_cell_pad_v">
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -340,12 +340,12 @@
                 android:id="@+id/cellIso"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_margin="3dp"
+                android:layout_margin="@dimen/lv_param_cell_margin"
                 android:layout_weight="1"
                 android:background="@drawable/bg_lv_chip"
                 android:gravity="center"
                 android:orientation="vertical"
-                android:paddingVertical="6dp">
+                android:paddingVertical="@dimen/lv_param_cell_pad_v">
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -372,12 +372,12 @@
                 android:id="@+id/cellEv"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_margin="3dp"
+                android:layout_margin="@dimen/lv_param_cell_margin"
                 android:layout_weight="1"
                 android:background="@drawable/bg_lv_chip"
                 android:gravity="center"
                 android:orientation="vertical"
-                android:paddingVertical="6dp">
+                android:paddingVertical="@dimen/lv_param_cell_pad_v">
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -404,12 +404,12 @@
                 android:id="@+id/cellWb"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_margin="3dp"
+                android:layout_margin="@dimen/lv_param_cell_margin"
                 android:layout_weight="1"
                 android:background="@drawable/bg_lv_chip"
                 android:gravity="center"
                 android:orientation="vertical"
-                android:paddingVertical="6dp">
+                android:paddingVertical="@dimen/lv_param_cell_pad_v">
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -1006,8 +1006,8 @@
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingHorizontal="@dimen/space_16"
-            android:paddingTop="6dp"
-            android:paddingBottom="@dimen/space_12">
+            android:paddingTop="@dimen/lv_shutter_row_pad_top"
+            android:paddingBottom="@dimen/lv_shutter_row_pad_bottom">
 
             <FrameLayout
                 android:layout_width="0dp"

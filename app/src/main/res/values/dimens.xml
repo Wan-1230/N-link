@@ -81,4 +81,24 @@
     <dimen name="lv_sheet_pad_h">18dp</dimen>
     <dimen name="lv_sheet_pad_top">14dp</dimen>
     <dimen name="lv_sheet_pad_bottom">18dp</dimen>
+
+    <!-- 底簇三行的紧凑度。竖屏就是下面这些值（与改造前的硬编码逐位相同，视觉零变化）；
+         横屏由 values-land/dimens.xml 收紧 —— 横屏可用高只有 ~360dp，
+         底簇按竖屏尺寸会吃掉半幅画面。 -->
+    <dimen name="lv_param_pad_v">6dp</dimen>
+    <dimen name="lv_param_cell_pad_v">6dp</dimen>
+    <dimen name="lv_param_cell_margin">3dp</dimen>
+    <dimen name="lv_shutter_row_pad_top">6dp</dimen>
+    <dimen name="lv_shutter_row_pad_bottom">12dp</dimen>
+    <!-- ToolItemView 自绘内部尺寸（图标框 + 标签竖排），改这几项即改工具行整体高度 -->
+    <dimen name="lv_tool_pad_top">6dp</dimen>
+    <dimen name="lv_tool_pad_bottom">4dp</dimen>
+    <dimen name="lv_tool_icon_box_h">28dp</dimen>
+    <dimen name="lv_tool_icon_h">25dp</dimen>
+
+    <!-- 拍摄页取景区：画面按自身比例定高，这两项是上下两道闸。
+         下限保证"还没帧"时那块面板不塌（开始监看按钮要有地方站），
+         上限保证机身给出非常规比例时不吃掉整个屏幕。 -->
+    <dimen name="remote_lv_min_h">168dp</dimen>
+    <dimen name="remote_lv_max_h">300dp</dimen>
 </resources>

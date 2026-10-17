@@ -34,6 +34,11 @@
     <!-- 参数手动输入 -->
     <!-- 优化项 4：遥控拍摄界面直方图开关 -->
     <string name="histogram_toggle">亮度直方图开关</string>
+    <!-- 拍摄页取景辅助工具行的四个短标签（按钮下方 11sp，只放两三个字，窄屏不换行） -->
+    <string name="txt_全屏">全屏</string>
+    <string name="txt_直方图">直方图</string>
+    <string name="txt_网格">网格</string>
+    <string name="txt_刷新参数">刷新参数</string>
     <string name="pseudo_color_toggle">伪彩色开关</string>
     <string name="pseudo_color_note">按亮度给画面分档上色：越暗越蓝、越亮越红，白＝已溢出</string>
     <string name="waveform_toggle">RGB 分量波形开关</string>
@@ -110,7 +115,6 @@
     <string name="btn_update_github_text">GitHub 更新</string>
     <string name="btn_view_log_text">查看完整日志</string>
     <string name="btn_later_text">稍后</string>
-    <string name="tv_hero_badge_text">未连接</string>
     <string name="btn_mode_scan_text">扫描相机</string>
     <string name="btn_mode_connect_text">连接相机</string>
     <!-- 2026-10-12 连接入口拆分：AP 页签独立 Wi-Fi 连接入口（原为「连接相机」弹窗触发） -->

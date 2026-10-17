@@ -29,10 +29,10 @@ class ToolItemView @JvmOverloads constructor(
     init {
         orientation = VERTICAL
         gravity = Gravity.CENTER_HORIZONTAL
-        setPadding(0, dp(6f), 0, dp(4f))
+        applyMetrics()
 
         val iconBox = FrameLayout(context)
-        iconView.layoutParams = FrameLayout.LayoutParams(dp(25f), dp(25f)).apply {
+        iconView.layoutParams = FrameLayout.LayoutParams(iconSide, iconSide).apply {
             gravity = Gravity.CENTER
         }
         badgeView.textSize = 9f
@@ -44,7 +44,7 @@ class ToolItemView @JvmOverloads constructor(
         ).apply { gravity = Gravity.BOTTOM or Gravity.END }
         iconBox.addView(iconView)
         iconBox.addView(badgeView)
-        addView(iconBox, LayoutParams(dp(30f), dp(28f)))
+        addView(iconBox, LayoutParams(dp(30f), iconBoxH))
 
         labelView.textSize = 11f
         labelView.setTextColor(labelOn)
@@ -60,6 +60,32 @@ class ToolItemView @JvmOverloads constructor(
         ta.recycle()
         iconView.setColorFilter(labelOn)
     }
+
+    /**
+     * 按当前配置档重贴内部尺寸（`lv_tool_pad_* / lv_tool_icon_*`，横屏见 values-land）。
+     *
+     * 为什么要有这个方法：全屏监看页内旋屏不重建视图（`LiveViewActivity` 声明了
+     * `configChanges`，而重建会牵动取流宿主的 attach/detach → 有黑屏风险），
+     * 于是资源已经换成横屏档、控件里却还是竖屏算好的像素。init 只在构造时读一次，
+     * 配置变化后必须自己再贴一遍，否则横屏的工具行还是 55dp 高。
+     */
+    fun applyMetrics() {
+        setPadding(0, toolPadTop, 0, toolPadBottom)
+        if (iconView.layoutParams != null) {
+            iconView.layoutParams = FrameLayout.LayoutParams(iconSide, iconSide).apply {
+                gravity = Gravity.CENTER
+            }
+        }
+        getChildAt(0)?.let { box ->
+            box.layoutParams = box.layoutParams.apply { height = iconBoxH }
+        }
+        requestLayout()
+    }
+
+    private val toolPadTop get() = resources.getDimensionPixelSize(R.dimen.lv_tool_pad_top)
+    private val toolPadBottom get() = resources.getDimensionPixelSize(R.dimen.lv_tool_pad_bottom)
+    private val iconSide get() = resources.getDimensionPixelSize(R.dimen.lv_tool_icon_h)
+    private val iconBoxH get() = resources.getDimensionPixelSize(R.dimen.lv_tool_icon_box_h)
 
     /**
      * @param badge 角标文本（A / ON / 模式缩写），null 或空串不显示

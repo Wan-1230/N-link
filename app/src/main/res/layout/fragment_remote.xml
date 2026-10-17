@@ -104,20 +104,30 @@
         android:layout_marginTop="6dp"
         android:visibility="gone" />
 
-    <!-- 实时取景区域（占 2/3） -->
+    <!-- 实时取景（2026-10-18 改版）：容器高度改由画面自身比例决定。
+         原来是 `weight=2` 撑走 2/3 屏高，而相机给的帧是横向比例（3:2 / 16:9），
+         fitCenter 之后上下各留一大条纯黑 —— 看着像"画面被裁"，其实是框比画面大。
+         现在 adjustViewBounds 让 ImageView 跟着帧的宽高比定高，黑边收掉，
+         省下来的竖向空间全部给下方的功能区（按钮更大、多两颗常用键）。
+         minHeight 兜住"还没有画面"的状态：没帧时这里仍是一块可点的取景面板，
+         不会塌成一条线；maxHeight 兜住极端比例（机身若给 1:1 或竖幅）。 -->
     <FrameLayout
         android:id="@+id/liveContainer"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
+        android:layout_height="wrap_content"
         android:layout_marginHorizontal="@dimen/page_margin"
-        android:layout_weight="2"
+        android:layout_marginTop="@dimen/space_8"
+        android:minHeight="@dimen/remote_lv_min_h"
         android:background="@drawable/bg_liveview">
 
         <ImageView
             android:id="@+id/ivLiveView"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
+            android:layout_height="wrap_content"
+            android:adjustViewBounds="true"
             android:contentDescription="实时取景画面"
+            android:maxHeight="@dimen/remote_lv_max_h"
+            android:minHeight="@dimen/remote_lv_min_h"
             android:scaleType="fitCenter" />
 
         <!-- 三分构图网格线 -->
@@ -242,33 +252,9 @@
             android:paddingHorizontal="28dp"
             android:text="@string/btn_start_lv_text" />
 
-        <!-- 横屏全屏监看入口 -->
-        <ImageView
-            android:id="@+id/btnFullscreenLv"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:layout_gravity="top|end"
-            android:layout_marginTop="48dp"
-            android:layout_marginEnd="@dimen/space_8"
-            android:background="@drawable/bg_fullscreen_button"
-            android:contentDescription="全屏监看"
-            android:padding="9dp"
-            android:src="@drawable/ic_fullscreen"
-            app:tint="@color/white" />
-
-        <!-- 亮度直方图开关（优化项 4）：与全屏按钮同规格，位于其左侧 -->
-        <ImageView
-            android:id="@+id/btnHistogram"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:layout_gravity="top|end"
-            android:layout_marginTop="48dp"
-            android:layout_marginEnd="54dp"
-            android:background="@drawable/bg_fullscreen_button"
-            android:contentDescription="@string/histogram_toggle"
-            android:padding="9dp"
-            android:src="@drawable/ic_histogram"
-            app:tint="@color/white" />
+        <!-- 2026-10-18：「全屏监看」「直方图」两颗悬浮按钮从画面右上角挪到画面下方的
+             工具行（rowLvTools）—— 悬浮在画面上就是压住取景内容，
+             而这两颗是开关类操作，不必贴着自己的效果摆。 -->
 
         <!-- 实时亮度直方图（优化项 4）：贴取景区底部，随监看帧同步刷新 -->
         <com.nikonlink.app.camera.liveview.HistogramView
@@ -290,18 +276,145 @@
             android:visibility="gone" />
     </FrameLayout>
 
-    <!-- 参数控制区（占 1/3） -->
+    <!-- 参数控制区：取景区省下来的竖向空间全归这里 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
         android:orientation="vertical"
-        android:paddingTop="10dp">
+        android:paddingTop="@dimen/space_8">
 
-        <!-- 基础参数行：模式/光圈/快门/ISO/白平衡（点击弹出滚轮选择器） -->
+        <!-- 取景辅助工具行（2026-10-18 新增）：
+             前两颗是原先压在画面右上角的「全屏监看」「直方图」，后两颗补的是常用项 ——
+             「网格」开关三分构图线（画面里本来就有这层，此前没有任何入口）、
+             「刷新参数」重读机身的光圈/快门/ISO/白平衡（参数看着不动时不用退出重进）。
+             四格等宽 + 40dp 方形芯片 + 11sp 标签：320dp 屏每格仍有 ~68dp，图标不会挤在一起。
+             图标沿用同族线性矢量（ic_fullscreen / ic_histogram / ic_grid_toggle / ic_refresh）。 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:paddingHorizontal="@dimen/page_margin"
+            android:paddingBottom="@dimen/space_4">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:id="@+id/btnFullscreenLv"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="@drawable/bg_fullscreen_button"
+                    android:contentDescription="全屏监看"
+                    android:padding="9dp"
+                    android:src="@drawable/ic_fullscreen"
+                    app:tint="@color/white" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:maxLines="1"
+                    android:text="@string/txt_全屏"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="@dimen/font_foot" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:id="@+id/btnHistogram"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="@drawable/bg_fullscreen_button"
+                    android:contentDescription="@string/histogram_toggle"
+                    android:padding="9dp"
+                    android:src="@drawable/ic_histogram"
+                    app:tint="@color/white" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:maxLines="1"
+                    android:text="@string/txt_直方图"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="@dimen/font_foot" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:id="@+id/btnGrid"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="@drawable/bg_fullscreen_button"
+                    android:contentDescription="@string/txt_网格"
+                    android:padding="9dp"
+                    android:src="@drawable/ic_grid_toggle"
+                    app:tint="@color/white" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:maxLines="1"
+                    android:text="@string/txt_网格"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="@dimen/font_foot" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:id="@+id/btnRefreshParams"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="@drawable/bg_fullscreen_button"
+                    android:contentDescription="@string/txt_刷新参数"
+                    android:padding="9dp"
+                    android:src="@drawable/ic_refresh"
+                    app:tint="@color/white" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:maxLines="1"
+                    android:text="@string/txt_刷新参数"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="@dimen/font_foot" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- 基础参数行：模式/光圈/快门/ISO/白平衡（点击弹出滚轮选择器）。
+             与上面的工具行、下面的快门区各占 1/3 权重 —— 取景区按画面比例缩掉之后
+             多出来的竖向空间平摊给三段，避免堆成中间一个大空洞。 -->
         <HorizontalScrollView
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="0dp"
+            android:layout_weight="1"
             android:clipToPadding="false"
             android:paddingHorizontal="@dimen/page_margin"
             android:scrollbars="none">
@@ -309,7 +422,8 @@
             <LinearLayout
                 android:id="@+id/paramRow"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
+                android:gravity="center_vertical"
                 android:orientation="horizontal" />
         </HorizontalScrollView>
 

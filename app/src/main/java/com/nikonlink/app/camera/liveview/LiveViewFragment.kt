@@ -19,6 +19,7 @@ import androidx.fragment.app.viewModels
 import androidx.lifecycle.lifecycleScope
 import com.nikonlink.app.shared.ui.glass.NlGlass
 import com.nikonlink.app.shared.ui.glass.UiFlags
+import com.nikonlink.app.shared.ui.widget.ToolItemView
 import com.nikonlink.app.MainActivity
 import com.nikonlink.app.R
 import com.nikonlink.app.camera.liveview.panels.LiveViewPanelsController
@@ -513,6 +514,67 @@ class LiveViewFragment : Fragment() {
         // 横屏空间全留给画面，帧率读数一律不显示；竖屏再按宽度决定
         val show = !isLandscape() && widthDp >= 400
         binding.tvPerformance.visibility = if (show) View.VISIBLE else View.GONE
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // 页内「旋屏」按钮只改 requestedOrientation：LiveViewActivity 声明了 configChanges，
+        // 视图不重建（重建要重走取流宿主的 attach/detach，最后一个宿主离开即停流 —— 黑屏风险，
+        // 且停流/重连属于协议交互，本轮明确不动）。代价是资源已经换到横屏档，
+        // 控件里却还是竖屏算好的像素，所以这里按新档把底簇尺寸重贴一遍。
+        applyClusterMetrics()
+        applyCompactWidthPolicy()
+        positionLvStateCard()
+    }
+
+    /**
+     * 底簇三行（参数条 / 工具行 / 快门行）按当前配置档重贴尺寸。
+     *
+     * 竖屏取 `values/dimens.xml`（与改造前的硬编码逐位相同），横屏取
+     * `values-land/dimens.xml`（三行合计约 224dp → 170dp）。
+     * 只改度量：不动可见性、不动点击与状态、不碰会话。
+     */
+    private fun applyClusterMetrics() {
+        if (_binding == null) return
+
+        fun d(id: Int) = resources.getDimensionPixelSize(id)
+
+        val barPad = d(R.dimen.lv_param_pad_v)
+        binding.paramsBar.setPadding(binding.paramsBar.paddingLeft, barPad, binding.paramsBar.paddingRight, barPad)
+        val cellPad = d(R.dimen.lv_param_cell_pad_v)
+        val cellMargin = d(R.dimen.lv_param_cell_margin)
+        for (i in 0 until binding.paramsBar.childCount) {
+            val cell = binding.paramsBar.getChildAt(i)
+            (cell.layoutParams as? ViewGroup.MarginLayoutParams)?.let {
+                it.setMargins(cellMargin, cellMargin, cellMargin, cellMargin)
+                cell.layoutParams = it
+            }
+            cell.setPadding(cell.paddingLeft, cellPad, cell.paddingRight, cellPad)
+        }
+
+        val toolH = d(R.dimen.lv_tool_h)
+        for (i in 0 until binding.toolbarArea.childCount) {
+            val tool = binding.toolbarArea.getChildAt(i)
+            (tool as? ToolItemView)?.applyMetrics()
+            tool.layoutParams = tool.layoutParams.apply { height = toolH }
+        }
+
+        binding.shutterRow.setPadding(
+            binding.shutterRow.paddingLeft,
+            d(R.dimen.lv_shutter_row_pad_top),
+            binding.shutterRow.paddingRight,
+            d(R.dimen.lv_shutter_row_pad_bottom)
+        )
+        val shutter = d(R.dimen.lv_shutter)
+        binding.btnShutter.layoutParams = binding.btnShutter.layoutParams.apply {
+            width = shutter
+            height = shutter
+        }
+        val inner = d(R.dimen.lv_shutter_inner)
+        binding.shutterInner.layoutParams = binding.shutterInner.layoutParams.apply {
+            width = inner
+            height = inner
+        }
     }
 
     // ---------------- 快门 ----------------
