@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 横屏监看 HUD 紧凑档。
+     为什么需要这一份：`res/layout-land/fragment_liveview.xml` 在应用内旋转这条路径下
+     **不会被加载** —— MainActivity 锁竖屏，LiveViewActivity 又声明了
+     `configChanges="orientation|screenSize|screenLayout"` 且不做重建，
+     所以点页内「旋屏」后窗口转成横屏、布局仍是竖屏那份（2026-10-17 uiautomator 实锤：
+     横屏下 paramsBar 与 toolbarArea 依旧上下两行）。
+     资源限定符却**是**按当前配置解析的，于是竖屏布局 + 本文件的尺寸 = 在不碰生命周期、
+     不碰取流会话的前提下把底簇压下来：三行合计从 ~224dp 降到 ~170dp，
+     画面可用带从 356px 提到 ~496px（1080px 高的横屏）。
+
+     真正的解法是让 land 变体生效（重建 Activity 或在 onConfigurationChanged 里重 inflate），
+     但那会牵动 LiveViewHostRegistry 的 attach/detach 时序 —— 最后一个宿主离开即停流，
+     重建顺序稍有不慎就是黑屏，必须连着真机验，故未在本轮做。 -->
+<resources>
+    <!-- 工具行：控件内部自然高随之收紧，否则 48dp 会把标签裁掉 -->
+    <dimen name="lv_tool_h">48dp</dimen>
+    <dimen name="lv_tool_pad_top">2dp</dimen>
+    <dimen name="lv_tool_pad_bottom">2dp</dimen>
+    <dimen name="lv_tool_icon_box_h">24dp</dimen>
+    <dimen name="lv_tool_icon_h">22dp</dimen>
+
+    <!-- 参数条：五格芯片的内边距与间距 -->
+    <dimen name="lv_param_pad_v">2dp</dimen>
+    <dimen name="lv_param_cell_pad_v">2dp</dimen>
+    <dimen name="lv_param_cell_margin">2dp</dimen>
+
+    <!-- 快门行：横屏是双手握持，快门键 56dp 仍在拇指可及范围内 -->
+    <dimen name="lv_shutter">56dp</dimen>
+    <dimen name="lv_shutter_inner">42dp</dimen>
+    <dimen name="lv_shutter_row_pad_top">2dp</dimen>
+    <dimen name="lv_shutter_row_pad_bottom">6dp</dimen>
+</resources>

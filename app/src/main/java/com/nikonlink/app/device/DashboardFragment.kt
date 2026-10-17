@@ -11,7 +11,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import android.graphics.Typeface
 import android.os.Bundle
 import android.text.InputType
-import android.view.animation.AnimationUtils
 import android.view.animation.DecelerateInterpolator
 import android.view.LayoutInflater
 import android.view.View
@@ -359,7 +358,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 // FR-37：STA 那一栏的行内「连接」按钮按所选架构分流——FTP 推送架构下手机侧
                 // 没有可连的对象，点一下却发起 PTP/IP 直连，正是用户报的「切了没切」。
                 renderWifiCandidates(
-                    binding.panelWifiSta.staCandidateList,
+                    binding.staCandidateList,
                     devices,
                     staArch
                 )
@@ -634,8 +633,10 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 tv.text = "相机没有记住本机 —— 需要先做一次主机注册（全程只需一次）：\n" +
                         "相机菜单进入「Wi-Fi连接（STA mode）」创建配置文件，" +
                         "停在「正在等待连接」画面；\n" +
-                        "手机与相机同网后，点上方「STA 主机注册」，相机屏幕按 OK。\n" +
-                        "注意：普通的「连接至智能设备」热点不接受注册（会回 0x201F）。"
+                        "手机与相机同网后，点上方「STA 主机注册」，相机屏幕按 OK。"
+                // 2026-10-18：末行「注意：普通的「连接至智能设备」热点不接受注册（会回 0x201F）」
+                // 从这块常驻提示里删掉，教程框随之收缩一行。信息没丢 ——
+                // 「连接教程」正文与「STA 主机注册」弹窗里各留了一处同样的说明。
             }
             else -> {
                 tv.visibility = View.VISIBLE
@@ -737,149 +738,6 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         }
         binding.cardDevice.tvStatusMessage.text = text.ifBlank { "未连接" }
         renderApWifiState()
-        renderHero()
-    }
-
-    /** 英雄图四态：未连接 / 连接中 / 已连接 / 连接失败。徽章上只放这四个短词。 */
-    private enum class HeroStatus { IDLE, BUSY, CONNECTED, FAILED }
-
-    /**
-     * 连接英雄图渲染：相机图（明暗）+ 状态徽章（底/字/描边）+ 状态灯（色/呼吸）。
-     *
-     * **单一出口**：挂在 [renderStatusLine] 末尾。后者已经是 USB 与无线两条链路所有状态
-     * 变化的收敛点（各处改动都调它），这里不再另外插桩，避免重演"两处各写各的"的老问题。
-     *
-     * **去重**：状态键存在徽章的 tag 上（随视图销毁自动复位，不用在 onDestroyView 手动清），
-     * 键不变整段跳过 —— 状态行会被 statusMessage 高频触发，不去重会让徽章反复回弹。
-     *
-     * 状态判定口径与 [renderStatusLine] 完全一致：USB 已连上 > USB 页签过程态 > 无线状态机。
-     */
-    private fun renderHero() {
-        val wifi = viewModel.connectionState.value
-        val usb = viewModel.usbState.value
-        val (status, label) = when {
-            usb == UsbConnectionState.CONNECTED -> HeroStatus.CONNECTED to "已连接"
-            isUsbMode() -> when (usb) {
-                UsbConnectionState.REQUESTING_PERMISSION,
-                UsbConnectionState.CONNECTING -> HeroStatus.BUSY to "连接中"
-                UsbConnectionState.PERMISSION_DENIED,
-                UsbConnectionState.ERROR -> HeroStatus.FAILED to "连接失败"
-                else -> HeroStatus.IDLE to "未连接"
-            }
-            apUiActive -> when (viewModel.apState.value) {
-                is com.camerakit.api.CameraState.Connected -> HeroStatus.CONNECTED to "已连接"
-                is com.camerakit.api.CameraState.Failed -> HeroStatus.FAILED to "连接失败"
-                is com.camerakit.api.CameraState.Recovering -> HeroStatus.BUSY to "恢复中"
-                is com.camerakit.api.CameraState.Disconnected -> HeroStatus.IDLE to "未连接"
-                else -> HeroStatus.BUSY to "连接中"
-            }
-            else -> when (wifi) {
-                // 2026-10-12 状态文案清理：BLE_CONNECTED 且 BLE 未真实连接时
-                // （非 BLE 直连链路掉线经停此态）不再显示「已连接」
-                ConnectionState.FULLY_CONNECTED -> HeroStatus.CONNECTED to "已连接"
-                ConnectionState.BLE_CONNECTED ->
-                    if (viewModel.isBleConnected()) HeroStatus.CONNECTED to "已连接"
-                    else HeroStatus.FAILED to "连接失败"
-                ConnectionState.CONNECTING,
-                ConnectionState.WIFI_UPGRADING -> HeroStatus.BUSY to "连接中"
-                ConnectionState.ERROR_WAITING_RETRY -> HeroStatus.FAILED to "连接失败"
-                ConnectionState.DISCONNECTED -> HeroStatus.IDLE to "未连接"
-            }
-        }
-
-        val badge = binding.heroBadge
-        val key = "${status.name}|$label"
-        if (badge.tag == key) return
-        val isFirstPaint = badge.tag == null
-        badge.tag = key
-
-        val dot = binding.heroBadgeDot
-        val text = binding.tvHeroBadge
-        val cam = binding.ivCameraHero
-        fun color(res: Int) = ContextCompat.getColor(requireContext(), res)
-
-        // ── 徽章外观 ─────────────────────────────────────────────────
-        // 不引入彩色状态色（视觉规范 §1.1：除品牌强调色外一律灰度），四态靠"底 + 灯 + 字重"
-        // 三者的组合区分：
-        //   已连接 = 实心反相（primary 底 / on_primary 加粗字）+ 品牌黄灯，视觉最重；
-        //   连接中 = 灰底 + 品牌黄**呼吸**灯；
-        //   失败   = 空心描边（alert 底），与"未连接"靠空心/实心区分，不靠颜色；
-        //   未连接 = 灰底 + 灰灯 + 二级字色，最轻。
-        when (status) {
-            HeroStatus.CONNECTED -> {
-                badge.setBackgroundResource(R.drawable.bg_hero_badge)
-                badge.backgroundTintList = ColorStateList.valueOf(color(R.color.primary))
-                text.setTextColor(color(R.color.on_primary))
-                text.typeface = Typeface.DEFAULT_BOLD
-            }
-            HeroStatus.BUSY -> {
-                badge.setBackgroundResource(R.drawable.bg_hero_badge)
-                badge.backgroundTintList = ColorStateList.valueOf(color(R.color.chip_unselected))
-                text.setTextColor(color(R.color.text_primary))
-                text.typeface = Typeface.DEFAULT
-            }
-            HeroStatus.FAILED -> {
-                // 描边底不 tint —— tint 会把描边一起染掉，空心感就没了
-                badge.setBackgroundResource(R.drawable.bg_hero_badge_alert)
-                badge.backgroundTintList = null
-                text.setTextColor(color(R.color.text_primary))
-                text.typeface = Typeface.DEFAULT
-            }
-            HeroStatus.IDLE -> {
-                badge.setBackgroundResource(R.drawable.bg_hero_badge)
-                badge.backgroundTintList = ColorStateList.valueOf(color(R.color.chip_unselected))
-                text.setTextColor(color(R.color.text_secondary))
-                text.typeface = Typeface.DEFAULT
-            }
-        }
-        text.text = label
-
-        dot.backgroundTintList = ColorStateList.valueOf(
-            color(
-                when (status) {
-                    HeroStatus.CONNECTED, HeroStatus.BUSY -> R.color.status_connected
-                    HeroStatus.FAILED -> R.color.text_primary
-                    HeroStatus.IDLE -> R.color.status_disconnected
-                }
-            )
-        )
-
-        // ── 状态灯呼吸：只让"灯"呼吸，不让机身晃 ──────────────────────
-        if (status == HeroStatus.BUSY) {
-            if (dot.animation == null) {
-                dot.startAnimation(
-                    AnimationUtils.loadAnimation(requireContext(), R.anim.hero_dot_pulse)
-                )
-            }
-        } else {
-            dot.clearAnimation()
-            dot.alpha = 1f
-        }
-
-        // ── 相机图：离线压暗、连接中半亮、已连接全亮 ───────────────────
-        val targetAlpha = when (status) {
-            HeroStatus.CONNECTED -> 1f
-            HeroStatus.BUSY -> 0.9f
-            HeroStatus.FAILED -> 0.62f
-            HeroStatus.IDLE -> 0.68f
-        }
-        if (isFirstPaint) {
-            cam.alpha = targetAlpha
-        } else {
-            cam.animate().alpha(targetAlpha).setDuration(Motion.BASE).start()
-        }
-
-        // ── 切换过渡：徽章轻微回弹，避免硬切 ──────────────────────────
-        if (!isFirstPaint) {
-            badge.animate()
-                .scaleX(1.06f)
-                .scaleY(1.06f)
-                .setDuration(Motion.FAST)
-                .withEndAction {
-                    badge.animate().scaleX(1f).scaleY(1f)
-                        .setDuration(Motion.BASE).start()
-                }.start()
-        }
     }
 
     /**
@@ -1337,14 +1195,13 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         // 2026-10-17 按钮合行：模式专属按钮跟着页签走，一行里最多出现「专属 + 连接」两颗。
         // STA 的 FTP 推送架构不在这行里给手动 IP 入口 —— 该架构下手机是接收端，
         // 没有"连到某个相机地址"这回事（整行此时也已隐藏）。
+        val staPtp = currentMode == ConnectMode.WIFI_STA && staArch != AppSettings.STA_ARCH_FTP
         binding.btnApWifiConnect.visibility =
             if (currentMode == ConnectMode.WIFI_AP) View.VISIBLE else View.GONE
-        binding.btnStaManualIp.visibility =
-            if (currentMode == ConnectMode.WIFI_STA && staArch != AppSettings.STA_ARCH_FTP) {
-                View.VISIBLE
-            } else {
-                View.GONE
-            }
+        binding.btnStaManualIp.visibility = if (staPtp) View.VISIBLE else View.GONE
+        // 2026-10-18：候选两栏搬到操作行下方后，跟着同一条件走 ——
+        // 只有 STA + PTP/IP 直连才有"最近连接设备 / 已发现相机"可列
+        binding.staLists.visibility = if (staPtp) View.VISIBLE else View.GONE
         // FR-35② 的主次表达随扫描退役一并作废：连接按钮恒等宽
         applyActionEmphasis()
     }
@@ -1825,17 +1682,17 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     }
 
     private fun renderRecentDevices(devices: List<PairedDevice>) {
-        binding.panelWifiSta.recentDeviceList.removeAllViews()
+        binding.recentDeviceList.removeAllViews()
         if (devices.isEmpty()) {
-            binding.panelWifiSta.recentDeviceList.addView(
-                emptyState("暂无最近连接设备", iconRes = R.drawable.ic_empty_clock)
-            )
+            // 2026-10-18：空态只留一句结论，撤掉 72dp 图标方块 ——
+            // 与下方「已发现相机」空态同一口径（那处的相机图已先一步撤掉）
+            binding.recentDeviceList.addView(emptyState("暂无最近连接设备"))
             return
         }
         devices.forEach { device ->
             val item = ItemRecentDeviceBinding.inflate(
                 layoutInflater,
-                binding.panelWifiSta.recentDeviceList,
+                binding.recentDeviceList,
                 false
             )
             // FR-36：配对记录新写的是官方全称（`Nikon Z 50II`）；旧记录那一列存的是
@@ -1854,7 +1711,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             item.root.pressEffect()
             item.btnRecentConnect.pressEffect()
             item.btnRecentConnect.setOnClickListener { connectRecentDevice(device) }
-            binding.panelWifiSta.recentDeviceList.addView(item.root)
+            binding.recentDeviceList.addView(item.root)
         }
     }
 

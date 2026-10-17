@@ -181,33 +181,11 @@
                                 android:visibility="gone" />
                         </LinearLayout>
 
-                        <TextView
-                            style="@style/NlText.GroupTitle"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="14dp"
-                            android:layout_marginBottom="@dimen/space_8"
-                            android:text="@string/txt_最近连接设备" />
-
-                        <LinearLayout
-                            android:id="@+id/recentDeviceList"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="vertical" />
-
-                        <TextView
-                            style="@style/NlText.GroupTitle"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="14dp"
-                            android:layout_marginBottom="@dimen/space_8"
-                            android:text="@string/txt_已发现相机" />
-
-                        <LinearLayout
-                            android:id="@+id/staCandidateList"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:orientation="vertical" />
+                        <!-- 2026-10-18：「最近连接设备」「已发现相机」两栏搬去
+                             fragment_dashboard 的操作行下方 —— 「手动输入相机 IP」与
+                             「连接相机」要摆在候选列表之前（先给入口，再列结果），
+                             而那颗按钮是三个页签共用的，只能整体上移、不在本面板内复制一份。
+                             显隐由 DashboardFragment.applyActionRowVisibility 按页签与架构给。 -->
                         </LinearLayout><!-- /layoutStaPtp -->
 
                         <!-- 架构 B：FTP 推送收图（PRD §4.5 备选架构）。

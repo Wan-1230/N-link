@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- 英雄图状态徽章底：实心胶囊。填充色在运行时用 backgroundTintList 覆盖
-     （未连接=chip_unselected 灰、已连接=primary 黑/白反相），故这里只给占位色。 -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
-    <solid android:color="@color/chip_unselected" />
-    <corners android:radius="@dimen/radius_pill" />
-</shape>

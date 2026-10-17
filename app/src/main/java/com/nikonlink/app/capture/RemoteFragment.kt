@@ -270,6 +270,24 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         }
         applyHistogramToggle(settings.histogramEnabled)
 
+        // 三分构图网格：这层覆盖物一直画在取景区布局里（viewGrid），但没有任何入口，
+        // 所以这里补一颗开关。只翻可见性，不落设置 —— 构图辅助属于当次取景的临时件。
+        binding.btnGrid.pressEffect()
+        binding.btnGrid.setOnClickListener {
+            val on = binding.viewGrid.visibility != View.VISIBLE
+            binding.viewGrid.visibility = if (on) View.VISIBLE else View.GONE
+            binding.btnGrid.alpha = if (on) 1f else 0.55f
+            NlFeedback.show(requireContext(), if (on) "已开启构图网格" else "已关闭构图网格")
+        }
+        binding.btnGrid.alpha = if (binding.viewGrid.visibility == View.VISIBLE) 1f else 0.55f
+
+        // 参数看着不动时的自救入口：重读一次机身参数，不必退出页面重进
+        binding.btnRefreshParams.pressEffect()
+        binding.btnRefreshParams.setOnClickListener {
+            paramsViewModel.readAll()
+            NlFeedback.show(requireContext(), "正在重新读取机身参数")
+        }
+
         // 点击画面选择对焦点（淡入淡出动效）。
         // Fix: 旧版直接 event.x/view.width 归一化，把 fitCenter 黑边算进坐标，
         // 实际对焦点与点击位置系统性偏移；统一走 FocusTapMapper（含缩放还原）
