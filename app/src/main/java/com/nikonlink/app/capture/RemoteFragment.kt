@@ -1,5 +1,6 @@
 package com.nikonlink.app.capture
 
+import com.nikonlink.app.shared.ui.ControlStates
 import com.nikonlink.app.shared.ui.NlFeedback
 import android.annotation.SuppressLint
 import android.graphics.Outline
@@ -290,6 +291,10 @@ class RemoteFragment : Fragment(), GlassInsetAware {
      * 优化项 4：应用直方图开关状态。
      * 关闭时一并清空已统计的柱体，否则重新打开会先闪一帧上一轮的残留图形。
      * 开关态用图标透明度表达（开启 100% / 关闭 55%），不引入强调色，保持黑白体系。
+     *
+     * 设计取舍（finesse 八状态）：这里的 alpha **不是** disabled，而是「开关双态」的对比表达——
+     * 关闭态下按钮仍须可点以便重新开启。因此刻意不套 ControlStates.setEnabled（那会让关闭后点不开）。
+     * 真正的 disabled 三通道见 ControlStates 与 updateModeCellState/applyBulbLock。
      */
     private fun applyHistogramToggle(enabled: Boolean) {
         binding.viewHistogram.visibility = if (enabled) View.VISIBLE else View.GONE
@@ -529,9 +534,7 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         val cell = modeCell ?: return
         val enabled = isCameraPtpConnected() && !bulbBusy && !modeSwitching
             && paramsViewModel.exposureProgramModes.isNotEmpty()
-        cell.isEnabled = enabled
-        cell.isClickable = enabled
-        cell.alpha = if (enabled) 1f else 0.4f
+        ControlStates.setEnabled(cell, enabled)
     }
 
     /**
@@ -1080,15 +1083,11 @@ class RemoteFragment : Fragment(), GlassInsetAware {
     private fun applyBulbLock(busy: Boolean) {
         bulbBusy = busy
         paramCellContainers.forEach { cell ->
-            cell.isEnabled = !busy
-            cell.isClickable = !busy
-            cell.alpha = if (busy) 0.4f else 1f
+            ControlStates.setEnabled(cell, !busy)
         }
         listOf(binding.btnTimer, binding.btnModeAction, binding.btnModePhoto, binding.btnModeVideo)
             .forEach { view ->
-                view.isEnabled = !busy
-                view.isClickable = !busy
-                view.alpha = if (busy) 0.4f else 1f
+                ControlStates.setEnabled(view, !busy)
             }
         // B 门锁定变化影响「模式」入口可用性（连接/切换态不变，仅叠加 busy）
         updateModeCellState()

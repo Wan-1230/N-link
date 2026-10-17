@@ -470,6 +470,28 @@ class TransferFragment : Fragment(), GlassInsetAware {
         }
     }
 
+    /**
+     * 空态文案：严格区分「断连」与「真·空」（PRODUCT.md:120-122 军规——断连≠为空）。
+     * 断连写「原因+怎么办」，真空写「为什么空+下一步」，两者不混在一句里、不写 `--`、不编假数据。
+     * 三源连接依赖：CAMERA 靠连接取相册、MARKED 靠连接补缩略图、LOCAL 纯本地无连接依赖。
+     */
+    private fun emptyMessage(): String {
+        val connected = viewModel.cameraReady.value
+        return when (viewModel.activeAlbum.value) {
+            AlbumSource.CAMERA ->
+                if (connected) "相机相册里没有照片"
+                else "连接相机后查看相册"
+            AlbumSource.MARKED ->
+                when {
+                    viewModel.markedRecords.value.isEmpty() ->
+                        "暂无标记照片：在相机相册长按多选后点「标记」"
+                    connected -> "标记的照片都已下载到手机"
+                    else -> "相机未连接，标记的照片无法加载"
+                }
+            AlbumSource.LOCAL -> "尚未下载照片到手机"
+        }
+    }
+
     private fun renderAlbumTabs(source: AlbumSource) {
         val tabs = mapOf(
             AlbumSource.CAMERA to binding.tabCameraPhotos,
@@ -817,11 +839,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
                     if (source == AlbumSource.MARKED) View.GONE else View.VISIBLE
                 renderNotDownloadedChip(viewModel.onlyNotDownloaded.value)
                 renderDownloadStats()
-                binding.tvMessage.text = when (source) {
-                    AlbumSource.CAMERA -> "连接相机后查看相册"
-                    AlbumSource.MARKED -> "暂无标记照片：在相机相册长按多选后点「标记」"
-                    AlbumSource.LOCAL -> "尚未下载照片到手机"
-                }
+                binding.tvMessage.text = emptyMessage()
             }
         }
 
@@ -894,16 +912,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
                             NlFeedback.show(requireContext(), "已全部下载，已显示全部照片")
                             return@collect
                         }
-                        binding.tvMessage.text = when (viewModel.activeAlbum.value) {
-                            AlbumSource.MARKED -> if (viewModel.markedRecords.value.isEmpty()) {
-                                "暂无标记照片：在相机相册长按多选后点「标记」"
-                            } else {
-                                "标记的照片都已下载，或相机尚未连接"
-                            }
-
-                            AlbumSource.CAMERA -> "连接相机后查看相册"
-                            AlbumSource.LOCAL -> "尚未下载照片到手机"
-                        }
+                        binding.tvMessage.text = emptyMessage()
                     }
                 }
             }

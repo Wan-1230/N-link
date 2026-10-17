@@ -186,6 +186,7 @@
             android:layout_marginStart="@dimen/lv_cell_gap"
             android:background="@drawable/bg_lv_state_bad"
             android:ellipsize="end"
+            android:maxEms="4"
             android:paddingHorizontal="10dp"
             android:paddingVertical="6dp"
             android:singleLine="true"

@@ -1,5 +1,6 @@
 package com.nikonlink.app.camera.liveview
 
+import com.nikonlink.app.shared.ui.ControlStates
 import com.nikonlink.app.shared.ui.NlFeedback
 import android.annotation.SuppressLint
 import android.content.Intent
@@ -493,13 +494,18 @@ class LiveViewFragment : Fragment() {
     }
 
     /**
-     * 窄屏（&lt;360dp）隐藏帧率/延迟读数，避免顶栏五项横向挤出屏幕。
+     * 窄屏隐藏帧率/延迟读数，避免顶栏横向挤出屏幕。
      * 它是连接质量反馈而不是拍照必需信息，让位是合理的降级。
+     *
+     * 阈值取 400dp 而不是 360dp：顶栏六项在 1216px/525dpi（=370dp）的真机上实测
+     * 排到 1421px，`btnOverlays`（「显示辅助」面板的唯一入口）整条被推到屏幕外、
+     * 无法点击，`tvLvState` 也被裁掉一半 —— 360dp 这道槛正好放过了这类
+     * "宽度够不上溢出、却又装不下六项" 的机型。
      */
     private fun applyCompactWidthPolicy() {
         val widthDp = resources.configuration.screenWidthDp
         // 横屏空间全留给画面，帧率读数一律不显示；竖屏再按宽度决定
-        val show = !isLandscape() && widthDp >= 360
+        val show = !isLandscape() && widthDp >= 400
         binding.tvPerformance.visibility = if (show) View.VISIBLE else View.GONE
     }
 
@@ -897,20 +903,21 @@ class LiveViewFragment : Fragment() {
             LiveViewState.STOPPED -> {
                 binding.tvStateTitle.text = "未开始监看"
                 binding.tvStateDesc.text = "开始后可用触摸对焦、缩放与参数回读"
-                binding.btnStateAction.text = "开始监看"
-                binding.btnStateAction.isEnabled = true
+                ControlStates.setEnabled(binding.btnStateAction, true)
+                ControlStates.setLoading(binding.btnStateAction, false, "", "开始监看")
             }
             LiveViewState.STARTING -> {
                 binding.tvStateTitle.text = "启动中…"
                 binding.tvStateDesc.text = "正在与相机建立监看会话"
-                binding.btnStateAction.text = "启动中"
-                binding.btnStateAction.isEnabled = false
+                // loading：预留终态宽度防「开始监看→启动中」换标签让邻居回流，同时 disabled 三通道
+                ControlStates.setLoading(binding.btnStateAction, true, "启动中", "开始监看")
+                ControlStates.setEnabled(binding.btnStateAction, false)
             }
             else -> {
                 binding.tvStateTitle.text = "监看异常"
                 binding.tvStateDesc.text = "会话中断，可重试"
-                binding.btnStateAction.text = "重试监看"
-                binding.btnStateAction.isEnabled = true
+                ControlStates.setEnabled(binding.btnStateAction, true)
+                ControlStates.setLoading(binding.btnStateAction, false, "", "重试监看")
             }
         }
         // 上移半个底簇高度：卡片默认居中，横屏底簇一高就压在参数条 / 快门上（截图实锤）

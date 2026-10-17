@@ -1,5 +1,6 @@
 package com.nikonlink.app.device
 
+import com.nikonlink.app.shared.ui.ControlStates
 import com.nikonlink.app.shared.ui.NlFeedback
 import android.Manifest
 import android.content.Intent
@@ -277,7 +278,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 when (state) {
                     null -> {
                         binding.panelWifiSta.tvStaHostRegStatus.visibility = View.GONE
-                        binding.panelWifiSta.btnStaHostRegister.isEnabled = true
+                        ControlStates.setEnabled(binding.panelWifiSta.btnStaHostRegister, true)
                         // 结果清空后回到引导提示（若仍需要注册）
                         updateHostRegHint(
                             viewModel.staRegisterNeeded.value,
@@ -287,17 +288,17 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     is HostRegUiState.Running -> {
                         binding.panelWifiSta.tvStaHostRegStatus.visibility = View.VISIBLE
                         binding.panelWifiSta.tvStaHostRegStatus.text = state.progress
-                        binding.panelWifiSta.btnStaHostRegister.isEnabled = false
+                        ControlStates.setEnabled(binding.panelWifiSta.btnStaHostRegister, false)
                     }
                     is HostRegUiState.Success -> {
                         binding.panelWifiSta.tvStaHostRegStatus.visibility = View.VISIBLE
                         binding.panelWifiSta.tvStaHostRegStatus.text = state.message
-                        binding.panelWifiSta.btnStaHostRegister.isEnabled = true
+                        ControlStates.setEnabled(binding.panelWifiSta.btnStaHostRegister, true)
                     }
                     is HostRegUiState.Failure -> {
                         binding.panelWifiSta.tvStaHostRegStatus.visibility = View.VISIBLE
                         binding.panelWifiSta.tvStaHostRegStatus.text = state.message
-                        binding.panelWifiSta.btnStaHostRegister.isEnabled = true
+                        ControlStates.setEnabled(binding.panelWifiSta.btnStaHostRegister, true)
                     }
                 }
             }

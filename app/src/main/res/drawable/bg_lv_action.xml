@@ -1,8 +1,68 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 主行动按钮：纯白实底黑字。与项目 NlButton.Primary 的黑白反相一致，
-     不参与强调色竞争 —— 强调色只留给「当前值/激活态」 -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
-    <solid android:color="@color/white" />
-    <corners android:radius="@dimen/lv_radius_md" />
-</shape>
+     不参与强调色竞争 —— 强调色只留给「当前值/激活态」。
+     v2.8 起为八状态 selector（finesse component-scope §3）。恒白无夜间翻转（lv_* 豁免族），
+     故 hover/active 用 light 族叠层恒压深；常驻 2dp 透明描边换色实现焦点环零位移。 -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <item android:state_enabled="false">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/white"/>
+            <stroke android:width="2dp" android:color="@android:color/transparent"/>
+            <corners android:radius="@dimen/lv_radius_md"/>
+        </shape>
+    </item>
+
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/white"/>
+            <stroke android:width="2dp" android:color="@color/focus_ring"/>
+            <corners android:radius="@dimen/lv_radius_md"/>
+        </shape>
+    </item>
+
+    <item android:state_pressed="true">
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/white"/>
+                    <stroke android:width="2dp" android:color="@android:color/transparent"/>
+                    <corners android:radius="@dimen/lv_radius_md"/>
+                </shape>
+            </item>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/state_active_light"/>
+                    <corners android:radius="@dimen/lv_radius_md"/>
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+
+    <item android:state_hovered="true">
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/white"/>
+                    <stroke android:width="2dp" android:color="@android:color/transparent"/>
+                    <corners android:radius="@dimen/lv_radius_md"/>
+                </shape>
+            </item>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/state_hover_light"/>
+                    <corners android:radius="@dimen/lv_radius_md"/>
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+
+    <!-- default -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/white"/>
+            <stroke android:width="2dp" android:color="@android:color/transparent"/>
+            <corners android:radius="@dimen/lv_radius_md"/>
+        </shape>
+    </item>
+</selector>
