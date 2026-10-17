@@ -30,6 +30,8 @@
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
                                 android:layout_marginStart="@dimen/space_8"
+                                android:ellipsize="end"
+                                android:maxLines="1"
                                 android:text="@string/tv_connection_status_text"
                                 android:textColor="@color/on_dark_card_variant"
                                 android:textSize="@dimen/font_caption" />
@@ -71,156 +73,9 @@
                             android:textColor="@color/on_dark_card"
                             android:textSize="@dimen/font_display" />
 
-                        <!-- 电池 -->
-                        <LinearLayout
-                            android:id="@+id/rowBattery"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="18dp"
-                            android:gravity="center_vertical"
-                            android:orientation="horizontal"
-                            android:visibility="gone">
-
-                            <ImageView
-                                android:layout_width="18dp"
-                                android:layout_height="18dp"
-                                android:contentDescription="电池"
-                                android:src="@drawable/ic_battery"
-                                app:tint="@color/on_dark_card_variant" />
-
-                            <TextView
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_marginStart="@dimen/space_8"
-                                android:layout_weight="1"
-                                android:text="@string/txt_电池电量"
-                                android:textColor="@color/on_dark_card_variant"
-                                android:textSize="@dimen/font_caption" />
-
-                            <TextView
-                                android:id="@+id/tvBattery"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text=""
-                                android:textColor="@color/on_dark_card"
-                                android:textSize="@dimen/font_caption"
-                                android:textStyle="bold" />
-                        </LinearLayout>
-
-                        <!-- 存储卡 -->
-                        <LinearLayout
-                            android:id="@+id/rowStorage"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="10dp"
-                            android:gravity="center_vertical"
-                            android:orientation="horizontal"
-                            android:visibility="gone">
-
-                            <ImageView
-                                android:layout_width="18dp"
-                                android:layout_height="18dp"
-                                android:contentDescription="存储"
-                                android:src="@drawable/ic_sd_card"
-                                app:tint="@color/on_dark_card_variant" />
-
-                            <TextView
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginStart="@dimen/space_8"
-                                android:text="@string/txt_存储卡"
-                                android:textColor="@color/on_dark_card_variant"
-                                android:textSize="@dimen/font_caption" />
-
-                            <ProgressBar
-                                android:id="@+id/pbStorage"
-                                style="@style/Widget.AppCompat.ProgressBar.Horizontal"
-                                android:layout_width="0dp"
-                                android:layout_height="4dp"
-                                android:layout_marginHorizontal="10dp"
-                                android:layout_weight="1"
-                                android:max="100"
-                                android:progress="0"
-                                android:progressTint="@color/on_dark_card"
-                                android:progressBackgroundTint="@color/on_dark_card_variant" />
-
-                            <TextView
-                                android:id="@+id/tvStorage"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:ellipsize="end"
-                                android:maxLines="1"
-                                android:maxWidth="176dp"
-                                android:text=""
-                                android:textColor="@color/on_dark_card"
-                                android:textSize="@dimen/font_caption"
-                                android:textStyle="bold" />
-                        </LinearLayout>
-
-                        <!-- 剩余可拍 -->
-                        <LinearLayout
-                            android:id="@+id/rowShotsRemaining"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="10dp"
-                            android:gravity="center_vertical"
-                            android:orientation="horizontal"
-                            android:visibility="gone">
-
-                            <ImageView
-                                android:layout_width="18dp"
-                                android:layout_height="18dp"
-                                android:contentDescription="剩余可拍"
-                                android:src="@drawable/ic_nav_camera"
-                                app:tint="@color/on_dark_card_variant" />
-
-                            <TextView
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_marginStart="@dimen/space_8"
-                                android:layout_weight="1"
-                                android:text="@string/txt_剩余可拍摄"
-                                android:textColor="@color/on_dark_card_variant"
-                                android:textSize="@dimen/font_caption" />
-
-                            <TextView
-                                android:id="@+id/tvShotsRemaining"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text=""
-                                android:textColor="@color/on_dark_card"
-                                android:textSize="@dimen/font_caption"
-                                android:textStyle="bold" />
-                        </LinearLayout>
-
-                        <!-- 镜头信息 -->
-                        <LinearLayout
-                            android:id="@+id/rowLens"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="14dp"
-                            android:gravity="center_vertical"
-                            android:orientation="horizontal"
-                            android:visibility="gone">
-
-                            <ImageView
-                                android:layout_width="18dp"
-                                android:layout_height="18dp"
-                                android:contentDescription="镜头"
-                                android:src="@drawable/ic_lens"
-                                app:tint="@color/on_dark_card_variant" />
-
-                            <TextView
-                                android:id="@+id/tvLens"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginStart="@dimen/space_8"
-                                android:ellipsize="end"
-                                android:maxLines="1"
-                                android:text=""
-                                android:textColor="@color/on_dark_card_variant"
-                                android:textSize="@dimen/font_nav" />
-                        </LinearLayout>
+                        <!-- 2026-10-17：电池 / 存储卡 / 剩余可拍 / 镜头四行整体搬进设备页下方的
+                             参数四宫格，本卡不再重复一遍（原来四行 + 相机名占了大半张卡的纵向空间，
+                             却和下面的网格说的是同一批数）。卡片只保留状态行与相机全称 + 连接/断开。 -->
 
                         <!-- 连接 / 断开按钮 -->
                         <com.google.android.material.button.MaterialButton
@@ -229,6 +84,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="48dp"
                             android:layout_marginTop="18dp"
+                            android:maxLines="1"
                             android:text="@string/btn_connect_text"
                             android:visibility="gone" />
 
@@ -238,6 +94,7 @@
                             android:layout_width="match_parent"
                             android:layout_height="48dp"
                             android:layout_marginTop="18dp"
+                            android:maxLines="1"
                             android:text="@string/btn_disconnect_text"
                             android:visibility="gone" />
                     </LinearLayout>

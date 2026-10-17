@@ -7,6 +7,9 @@
      一步 —— 候选栏因而恒为空，只会永久摆一张空态卡 + 一个「手动输入相机 IP」按钮，
      与真实流程无关。对应的渲染调用同步从 DashboardFragment 移除，手动 IP 入口在 AP 侧
      一并撤掉（STA 侧保留，那才是它真正的用武之地）。 -->
+<!-- 2026-10-17 按钮合行：「连接相机 Wi-Fi」从本页签卡片搬进 fragment_dashboard 的
+     actionContainer，与「连接相机」并排成一行，纵向省出一整颗按钮的高度（46dp + 间距）。
+     点击行为与 showApWifiDialog() 零改动，只换了摆放位置。 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:app="http://schemas.android.com/apk/res-auto"
     android:orientation="vertical">
 
@@ -49,21 +52,14 @@
                                 android:textColor="@color/text_secondary"
                                 android:textSize="@dimen/font_caption" />
 
-                            <!-- 独立入口：Wi-Fi 连接（原为「连接相机」触发的系统弹窗，拆分为单独按钮） -->
-                            <com.google.android.material.button.MaterialButton
-                                android:id="@+id/btnApWifiConnect"
-                                style="@style/NlButton.Outline"
-                                android:layout_width="match_parent"
-                                android:layout_height="46dp"
-                                android:layout_marginTop="10dp"
-                                android:text="@string/btn_ap_wifi_connect_text" />
-
+                            <!-- 独立入口：Wi-Fi 连接（按钮本体已搬进 actionContainer 与「连接相机」同行，
+                                 这里只留状态行作为它的眼睛） -->
                             <!-- 连接教程：默认收起，仅留一个展开按钮（点击后展开） -->
                             <LinearLayout
                                 android:id="@+id/apGuideHeader"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginTop="@dimen/space_12"
+                                android:layout_marginTop="@dimen/space_8"
                                 android:background="?attr/selectableItemBackground"
                                 android:gravity="center_vertical"
                                 android:orientation="horizontal"

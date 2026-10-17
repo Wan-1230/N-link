@@ -51,6 +51,7 @@ import timber.log.Timber
 import com.nikonlink.app.databinding.FragmentDashboardBinding
 import com.nikonlink.app.device.ftp.FtpPushServer
 import com.nikonlink.app.shared.common.AppSettings
+import com.nikonlink.app.camera.params.CameraInfo
 import com.nikonlink.app.camera.params.CameraParamsViewModel
 import com.nikonlink.app.camera.params.ShutterCountSource
 import com.nikonlink.app.camera.params.ShutterCountState
@@ -149,6 +150,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         setupModeTabs()
         setupModeActions()
         setupApWifiEntry()
+        setupStaManualIpEntry()
         setupGuideToggles()
         setupStaArch()
         paramsViewModel.readAll()
@@ -314,90 +316,14 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             }
         }
 
-        // 相机信息：有真实数据才展示对应行，读不到时整行隐藏，不遗留横杠占位
+        // 相机信息 → 参数四宫格（2026-10-17 改版）
+        // 旧规则是「读不到就整行隐藏」，因为那些行挤在设备卡里，留一行空着比没有更糟。
+        // 现在这四个格子是页面底部的固定栅格，格子本身不能消失（否则网格塌成不规则形状），
+        // 所以改为一律展示、读不到摆「—」，并把「为什么没有数」写进副行。
         viewLifecycleOwner.lifecycleScope.launch {
             paramsViewModel.cameraInfo.collect { info ->
-                binding.cardDevice.rowBattery.visibility =
-                    if (info.batteryLevel >= 0) View.VISIBLE else View.GONE
-                if (info.batteryLevel >= 0) {
-                    binding.cardDevice.tvBattery.text = "${info.batteryLevel}%"
-                }
-
-                binding.cardDevice.rowStorage.visibility =
-                    if (info.storageTotalMb > 0) View.VISIBLE else View.GONE
-                if (info.storageTotalMb > 0) {
-                    val usedPct =
-                        ((info.storageTotalMb - info.storageFreeMb) * 100 / info.storageTotalMb).toInt()
-                    binding.cardDevice.pbStorage.progress = usedPct.coerceIn(0, 100)
-                    binding.cardDevice.tvStorage.text =
-                        if (info.storageDescription.isNotBlank()) {
-                            "${info.storageDescription} · ${formatMb(info.storageTotalMb - info.storageFreeMb)} / ${formatMb(info.storageTotalMb)}"
-                        } else {
-                            "${formatMb(info.storageTotalMb - info.storageFreeMb)} / ${formatMb(info.storageTotalMb)}"
-                        }
-                    // 估算剩余可拍张数（按单张 ~25MB RAW 计）
-                    val shots = (info.storageFreeMb / 25).toInt()
-                    binding.cardDevice.tvShotsRemaining.text = "约 $shots 张"
-                }
-                binding.cardDevice.rowShotsRemaining.visibility =
-                    if (info.storageTotalMb > 0) View.VISIBLE else View.GONE
-
-                binding.cardDevice.rowLens.visibility =
-                    if (info.lensName.isNotBlank()) View.VISIBLE else View.GONE
+                renderParamTiles(info)
                 if (info.modelName.isNotBlank()) renderCameraName()
-                if (info.lensName.isNotBlank()) binding.cardDevice.tvLens.text = info.lensName
-
-                // 快门次数：尼康无快门计数 PTP 属性，读数来自样张照片 MakerNote 的 0x00A7。
-                // 来源与可信度必须呈现给用户 —— 「未校验」表示只过了数值合理性、没过恒等式；
-                // 「云端解析」表示原片被交给第三方解析，见 PRD v2.4。
-                val shutterRowVisible = info.shutterQueryState != ShutterCountState.NONE ||
-                        info.modelName.isNotBlank()
-                binding.rowShutterCount.visibility =
-                    if (shutterRowVisible) View.VISIBLE else View.GONE
-                binding.tvShutterCount.text = when (info.shutterQueryState) {
-                    ShutterCountState.QUERYING -> getString(R.string.shutter_count_querying)
-                    ShutterCountState.SUCCESS -> buildString {
-                        append(getString(R.string.shutter_count_value, info.shutterCount))
-                        // FR-10：样张之间对不上就报区间。快门计数不会倒退，
-                        // 从两个数里挑一个装成精确值，比承认"这几张解得不一致"更坏。
-                        info.shutterCountRange?.let {
-                            append(getString(R.string.shutter_count_spread, it.first, it.last))
-                        }
-                        append(
-                            if (info.shutterCountSource == ShutterCountSource.CLOUD) {
-                                getString(R.string.shutter_count_source_cloud)
-                            } else if (info.shutterVerified) {
-                                getString(R.string.shutter_count_source_local)
-                            } else {
-                                getString(R.string.shutter_count_source_local_unverified)
-                            }
-                        )
-                        // Z8/Z9 等机身的 0x00A7 含电子快门触发，与售后口径不一致时把仅机械值一并给出
-                        if (info.shutterMechanicalCount in 0 until info.shutterCount) {
-                            append(getString(R.string.shutter_count_mechanical, info.shutterMechanicalCount))
-                        }
-                    }
-                    ShutterCountState.FAILED -> getString(
-                        when (info.shutterFailReason) {
-                            ShutterFailReason.NO_MEDIA -> R.string.shutter_count_failed_no_media
-                            ShutterFailReason.PARSE_FAILED -> R.string.shutter_count_failed_parse
-                            ShutterFailReason.CONSENT_REQUIRED ->
-                                R.string.shutter_count_failed_consent
-                            else -> R.string.shutter_count_failed_read
-                        }
-                    )
-                    ShutterCountState.NONE -> getString(R.string.shutter_count_idle)
-                }
-                binding.tvShutterCount.isClickable = shutterRowVisible
-                binding.tvShutterCount.pressEffect()
-                binding.tvShutterCount.setOnClickListener {
-                    // 「本机解不出」是唯一值得点开的分支——它要问一次云端授权，不是简单重试
-                    if (info.shutterFailReason == ShutterFailReason.CONSENT_REQUIRED) {
-                        askShutterCloudConsent()
-                    } else {
-                        paramsViewModel.retryShutterCountQuery()
-                    }
-                }
 
                 binding.rowFirmware.visibility =
                     if (info.firmwareVersion.isNotBlank()) View.VISIBLE else View.GONE
@@ -420,11 +346,6 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 if (metrics.wifiFrequencyMhz > 0) {
                     binding.tvWifiBand.text =
                         "${WifiManager.bandLabel(metrics.wifiFrequencyMhz)} (${metrics.wifiFrequencyMhz} MHz)"
-                    binding.tvWifiBandCard.text =
-                        "${WifiManager.bandLabel(metrics.wifiFrequencyMhz)} · ${metrics.wifiFrequencyMhz}MHz"
-                } else if (!usbActive) {
-                    // USB 链路激活时频段卡由 USB 分支维护，避免每 2s 的指标刷新覆盖
-                    binding.tvWifiBandCard.text = "未连接"
                 }
                 binding.tvReconnectCount.text = "${metrics.reconnectCount} 次"
             }
@@ -503,9 +424,6 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 when (usbState) {
                     UsbConnectionState.CONNECTED -> {
                         usbActive = true
-                        // USB 链路下频段卡切换为 USB 状态信息（WiFi 频段无意义）
-                        binding.ivWifiBandCard.setImageResource(R.drawable.ic_usb)
-                        binding.tvWifiBandCard.text = "USB 已连接"
                         binding.cardDevice.tvConnectionStatus.text = "USB 已连接"
                         binding.panelUsb.tvUsbDevice.text = "USB 相机已连接，可直接传输照片"
                         binding.cardDevice.viewStatusIndicator.backgroundTintList = ColorStateList.valueOf(
@@ -547,11 +465,9 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                         // USB 卡片（仅 USB 面板可见）保留完整指引；状态行用短文案，见 renderStatusLine
                         binding.panelUsb.tvUsbDevice.text =
                             viewModel.usbErrorMessage.value ?: "未检测到 USB 相机"
-                        // 切回 WiFi 链路：恢复频段卡，具体频段由指标刷新补齐
+                        // 切回 WiFi 链路：频段一格由指标刷新按实际值给，这里只复位链路标记
                         if (usbActive) {
                             usbActive = false
-                            binding.ivWifiBandCard.setImageResource(R.drawable.ic_wifi_sta)
-                            binding.tvWifiBandCard.text = "未连接"
                         }
                         if (viewModel.connectionState.value == ConnectionState.DISCONNECTED) {
                             binding.cardDevice.tvConnectionStatus.text = "未连接"
@@ -725,7 +641,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 tv.visibility = View.VISIBLE
                 tv.text = "相机未接受本次连接：注册已经通过，多半是相机还没停在 STA 等待画面。\n" +
                         "请在相机菜单进入「WiFi 连接（STA mode）」，连上网络后停在等待画面，" +
-                        "再点「连接相机」自动搜索，或点空态里的「手动输入相机 IP」。"
+                        "再点「连接相机」自动搜索，或点同一行的「手动输入相机 IP」。"
             }
         }
     }
@@ -1044,24 +960,10 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             }
         }
 
-        // 快捷功能网格（缩放反馈 + 跳转）
-        binding.cardQuickRemote.pressEffect()
-        binding.cardQuickRemote.setOnClickListener {
-            (activity as? MainActivity)?.switchToTab(MainActivity.TAB_REMOTE)
-        }
-        binding.cardQuickAlbum.pressEffect()
-        binding.cardQuickAlbum.setOnClickListener {
-            (activity as? MainActivity)?.switchToTab(MainActivity.TAB_ALBUM)
-        }
-        // 当前 WiFi 频段卡片：展示当前链路频段（不可用时隐藏），点击跳设置页开启 5GHz 优先
-        binding.cardWifiSpeed.pressEffect()
-        binding.cardWifiSpeed.setOnClickListener {
-            (activity as? MainActivity)?.switchToTab(MainActivity.TAB_SETTINGS)
-        }
-        binding.cardQuickSettings.pressEffect()
-        binding.cardQuickSettings.setOnClickListener {
-            (activity as? MainActivity)?.switchToTab(MainActivity.TAB_SETTINGS)
-        }
+        // 参数四宫格里只有快门格子带动作（重试 / 授权云端解析），其余三格是纯读数，
+        // 不做跳转 —— 遥控拍摄、相机照片、传输设置本来就在底部 dock 上，
+        // 让一格写着「电池电量」却跳到设置页，点下去只会让人以为是电量详情。
+        binding.cardTileShutter.pressEffect()
 
         // 相机详情折叠组（展开/收起 + 箭头旋转动画）
         binding.rowDetailHeader.setOnClickListener {
@@ -1432,6 +1334,17 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         // （AP=一键直连/拉面板，STA=自动搜索+自动接续，USB=检测并建立通道），
         // 「扫描相机」退役（保留在布局里便于整体回退）
         binding.btnModeScan.visibility = View.GONE
+        // 2026-10-17 按钮合行：模式专属按钮跟着页签走，一行里最多出现「专属 + 连接」两颗。
+        // STA 的 FTP 推送架构不在这行里给手动 IP 入口 —— 该架构下手机是接收端，
+        // 没有"连到某个相机地址"这回事（整行此时也已隐藏）。
+        binding.btnApWifiConnect.visibility =
+            if (currentMode == ConnectMode.WIFI_AP) View.VISIBLE else View.GONE
+        binding.btnStaManualIp.visibility =
+            if (currentMode == ConnectMode.WIFI_STA && staArch != AppSettings.STA_ARCH_FTP) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
         // FR-35② 的主次表达随扫描退役一并作废：连接按钮恒等宽
         applyActionEmphasis()
     }
@@ -1477,9 +1390,21 @@ class DashboardFragment : Fragment(), GlassInsetAware {
      * 兜底，连上热点后自动起 PTP/IP 轮次（复用既有的武装-回连检测）。
      */
     private fun setupApWifiEntry() {
-        binding.panelWifiAp.btnApWifiConnect.pressEffect()
-        binding.panelWifiAp.btnApWifiConnect.setOnClickListener { showApWifiDialog() }
+        binding.btnApWifiConnect.pressEffect()
+        binding.btnApWifiConnect.setOnClickListener { showApWifiDialog() }
         renderApWifiState()
+    }
+
+    /**
+     * STA 的「手动输入相机 IP」——2026-10-17 从「已发现相机」空态卡片里提到操作行，
+     * 与「连接相机」并排。原先它只在扫描返回空时才出现，于是"扫到了别的相机、
+     * 但我要连的这台没被扫到"就没有兜底入口了；恒摆在行上才是恒有兜底。
+     * 弹窗与连接逻辑（showManualIpDialog）零改动。
+     */
+    private fun setupStaManualIpEntry() {
+        ControlStates.setEnabled(binding.btnStaManualIp, true)
+        binding.btnStaManualIp.pressEffect()
+        binding.btnStaManualIp.setOnClickListener { showManualIpDialog() }
     }
 
     /** AP 页签 Wi-Fi 状态行：手机此刻是否挂在相机热点上（SSID 可读时带上名字）。 */
@@ -1723,7 +1648,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     connectWifiCandidate(target)
                 } else {
                     // 视修复 D（STA 单按钮，参考实现对齐）：点「连接相机」= 自动搜索 +
-                    // 自动接续，不再要求先按「扫描相机」。无候选时空态给「手动输入 IP」。
+                    // 自动接续，不再要求先按「扫描相机」。扫不到时用同一行的「手动输入相机 IP」。
                     staAutoConnectArmed = true
                     // 只报「多久」，不报「怎么实现的」：用户需要的是等多久，不是 mDNS 还是网段探测。
                     binding.cardDevice.tvStatusMessage.text = "正在搜索相机（约 8 秒）…"
@@ -1867,19 +1792,12 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                             append(stats.probeTimeout)
                         }
                     }
-                // 空态与诊断**并存**：行动按钮必须一直在（手动 IP 是 STA 最后的兜底），
-                // 诊断只是按钮下面的一段补充。旧写法是二选一 —— 一旦有诊断串按钮就消失，
-                // 用户只能靠诊断尾句「可点「连接」手动输入相机 IP」去找入口，而那个入口
-                // 早已随扫描按钮退役。现在按钮恒在，不再需要那句指路。
+                // 2026-10-17：这一栏只剩一句结论 + 下面的诊断补充。
+                // 「手动输入相机 IP」提到了操作行（与「连接相机」并排，恒在），
+                // 相机图标也撤了 —— 候选区就在页签卡片正下方，一张 72dp 的相机占位图
+                // 既不代表任何状态，又把「未发现相机」这句结论挤到需要滚动才看见的位置。
                 container.addView(
-                    emptyState(
-                        "未发现相机，请确认相机与手机在同一网络",
-                        iconRes = R.drawable.ic_camera_hero,
-                        // 视修复 D：单按钮流程里手动 IP 是最后的兜底入口，
-                        // 收进空态的行动按钮（原来挂在已退役的扫描按钮旁）
-                        actionText = "手动输入相机 IP",
-                        onAction = { showManualIpDialog() }
-                    )
+                    emptyState("未发现相机，请确认相机与手机在同一网络")
                 )
                 if (diagnosticText != null) {
                     container.addView(emptyHint(diagnosticText))
@@ -2018,6 +1936,140 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             .setNegativeButton("取消", null)
             .show()
     }
+
+    /**
+     * 设备页参数四宫格：快门次数 / 镜头 / 电池电量 / 存储卡。
+     *
+     * 四格恒在，读数没到的格子摆「—」而不是隐藏 —— 编一个默认值的代价是用户照着一个假数
+     * 做决定，空格的代价只是"这一格暂时没信息"。真正的信息量放在副行：快门次数必须交代
+     * 来源与可信度（本机解析是否过 `0x00A5+0x00A6==0x00A7` 恒等式、还是交给了云端），
+     * 读不出来时副行就是下一步动作（点按重试 / 授权云端）。
+     */
+    private fun renderParamTiles(info: CameraInfo) {
+        // 快门次数：机身没有快门计数的 PTP 属性，读数来自样张照片 MakerNote 的 0x00A7
+        binding.tvTileShutter.text = when (info.shutterQueryState) {
+            ShutterCountState.SUCCESS -> info.shutterCountRange
+                // FR-10：样张之间对不上就报区间。快门计数不会倒退，从两个数里挑一个装成
+                // 精确值，比承认"这几张解得不一致"更坏。
+                ?.let { "${it.first}–${it.last}" }
+                ?: info.shutterCount.toString()
+            ShutterCountState.QUERYING -> getString(R.string.shutter_count_querying)
+            else -> getString(R.string.tv_tile_placeholder_text)
+        }
+        val shutterSourceNote = when {
+            info.shutterCountSource == ShutterCountSource.CLOUD ->
+                getString(R.string.shutter_count_source_cloud)
+            info.shutterVerified -> getString(R.string.shutter_count_source_local)
+            else -> getString(R.string.shutter_count_source_local_unverified)
+        }
+        // Z8/Z9 等机身的 0x00A7 含电子快门触发，与售后口径不一致时把仅机械值一并给出
+        val mechanical = if (info.shutterMechanicalCount in 0 until info.shutterCount) {
+            getString(R.string.shutter_count_mechanical, info.shutterMechanicalCount)
+        } else ""
+        bindTileSub(
+            binding.tvTileShutterSub,
+            when (info.shutterQueryState) {
+                ShutterCountState.SUCCESS -> shutterSourceNote + mechanical
+                ShutterCountState.QUERYING -> null
+                ShutterCountState.FAILED -> getString(
+                    when (info.shutterFailReason) {
+                        ShutterFailReason.NO_MEDIA -> R.string.shutter_count_failed_no_media
+                        ShutterFailReason.PARSE_FAILED -> R.string.shutter_count_failed_parse
+                        ShutterFailReason.CONSENT_REQUIRED -> R.string.shutter_count_failed_consent
+                        else -> R.string.shutter_count_failed_read
+                    }
+                )
+                ShutterCountState.NONE -> getString(R.string.shutter_count_idle)
+            }
+        )
+        bindTileAction(
+            binding.cardTileShutter,
+            enabled = info.shutterQueryState != ShutterCountState.QUERYING,
+            onClick = {
+                // 「本机解不出」是唯一值得点开的分支——它要问一次云端授权，不是简单重试
+                if (info.shutterFailReason == ShutterFailReason.CONSENT_REQUIRED) {
+                    askShutterCloudConsent()
+                } else {
+                    paramsViewModel.retryShutterCountQuery()
+                }
+            }
+        )
+
+        // 镜头：机身给的名称普遍很长（NIKKOR Z 24-70mm f/4 S），值行给它两行，
+        // 副行只放结构化焦段 / 光圈，读不到就不占一行
+        binding.tvTileLens.text = if (info.lensName.isNotBlank()) {
+            info.lensName
+        } else {
+            getString(R.string.tv_tile_placeholder_text)
+        }
+        val lensSpec = if (info.lensFocalMaxMm > 0) {
+            val focal = if (info.lensFocalMinMm == info.lensFocalMaxMm) {
+                fmtMm(info.lensFocalMinMm)
+            } else {
+                "${fmtMm(info.lensFocalMinMm)}-${fmtMm(info.lensFocalMaxMm)}"
+            }
+            val ap = if (info.lensMaxApAtMinFocalX100 == info.lensMaxApAtMaxFocalX100) {
+                fmtAp(info.lensMaxApAtMinFocalX100)
+            } else {
+                "${fmtAp(info.lensMaxApAtMinFocalX100)}-${fmtAp(info.lensMaxApAtMaxFocalX100)}"
+            }
+            listOf(focal.takeIf { info.lensFocalMinMm > 0 }, ap.takeIf { ap.isNotBlank() })
+                .filterNotNull()
+                .joinToString(" · ")
+        } else ""
+        bindTileSub(binding.tvTileLensSub, lensSpec.takeIf { info.lensName.isNotBlank() })
+
+        // 电池
+        binding.tvTileBattery.text = if (info.batteryLevel >= 0) {
+            "${info.batteryLevel}%"
+        } else {
+            getString(R.string.tv_tile_placeholder_text)
+        }
+
+        // 存储卡：值行给剩余空间，进度条给占用比，副行给「还能拍几张 · 卡总量」
+        if (info.storageTotalMb > 0) {
+            binding.tvTileStorage.text = "${formatMb(info.storageFreeMb)} 可用"
+            val usedPct =
+                ((info.storageTotalMb - info.storageFreeMb) * 100 / info.storageTotalMb).toInt()
+            binding.pbTileStorage.progress = usedPct.coerceIn(0, 100)
+            binding.pbTileStorage.visibility = View.VISIBLE
+            // 估算剩余可拍张数（按单张 ~25MB RAW 计）—— 是估算，副行如实写「约」
+            val shots = (info.storageFreeMb / 25).toInt()
+            val card = info.storageDescription
+                .takeIf { it.isNotBlank() }
+                ?.let { " · $it" }
+                .orEmpty()
+            bindTileSub(binding.tvTileStorageSub, "约 $shots 张 · 共 ${formatMb(info.storageTotalMb)}$card")
+        } else {
+            binding.tvTileStorage.text = getString(R.string.tv_tile_placeholder_text)
+            binding.pbTileStorage.visibility = View.GONE
+            bindTileSub(binding.tvTileStorageSub, null)
+        }
+    }
+
+    /** 格子的副行：空或 null 时整行隐藏，不留一行空字把格子撑出多余间距 */
+    private fun bindTileSub(subView: android.widget.TextView, sub: String?) {
+        if (sub.isNullOrBlank()) {
+            subView.visibility = View.GONE
+        } else {
+            subView.text = sub
+            subView.visibility = View.VISIBLE
+        }
+    }
+
+    /** 快门格子的点击：只在有动作可给时可点，查询中不给假反馈（禁用态无按压反馈） */
+    private fun bindTileAction(tile: View, enabled: Boolean, onClick: () -> Unit) {
+        ControlStates.setEnabled(tile, enabled)
+        tile.isClickable = enabled
+        tile.setOnClickListener(if (enabled) { View.OnClickListener { onClick() } } else null)
+    }
+
+    private fun fmtMm(mm: Double): String =
+        if (mm % 1.0 == 0.0) "${mm.toInt()}mm" else String.format("%.1fmm", mm)
+
+    private fun fmtAp(x100: Int): String =
+        if (x100 <= 0) "" else "f/" + (if (x100 % 100 == 0) (x100 / 100).toString()
+        else String.format("%.1f", x100 / 100.0))
 
     private fun formatMb(mb: Long): String =
         if (mb >= 1024) String.format("%.1f GB", mb / 1024f) else "$mb MB"

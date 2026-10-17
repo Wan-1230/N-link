@@ -87,6 +87,8 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="10dp"
+            android:ellipsize="end"
+            android:maxLines="1"
             android:text="@string/tv_remote_status_text"
             android:textColor="@color/text_tertiary"
             android:textSize="@dimen/font_nav" />
