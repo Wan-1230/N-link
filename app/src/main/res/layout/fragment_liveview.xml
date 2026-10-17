@@ -234,7 +234,9 @@
             android:layout_width="220dp"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
+            android:ellipsize="end"
             android:gravity="center"
+            android:maxLines="2"
             android:text="@string/tv_state_desc_text"
             android:textColor="@color/lv_text_dim"
             android:textSize="@dimen/font_nav" />
@@ -541,6 +543,8 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
+                    android:ellipsize="end"
+                    android:maxLines="2"
                     android:text="@string/tv_focus_hint_text"
                     android:textColor="@color/lv_text_dim"
                     android:textSize="@dimen/font_foot" />

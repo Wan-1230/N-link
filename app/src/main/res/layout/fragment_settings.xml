@@ -743,7 +743,7 @@
                         android:id="@+id/tvUpdateValue"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="0.1.2"
+                        android:maxLines="1"
                         android:textColor="@color/text_tertiary"
                         android:textSize="@dimen/font_caption" />
 

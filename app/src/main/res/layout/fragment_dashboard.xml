@@ -131,6 +131,13 @@
                 </LinearLayout>
 
                 <!-- 扫描 / 连接 并列操作容器 -->
+                <!-- 2026-10-17 按钮合行：模式专属的那颗按钮（AP 的「连接相机 Wi-Fi」、
+                     STA 的「手动输入相机 IP」）从各自页签卡片里搬进本行，与「连接相机」
+                     并排 —— 纵向各省下一颗按钮（46dp + 上间距）。同一时刻只可能出现
+                     一颗专属按钮，显隐由 DashboardFragment.applyActionRowVisibility 按页签给。
+                     两颗按钮的点击逻辑零改动（showApWifiDialog / showManualIpDialog）。
+                     窄屏保护：12sp + 收紧内边距 + maxLines=1 + ellipsize，
+                     定高 46dp 下换行会被裁切，所以宁可省略号也不让它折行。 -->
                 <LinearLayout
                     android:id="@+id/actionContainer"
                     android:layout_width="match_parent"
@@ -147,7 +154,38 @@
                         android:layout_height="46dp"
                         android:layout_weight="1"
                         android:layout_marginEnd="6dp"
+                        android:maxLines="1"
                         android:text="@string/btn_mode_scan_text" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnApWifiConnect"
+                        style="@style/NlButton.Outline"
+                        android:layout_width="0dp"
+                        android:layout_height="46dp"
+                        android:layout_weight="1"
+                        android:layout_marginEnd="6dp"
+                        android:ellipsize="end"
+                        android:minWidth="0dp"
+                        android:paddingHorizontal="@dimen/space_8"
+                        android:maxLines="1"
+                        android:text="@string/btn_ap_wifi_connect_text"
+                        android:textSize="@dimen/font_nav"
+                        android:visibility="gone" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnStaManualIp"
+                        style="@style/NlButton.Outline"
+                        android:layout_width="0dp"
+                        android:layout_height="46dp"
+                        android:layout_weight="1"
+                        android:layout_marginEnd="6dp"
+                        android:ellipsize="end"
+                        android:minWidth="0dp"
+                        android:paddingHorizontal="@dimen/space_8"
+                        android:maxLines="1"
+                        android:text="@string/btn_sta_manual_ip_text"
+                        android:textSize="@dimen/font_nav"
+                        android:visibility="gone" />
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btnModeConnect"
@@ -155,7 +193,9 @@
                         android:layout_width="0dp"
                         android:layout_height="46dp"
                         android:layout_weight="1"
-                        android:layout_marginStart="6dp"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:paddingHorizontal="@dimen/space_8"
                         android:text="@string/btn_mode_connect_text" />
                 </LinearLayout>
 
@@ -168,7 +208,15 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="@dimen/module_gap" />
 
-                <!-- 快捷功能网格 2x2 -->
+                <!-- 相机参数四宫格（2026-10-17 改版）
+                     原先这里是四张快捷入口卡（遥控拍摄 / 查看相册 / WiFi 频段 / 传输设置）。
+                     跳转能力与底部 dock 完全重复（拍摄 = tabRemote、相机照片 = tabTransfer、
+                     设置 = tabSettings），频段又与「相机详情」折叠组里的 Wi-Fi 频行重复，
+                     于是这四格改为承载相机参数：快门次数 / 镜头 / 电池电量 / 存储卡（含剩余可拍）。
+                     设备卡与详情组里对应的行同步删除，一条信息只出现在一个地方。
+                     几何：沿用 96dp 定高 + columnWeight=1 两列 + space_12 行距，窄屏（320dp）
+                     下每格仍拿到约 (屏宽-页边距×2-6)/2 的宽度；三行文字全部 maxLines=1 +
+                     ellipsize=end，定高容器内绝不允许换行裁切。 -->
                 <GridLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -176,113 +224,254 @@
                     android:columnCount="2">
 
                     <LinearLayout
-                        android:id="@+id/cardQuickRemote"
+                        android:id="@+id/cardTileShutter"
                         android:layout_width="0dp"
                         android:layout_height="96dp"
                         android:layout_columnWeight="1"
                         android:layout_marginEnd="6dp"
                         android:layout_marginBottom="@dimen/space_12"
                         android:background="@drawable/bg_card"
-                        android:gravity="center"
+                        android:gravity="center_vertical"
                         android:orientation="vertical"
-                        android:paddingVertical="@dimen/space_20">
+                        android:paddingHorizontal="@dimen/space_12"
+                        android:paddingVertical="@dimen/space_12">
 
-                        <ImageView
-                            android:layout_width="24dp"
-                            android:layout_height="24dp"
-                            android:contentDescription="遥控拍摄"
-                            android:src="@drawable/ic_nav_camera"
-                            app:tint="@color/text_primary" />
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal">
+
+                            <ImageView
+                                android:layout_width="16dp"
+                                android:layout_height="16dp"
+                                android:contentDescription="@string/txt_快门次数"
+                                android:src="@drawable/ic_nav_camera"
+                                android:importantForAccessibility="no"
+                                app:tint="@color/text_tertiary" />
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="6dp"
+                                android:layout_weight="1"
+                                android:ellipsize="end"
+                                android:maxLines="1"
+                                android:text="@string/txt_快门次数"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="@dimen/font_foot" />
+                        </LinearLayout>
 
                         <TextView
-                            style="@style/NlText.Subtitle"
-                            android:layout_width="wrap_content"
+                            android:id="@+id/tvTileShutter"
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="@dimen/space_8"
-                            android:text="@string/txt_遥控拍摄" />
+                            android:layout_marginTop="4dp"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:text="@string/tv_tile_placeholder_text"
+                            android:textColor="@color/text_primary"
+                            android:textSize="@dimen/font_title"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/tvTileShutterSub"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:textColor="@color/text_tertiary"
+                            android:textSize="@dimen/font_foot"
+                            android:visibility="gone" />
                     </LinearLayout>
 
                     <LinearLayout
-                        android:id="@+id/cardQuickAlbum"
+                        android:id="@+id/cardTileLens"
                         android:layout_width="0dp"
                         android:layout_height="96dp"
                         android:layout_columnWeight="1"
                         android:layout_marginStart="6dp"
                         android:layout_marginBottom="@dimen/space_12"
                         android:background="@drawable/bg_card"
-                        android:gravity="center"
+                        android:gravity="center_vertical"
                         android:orientation="vertical"
-                        android:paddingVertical="@dimen/space_20">
+                        android:paddingHorizontal="@dimen/space_12"
+                        android:paddingVertical="@dimen/space_12">
 
-                        <ImageView
-                            android:layout_width="24dp"
-                            android:layout_height="24dp"
-                            android:contentDescription="查看相册"
-                            android:src="@drawable/ic_nav_album"
-                            app:tint="@color/text_primary" />
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal">
+
+                            <ImageView
+                                android:layout_width="16dp"
+                                android:layout_height="16dp"
+                                android:contentDescription="@string/txt_镜头"
+                                android:src="@drawable/ic_lens"
+                                android:importantForAccessibility="no"
+                                app:tint="@color/text_tertiary" />
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="6dp"
+                                android:layout_weight="1"
+                                android:ellipsize="end"
+                                android:maxLines="1"
+                                android:text="@string/txt_镜头"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="@dimen/font_foot" />
+                        </LinearLayout>
 
                         <TextView
-                            style="@style/NlText.Subtitle"
-                            android:layout_width="wrap_content"
+                            android:id="@+id/tvTileLens"
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="@dimen/space_8"
-                            android:text="@string/txt_查看相册" />
+                            android:layout_marginTop="4dp"
+                            android:ellipsize="end"
+                            android:maxLines="2"
+                            android:text="@string/tv_tile_placeholder_text"
+                            android:textColor="@color/text_primary"
+                            android:textSize="@dimen/font_body"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/tvTileLensSub"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:textColor="@color/text_tertiary"
+                            android:textSize="@dimen/font_foot"
+                            android:visibility="gone" />
                     </LinearLayout>
 
                     <LinearLayout
-                        android:id="@+id/cardWifiSpeed"
+                        android:id="@+id/cardTileBattery"
                         android:layout_width="0dp"
                         android:layout_height="96dp"
                         android:layout_columnWeight="1"
                         android:layout_marginEnd="6dp"
-                        android:layout_marginBottom="@dimen/space_12"
                         android:background="@drawable/bg_card"
-                        android:gravity="center"
+                        android:gravity="center_vertical"
                         android:orientation="vertical"
-                        android:paddingVertical="@dimen/space_20">
+                        android:paddingHorizontal="@dimen/space_12"
+                        android:paddingVertical="@dimen/space_12">
 
-                        <ImageView
-                            android:id="@+id/ivWifiBandCard"
-                            android:layout_width="24dp"
-                            android:layout_height="24dp"
-                            android:contentDescription="WiFi 频段"
-                            android:src="@drawable/ic_wifi_sta"
-                            app:tint="@color/text_primary" />
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal">
+
+                            <ImageView
+                                android:layout_width="16dp"
+                                android:layout_height="16dp"
+                                android:contentDescription="@string/txt_电池电量"
+                                android:src="@drawable/ic_battery"
+                                android:importantForAccessibility="no"
+                                app:tint="@color/text_tertiary" />
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="6dp"
+                                android:layout_weight="1"
+                                android:ellipsize="end"
+                                android:maxLines="1"
+                                android:text="@string/txt_电池电量"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="@dimen/font_foot" />
+                        </LinearLayout>
 
                         <TextView
-                            android:id="@+id/tvWifiBandCard"
-                            style="@style/NlText.Subtitle"
-                            android:layout_width="wrap_content"
+                            android:id="@+id/tvTileBattery"
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="@dimen/space_8"
-                            android:text="@string/tv_wifi_band_card_text" />
+                            android:layout_marginTop="4dp"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:text="@string/tv_tile_placeholder_text"
+                            android:textColor="@color/text_primary"
+                            android:textSize="@dimen/font_title"
+                            android:textStyle="bold" />
                     </LinearLayout>
 
                     <LinearLayout
-                        android:id="@+id/cardQuickSettings"
+                        android:id="@+id/cardTileStorage"
                         android:layout_width="0dp"
                         android:layout_height="96dp"
                         android:layout_columnWeight="1"
                         android:layout_marginStart="6dp"
-                        android:layout_marginBottom="@dimen/space_12"
                         android:background="@drawable/bg_card"
-                        android:gravity="center"
+                        android:gravity="center_vertical"
                         android:orientation="vertical"
-                        android:paddingVertical="@dimen/space_20">
+                        android:paddingHorizontal="@dimen/space_12"
+                        android:paddingVertical="@dimen/space_12">
 
-                        <ImageView
-                            android:layout_width="24dp"
-                            android:layout_height="24dp"
-                            android:contentDescription="传输设置"
-                            android:src="@drawable/ic_nav_settings"
-                            app:tint="@color/text_primary" />
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal">
+
+                            <ImageView
+                                android:layout_width="16dp"
+                                android:layout_height="16dp"
+                                android:contentDescription="@string/txt_存储卡"
+                                android:src="@drawable/ic_sd_card"
+                                android:importantForAccessibility="no"
+                                app:tint="@color/text_tertiary" />
+
+                            <TextView
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="6dp"
+                                android:layout_weight="1"
+                                android:ellipsize="end"
+                                android:maxLines="1"
+                                android:text="@string/txt_存储卡"
+                                android:textColor="@color/text_secondary"
+                                android:textSize="@dimen/font_foot" />
+                        </LinearLayout>
 
                         <TextView
-                            style="@style/NlText.Subtitle"
-                            android:layout_width="wrap_content"
+                            android:id="@+id/tvTileStorage"
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="@dimen/space_8"
-                            android:text="@string/txt_传输设置" />
+                            android:layout_marginTop="4dp"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:text="@string/tv_tile_placeholder_text"
+                            android:textColor="@color/text_primary"
+                            android:textSize="@dimen/font_title"
+                            android:textStyle="bold" />
+
+                        <ProgressBar
+                            android:id="@+id/pbTileStorage"
+                            style="@style/Widget.AppCompat.ProgressBar.Horizontal"
+                            android:layout_width="match_parent"
+                            android:layout_height="3dp"
+                            android:layout_marginTop="4dp"
+                            android:max="100"
+                            android:progress="0"
+                            android:progressBackgroundTint="@color/divider"
+                            android:progressTint="@color/text_primary"
+                            android:visibility="gone" />
+
+                        <TextView
+                            android:id="@+id/tvTileStorageSub"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="2dp"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:textColor="@color/text_tertiary"
+                            android:textSize="@dimen/font_foot"
+                            android:visibility="gone" />
                     </LinearLayout>
                 </GridLayout>
 
@@ -332,31 +521,7 @@
                             android:layout_height="@dimen/divider_height"
                             android:background="@color/divider" />
 
-                        <LinearLayout
-                            android:id="@+id/rowShutterCount"
-                            android:layout_width="match_parent"
-                            android:layout_height="40dp"
-                            android:gravity="center_vertical"
-                            android:orientation="horizontal"
-                            android:visibility="gone">
-
-                            <TextView
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:text="@string/txt_快门次数"
-                                android:textColor="@color/text_secondary"
-                                android:textSize="@dimen/font_caption" />
-
-                            <TextView
-                                android:id="@+id/tvShutterCount"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:text=""
-                                android:textColor="@color/text_primary"
-                                android:textSize="@dimen/font_caption" />
-                        </LinearLayout>
-
+                        <!-- 快门次数已搬进上方参数四宫格（2026-10-17），本组不再重复一次 -->
                         <LinearLayout
                             android:id="@+id/rowFirmware"
                             android:layout_width="match_parent"
@@ -529,7 +694,9 @@
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
                     android:layout_weight="1"
+                    android:ellipsize="end"
                     android:gravity="center"
+                    android:maxLines="1"
                     android:text="@string/tab_wifi_ap_text"
                     android:textColor="@color/on_primary"
                     android:textSize="@dimen/font_nav"
@@ -540,7 +707,9 @@
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
                     android:layout_weight="1"
+                    android:ellipsize="end"
                     android:gravity="center"
+                    android:maxLines="1"
                     android:text="@string/tab_wifi_sta_text"
                     android:textColor="@color/text_primary"
                     android:textSize="@dimen/font_nav" />
@@ -550,7 +719,9 @@
                     android:layout_width="0dp"
                     android:layout_height="match_parent"
                     android:layout_weight="1"
+                    android:ellipsize="end"
                     android:gravity="center"
+                    android:maxLines="1"
                     android:text="@string/tab_usb_text"
                     android:textColor="@color/text_primary"
                     android:textSize="@dimen/font_nav" />

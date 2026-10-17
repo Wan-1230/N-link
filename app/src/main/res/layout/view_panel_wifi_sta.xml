@@ -121,7 +121,7 @@
                                 android:layout_height="wrap_content"
                                 android:layout_marginTop="6dp"
                                 android:lineSpacingExtra="3dp"
-                                android:text="首次使用先注册一次（之后不再需要）：\n  相机菜单 →「Wi-Fi连接（STA mode）」创建配置文件（旧固件在「连接至 PC」→ 网络设定里）。\n  向导连上网后会停在「正在等待连接」的画面 —— 注册必须在这一步做：\n  让手机与相机处于同一网络，回到本页点「STA 主机注册」，相机屏幕按 OK（约 10 秒）。\n  ⚠ 普通的「连接至智能设备」热点也能连上相机，但它不接受注册，点了报 0x201F。\n\n日常连接：\n  ① 手机与相机连接同一个路由器\n  ② 相机菜单进入「WiFi 连接（STA mode）」，选择该路由器，停在等待画面\n  ③ 点「连接相机」——自动搜索并接续，无需扫描\n搜不到相机时：确认相机停在等待连接画面、手机没开 VPN、路由器没开 AP 隔离（都会挡掉设备发现）；仍搜不到可点空态里的「手动输入相机 IP」"
+                                android:text="首次使用先注册一次（之后不再需要）：\n  相机菜单 →「Wi-Fi连接（STA mode）」创建配置文件（旧固件在「连接至 PC」→ 网络设定里）。\n  向导连上网后会停在「正在等待连接」的画面 —— 注册必须在这一步做：\n  让手机与相机处于同一网络，回到本页点「STA 主机注册」，相机屏幕按 OK（约 10 秒）。\n  ⚠ 普通的「连接至智能设备」热点也能连上相机，但它不接受注册，点了报 0x201F。\n\n日常连接：\n  ① 手机与相机连接同一个路由器\n  ② 相机菜单进入「WiFi 连接（STA mode）」，选择该路由器，停在等待画面\n  ③ 点「连接相机」——自动搜索并接续，无需扫描\n搜不到相机时：确认相机停在等待连接画面、手机没开 VPN、路由器没开 AP 隔离（都会挡掉设备发现）；仍搜不到可点同一行的「手动输入相机 IP」"
                                 android:textColor="@color/text_secondary"
                                 android:textSize="@dimen/font_caption"
                                 android:visibility="gone" />
@@ -167,6 +167,8 @@
                                 android:layout_width="match_parent"
                                 android:layout_height="46dp"
                                 android:layout_marginTop="14dp"
+                                android:ellipsize="end"
+                                android:maxLines="1"
                                 android:text="@string/btn_sta_host_register_text" />
 
                             <TextView

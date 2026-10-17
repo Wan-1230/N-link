@@ -115,6 +115,10 @@
     <string name="btn_mode_connect_text">连接相机</string>
     <!-- 2026-10-12 连接入口拆分：AP 页签独立 Wi-Fi 连接入口（原为「连接相机」弹窗触发） -->
     <string name="btn_ap_wifi_connect_text">连接相机 Wi-Fi</string>
+    <!-- 2026-10-17 按钮合行：STA 的「手动输入相机 IP」从空态卡片里提到操作行，与「连接相机」并排 -->
+    <string name="btn_sta_manual_ip_text">手动输入相机 IP</string>
+    <!-- 参数四宫格：读数没来之前格子里的空值占位。用一条横杠，不写「未知」这类多义串 -->
+    <string name="tv_tile_placeholder_text">—</string>
     <string name="tv_ap_wifi_state_default">未连接相机热点</string>
     <!-- 状态行只说「是什么状态」，不说「接下来点哪里」——操作路径由按钮自己表达，
          那句附带的指路既占位又和按钮文案打架（2026-10-13 连接页精简）。 -->
@@ -130,9 +134,8 @@
     <string name="dialog_ap_wifi_message_on_ap">手机已连接相机热点，可以直接连接相机。</string>
     <string name="ap_wifi_panel_opened">请在系统面板里点相机热点（NIKON_…），返回后自动继续</string>
     <string name="ap_wifi_panel_unavailable">打不开 Wi-Fi 面板，请到系统「设置 → WLAN」手动连接相机热点</string>
-    <string name="txt_遥控拍摄">遥控拍摄</string>
-    <string name="txt_查看相册">查看相册</string>
-    <string name="tv_wifi_band_card_text">WiFi 频段</string>
+    <!-- 2026-10-17 设备页四宫格改为参数展示后，这三条快捷入口文案零引用，已删；
+         「传输设置」仍被设置页分组标题使用，保留 -->
     <string name="txt_传输设置">传输设置</string>
     <string name="txt_相机详情">相机详情</string>
     <string name="txt_快门次数">快门次数</string>
@@ -217,7 +220,7 @@
     <string name="tv_connection_status_text">未连接</string>
     <string name="txt_电池电量">电池电量</string>
     <string name="txt_存储卡">存储卡</string>
-    <string name="txt_剩余可拍摄">剩余可拍摄</string>
+    <string name="txt_镜头">镜头</string>
     <string name="btn_connect_text">连接相机</string>
     <string name="btn_disconnect_text">断开连接</string>
     <string name="txt_u_s_b有线">USB 有线连接教程</string>

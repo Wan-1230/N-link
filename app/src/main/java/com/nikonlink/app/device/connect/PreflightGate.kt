@@ -62,9 +62,14 @@ class PreflightGate @Inject constructor(
             if (ok) label else "$label。${reason.hint ?: "请检查系统设置"}"
     }
 
-    /** 全量检查（供诊断面板展示，包含已通过项）。 */
-    fun checkAll(channel: String): List<Item> = buildList {
-        add(wifiSwitchOn())
+    /**
+     * 全量检查（供诊断面板展示，包含已通过项）。
+     *
+     * [hotspotMode] = STA 的「连接手机热点」子模式：手机自己是 AP，见 [wifiSwitchOn]。
+     * 默认 false，设置页诊断面板按默认走，逐机型口径与改动前一致。
+     */
+    fun checkAll(channel: String, hotspotMode: Boolean = false): List<Item> = buildList {
+        add(wifiSwitchOn(hotspotMode))
         if (channel != CHANNEL_USB) {
             add(nearbyPermission())
             add(locationSwitch())
@@ -78,8 +83,8 @@ class PreflightGate @Inject constructor(
     }
 
     /** 该通道的第一个阻塞项；null 表示可以继续连接。 */
-    fun firstBlocking(channel: String): Item? =
-        checkAll(channel).firstOrNull { !it.ok && it.blocking }
+    fun firstBlocking(channel: String, hotspotMode: Boolean = false): Item? =
+        checkAll(channel, hotspotMode).firstOrNull { !it.ok && it.blocking }
 
     /**
      * 该通道的**软告警**：不解决也照样能连，但会显著拉低成功率。
@@ -94,8 +99,8 @@ class PreflightGate @Inject constructor(
      * 才是致败因素 —— 旧实现在这里把两项一起跳过了，所以真机日志里那台带着
      * `vgate0` 反复失败的机器，VPN 告警一行都没出现过。
      */
-    fun warnings(channel: String): List<Item> =
-        checkAll(channel).filter { !it.ok && !it.blocking }
+    fun warnings(channel: String, hotspotMode: Boolean = false): List<Item> =
+        checkAll(channel, hotspotMode).filter { !it.ok && !it.blocking }
 
     /**
      * FR-33 C4：「系统因无互联网踢掉相机热点」的逐 ROM 指引文案。
@@ -110,7 +115,29 @@ class PreflightGate @Inject constructor(
 
     // ── 各项检查 ────────────────────────────────────────────────────────────
 
-    private fun wifiSwitchOn(): Item {
+    /**
+     * WLAN 开关检查。
+     *
+     * 「连接手机热点」子模式下这一条**不适用**，而不是"关着也放行"：那种接法里手机是 AP，
+     * 相机是连进来的 STA，手机侧根本没有"客户端连 WiFi"这一步。而 `WifiManager.isWifiEnabled`
+     * 读的是客户端总开关，多台 ROM 上开着个人热点时它仍返回 false（热点走 TETHERING，
+     * 与 WLAN 客户端是两套状态，ConnectivityManager 甚至不把热点接口放进 allNetworks ——
+     * 同源的坑见 [com.nikonlink.app.device.wifi_sta.LocalNetworkInterfaceResolver] 的 RC-0 注释）。
+     * 拿它当硬前提，等于在用户这边链路完全通的时候回一句「WLAN 处于关闭状态」把连接拦死。
+     *
+     * 拦掉之后链路也不会瞎跑：真正一张网都没有时，扫描与连接轮次会各自收到
+     * `no_wifi_network` / `no_camera_subnet`，那两条文案说的是"本机没有可用网络"，比这里准。
+     */
+    private fun wifiSwitchOn(hotspotMode: Boolean): Item {
+        if (hotspotMode) {
+            return Item(
+                ConnFunnel.Reason.OK,
+                "WLAN 客户端开关：本机热点模式下手机就是热点，不需要连任何 WiFi",
+                true,
+                false,
+                null
+            )
+        }
         val enabled = runCatching {
             @Suppress("DEPRECATION")
             context.getSystemService(WifiManager::class.java)?.isWifiEnabled ?: true

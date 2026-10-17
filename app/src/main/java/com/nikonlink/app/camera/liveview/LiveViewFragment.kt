@@ -144,6 +144,12 @@ class LiveViewFragment : Fragment() {
         observeState()
         updateModeEntryState()
         applyWindowInsets()
+        // 底簇是 bottom 锚定的 wrap_content，面板展开 / 参数换行都会把它整体上沿顶上去，
+        // 状态卡的避让量随之失效 —— 长高一次就重算一次（横屏可用高只有 1080px，差 100 多 px
+        // 就从"压在参数条上"变成"压在顶栏上"）。
+        binding.bottomCluster.addOnLayoutChangeListener { _, _, top, _, _, _, oldTop, _, _ ->
+            if (top != oldTop) positionLvStateCard()
+        }
         applyCompactWidthPolicy()
         binding.viewGridOverlay.setImageSource(binding.ivLiveView)
         paramsViewModel.readAll()
@@ -1006,11 +1012,36 @@ class LiveViewFragment : Fragment() {
                 ControlStates.setLoading(binding.btnStateAction, false, "", "重试监看")
             }
         }
-        // 上移半个底簇高度：卡片默认居中，横屏底簇一高就压在参数条 / 快门上（截图实锤）
-        binding.cardLvState.post {
-            if (_binding != null) {
-                binding.cardLvState.translationY = -binding.bottomCluster.height / 2f
-            }
+        // 状态卡落在「顶栏下沿 ~ 底簇上沿」这条空带的正中间。
+        //
+        // 旧写法是 `translationY = -bottomCluster.height / 2f`（只躲底簇）。横屏可用高只有
+        // 1080px，底簇本身就有 587px，于是卡片被整块抬到 y=54 起，压进顶栏把「模式」芯片
+        // 盖掉 —— 2026-10-17 模拟器 uiautomator 实锤：topBar=[0,0][2400,137]、
+        // cardLvState=[837,54][1563,440]。躲开一边、撞上另一边，是因为补偿量只数了下面。
+        positionLvStateCard()
+    }
+
+    /**
+     * 把居中状态卡钉在顶栏与底簇之间那条空带的正中。
+     *
+     * 为什么不能只算一次：`applyLvCard` 触发时底簇往往还没长到最终高度
+     * （10-17 实测 post 里读到 459px、布局完成后是 587px），按 459 算出的位置偏低，
+     * 卡片下沿压住参数条。所以底簇每次长高都要重算一遍（见 setupLvChrome 里的监听）。
+     *
+     * 空带比卡片还窄时（极端小屏 / 面板展开），卡片仍取空带中心，上下各让出一半溢出量，
+     * 不再固定往某一边叠。
+     */
+    private fun positionLvStateCard() {
+        if (_binding == null) return
+        val card = binding.cardLvState
+        card.post {
+            if (_binding == null || card.height == 0 || binding.root.height == 0) return@post
+            val bandTop = binding.topBar.bottom
+            val bandBottom = binding.root.height - binding.bottomCluster.height
+            if (bandBottom <= bandTop) return@post
+            // 卡片在 FrameLayout 里的静止位置是整屏居中，translationY 相对它计算
+            val restingTop = (binding.root.height - card.height) / 2f
+            card.translationY = (bandTop + bandBottom) / 2f - card.height / 2f - restingTop
         }
     }
 

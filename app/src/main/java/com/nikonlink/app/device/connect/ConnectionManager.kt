@@ -76,6 +76,9 @@ class ConnectionManager @Inject constructor(
         private const val PREFS_WIFI_5G_PREFER = "wifi_band_5g_prefer"
         /** FR-37：设备页 STA 架构选择的键（写侧是 `AppSettings.staArchitecture`，同一个 prefs 文件）。 */
         private const val PREFS_STA_ARCH = "sta_arch"
+
+        /** STA 子模式（`same_wifi` / `phone_hotspot`），键与 `AppSettings.staSubMode` 同源 */
+        private const val PREFS_STA_SUB_MODE = "sta_sub_mode"
         /** STA 主机注册标记：相机已记住本机 GUID（门控解除） */
         private const val PREFS_STA_HOST_REGISTERED = "sta_host_registered"
 
@@ -394,6 +397,10 @@ class ConnectionManager @Inject constructor(
         // 拿权限项把用户当前能用的连接拦掉是倒退。
         if (connFlags.isEnabled(ConnFlags.PREFLIGHT)) {
             val onCameraAp = apGatewayResolver.isOnCameraAp()
+            // 「连接手机热点」子模式：手机就是热点，WLAN 客户端开关与这条链路无关，
+            // 预检不能再拿它拦连接（详见 PreflightGate.wifiSwitchOn 的注释）。
+            // 除这一项之外的检查照旧：权限、位置开关、VPN、电池优化在热点拓扑下同样有效。
+            val hotspotMode = isPhoneHotspotMode()
             // FR-24：预检分两类。**硬阻断**（WLAN 关着、没权限）沿用"已在相机热点上
             // 就不拦"的规则；**软告警**（VPN、避开不良网络、电池优化）一律照查照报 ——
             // 恰恰是在相机热点上，这两项才是致败因素：它们会把没有网络的相机热点
@@ -401,7 +408,7 @@ class ConnectionManager @Inject constructor(
             // 机器，VPN 告警就因为这道豁免从来没有出现过。
             // 软告警**不改变任何连接/重试/绑定行为**，只上日志与状态行。
             if (connFlags.isEnabled(ConnFlags.PREFLIGHT_SOFT)) {
-                val warns = preflight.warnings(PreflightGate.CHANNEL_WIFI)
+                val warns = preflight.warnings(PreflightGate.CHANNEL_WIFI, hotspotMode)
                 warns.forEach { warn ->
                     eventLogger.event(
                         "preflight_warn", "code" to warn.reason.code, "label" to warn.label
@@ -412,7 +419,7 @@ class ConnectionManager @Inject constructor(
                 warns.lastOrNull()?.let { _statusMessage.value = it.surfaceText() }
             }
             if (!onCameraAp) {
-                val blocker = preflight.firstBlocking(PreflightGate.CHANNEL_WIFI)
+                val blocker = preflight.firstBlocking(PreflightGate.CHANNEL_WIFI, hotspotMode)
                 if (blocker != null) {
                     funnel.stage(ConnFunnel.Stage.PREFLIGHT, blocker.reason, blocker.label)
                     funnel.fail(blocker.reason, blocker.label)
@@ -1000,8 +1007,7 @@ class ConnectionManager @Inject constructor(
         val candidates = runCatching {
             scanWifiCameras(
                 timeoutMs = REG_DISCOVERY_TIMEOUT_MS,
-                hotspotMode = prefs.getString("sta_sub_mode", "") ==
-                    com.nikonlink.app.shared.common.AppSettings.STA_MODE_PHONE_HOTSPOT,
+                hotspotMode = isPhoneHotspotMode(),
                 ptpConfirm = false,
                 earlyExit = true
             )
@@ -1216,6 +1222,21 @@ class ConnectionManager @Inject constructor(
                 PREFS_STA_ARCH,
                 com.nikonlink.app.shared.common.AppSettings.STA_ARCH_PTP
             ) == com.nikonlink.app.shared.common.AppSettings.STA_ARCH_FTP
+
+    /**
+     * 设备页当前的 STA 子模式是不是「连接手机热点」。
+     *
+     * 与 [isFtpPushArchitecture] 同一个理由：不为本布尔给构造器加依赖。
+     * 键与 `AppSettings.staSubMode` 一致（`nl_settings` / `sta_sub_mode`）。
+     *
+     * 它决定两件事：扫描走热点拓扑（内核网卡枚举补网段，不依赖 ConnectivityManager），
+     * 以及预检里「WLAN 客户端开关」这条该不该拦 —— 见 [PreflightGate.wifiSwitchOn]。
+     */
+    private fun isPhoneHotspotMode(): Boolean =
+        prefs.getString(
+            PREFS_STA_SUB_MODE,
+            com.nikonlink.app.shared.common.AppSettings.STA_MODE_SAME_WIFI
+        ) == com.nikonlink.app.shared.common.AppSettings.STA_MODE_PHONE_HOTSPOT
 
     /**
      * 监听状态机变化，更新 UI 状态

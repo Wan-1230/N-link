@@ -212,7 +212,7 @@
         android:gravity="center_horizontal"
         android:orientation="vertical"
         android:paddingHorizontal="28dp"
-        android:paddingVertical="@dimen/space_16"
+        android:paddingVertical="10dp"
         android:visibility="gone">
 
         <TextView
@@ -229,7 +229,9 @@
             android:layout_width="220dp"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
+            android:ellipsize="end"
             android:gravity="center"
+            android:maxLines="2"
             android:text="@string/tv_state_desc_text"
             android:textColor="@color/lv_text_dim"
             android:textSize="@dimen/font_nav" />
@@ -238,7 +240,7 @@
             android:id="@+id/btnStateAction"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_12"
+            android:layout_marginTop="@dimen/space_8"
             android:background="@drawable/bg_lv_action"
             android:paddingHorizontal="@dimen/space_24"
             android:paddingVertical="@dimen/space_8"
@@ -525,6 +527,8 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
+                    android:ellipsize="end"
+                    android:maxLines="2"
                     android:text="@string/tv_focus_hint_text"
                     android:textColor="@color/lv_text_dim"
                     android:textSize="@dimen/font_foot" />
