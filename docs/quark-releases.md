@@ -5,6 +5,7 @@
 
 | 版本 | 日期 | 夸克（固定） | 百度（本版新链接） | 归档去向 |
 |---|---|---|---|---|
+| v3.3.2 | 2026-10-18 | https://pan.quark.cn/s/d060f7f350e8 | https://pan.baidu.com/s/15tvlyYPnHYJfYIsJckTDcA?pwd=ocfn | 夸克/百度 `_archive-releases/`：v3.3.1 APK + version-info（百度侧改名 `version-info-v3.3.1.txt`，并把上一版遗留的裸名 `version-info.txt` 补记为 `version-info-v3.3.0.txt`） |
 | v3.3.1 | 2026-10-16 | https://pan.quark.cn/s/d060f7f350e8 | https://pan.baidu.com/s/1MYImdeo2ch67IK2vXd-xUA?pwd=f21e | 夸克/百度 `_archive-releases/`：v3.3.0 APK + version-info |
 | v3.3.0 | 2026-10-16 | https://pan.quark.cn/s/d060f7f350e8 | https://pan.baidu.com/s/1DyneXLKntiEXsLtfQcx14g?pwd=46ym | 夸克/百度 `_archive-releases/`：v3.2.0 APK；version-info 夸克侧撞名落成 `version-info(7).txt`、百度侧已改名 `version-info-v3.2.0.txt` |
 | v3.2.0 | 2026-10-15 | https://pan.quark.cn/s/d060f7f350e8 | 未记录（发版时漏建本行，链接不凭记忆补） | 于 v3.3.0 发版时归档 |
@@ -14,6 +15,8 @@
 | v3.0.0 | 2026-10-03 | https://pan.quark.cn/s/d060f7f350e8 | https://pan.baidu.com/s/2ynD1puzNSAgJHiUFRiWlw?pwd=whet | 夸克/百度 `_archive-releases/`：v2.6.1 APK + version-info-v2.6.1.txt |
 
 ## 归档记录
+
+- 2026-10-18（v3.3.2）：APK 4,279,562B、`version-info.txt` 1,317B，两盘字节一致，SHA-256 `aeefc0c5…8949`，签名 `CN=N-Link`。**两盘都按「先归档腾名 → 再上传新版」执行，全程零撞名**：夸克侧 `move` 旧 v3.3.1 APK 与旧 `version-info.txt` → `_archive-releases/`（fid 当次 browse 即取即用），再上传两个规范名文件；百度侧 `mv` 旧 APK 成功，但旧 `version-info.txt` 首次 `mv` 被拒（归档区已存在同名裸名文件，CLI 直接打印 usage 而非报错），改为先 `rename` 那个 1.2KB 遗留文件为 `version-info-v3.3.0.txt` 腾名 → `mv` → 再 `rename` 成 `version-info-v3.3.1.txt`。**教训：百度归档 version-info 必须在移入前先改名**，否则与归档区遗留裸名相撞且 `mv` 静默失败。百度本版分享只生成一次（`15tvlyYPnHYJfYIsJckTDcA`，`-d 0` 永久，提取码 `ocfn`）。公开校验：夸克走 sharepage token + detail 两层（注意 detail 字段名是 `file_name` 不是 `filename`），百度走 `transfer list --source-dir /releases`，两盘均恰好 2 项。Release body 两行标记已按 `QUARK_URL_REGEX` / `BAIDU_LINK_REGEX` 实跑自检命中。
 
 - 2026-10-16（v3.3.1）：APK 4,277,954B、`version-info.txt` 809B（两盘字节一致，SHA-256 `e9887f1f…55a2`）。**夸克侧重演了 v1.2.2 的 version-info 撞名**：目录已有旧 `version-info.txt`，新文件被自动改名落成 `version-info(1).txt`；按参考文档规定顺序补救——先把旧 `version-info.txt` 与旧 `N-Link-v3.3.0-release.apk` 一并 `move` 到 `_archive-releases/`（取当次 browse 的 fid），再用 `rename`（items JSON 需 `schema_version:1` + `fid`/`old_name`/`new_name`）把 `version-info(1).txt` 改回规范名，browse 复核 releases 恰好 2 项且字节一致。夸克分享复用固定链接未新建。百度侧按「先归档腾名 → 再上传」零撞名：`mv` 旧 v3.3.0 APK 与旧 version-info → `_archive-releases/`，再上传两个规范名文件；分享**只生成一次**（`1MYImdeo2ch67IK2vXd-xUA`，`-d 0` 永久，提取码 `f21e`）。两处网盘的 body 标记已按 App 的 `QUARK_URL_REGEX` / `BAIDU_LINK_REGEX` 逐行自检通过。
 
