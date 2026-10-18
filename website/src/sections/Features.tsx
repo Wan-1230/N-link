@@ -10,7 +10,6 @@ export function Features() {
     <section className="section ft" id="features">
       <div className="shell">
         <div className="sec-head">
-          <p className="eyebrow">{dict.features.eyebrow}</p>
           <h2>{dict.features.title}</h2>
           <p className="lede">{dict.features.lede}</p>
         </div>

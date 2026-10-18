@@ -15,7 +15,6 @@ export function How() {
     <section className="section hw" id="how">
       <div className="shell">
         <div className="sec-head">
-          <p className="eyebrow">{dict.how.eyebrow}</p>
           <h2>{dict.how.title}</h2>
           <p className="lede">{dict.how.lede}</p>
         </div>

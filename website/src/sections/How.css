@@ -6,12 +6,17 @@
   border: 1px solid var(--hairline);
   background: var(--surface-glass);
   margin-bottom: var(--sp-6);
+  /* M3：320 宽放不下三个标签时横向滚动，而不是把标签折成两行 */
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
 .hw__tab {
   padding: 8px 18px;
   border-radius: var(--r-pill);
   font-size: 0.86rem;
+  white-space: nowrap;
   color: var(--fg-dim);
   transition:
     background var(--dur-2) var(--ease-out-expo),
@@ -139,9 +144,10 @@
 .hw__tip {
   margin-top: var(--sp-3);
   padding: 10px 12px;
-  border-left: 2px solid var(--accent);
-  border-radius: 0 var(--r-sm) var(--r-sm) 0;
-  background: rgba(255, 225, 0, 0.05);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: var(--surface-glass);
+  box-shadow: var(--el-ring);
   font-size: 0.84rem;
   color: var(--fg-dim);
 }

@@ -15,6 +15,8 @@
   border-radius: inherit;
   padding: 1px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0) 42%);
+  /* mask 里的实心色只取 alpha 通道，不是页面用色；换成任何全不透明的颜色效果一致，
+     所以这里的字面色量不算「未偏移的中性色」。 */
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;

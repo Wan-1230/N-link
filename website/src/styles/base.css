@@ -8,6 +8,9 @@ html {
   -webkit-text-size-adjust: 100%;
   scroll-behavior: smooth;
   scroll-padding-top: calc(var(--nav-h) + var(--sp-4));
+  /* M1：用 clip 而不是 hidden。hidden 会把 html/body 变成滚动容器，
+     静默废掉所有 sticky 后代；clip 只裁横向溢出不建立滚动上下文。 */
+  overflow-x: clip;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -24,7 +27,7 @@ body {
   font-size: 16px;
   line-height: 1.65;
   -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 h1,

@@ -34,7 +34,7 @@ export function Trust() {
             <li key={m.label}>
               <GlassCard className="tr__metric">
                 <p className="tr__num plate">
-                  <Counter to={m.value} prefix={m.prefix} suffix={m.suffix} />
+                  <Counter to={m.value} decimals={m.decimals} prefix={m.prefix} suffix={m.suffix} />
                 </p>
                 <p className="tr__label">{m.label}</p>
                 <p className="tr__note">{m.note}</p>

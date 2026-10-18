@@ -10,7 +10,6 @@ export function Why() {
     <section className="section wh" id="why">
       <div className="shell">
         <div className="sec-head">
-          <p className="eyebrow">{dict.why.eyebrow}</p>
           <h2>{dict.why.title}</h2>
           <p className="lede">{dict.why.lede}</p>
         </div>

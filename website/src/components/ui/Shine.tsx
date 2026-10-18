@@ -8,8 +8,8 @@ import './Shine.css';
  */
 export function Shine({
   text,
-  base = '#ffe100',
-  hot = '#fff8c2',
+  base = 'var(--accent)',
+  hot = 'var(--accent-hot)',
   speed = 3,
 }: {
   text: string;

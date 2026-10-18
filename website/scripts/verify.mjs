@@ -13,6 +13,8 @@ const VIEWPORTS = [
   ['laptop', 1280, 800],
   ['tablet', 820, 1180],
   ['mobile', 390, 844],
+  // finesse 移动端门禁要求 320 档：按钮换行与长词溢出这两类问题只有这里会暴露
+  ['small', 320, 568],
 ];
 
 const HOME_SECTIONS = ['trust', 'pipeline', 'features', 'why', 'how', 'roadmap', 'tech'];
@@ -20,8 +22,10 @@ const HOME_SECTIONS = ['trust', 'pipeline', 'features', 'why', 'how', 'roadmap',
 const snapshot = JSON.parse(fs.readFileSync(path.join(ROOT, 'src/data/releases.json'), 'utf8'));
 const expectVersion = snapshot.latestTag;
 
-// 与 src/i18n/zh.ts 的 trust.metrics 对齐；改字典必须同时改这里（默认语言为 zh）
-const EXPECTED_NUMS = ['<3s', '<200ms', '46档', '40个'];
+// 从字典推导，而不是在这里再抄一份：抄件会让「改字典必须同步改脚本」这条
+// 注释变成潜在的真错误源（本次内容改版就一次性撞上了四项数值变更）。
+import { zh } from '../src/i18n/zh.ts';
+const EXPECTED_NUMS = zh.trust.metrics.map((m) => `${m.prefix}${m.value.toFixed(m.decimals)}${m.suffix}`.replace(/\s+/g, ''));
 
 // 体积在 node 侧对 dist 逐文件 gzip 求和：vite preview 默认不压缩，
 // 用浏览器 encodedBodySize 量到的是未压缩字节，等于没量。
@@ -34,9 +38,9 @@ const jsBytes = fs.existsSync(ASSETS)
   : 0;
 
 let failures = 0;
-const check = (label, ok) => {
+const check = (label, ok, detail) => {
   if (!ok) failures++;
-  console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${label}`);
+  console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${label}${ok || !detail ? '' : `  → ${detail}`}`);
 };
 
 const browser = await chromium.launch();
@@ -85,6 +89,18 @@ for (const [name, width, height] of VIEWPORTS) {
     const levels = [...document.querySelectorAll('h1,h2,h3,h4')].map((h) => Number(h.tagName[1]));
     let jumps = 0;
     for (let i = 1; i < levels.length; i++) if (levels[i] - levels[i - 1] > 1) jumps++;
+    // M3：文字标签在任何宽度下都不许被折成两行。
+    // 只看有文字的控件；行数以「内容高度 ÷ 行高」判定，避免把图标控件的
+    // 多个 getClientRects 误读成两行。
+    const wrappedLines = (el) => {
+      const cs = getComputedStyle(el);
+      const lh = cs.lineHeight === 'normal' ? parseFloat(cs.fontSize) * 1.4 : parseFloat(cs.lineHeight);
+      const content = el.getBoundingClientRect().height - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+      return content > lh * 1.8;
+    };
+    // M3 只管**可点击**的文字标签：按钮、导航项、页脚链接、tab。
+    // 信息性 chip（协议名等）折行是正常排版，不该算违规。
+    const labelEls = [...document.querySelectorAll('a, button')].filter((el) => (el.innerText ?? '').trim().length > 0);
     return {
       missing: ids.filter((id) => !document.getElementById(id)),
       hasChangelog: !!document.getElementById('changelog'),
@@ -104,6 +120,12 @@ for (const [name, width, height] of VIEWPORTS) {
           return r.width > 0 && r.height > 0 && (r.height < 24 || r.width < 24);
         }).length,
       jumps,
+      labels: labelEls.filter((el) => el.getBoundingClientRect().width > 0).length,
+      wrapped: labelEls.filter((el) => el.getBoundingClientRect().width > 0 && wrappedLines(el)).map((el) => el.innerText.replace(/\s+/g, ' ').trim().slice(0, 28)),
+      eyebrows: [...document.querySelectorAll('.eyebrow')].filter((el) => el.getBoundingClientRect().height > 0).length,
+      mockNodes: document.querySelectorAll('.mock, [class*="mock__"]').length,
+      dashes: (text.match(/—|–/g) ?? []).length,
+      ladderRows: document.querySelectorAll('.ladder__row').length,
       placeholders: ['TODO', 'TBD', 'Lorem', '占位', 'FIXME'].filter((w) => text.includes(w)),
       emptyLinks: [...document.querySelectorAll('a[href="#"], a:not([href])')].length,
     };
@@ -114,6 +136,12 @@ for (const [name, width, height] of VIEWPORTS) {
   check(`badge 含快照版本 ${expectVersion}`, home.badge.includes(expectVersion.replace(/^v/, '')));
   check('h1 非空', home.h1.length > 4);
   check('无横向溢出', !home.overflowX);
+  check(`标签样本非空（${home.labels} 个可见标签参与 M3 判定）`, home.labels >= 10);
+  check(`标签未被折成两行（M3，${width}px）`, home.wrapped.length === 0, home.wrapped.join(' / '));
+  check(`eyebrow 数量 ≤ 3（实测 ${home.eyebrows}）`, home.eyebrows <= 3);
+  check('无手绘假界面残留', home.mockNodes === 0);
+  check('正文无破折号（em/en dash）', home.dashes === 0, `命中 ${home.dashes} 处`);
+  check('首屏连接时序三行齐全', home.ladderRows === 3);
   check('skip-link 藏在屏外', home.skipTop < 0);
   check('Aurora canvas 存在', home.canvas);
   check('控件都有可访问名', home.noName === 0);
@@ -147,7 +175,12 @@ for (const [name, width, height] of VIEWPORTS) {
 
   /* ---------- 数字滚动终值 ---------- */
   await page.evaluate(() => window.scrollTo(0, 0));
-  await page.evaluate(() => document.getElementById('trust')?.scrollIntoView({ block: 'center' }));
+  // 窄视口下第 3/4 个指标在折叠线以下，IntersectionObserver 不会触发。
+  // 先把最后一个滚进视野，再等终值——否则量到的是「没滚到」而不是「滚错」。
+  await page.evaluate(() => {
+    const nums = [...document.querySelectorAll('.tr__num')];
+    (nums[nums.length - 1] ?? document.getElementById('trust'))?.scrollIntoView({ block: 'center' });
+  });
   const settled = await page
     .waitForFunction(
       (expected) =>

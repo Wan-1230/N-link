@@ -2,8 +2,7 @@ import { Suspense, lazy } from 'react';
 import { Magnet, SplitText } from '../components/reactbits';
 import { Counter } from '../components/ui/Counter';
 import { Shine } from '../components/ui/Shine';
-import { PhoneMock } from '../components/ui/PhoneMock';
-import { fill, useDict, useLang } from '../i18n';
+import { ConnectLadder } from '../components/ui/ConnectLadder';import { fill, useDict, useLang } from '../i18n';
 import { useReducedMotion } from '../hooks/useReducedMotion';
 import { useReleases } from '../hooks/useReleases';
 import { formatDate } from '../lib/format';
@@ -119,7 +118,7 @@ export function Hero() {
         </div>
 
         <div className="hero__stage">
-          <PhoneMock version={version} />
+          <ConnectLadder />
         </div>
       </div>
 

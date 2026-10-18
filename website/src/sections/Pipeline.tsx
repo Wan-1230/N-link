@@ -61,7 +61,6 @@ export function Pipeline() {
   return (
     <section className="pl" id="pipeline" ref={sectionRef} aria-label={dict.pipeline.title}>
       <div className="pl__head shell">
-        <p className="eyebrow">{dict.pipeline.eyebrow}</p>
         <h2>{dict.pipeline.title}</h2>
         <p className="lede">{dict.pipeline.lede}</p>
       </div>

@@ -29,7 +29,6 @@ export function LatestRelease() {
   return (
     <section className="lr" id="latest">
       <div className="shell">
-        <p className="eyebrow">{dict.releasesPage.eyebrow}</p>
         <h1 className="lr__h1">{dict.releasesPage.title}</h1>
         <p className="lede">{dict.releasesPage.lede}</p>
 

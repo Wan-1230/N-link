@@ -10,7 +10,6 @@ export function Roadmap() {
     <section className="section rm" id="roadmap">
       <div className="shell">
         <div className="sec-head">
-          <p className="eyebrow">{dict.roadmap.eyebrow}</p>
           <h2>{dict.roadmap.title}</h2>
           <p className="lede">{dict.roadmap.lede}</p>
         </div>
@@ -21,7 +20,9 @@ export function Roadmap() {
             <ul className="rm__done">
               {dict.roadmap.done.map((d) => (
                 <li key={d}>
-                  <span className="rm__tick" aria-hidden="true" />
+                  <svg className="rm__tick" viewBox="0 0 16 12" aria-hidden="true">
+                    <path d="M1 6.5 5.2 11 15 1" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                   {d}
                 </li>
               ))}

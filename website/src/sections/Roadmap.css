@@ -28,12 +28,10 @@
 }
 
 .rm__tick {
-  margin-top: 6px;
-  width: 12px;
-  height: 7px;
-  border-left: 2px solid var(--accent);
-  border-bottom: 2px solid var(--accent);
-  transform: rotate(-45deg);
+  margin-top: 7px;
+  width: 14px;
+  height: 11px;
+  color: var(--accent);
 }
 
 .rm__todo li {

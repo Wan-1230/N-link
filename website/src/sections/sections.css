@@ -116,14 +116,18 @@
 .chip {
   font-family: var(--font-mono);
   font-size: 0.76rem;
+  line-height: 1.5;
   padding: 5px 12px;
-  border-radius: var(--r-pill);
+  /* 协议名这类长标签在 320 宽会折行，胶囊圆角会把两行文字咬进弧线里。
+     折行的用 --r，只有恒定单行的机型徽章保留 --r-pill。 */
+  border-radius: var(--r);
   border: 1px solid var(--hairline);
   background: var(--surface-glass);
   color: var(--fg-dim);
 }
 
 .chip--accent {
+  border-radius: var(--r-pill);
   color: var(--accent);
   border-color: rgba(255, 225, 0, 0.3);
   background: var(--accent-dim);

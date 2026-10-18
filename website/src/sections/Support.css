@@ -49,7 +49,9 @@
   height: 132px;
   object-fit: cover;
   border-radius: var(--r);
-  background: #fff;
+  /* 二维码必须有浅色承载底，但不必是纯白：--fg 本身就是一层带色相的中性，
+     与黑色模块的对比仍有 17:1 左右，扫码不受影响。 */
+  background: var(--fg);
   padding: 6px;
 }
 

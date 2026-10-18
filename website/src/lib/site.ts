@@ -21,13 +21,13 @@ export const ROUTE_META = {
   '/': {
     title: 'N-Link · 尼康 Z 系列微单的 Android 连接与遥控伴侣',
     description:
-      '开源 Android 应用，为尼康 Z50II / Z6III / Z8 / Z9 / Zf 打通连接、浏览、传输、遥控、监看的完整链路。版本号与更新日志自动同步 GitHub Releases。',
+      '开源 Android 应用，为尼康 Z50II / Z6III / Z8 / Z9 / Zf / Z5 打通连接、浏览、传输、遥控、监看的完整链路。相机热点、同一路由器、USB 数据线三种连接方式，连不上会告诉你卡在哪一步。版本号与更新日志自动同步 GitHub Releases。',
     canonical: `${SITE_ORIGIN}/`,
   },
   '/releases/': {
     title: 'N-Link {version} 下载与更新日志 · 最新版本与全部历史版本',
     description:
-      '下载 N-Link {version} APK，查看完整版本历史。开源 Android 尼康 Z 系列微单连接与遥控伴侣，支持 Z50II / Z6III / Z8 / Z9 / Zf。',
+      '下载 N-Link {version} APK，查看完整版本历史。开源 Android 尼康 Z 系列微单连接与遥控伴侣，支持 Z50II / Z6III / Z8 / Z9 / Zf / Z5。',
     canonical: `${SITE_ORIGIN}/releases/`,
   },
 } as const;
@@ -44,7 +44,7 @@ export const CHANNELS = {
   baidu: 'https://pan.baidu.com/s/1if5qoCaQRjzBlCThs_sfsQ?pwd=trub',
 } as const;
 
-export const DEVICE_MODELS = ['Z50II', 'Z6III', 'Z8', 'Z9', 'Zf'] as const;
+export const DEVICE_MODELS = ['Z50II', 'Z6III', 'Z8', 'Z9', 'Zf', 'Z5'] as const;
 
 /** 首页正文段落，同时也是 scrollspy 的观测目标。 */
 export const HOME_SECTIONS = ['trust', 'pipeline', 'features', 'why', 'how', 'roadmap', 'tech'] as const;

@@ -108,7 +108,6 @@ export function Changelog({ compact = false }: { compact?: boolean }) {
               </>
             ) : (
               <>
-                <p className="eyebrow">{dict.changelog.eyebrow}</p>
                 <h2>{dict.changelog.title}</h2>
                 <p className="lede">{dict.changelog.lede}</p>
               </>
