@@ -178,7 +178,17 @@ class CameraParameterManager @Inject constructor(
                     runCatching { readExposureProgram() }
                         .onFailure { Timber.tag(TAG).w(it, "Mode watch read failed") }
                 }
-                delay(intervalMs)
+                // AP 取景期间把档位轮询放慢（2026-10-19）：AP 的命令通道全局串行，
+                // 每一次轮询都要排在当前这一帧后面、再把下一帧挤后一轮。
+                // 真机日志实证这种争抢是量级可见的（11 次 AF 属性回读在 AP 上花了 3.7s，
+                // 同一组在 STA 上 0.3s）。取景期间 500ms 档 → 1.5s 档，
+                // 模式变化仍由 0x4006 事件通道兜底，用户拨盘不会失同步。
+                val effective = if (apConnection.isConnected() && apConnection.streaming) {
+                    maxOf(intervalMs, 1_500L)
+                } else {
+                    intervalMs
+                }
+                delay(effective)
             }
         }
     }
@@ -253,15 +263,26 @@ class CameraParameterManager @Inject constructor(
         var cardCount = 0
 
         if (apConnection.isConnected()) {
-            // AP 直连会话：存储信息直接取会话解析结果，语义与旧双通道一致
-            val storages = apConnection.session()?.listStorages() ?: return
-            storages.forEach { storage ->
-                val max = storage.maxCapacity
+            // AP 引擎的 listStorages() 只发 0x1004 取 ID，容量/空闲/卷标是写死的 0
+            // （`ApEngineBridge.listStorages` 从未发过 0x1005），所以这里只借它拿 ID，
+            // 卡信息改走 AP 会话既有的 rawTransact 自己读 —— 与 STA/USB 分支同一个
+            // parseStorageInfo 口径。
+            // 不这么改的后果：下面 `max <= 0` 会把每张卡都跳过 → cardCount 恒为 0 →
+            // 函数在此提前 return → 设备页「存储卡」永远停在占位符，且不留任何失败痕迹。
+            val bridge = apConnection.bridge() ?: return
+            val storageIds = apConnection.session()?.listStorages()?.map { it.storageId }
+                ?: return
+            storageIds.forEach { storageId ->
+                val raw = bridge
+                    .rawTransact(PtpConstants.OP_GET_STORAGE_INFO, listOf(storageId))
+                    .takeIf { it.isOk }?.dataIn?.takeIf { it.isNotEmpty() }
+                val info = raw?.let(::parseStorageInfo) ?: return@forEach
+                val max = info.maxCapacityBytes
                 if (max <= 0 || max == 0xFFFFFFFFL) return@forEach
                 totalBytes += max
-                freeBytes += storage.freeSpace.coerceIn(0, max)
+                freeBytes += info.freeSpaceBytes.coerceIn(0, max)
                 cardCount++
-                if (storage.description.isNotBlank()) description = storage.description
+                if (info.storageDescription.isNotBlank()) description = info.storageDescription
             }
         } else {
             val storageIds = if (usbPtpManager.isConnected()) {
