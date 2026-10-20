@@ -110,3 +110,6 @@ Desktop.ini
 .firecrawl/
 agent/
 skills-lock.json
+
+# 需求/调研/台账类文档只在本地维护，不入库（2026-10-20 起）
+docs/
