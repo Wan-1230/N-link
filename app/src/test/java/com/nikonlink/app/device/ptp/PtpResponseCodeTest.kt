@@ -16,7 +16,7 @@ class PtpResponseCodeTest {
             PtpConstants.describeResponseCode(PtpConstants.RESPONSE_DEVICE_BUSY)
         )
         assertEquals(
-            "访问被拒绝（相机端未确认连接）",
+            "访问被拒绝（相机端未放行该操作）",
             PtpConstants.describeResponseCode(PtpConstants.RESPONSE_ACCESS_DENIED)
         )
         assertEquals(
