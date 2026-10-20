@@ -99,6 +99,9 @@ class TransferManager @Inject constructor(
          */
         private const val BATCH_PROP_LIST_TIMEOUT_MS = 15000L
 
+        /** STA 下句柄里只有目录时的重列间隔（总计 14s，在 ViewModel 60s 硬顶之内）。 */
+        private val STA_NO_MEDIA_RELIST_MS = longArrayOf(2_000L, 4_000L, 8_000L)
+
         /** 缩略图单请求兜底超时（0x90C4 高清缩略图可达数百 KB，正常远快于该上限） */
         private const val THUMBNAIL_TIMEOUT_MS = 8000L
         /** 快图（0x100A 小图）超时：几 KB 级载荷，给足 5s 已远超正常耗时 */
@@ -163,6 +166,13 @@ class TransferManager @Inject constructor(
     private val ptpTransport: CameraTransport = PtpTransport(ptpSession)
     private val usbTransport: CameraTransport = UsbTransport(usbPtpManager)
     private val apTransport: CameraTransport = ApTransport(apConnection)
+
+    /** STA（「连接到电脑」）相册直读：固件锁住标准对象命令时改走尼康私有命令。 */
+    private val staAlbum = StaDirectAlbum(ptpSession, eventLogger)
+
+    /** 当前通道是 WiFi PTP/IP 且会话经 STA 建立、并已探测为直读模式。 */
+    private fun staDirect(transport: CameraTransport = currentTransport()): Boolean =
+        transport === ptpTransport && staAlbum.isDirectActive()
 
     private val _transferState = MutableStateFlow<TransferState>(TransferState.Idle)
     val transferState: StateFlow<TransferState> = _transferState.asStateFlow()
@@ -332,7 +342,12 @@ class TransferManager @Inject constructor(
         val failedInfoCount: Int,
         val transportOnline: Boolean,
         val breakerTripped: Boolean = false,
-        val storeUnavailable: Boolean = false
+        val storeUnavailable: Boolean = false,
+        /**
+         * STA（「连接到电脑」）下机身锁住了相册读取，且私有直读命令也不可用。
+         * 重试无效，文案要指向「改用热点直连 / USB」。
+         */
+        val staAccessLocked: Boolean = false
     ) {
         /** 通道在线、句柄有货却有读取失败且一无所获 = 整体失败（区别于「存储卡为空」与「全是不可展示格式」） */
         val totalFailure: Boolean get() =
@@ -365,6 +380,13 @@ class TransferManager @Inject constructor(
         if (handle <= 0 || handle == PtpConstants.NIKON_EVENT_HANDLE_NONE) return null
         val transport = currentTransport()
         if (!transport.isConnected) return null
+        if (staDirect(transport)) {
+            return withContext(Dispatchers.IO) {
+                runCatching { staAlbum.fileFor(handle) }
+                    .onFailure { Timber.tag(TAG).d(it, "STA new-object build failed: $handle") }
+                    .getOrNull()
+            }
+        }
         return withContext(Dispatchers.IO) {
             val info = runCatching {
                 withTimeoutOrNull(OBJECT_INFO_TIMEOUT_MS) { transport.objectInfo(handle) }
@@ -425,6 +447,50 @@ class TransferManager @Inject constructor(
                 }
                 if (handles.isEmpty()) {
                     return@withContext PhotoListFetch(emptyList(), 0, 0, transportOnline = true)
+                }
+
+                // ---- STA 直读路径 ----
+                // 「连接到电脑」模式下尼康把 0x1008/0x9805 锁成 0x200F（2026-10-18 Z30：31 个句柄
+                // 全部被拒、熔断循环刷满日志）。先探测一次，锁住了就改用私有命令建列表。
+                if (transport === ptpTransport && ptpSession.isStaSession) {
+                    var access = staAlbum.probe(handles)
+                    // 只列出了目录、一个照片句柄都没有（2026-10-19：注册后首轮只返回 0x11004000）：
+                    // 不当空卡、不下结论，隔 2/4/8s 重列，期间出现照片就照常探测。
+                    for (wait in STA_NO_MEDIA_RELIST_MS) {
+                        if (access != StaDirectRead.Access.NO_MEDIA) break
+                        delay(wait)
+                        if (!transport.isConnected) break
+                        handles = relistHandles(transport, storageIds)
+                        eventLogger.event(
+                            "sta_relist", "wait_ms" to wait, "handles" to handles.size,
+                            "prefix" to StaDirectRead.prefixHistogram(handles)
+                        )
+                        access = if (handles.isEmpty()) StaDirectRead.Access.NO_MEDIA else staAlbum.probe(handles)
+                    }
+                    when (access) {
+                        StaDirectRead.Access.NO_MEDIA -> {
+                            // 重列三轮仍没有照片：按「无可展示内容」收口（文案：未发现可展示的照片或视频）
+                            return@withContext PhotoListFetch(emptyList(), handles.size, 0, transportOnline = true)
+                        }
+                        StaDirectRead.Access.DIRECT -> {
+                            val files = staAlbum.buildList(storageIds, handles)
+                            onPage?.invoke(files)
+                            return@withContext PhotoListFetch(
+                                files, handles.size,
+                                failedInfoCount = 0,
+                                transportOnline = true,
+                                staAccessLocked = files.isEmpty()
+                            )
+                        }
+                        StaDirectRead.Access.UNAVAILABLE -> {
+                            // 私有直读也不通：不再进逐条 0x1008 循环（只会再拒一整页），直接交给文案层
+                            return@withContext PhotoListFetch(
+                                emptyList(), handles.size, handles.size,
+                                transportOnline = true, breakerTripped = true, staAccessLocked = true
+                            )
+                        }
+                        StaDirectRead.Access.OBJECTINFO -> Unit // 固件没锁，走下面的老路径
+                    }
                 }
 
                 var failedInfoCount = 0
@@ -520,6 +586,19 @@ class TransferManager @Inject constructor(
         }
     }
 
+    /** 重新列一次全部存储的对象句柄（与 fetchPhotoListDetailed 开头同口径）。 */
+    private suspend fun relistHandles(transport: CameraTransport, storageIds: List<Int>): List<Int> {
+        val listed = storageIds.flatMap { storageId ->
+            runCatching {
+                withTimeoutOrNull(OBJECT_HANDLES_TIMEOUT_MS) { transport.objectHandles(storageId) }
+            }.getOrNull().orEmpty()
+        }.distinct()
+        if (listed.isNotEmpty()) return listed
+        return runCatching {
+            withTimeoutOrNull(OBJECT_HANDLES_TIMEOUT_MS) { transport.objectHandles(0xFFFFFFFF.toInt()) }
+        }.getOrNull().orEmpty()
+    }
+
     /**
      * 获取缩略图：优先 Nikon 高清缩略图（0x90C4），失败回退标准 0x100A。
      *
@@ -528,6 +607,13 @@ class TransferManager @Inject constructor(
      * 两级请求各自带兜底超时：高清缩略图不可达时快速回退小图，网格不会因单格卡死。
      */
     suspend fun fetchThumbnail(handle: Int): ByteArray? {
+        if (staDirect()) {
+            return withContext(Dispatchers.IO) {
+                runCatching { staAlbum.hdPreview(handle) }
+                    .onFailure { Timber.tag(TAG).d(it, "STA hd preview failed handle=$handle") }
+                    .getOrNull()
+            }
+        }
         return withContext(Dispatchers.IO) {
             try {
                 withTimeoutOrNull(THUMBNAIL_TIMEOUT_MS) { currentTransport().largeThumbnail(handle) }
@@ -556,6 +642,13 @@ class TransferManager @Inject constructor(
      * 只是把「等待高清」从阻塞式改成后台替换式。
      */
     suspend fun fetchThumbnailFast(handle: Int): ByteArray? {
+        if (staDirect()) {
+            return withContext(Dispatchers.IO) {
+                runCatching { staAlbum.thumbnail(handle) }
+                    .onFailure { Timber.tag(TAG).d(it, "STA thumbnail failed handle=$handle") }
+                    .getOrNull()
+            }
+        }
         return withContext(Dispatchers.IO) {
             try {
                 withTimeoutOrNull(THUMBNAIL_FAST_TIMEOUT_MS) { currentTransport().thumbnail(handle) }
@@ -743,8 +836,14 @@ class TransferManager @Inject constructor(
                 return TransferResult.Failed(userText)
             }
 
+            // STA 直读模式的列表用的是占位名，落相册前从文件头补出真实卡内编号
+            val saveName = if (staDirect(transport)) {
+                runCatching { staAlbum.resolveFileName(file) }.getOrDefault(file.fileName)
+            } else {
+                file.fileName
+            }
             val prepared = prepareFileToSave(tempFile, file)
-            val savedPath = saveFileToMediaStore(prepared, file.fileName)
+            val savedPath = saveFileToMediaStore(prepared, saveName)
             if (prepared !== tempFile) runCatching { prepared.delete() }  // 压缩副本已进相册，别留在缓存目录里累积
             if (savedPath != null) {
                 // 已下载原图 → 用原图生成高清缩略图回填缓存（0x90C4/0x100A 的小图从此不再展示）。
@@ -760,11 +859,13 @@ class TransferManager @Inject constructor(
                 _transferState.value = TransferState.Completed(file)
                 resetTransferSpeed()
                 recordTransfer("ok")
-                var msg = "已保存: ${file.fileName}"
+                var msg = "已保存: $saveName"
                 eventLogger.event(
                     "download_done",
                     "handle" to file.handle,
-                    "name" to file.fileName,
+                    // 记实际落相册的名字：STA 直读下列表名是占位名，落盘前会从文件头补真名
+                    "name" to saveName,
+                    "list_name" to file.fileName.takeIf { it != saveName },
                     "size" to file.size,
                     "path" to savedPath
                 )

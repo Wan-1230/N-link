@@ -126,6 +126,20 @@ object PtpConstants {
      */
     const val OP_NIKON_CHANGE_APPLICATION_MODE = 0x9435
 
+    /**
+     * STA 相册直读（「连接到电脑」模式下尼康固件锁住 0x1008/0x100A/0x101B/0x9805，
+     * 这几条私有命令不受锁；定义见 libgphoto2 ptp.h）。
+     * - 0x9421 GetObjectSize(h) → 数据相 u64 文件大小
+     * - 0x9431 GetPartialObjectEx(h, offLo, offHi, lenLo, lenHi) → 数据相为该区间字节
+     * - 0x9434 GetObjectsMetaData(storageId, 0, 0) → u32 ver, u32 n, n×16B{handle,size,_,s,m,h,d,mo,u16 y}
+     * - 0x9530 GetPartialImage(h, type, offset, maxBytes) → 机身现生成的预览 JPEG 一段，
+     *   响应参数[1] = 该预览总长度
+     */
+    const val OP_NIKON_GET_OBJECT_SIZE = 0x9421
+    const val OP_NIKON_GET_PARTIAL_OBJECT_EX = 0x9431
+    const val OP_NIKON_GET_OBJECTS_METADATA = 0x9434
+    const val OP_NIKON_GET_PARTIAL_IMAGE = 0x9530
+
     // PTP Response Codes
     const val RESPONSE_OK = 0x2001
     const val RESPONSE_GENERAL_ERROR = 0x2002
@@ -225,7 +239,7 @@ object PtpConstants {
         RESPONSE_STORE_FULL -> "存储卡已满"
         RESPONSE_OBJECT_WRITE_PROTECTED -> "文件写保护"
         RESPONSE_STORE_READ_ONLY -> "存储卡只读"
-        RESPONSE_ACCESS_DENIED -> "访问被拒绝（相机端未确认连接）"
+        RESPONSE_ACCESS_DENIED -> "访问被拒绝（相机端未放行该操作）"
         RESPONSE_NO_THUMBNAIL_PRESENT -> "无缩略图可用"
         RESPONSE_STORE_NOT_AVAILABLE -> "存储不可用（卡未在位或已弹出）"
         RESPONSE_DEVICE_BUSY -> "相机忙碌，请稍后重试"

@@ -132,6 +132,26 @@ class PtpSessionManager @Inject constructor(
         private set
 
     /**
+     * 当前会话是否经 STA（相机连路由器/手机热点）建立。STA 下尼康固件对标准对象命令
+     * 加访问锁（0x1008/0x100A/0x101B/0x9805 回 0x200F），相册据此改走私有直读命令。
+     */
+    @Volatile
+    var isStaSession: Boolean = false
+        private set
+
+    /** 每次会话建立成功 +1；相册直读的探测结论按它失效（换会话 = 重新探测）。 */
+    @Volatile
+    var connectGeneration: Int = 0
+        private set
+
+    /**
+     * STA 下分段读已切到 0x9431（标准 0x101B 被 0x200F 锁）。粘滞到会话结束，
+     * 免得每个分块都先吃一次拒绝。
+     */
+    @Volatile
+    private var partialExSticky = false
+
+    /**
      * 最近一次 `GetDeviceInfo` 里机身自报的 `Model` 原文（FR-36，如 `NIKON Z 50II`）。
      *
      * 设备页的「相机全称」优先用它：这次 GetDeviceInfo 在 OpenSession 之前就要发了，
@@ -313,6 +333,7 @@ class PtpSessionManager @Inject constructor(
         if (isConnected()) return@withContext true
         try {
             closeSession()
+            isStaSession = staMode
             lastEventAckTimedOut = false
             lastFailPhase = "socket"
             _sessionState.value = PtpSessionState.CONNECTING
@@ -509,6 +530,22 @@ class PtpSessionManager @Inject constructor(
                     "ops" to (ops?.size ?: -1),
                     "host_reg_0x952b" to ops?.contains(PtpConstants.OP_NIKON_HOST_REGISTRATION_PREPARE),
                 )
+                // STA 相册直读要看的那几条私有命令是否在能力表里（只记是否声明，以真实响应为准）
+                if (ops != null) {
+                    eventLogger.event(
+                        "device_caps_album",
+                        "sta" to staMode,
+                        "op_9434" to ops.contains(PtpConstants.OP_NIKON_GET_OBJECTS_METADATA),
+                        "op_9421" to ops.contains(PtpConstants.OP_NIKON_GET_OBJECT_SIZE),
+                        "op_9431" to ops.contains(PtpConstants.OP_NIKON_GET_PARTIAL_OBJECT_EX),
+                        "op_9530" to ops.contains(PtpConstants.OP_NIKON_GET_PARTIAL_IMAGE),
+                        "op_9805" to ops.contains(PtpConstants.OP_MTP_GET_OBJECT_PROP_LIST),
+                        "op_9803" to ops.contains(PtpConstants.OP_MTP_GET_OBJECT_PROP_VALUE),
+                        "op_90c4" to ops.contains(PtpConstants.OP_NIKON_GET_LARGE_THUMB),
+                        "vendor_ops" to ops.filter { it >= 0x9000 }.sorted()
+                            .joinToString(",") { it.toString(16) }
+                    )
+                }
                 // 型号只进事件日志的**归一化结果**：原文可能是序列号形态的串，
                 // 且导出日志会外发（DiagnosticsDisclosure 已声明「相机型号」这一项）。
                 CameraModelCatalog.official(lastDeviceModel)?.let { name ->
@@ -554,6 +591,8 @@ class PtpSessionManager @Inject constructor(
             // 事件通道不再无限阻塞（0）；45s 无入站即由读超时唤醒并判死，
             // 与心跳的 30s 判死窗口形成双保险，避免半开连接下永久挂起
             eventSocket?.soTimeout = EVENT_READ_TIMEOUT_MS
+            partialExSticky = false
+            connectGeneration++
             _sessionState.value = PtpSessionState.CONNECTED
             startKeepAlive()
             startEventListener()
@@ -929,15 +968,57 @@ class PtpSessionManager @Inject constructor(
     ): ByteArray? {
         bulkDepth.incrementAndGet()
         try {
+            if (partialExSticky) return getPartialObjectEx(handle, offset.toLong() and 0xFFFFFFFFL, maxBytes, sink)
             val result = sendCommandWithData(
                 PtpConstants.OP_GET_PARTIAL_OBJECT,
                 listOf(handle, offset, maxBytes),
+                sink = sink
+            )
+            if (result is PtpDataResult.Success) return result.data
+            // STA（「连接到电脑」）下尼康把 0x101B 锁成 0x200F，而 0x9431 不受锁：
+            // 切过去并粘滞到会话结束。sink 上一次失败不会写入任何字节（拒绝发生在数据相之前）。
+            val code = (result as? PtpDataResult.Failure)?.response?.responseCode
+            if (isStaSession && code == PtpConstants.RESPONSE_ACCESS_DENIED) {
+                partialExSticky = true
+                eventLogger.event("partial_ex_switch", "handle" to handle, "from" to "0x101b", "to" to "0x9431")
+                return getPartialObjectEx(handle, offset.toLong() and 0xFFFFFFFFL, maxBytes, sink)
+            }
+            return null
+        } finally {
+            bulkDepth.decrementAndGet()
+        }
+    }
+
+    /**
+     * 尼康 64 位分段读（0x9431 GetPartialObjectEx）：参数 handle, offLo, offHi, lenLo, lenHi。
+     * STA 下标准对象读被锁时的直读通道。
+     */
+    suspend fun getPartialObjectEx(
+        handle: Int,
+        offset: Long,
+        maxBytes: Int,
+        sink: OutputStream? = null
+    ): ByteArray? {
+        bulkDepth.incrementAndGet()
+        try {
+            val result = sendCommandWithData(
+                PtpConstants.OP_NIKON_GET_PARTIAL_OBJECT_EX,
+                listOf(handle, (offset and 0xFFFFFFFFL).toInt(), (offset ushr 32).toInt(), maxBytes, 0),
                 sink = sink
             )
             return (result as? PtpDataResult.Success)?.data
         } finally {
             bulkDepth.decrementAndGet()
         }
+    }
+
+    /** 尼康 0x9421 GetObjectSize：数据相 u64。失败/非正值返回 null。 */
+    suspend fun getObjectSize64(handle: Int): Long? {
+        val data = (sendCommandWithData(PtpConstants.OP_NIKON_GET_OBJECT_SIZE, listOf(handle))
+            as? PtpDataResult.Success)?.data ?: return null
+        if (data.size < 8) return null
+        val v = java.nio.ByteBuffer.wrap(data).order(java.nio.ByteOrder.LITTLE_ENDIAN).long
+        return v.takeIf { it > 0 }
     }
 
     /** 当前在途的批量传输数（>0 时心跳不判死，见 PRD v2.2 §5.2/§5.3）。 */

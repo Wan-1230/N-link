@@ -752,7 +752,7 @@ class TransferViewModel @Inject constructor(
                         if (!silent) _message.value = "相册加载超时，请检查连接后下拉重试"
                         null
                     }
-                    if (fetch == null || !fetch.totalFailure) break
+                    if (fetch == null || !fetch.totalFailure || fetch.staAccessLocked) break
                     if (attempt == 0) delay(800)
                 }
                 val outcome = fetch ?: return@launch
@@ -771,6 +771,11 @@ class TransferViewModel @Inject constructor(
                         outcome.storeUnavailable ->
                             "相机报告存储不可用：请检查存储卡是否在位、机身是否已弹出或切换卡槽" +
                                 "（双卡机身确认当前选中的卡里确实有卡）。这个状态重试无效，处理后下拉刷新"
+                        // STA（「连接到电脑」）下机身锁住了相册读取，私有直读也不通：
+                        // 重试与查卡都没用，只有换连接方式有用。
+                        outcome.staAccessLocked ->
+                            "相机处于「连接到电脑」模式，机身禁止本机读取相册（${outcome.totalHandles} 个文件）。" +
+                                "请改用热点直连或 USB 浏览相册"
                         outcome.totalFailure ->
                             // 熔断过的场景里「请下拉重试」是最没用的一句指引：相机是在**拒绝**
                             // 读元数据（0x200F），再点一次只会再拒一整页。先排机身状态。
@@ -791,7 +796,7 @@ class TransferViewModel @Inject constructor(
                 // 专项 v1 §3.4：整体失败后排一次自动重拉。旧行为是两轮跑完就躺着，
                 // 恢复只能靠 cameraReady 上升沿（连接没断、只是相机拒读时它根本不会出现）
                 // 或用户下拉 —— 那正是「必须下拉重试」的直接来源。
-                if (outcome.totalFailure && !silent) scheduleMetaRetry()
+                if (outcome.totalFailure && !outcome.staAccessLocked && !silent) scheduleMetaRetry()
                 if (result.isNotEmpty()) {
                     metaRetryRound = 0
                     metaRetryJob?.cancel()
