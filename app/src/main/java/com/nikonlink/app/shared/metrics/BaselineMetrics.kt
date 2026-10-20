@@ -57,6 +57,9 @@ class BaselineMetrics @Inject constructor(
     @Volatile private var lvFrames = 0L
     @Volatile private var lvFailures = 0L
 
+    /** 已交付帧的总字节数（口径见 [lvFrameBytes]）。 */
+    @Volatile private var lvBytes = 0L
+
     @Volatile
     private var lvStartedAtMs = 0L
 
@@ -105,6 +108,18 @@ class BaselineMetrics @Inject constructor(
         lvFrames++
     }
 
+    /**
+     * 累计已交付帧的字节数（2026-10-19）。
+     *
+     * 与 `fps` / `超轮率` 组合起来才能定性「卡顿」是哪一类：
+     * - 帧很大 + 超轮率高 = 带宽不够（要降监看尺寸）；
+     * - 帧不大 + 超轮率仍高 = 往返/省电问题（改链路参数）。
+     * 没有这个数，AP 与 STA 的卡顿差异只能靠猜。
+     */
+    fun lvFrameBytes(bytes: Int) {
+        if (bytes > 0) lvBytes += bytes
+    }
+
     fun lvFrameFailed() {
         lvFailures++
     }
@@ -122,8 +137,15 @@ class BaselineMetrics @Inject constructor(
             "failed" to lvFailures,
             "ms" to durationMs,
             "fps" to fmt(if (durationMs > 0) lvFrames * 1000.0 / durationMs else 0.0),
-            "overrun" to fmt(lvDropRate())
+            "overrun" to fmt(lvDropRate()),
+            // 平均帧长（KB）：帧大+超轮高=带宽瓶颈；帧小+超轮高=往返/省电瓶颈
+            "kb_frame" to fmt(if (lvFrames > 0) lvBytes.toDouble() / lvFrames / 1024.0 else 0.0)
         )
+        lvRounds = 0
+        lvLateRounds = 0
+        lvFrames = 0
+        lvFailures = 0
+        lvBytes = 0
     }
 
     /** 超轮率 = 取帧耗时 ≥ 目标间隔的轮次 / 总轮次（口径见文档 §3）。 */

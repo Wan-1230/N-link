@@ -32,6 +32,13 @@ import kotlinx.coroutines.sync.withLock
 class ApCameraConnection internal constructor(
     private val context: Context,
     private val log: (String) -> Unit = {},
+    /**
+     * 建链前的套接字调优（闸门 `ConnFlags.AP_LV_SOCKET_TUNING`）。
+     * 只影响 TCP 缓冲/keepAlive 三个 socket 选项，不碰握手、GUID、重试与网络绑定。
+     */
+    tuneSockets: Boolean = true,
+    /** 取帧零拷贝（闸门 `ConnFlags.AP_LV_ZEROCOPY`）。 */
+    zeroCopyFrames: Boolean = true,
 ) : CameraConnection {
 
     private companion object {
@@ -43,7 +50,14 @@ class ApCameraConnection internal constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val connectMutex = Mutex()
 
-    val engine: ApEngineBridge = ApEngineBridge(ApPtpClient { host -> currentSocketFactory(host) }, log)
+    val engine: ApEngineBridge = ApEngineBridge(
+        ApPtpClient(
+            socketFactory = { host -> currentSocketFactory(host) },
+            tuneSockets = tuneSockets,
+            zeroCopyFrames = zeroCopyFrames,
+        ),
+        log,
+    )
 
     private val _state = MutableStateFlow<CameraState>(CameraState.Disconnected)
     override val state: StateFlow<CameraState> = _state

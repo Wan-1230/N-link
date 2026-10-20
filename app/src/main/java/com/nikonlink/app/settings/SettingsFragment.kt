@@ -547,6 +547,12 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 { connFlags.setEnabled(ConnFlags.AP_REDISCOVER_REARM, it) }
             ),
             LabFlag(
+                ConnFlags.AP_LV_PROFILE_ALIGN,
+                "AP 监看不写 0xD1AC 档位（对齐参考实现；关=回到开播前硬写 3）",
+                { connFlags.isEnabled(ConnFlags.AP_LV_PROFILE_ALIGN) },
+                { connFlags.setEnabled(ConnFlags.AP_LV_PROFILE_ALIGN, it) }
+            ),
+            LabFlag(
                 UiFlags.PROTECT_SELECT, "「已保护」筛选（FR-16，默认关）",
                 { UiFlags.protectSelectEnabled(c) },
                 { UiFlags.set(c, UiFlags.PROTECT_SELECT, it) }

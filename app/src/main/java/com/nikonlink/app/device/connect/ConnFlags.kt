@@ -541,6 +541,89 @@ class ConnFlags @Inject constructor(
          */
         const val AP_REDISCOVER_REARM = "v40_ap_rediscover_rearm"
 
+        // ── AP 监看流畅度三条（2026-10-19）──────────────────────────────────
+        //
+        // 现场：AP 直连时监看明显卡顿，同一台手机改走 STA 就流畅。两条链路的
+        // **渲染链完全相同**（LiveViewManager → LvFrameDecoder → ImageView），
+        // 唯一差别在传输层实现：STA 走 PtpSessionManager，AP 走移植来的
+        // ApPtpClient。逐项比对后找到三处只在 AP 侧缺失的差异，各自一条闸门。
+
+        /**
+         * AP 会话与监看期间持有 WiFi 高性能锁（与 STA 的 `WifiNetworkMonitor` 同档）。
+         *
+         * STA 从 v1.1.0 起就靠 `WIFI_MODE_FULL_HIGH_PERF` 覆盖整个会话
+         * （`WifiNetworkMonitor.acquireLocks/retainLocks`，注释里写明「三方 APK 全部持有」）；
+         * AP 路径（`NetworkBinder` → `ApPtpClient`）**一把锁都没有**。
+         * 后果是相机热点没有外网、系统判定该网络空闲，Wi-Fi 很快进入省电模式，
+         * 单帧（数百 KB）传输被 PS-Poll 周期切成几百毫秒一段 —— 表现就是画面一顿一顿，
+         * 而 STA（路由器有外网 + 已持高性能锁）不会。
+         * 打开后：会话期持 `WIFI_MODE_FULL_HIGH_PERF`，监看期再叠一把
+         * `WIFI_MODE_FULL_LOW_LATENCY`（API 29+ 专为实时场景提供）。
+         * 关闸 = 回到不持锁（AP 仍会进省电）。
+         */
+        const val AP_LV_WIFI_LOCK = "v340_ap_lv_wifi_lock"
+
+        /**
+         * AP 的 PTP/IP 套接字按 STA 的实测参数建链（接收 4MB / 发送 1MB / keepAlive）。
+         *
+         * `PtpSessionManager` 在建链前设 `receiveBufferSize = 4MB`，注释写明
+         * 「必须在连接前设置才对 TCP 窗口协商生效」，这是 STA 传图吞吐的关键一环；
+         * AP 的 `ApPtpClient.connect` 只设了 `soTimeout` 与 `tcpNoDelay`，**缓冲区留默认**。
+         * 相机热点是 2.4GHz、RTT 与抖动都大于路由器，窗口偏小时单帧要分很多轮往返，
+         * 帧间隔被拉长。打开后在建链前设同样的三件套。
+         * 关闸 = 回到默认缓冲区。
+         */
+        const val AP_LV_SOCKET_TUNING = "v340_ap_lv_socket_tuning"
+
+        /**
+         * AP 取帧不再二次搬运（零拷贝数据阶段 + 不裁剪 JPEG）。
+         *
+         * 旧路径每帧要走三遍内存：`ByteArrayOutputStream` 边写边翻倍扩容（累计约 2× 帧长）、
+         * `ApPtpWire.jpeg()` 正反扫两遍找 SOI/EOI、再 `copyOfRange` 拷一份。
+         * 15fps × 数百 KB 就是每秒几十 MB 的无谓拷贝与 GC 压力，弱机上是可见的顿感。
+         * 打开后：按 StartData 声明的长度**一次分配**、直接读进最终数组；
+         * 且不再裁剪 JPEG —— 下游 `LvFrame.findJpegStart` 本来就会跳过数据阶段前缀，
+         * 与 STA 通道（`PtpSessionManager.getLiveViewImage` 直接返回数据阶段）口径一致。
+         * 关闸 = 回到旧的三次拷贝路径。
+         */
+        const val AP_LV_ZEROCOPY = "v340_ap_lv_zerocopy"
+
+        /**
+         * AP 取帧改为**连续拉取**（帧间隔 66ms → 8ms）。
+         *
+         * 2026-10-19 真机日志（Z50II + vivo V2509A）里 AP 监看 80 轮 / 22.8s ≈ 3.5fps，
+         * 但单轮取帧 ≥66ms 的只占 61% —— 39% 的轮次能在 66ms 内拿到帧。
+         * 带宽不足会是「每轮都慢」，这种一半快一半慢是**手机 Wi-Fi 省电**的形态：
+         * 每取一帧空等 66ms，空口一闲驱动就进省电，下一帧的请求要等 DTIM 才发出去。
+         * 用户指定的参考实现取的正是连续拉取（`delay(frame == null ? 100 : 10)`）。
+         * 打开后 AP 侧空档压到 8ms，链路持续有流量；相机回重复帧由 `isSameFrame` 挡掉。
+         * 关闸 = 回到 66ms 档（STA/USB 一直是 66ms，不受本闸门影响）。
+         */
+        const val AP_LV_CONTINUOUS_PULL = "v340_ap_lv_continuous_pull"
+
+        /**
+         * AP 监看**不再硬写尼康监看图像档位 0xD1AC=3**，对齐参考实现。
+         *
+         * 依据（2026-10-19）：参考实现 `_ref/NikonLink`（github.com/shixisheng6174-cmyk/NikonLink，
+         * 本地 HEAD fd9dffa）的 AP 监看链路 `PtpIpClient.startLiveView/liveViewFrame` +
+         * `RemoteViewModel.startPreview` **从头到尾没有写过 0xD1AC**，而且它既没有 WifiLock、
+         * 也没调 socket 缓冲、每帧还要多两遍全量拷贝 —— 也就是说它在 AP 下流畅，
+         * 靠的不是我们这轮加的那几项，而是**它没往链路上多塞东西**。
+         *
+         * 我们这边 `0xD1AC = byteArrayOf(3)` 是无条件写的，注释自承「3 的语义从未真机标定」
+         * （`LiveViewManager.probeApLvProfile` 就是为这个补的只读回读）。若 3 是**较大档位**，
+         * 那就是每帧字节数被我们主动抬上去 —— 而 AP 只有 2.4GHz、STA 走路由器，
+         * 同一档位下 AP 的代价大得多。这与「AP 卡、STA 不卡」的分布吻合，
+         * 且是 `AP_LV_WIFI_LOCK / SOCKET_TUNING / ZEROCOPY / CONTINUOUS_PULL`
+         * 四项都没碰到的那一项。
+         *
+         * 打开后：AP 通道跳过这次写入，STA/USB **逐字节不变**（它们一直流畅，没有理由改）。
+         * 关闸 = 回到「开播前硬写 0xD1AC=3」。
+         * 风险与出口：若某机身确实要靠这一写才出 JPEG，表现为监看黑屏 + 取帧失败计数上升，
+         * 关掉本闸门即回到现状；日志里 `lv_profile_write` 会记下本次到底写没写。
+         */
+        const val AP_LV_PROFILE_ALIGN = "v341_ap_lv_profile_align"
+
         /**
          * 连接前的可达性探测只做 TCP 建链，不再发 PTP/IP InitCommand。
          *
@@ -712,6 +795,16 @@ class ConnFlags @Inject constructor(
             AP_REDISCOVER_SAME_HOST to true,
             AP_REDISCOVER_REARM to true,
             AP_ENONET_FAST_CLOSE to true,
+            // ── AP 监看流畅度三条（2026-10-19）默认开 ──
+            // 三条都只作用于 AP 侧的监看数据面（WiFi 锁 / 套接字参数 / 取帧搬运），
+            // 不碰握手、重试、GUID 与网络绑定 —— 连接链路逐位不变，可单独关闸二分。
+            AP_LV_WIFI_LOCK to true,
+            AP_LV_SOCKET_TUNING to true,
+            AP_LV_ZEROCOPY to true,
+            AP_LV_CONTINUOUS_PULL to true,
+            // 第四项（2026-10-19 续）：前三项 + 连续拉取都没动到「每帧多少字节」，
+            // 而参考实现在 AP 下流畅恰恰是因为它不写 0xD1AC。单独一条，可独立关闸。
+            AP_LV_PROFILE_ALIGN to true,
             // ── 以下四条默认关：AP / STA 连接方式回退到 v3.0.0 正式版行为 ──
             // 2026-10-07 用户决策：连接方式先退回 v3.0.0 观察，不带新逻辑上线，
             // 优化留待后续单独一轮。代码一行未动，只改默认值 —— 随时可拨回 true。

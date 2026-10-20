@@ -34,6 +34,8 @@ class LiveViewManager @Inject constructor(
     private val ptpSession: PtpSessionManager,
     private val usbPtpManager: UsbPtpManager,
     private val apConnection: com.nikonlink.app.device.ap.ApConnectionService,
+    private val apLinkLocks: com.nikonlink.app.device.ap.ApLinkLocks,
+    private val connFlags: com.nikonlink.app.device.connect.ConnFlags,
     private val eventLogger: AppEventLogger,
     private val baselineMetrics: BaselineMetrics
 ) {
@@ -42,6 +44,34 @@ class LiveViewManager @Inject constructor(
 
         /** ~15fps，预留保活通道余量防断联；也是 FR-01 掉帧率的判定阈值（同源，勿在此处改数值）。 */
         private const val FRAME_INTERVAL_MS = BaselineMetrics.LV_TARGET_INTERVAL_MS
+
+        /**
+         * AP 通道的帧间隔：**连续拉取**（2026-10-19）。
+         *
+         * 2026-10-19 真机日志（Z50II + vivo V2509A，v3.3.2）的硬数据：
+         * AP 监看 80 轮 / 22.8s ≈ **3.5fps**，但 `late`（单轮取帧 ≥66ms）只占 61% ——
+         * 也就是**有 39% 的轮次能在 66ms 内拿到帧**。带宽不够会是「每轮都慢」，
+         * 不会一半快一半慢；这种抖动是**手机 Wi-Fi 省电（PS-Poll）**的典型形态：
+         * 我们每取一帧就空等 66ms，空口一闲，驱动就进省电，
+         * 下一帧的请求要等下一个 DTIM 才被发出去，白吃 100~300ms。
+         *
+         * 参考实现（用户指定的开源项目）取的正是连续拉取：`delay(frame == null ? 100 : 10)`。
+         * 这里按同一思路把 AP 的空档压到 8ms：链路持续有流量，射频不进省电，
+         * 帧率就回到相机实际出帧能力上。相机回重复帧时由 [isSameFrame] 挡掉，
+         * 不会因为拉得快而多做解码。
+         *
+         * 只作用于 AP；STA / USB 仍走 66ms 档（它们的帧率受产品口径约束，见指标口径文档）。
+         */
+        private const val AP_FRAME_INTERVAL_MS = 8L
+
+        /**
+         * AP 侧**没拿到帧**时的退避档（对齐参考实现 `delay(frame == null ? 100 : 10)` 的后半句）。
+         *
+         * 2026-10-19 那轮只落地了「拿到帧 8ms」，没落地「拿不到退到 100ms」，
+         * 于是相机忙碌（0x2019 DeviceBusy / 0xA004）或本轮无新帧时，我们按 8ms 猛敲 0x9203：
+         * 每敲一次就占一格命令串行锁，把真正出帧的那一轮往后挤，表现就是画面持续顿挫。
+         */
+        private const val AP_EMPTY_FRAME_INTERVAL_MS = 100L
         private const val MAX_CONSECUTIVE_ERRORS = 5
 
         /**
@@ -149,6 +179,16 @@ class LiveViewManager @Inject constructor(
 
     private var frameCount = 0
     private var lastFpsTime = 0L
+
+    /** AP 通道 5s 心跳窗口（字节 / 取帧耗时 / 帧数），见帧循环里的 `lv_ap_rate`。 */
+    private var apWindowBytes = 0L
+    private var apWindowMs = 0L
+    private var apWindowFrames = 0
+
+    /** 上一帧指纹（长度 + 首尾各 8 字节），用于连续拉取时挡掉相机重复回的同一帧。 */
+    private var lastFrameSize = -1
+    private var lastFrameHead = 0L
+    private var lastFrameTail = 0L
 
     /**
      * 最新监看帧的像素尺寸。用于把归一化点击换算到相机 AF 坐标域时校正宽高比：
@@ -268,8 +308,19 @@ class LiveViewManager @Inject constructor(
                     delay(300)  // 等待相机完成模式切换
                 }
                 // 启动 LiveView 前先设置 Nikon 图像配置 0xD1AC=3，
-                // 否则相机可能不输出 JPEG 帧
-                runCatching {
+                // 否则相机可能不输出 JPEG 帧。
+                // AP 是例外（闸门 AP_LV_PROFILE_ALIGN）：参考实现
+                // （_ref/NikonLink PtpIpClient.startLiveView）全程不写这个属性，AP 监看依然流畅，
+                // 而我们这里无条件写 3，且 3 的档位语义从未真机标定过。若 3 是较大档位，
+                // 等于我们主动把每帧字节数抬上去 —— 相机热点只有 2.4GHz，STA 走路由器，
+                // 同一档位下 AP 的代价大得多，这正好是「AP 卡、STA 不卡」且前四项修复都没
+                // 碰到的那一项。STA / USB 这条写入逐字节不变。
+                val skipProfileWrite = isApChannel() &&
+                    connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.AP_LV_PROFILE_ALIGN)
+                if (skipProfileWrite) {
+                    Timber.tag(TAG).i("LiveView image profile 0xD1AC write skipped (AP, 对齐参考实现)")
+                    eventLogger.event("lv_profile_write", "code" to "0xD1AC", "written" to false)
+                } else runCatching {
                     val profileOk = ch.setDevicePropValue(
                         PtpConstants.PROP_NIKON_LV_IMAGE_PROFILE,
                         byteArrayOf(3)
@@ -279,6 +330,7 @@ class LiveViewManager @Inject constructor(
                     } else {
                         Timber.tag(TAG).w("LiveView image profile 0xD1AC=3 rejected (non-fatal)")
                     }
+                    eventLogger.event("lv_profile_write", "code" to "0xD1AC", "written" to profileOk)
                 }
                 val success = startLiveViewCommand()
                 if (success) {
@@ -289,16 +341,38 @@ class LiveViewManager @Inject constructor(
                     // USB 监看期间暂停 DeviceReady 保活：帧流量本身即保活，
                     // 保活命令只会与帧竞争命令串行通道、拉高帧延迟
                     if (usbPtpManager.isConnected()) usbPtpManager.setKeepAlivePaused(true)
+                    // AP 监看期间追加一把低时延 WiFi 锁：相机热点无外网，系统会把它
+                    // 当闲置网络放进省电，单帧被 PS-Poll 切成多段——这是 AP 卡顿的主因之一
+                    if (apConnection.isConnected()) {
+                        apLinkLocks.retainStreaming()
+                        apConnection.markStreaming(true)
+                    }
                     startFrameLoop()
                     Timber.tag(TAG).i("✓ Live View started")
-                    // 启动后一次性试读候选 AF 属性码，打日志供真机标定（只读、不阻断）
-                    managerScope.launch(Dispatchers.IO) {
+                    // 启动后一次性试读候选 AF 属性码，打日志供真机标定（只读、不阻断）。
+                    // AP 下跳过：这 11 次属性读排在同一把命令串行锁上，会和最初的帧抢通道
+                    // （2026-10-19 实测 AP 侧这 11 次花 3.7s，同一组在 STA 侧 0.3s），
+                    // 而结果只写日志、不参与任何运行时判定 —— 拿 3.7s 的干净监看换一条
+                    // 标定日志不值。AF 属性的标定数据 STA 侧已经拿到，不必在 AP 重复。
+                    if (apConnection.isConnected()) {
+                        eventLogger.event("af_readback_skip", "reason" to "ap_liveview")
+                    } else managerScope.launch(Dispatchers.IO) {
                         runCatching { probeCameraAfProperties("af_readback_start") }
+                    }
+                    // AP：把监看图像档位 0xD1AC 的取值域回读一次（只读）。这个属性的
+                    // 档位语义（3 到底是"最大"还是"JPEG"）一直没真机标定过，
+                    // 而它直接决定每帧字节数——是"卡在带宽"时唯一能动的相机侧旋钮。
+                    if (apConnection.isConnected()) {
+                        managerScope.launch(Dispatchers.IO) {
+                            runCatching { probeApLvProfile() }
+                        }
                     }
                 } else {
                     // 全链路优化: 启动失败时恢复原曝光模式，
                     // 避免相机卡在无线控制模式导致后续下载被拒绝
                     usbPtpManager.setKeepAlivePaused(false)
+                    apLinkLocks.releaseStreaming()
+                    apConnection.markStreaming(false)
                     restoreExposureModeIfNeeded()
                     Timber.tag(TAG).e("Failed to start Live View")
                     _liveViewState.value = LiveViewState.ERROR
@@ -425,6 +499,9 @@ class LiveViewManager @Inject constructor(
         _errorMessage.value = null
         // 无论此前走哪条通道，恢复 USB 保活（无 USB 连接时该调用无副作用）
         usbPtpManager.setKeepAlivePaused(false)
+        // 归还 AP 监看级 WiFi 锁（无 AP 会话时该调用无副作用）
+        apLinkLocks.releaseStreaming()
+        apConnection.markStreaming(false)
         if (_liveViewState.value == LiveViewState.RUNNING) {
             // 记录停止作业：startLiveView 会 join 它，保证 End 先于下一次 Start 到相机
             stopJob = managerScope.launch(Dispatchers.IO) {
@@ -506,15 +583,23 @@ class LiveViewManager @Inject constructor(
         frameJob?.cancel()
         frameCount = 0
         lastFpsTime = System.currentTimeMillis()
+        apWindowBytes = 0
+        apWindowMs = 0
+        apWindowFrames = 0
+        lastFrameSize = -1
+        lastFrameHead = 0
+        lastFrameTail = 0
         baselineMetrics.lvSessionStarted()
 
         frameJob = managerScope.launch(Dispatchers.IO) {
             while (isActive && _liveViewState.value == LiveViewState.RUNNING) {
                 val frameStart = System.currentTimeMillis()
+                var frameArrived = false
 
                 try {
                     val imageData = fetchFrame()
                     if (imageData != null && imageData.isNotEmpty()) {
+                        frameArrived = true
                         val latency = System.currentTimeMillis() - frameStart
                         _latency.value = latency
 
@@ -526,18 +611,54 @@ class LiveViewManager @Inject constructor(
                         // 仅在帧尺寸未知时解析一次 JPEG 头，供触摸对焦按真实比例换算
                         if (framePixelWidth == 0 || framePixelHeight == 0) {
                             updateFrameSize(imageData)
+                            // AP 会话第一帧把尺寸与字节数写进全链路日志：这是判断
+                            // 「卡在带宽还是卡在往返」唯一的硬数据（旧版只有 logcat）
+                            if (apConnection.isConnected() && framePixelWidth > 0) {
+                                eventLogger.event(
+                                    "lv_ap_frame",
+                                    "w" to framePixelWidth,
+                                    "h" to framePixelHeight,
+                                    "kb" to imageData.size / 1024,
+                                    "ms" to latency
+                                )
+                            }
                         }
-                        if (_latestFrame.tryEmit(frame)) baselineMetrics.lvFrameDelivered()
+                        // 连续拉取下相机会重复回同一帧：尺寸与首尾字节都没变就跳过上屏，
+                        // 省掉一次解码与一次全屏重绘（链路照常保持忙碌）
+                        val duplicate = isApChannel() && isSameFrame(imageData)
+                        if (!duplicate && _latestFrame.tryEmit(frame)) baselineMetrics.lvFrameDelivered()
+                        if (!duplicate) baselineMetrics.lvFrameBytes(imageData.size)
                         consecutiveErrors = 0
                         stallCount = 0
 
-                        // FPS 计算
-                        frameCount++
+                        // FPS 计算：只数**真正换了画面**的帧。连续拉取下相机重复回同一帧时
+                        // 拉取次数远高于换帧次数，按拉取次数算会把 15fps 显示成 30fps
+                        if (!duplicate) frameCount++
                         val now = System.currentTimeMillis()
                         if (now - lastFpsTime >= 1000) {
                             _fps.value = frameCount
                             frameCount = 0
                             lastFpsTime = now
+                        }
+
+                        // AP 通道 5s 心跳：把「每帧多大 / 取一帧多久」写进全链路日志。
+                        // 这两个数决定卡顿性质——帧大=带宽不够（要降尺寸），
+                        // 帧小但取帧慢=往返/省电问题（要改链路参数），二者修法完全不同。
+                        if (isApChannel()) {
+                            apWindowBytes += imageData.size
+                            apWindowMs += latency
+                            apWindowFrames++
+                            if (apWindowFrames >= 50) {
+                                eventLogger.event(
+                                    "lv_ap_rate",
+                                    "kb_frame" to apWindowBytes / apWindowFrames / 1024,
+                                    "ms_frame" to apWindowMs / apWindowFrames,
+                                    "frames" to apWindowFrames
+                                )
+                                apWindowBytes = 0
+                                apWindowMs = 0
+                                apWindowFrames = 0
+                            }
                         }
                     } else {
                         handleFrameFailure(null)
@@ -553,11 +674,13 @@ class LiveViewManager @Inject constructor(
                     handleFrameFailure(e)
                 }
 
-                // 帧间隔控制（避免过度请求）
+                // 帧间隔控制（避免过度请求）。
+                // 指标口径不变：`lvRound` 仍以 66ms 判「这一轮取帧是否超时」。
                 val elapsed = System.currentTimeMillis() - frameStart
                 baselineMetrics.lvRound(elapsed)
-                if (elapsed < FRAME_INTERVAL_MS) {
-                    delay(FRAME_INTERVAL_MS - elapsed)
+                val target = apFrameIntervalMs(frameArrived)
+                if (elapsed < target) {
+                    delay(target - elapsed)
                 }
             }
         }
@@ -626,6 +749,11 @@ class LiveViewManager @Inject constructor(
             _liveViewState.value = LiveViewState.ERROR
             _errorMessage.value = "与相机的连接已断开，请返回重连后再开启监看"
             frameJob?.cancel()
+            // 链路已死这条路径不走 stopLiveView()/stopWithError()，两把"会话期"资源
+            // 必须在此归还，否则会挂到下一次监看才释放（USB 保活、AP 低时延锁）
+            usbPtpManager.setKeepAlivePaused(false)
+            apLinkLocks.releaseStreaming()
+            apConnection.markStreaming(false)
             baselineMetrics.lvSessionEnded()
             return
         }
@@ -722,6 +850,8 @@ class LiveViewManager @Inject constructor(
         }
         // 帧循环自停路径不走 stopLiveView()，保活需在此恢复
         usbPtpManager.setKeepAlivePaused(false)
+        apLinkLocks.releaseStreaming()
+        apConnection.markStreaming(false)
         frameJob?.cancel()
     }
 
@@ -833,6 +963,52 @@ class LiveViewManager @Inject constructor(
         AfCoordMapper.map(nx, ny, framePixelWidth, framePixelHeight)
 
     /**
+     * 当前是否走 AP 直连（帧循环里每次现查，链路切换后立即生效）。
+     */
+    private fun isApChannel(): Boolean = apConnection.isConnected()
+
+    /**
+     * AP 侧帧间隔：连续拉取档（闸门 [ConnFlags.AP_LV_CONTINUOUS_PULL]）或 66ms 档。
+     *
+     * 连续拉取分两档 —— 拿到帧 8ms、没拿到帧退到 [AP_EMPTY_FRAME_INTERVAL_MS]，
+     * 与参考实现的 `delay(frame == null ? 100 : 10)` 同形。
+     */
+    private fun apFrameIntervalMs(frameArrived: Boolean): Long =
+        if (isApChannel() &&
+            connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.AP_LV_CONTINUOUS_PULL)
+        ) {
+            if (frameArrived) AP_FRAME_INTERVAL_MS else AP_EMPTY_FRAME_INTERVAL_MS
+        } else {
+            FRAME_INTERVAL_MS
+        }
+
+    /**
+     * 连续拉取下相机会把**同一帧**重复回给我们（0x9203 是"取最新一帧"，不是队列）。
+     * 用「长度 + 首尾各 8 字节」做指纹：命中即认为没有新画面，跳过解码与上屏。
+     *
+     * 为什么不用全量哈希：一帧数百 KB，每帧算一遍哈希等于把省下来的拷贝又花回去；
+     * JPEG 的头尾（SOI/量化表开头与 EOI 前的扫描数据结尾）已足以区分两帧。
+     * 只在 AP 通道调用（[isSameFrame] 会更新指纹）。
+     */
+    private fun isSameFrame(data: ByteArray): Boolean {
+        val head = edgeLong(data, fromHead = true)
+        val tail = edgeLong(data, fromHead = false)
+        if (data.size == lastFrameSize && head == lastFrameHead && tail == lastFrameTail) return true
+        lastFrameSize = data.size
+        lastFrameHead = head
+        lastFrameTail = tail
+        return false
+    }
+
+    private fun edgeLong(data: ByteArray, fromHead: Boolean): Long {
+        var v = 0L
+        val start = if (fromHead) 0 else maxOf(0, data.size - 8)
+        val end = if (fromHead) minOf(8, data.size) else data.size
+        for (i in start until end) v = (v shl 8) or (data[i].toLong() and 0xFF)
+        return v
+    }
+
+    /**
      * 解析监看帧 JPEG 头拿到像素宽高（仅 bounds，不解码像素），用于触摸对焦比例校正。
      * 仅在帧尺寸未知时调用一次；解析失败静默忽略（下次帧再试）。
      */
@@ -880,6 +1056,31 @@ class LiveViewManager @Inject constructor(
 
     /** 走当前活跃通道只读回读单条设备属性值（只读，不改连接层） */
     private suspend fun readDevicePropValue(code: Int): ByteArray? = lv().getDevicePropValue(code)
+
+    /**
+     * AP 侧回读监看图像档位 0xD1AC 的取值域（只读、一次）。
+     *
+     * 现在启动前硬写 `0xD1AC=3`，但**3 的语义从未真机标定**：既可能是"最大尺寸"，
+     * 也可能只是"输出 JPEG"。若 AP 的瓶颈是带宽（`lv_ap_rate kb_frame` 偏大），
+     * 这个属性就是唯一能减小每帧字节数的相机侧旋钮。
+     * 这里只把 `current / 可写 / 枚举值或 min-max-step` 写进日志，
+     * 下一次真机日志就能决定能不能做"监看尺寸阶梯"，不再靠猜。
+     */
+    private suspend fun probeApLvProfile() {
+        val bridge = apConnection.bridge() ?: return
+        val p = runCatching { bridge.property(PtpConstants.PROP_NIKON_LV_IMAGE_PROFILE) }
+            .getOrNull() ?: return
+        eventLogger.event(
+            "lv_profile",
+            "code" to "0xD1AC",
+            "cur" to p.current,
+            "writable" to p.writable,
+            "values" to p.values.joinToString(","),
+            "min" to p.minimum,
+            "max" to p.maximum,
+            "step" to p.step
+        )
+    }
 
     /**
      * 手动对焦驱动

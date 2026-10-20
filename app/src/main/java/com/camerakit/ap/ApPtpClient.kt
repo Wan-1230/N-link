@@ -40,7 +40,21 @@ import javax.inject.Singleton
  *   type=12 end.
  */
 @Singleton
-class ApPtpClient(private val socketFactory: (String) -> Socket = { Socket() }) {
+class ApPtpClient(
+    private val socketFactory: (String) -> Socket = { Socket() },
+    /**
+     * 建链前是否按 STA 的实测参数调优套接字（接收 4MB / 发送 1MB / keepAlive）。
+     *
+     * 相机热点是 2.4GHz，RTT 与抖动都大于路由器；接收窗口偏小时单帧要分很多轮往返，
+     * 帧间隔被拉长，表现为监看一顿一顿。STA 侧（`PtpSessionManager.connect`）从
+     * v2.2 起就在**连接前**设这三项（注释写明「必须在连接前设置才对 TCP 窗口协商生效」），
+     * 本客户端是移植实现，此前只设了 `soTimeout` 与 `tcpNoDelay`。
+     * 闸门：`ConnFlags.AP_LV_SOCKET_TUNING`。
+     */
+    private val tuneSockets: Boolean = true,
+    /** 取帧是否走零拷贝数据阶段（闸门 `ConnFlags.AP_LV_ZEROCOPY`，关掉回旧路径）。 */
+    private val zeroCopyFrames: Boolean = true,
+) {
 
     companion object {
         const val PTP_IP_PORT = 15740
@@ -81,6 +95,11 @@ class ApPtpClient(private val socketFactory: (String) -> Socket = { Socket() }) 
         const val FMT_ASSOCIATION = 0x3001
 
         private const val SESSION_ID = 1
+
+        /** 单次取帧/取对象允许的最大数据阶段长度（与通用事务一致）。 */
+        private const val MAX_FRAME_BYTES = 32L * 1024 * 1024
+
+        private val EMPTY_BYTES = ByteArray(0)
     }
 
     data class PtpResponse(val code: Int, val data: ByteArray) {
@@ -148,6 +167,7 @@ class ApPtpClient(private val socketFactory: (String) -> Socket = { Socket() }) 
                 // --- Command channel ---
                 val cmd = socketFactory(host)
                 cmdSocket = cmd
+                tuneSocket(cmd, "command")
                 cmd.connect(InetSocketAddress(host, port), 5000)
                 cmd.soTimeout = 20000
                 cmd.tcpNoDelay = true
@@ -172,6 +192,7 @@ class ApPtpClient(private val socketFactory: (String) -> Socket = { Socket() }) 
                 // --- Event channel (second TCP connection) ---
                 val evt = socketFactory(host)
                 evtSocket = evt
+                tuneSocket(evt, "event")
                 evt.connect(InetSocketAddress(host, port), 5000)
                 evt.soTimeout = 20000
                 evt.tcpNoDelay = true
@@ -408,6 +429,58 @@ class ApPtpClient(private val socketFactory: (String) -> Socket = { Socket() }) 
             }
         }
 
+    /**
+     * 建链前的套接字调优（与 STA `PtpSessionManager.connect` 同参数）。
+     *
+     * `receiveBufferSize` 必须在 `connect()` **之前**设置：TCP 窗口缩放因子在 SYN 里协商，
+     * 连上之后再改只影响本地缓冲，协商出去的窗口不会变大。
+     * 全部 runCatching：个别 ROM 对未连接套接字设缓冲会抛异常，不能因此断链。
+     */
+    private fun tuneSocket(socket: Socket, label: String) {
+        if (!tuneSockets) return
+        runCatching { socket.receiveBufferSize = 4 * 1024 * 1024 }
+            .onFailure { Log.w(TAG, "setReceiveBufferSize($label) failed: ${it.message}") }
+        runCatching { socket.sendBufferSize = 1024 * 1024 }
+            .onFailure { Log.w(TAG, "setSendBufferSize($label) failed: ${it.message}") }
+        runCatching { socket.keepAlive = true }
+        Log.i(TAG, "socket[$label] tuned rcv=${runCatching { socket.receiveBufferSize }.getOrDefault(-1)}")
+    }
+
+    /**
+     * 取一帧监看图像（0x9203）的专用事务。
+     *
+     * 与通用 [transact] 的差别只有数据阶段的接收方式：
+     * - [transact] 走 `ByteArrayOutputStream`（边写边翻倍扩容）+ `ApPtpWire.jpeg()` 裁剪拷贝；
+     * - 这里按 StartData 声明的长度**一次分配**，直接把数据读进最终数组，不裁剪 JPEG
+     *   （下游 `LvFrame.findJpegStart` 本来就会跳过数据阶段前缀，与 STA 通道口径一致）。
+     *
+     * 每帧少两遍全量拷贝与两遍全表扫描；15fps × 数百 KB 的省量在弱机上是可感的，
+     * 也减少了命令通道被 GC 挤占的时间。闸门 `ConnFlags.AP_LV_ZEROCOPY` 关掉时
+     * 调用方仍走 [transact]。
+     */
+    private suspend fun transactFrame(opcode: Int): PtpResponse? = withContext(Dispatchers.IO) {
+        ioMutex.withLock {
+            val out = cmdOut ?: return@withLock null
+            val input = cmdIn ?: return@withLock null
+            try {
+                out.write(buildCmdPacket(opcode, emptyList(), 1))
+                out.flush()
+                val reply = ApPtpWire.receiveFrame(
+                    input, transactionId.get() - 1, MAX_FRAME_BYTES,
+                    pong = { out.write(simplePacket(14)); out.flush() },
+                )
+                lastError = if (reply.code == RC_OK) null else "操作 0x${opcode.toString(16)}：${responseMessage(reply.code)}"
+                PtpResponse(reply.code, reply.data ?: EMPTY_BYTES)
+            } catch (e: Exception) {
+                Log.e(TAG, "transactFrame(0x${opcode.toString(16)}) failed", e)
+                lastError = "操作 0x${opcode.toString(16)} 失败：${e.message}，请重新连接相机"
+                record(lastError!!)
+                disconnect()
+                null
+            }
+        }
+    }
+
     fun disconnect() {
         sessionGeneration++
         _connected.value = false
@@ -515,10 +588,24 @@ class ApPtpClient(private val socketFactory: (String) -> Socket = { Socket() }) 
     }
 
     suspend fun liveViewFrame(): kotlin.Result<ByteArray?> = runCatching {
-        val r = transact(OP_LIVE_VIEW_IMAGE) ?: throw IOException(lastError)
+        val r = (if (zeroCopyFrames) transactFrame(OP_LIVE_VIEW_IMAGE) else transact(OP_LIVE_VIEW_IMAGE))
+            ?: throw IOException(lastError)
         if (r.code == 0x2019 || r.code == 0xA004) return@runCatching null
         if (!r.isOk) throw IOException(responseMessage(r.code))
-        ApPtpWire.jpeg(r.data) ?: throw IOException("相机返回的监看数据中没有完整 JPEG 图像")
+        val data = r.data
+        // 旧路径靠 ApPtpWire.jpeg() 顺带校验「数据里到底有没有 JPEG」；不裁剪之后
+        // 这个校验要显式保留（只扫前 1KB，正常帧 SOI 就在 0 或紧邻一小段头部）。
+        // 下游 LvFrame.findJpegStart 会自己再定位一次，这里只判真伪、不重复拷贝。
+        if (!hasJpegHeader(data)) throw IOException("相机返回的监看数据中没有完整 JPEG 图像")
+        data
+    }
+
+    private fun hasJpegHeader(d: ByteArray): Boolean {
+        val limit = minOf(d.size - 2, 1024)
+        for (i in 0 until limit) {
+            if (d[i] == 0xFF.toByte() && d[i + 1] == 0xD8.toByte() && d[i + 2] == 0xFF.toByte()) return true
+        }
+        return false
     }
 
     suspend fun endLiveView() { if (OP_END_LIVE_VIEW in supportedOperations) transact(OP_END_LIVE_VIEW) }

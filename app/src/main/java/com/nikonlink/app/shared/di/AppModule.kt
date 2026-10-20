@@ -186,10 +186,15 @@ object AppModule {
         ptpSessionManager: PtpSessionManager,
         usbPtpManager: UsbPtpManager,
         apConnection: com.nikonlink.app.device.ap.ApConnectionService,
+        apLinkLocks: com.nikonlink.app.device.ap.ApLinkLocks,
+        connFlags: com.nikonlink.app.device.connect.ConnFlags,
         eventLogger: AppEventLogger,
         baselineMetrics: com.nikonlink.app.shared.metrics.BaselineMetrics
     ): LiveViewManager =
-        LiveViewManager(ptpSessionManager, usbPtpManager, apConnection, eventLogger, baselineMetrics)
+        LiveViewManager(
+            ptpSessionManager, usbPtpManager, apConnection, apLinkLocks, connFlags,
+            eventLogger, baselineMetrics
+        )
 
     @Provides
     @Singleton
