@@ -227,6 +227,7 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         // 本页切离时的停流走 onHiddenChanged（释放 PTP 通道，防断联），那条路径保留。
         recordTimerJob?.cancel()
         modePillLayoutListener = null
+        lvBottomPx = -1
         _binding = null
     }
 
@@ -248,6 +249,12 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         binding.btnStartLv.pressEffect()
         binding.btnStartLv.setOnClickListener {
             liveViewViewModel.startLiveView()
+        }
+
+        // 画面按帧比例定高，容器下限跟着画面走（见 applyLvBottomReserve）。
+        // 首帧到达、旋屏、分屏改宽都会让画面高度变化，这里统一接住。
+        binding.ivLiveView.addOnLayoutChangeListener { _, _, _, _, height, _, _, _, _ ->
+            if (height > 0) applyLvBottomReserve()
         }
 
         binding.btnFullscreenLv.pressEffect()
@@ -318,6 +325,42 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         binding.viewHistogram.visibility = if (enabled) View.VISIBLE else View.GONE
         binding.btnHistogram.alpha = if (enabled) 1f else 0.55f
         if (!enabled) binding.viewHistogram.clear()
+        applyLvBottomReserve()
+    }
+
+    /** 已应用到取景框的下限像素值，用于去重（布局监听每帧都会回调） */
+    private var lvBottomPx = -1
+
+    /**
+     * 取景框下限跟着画面走：直方图开着才在画面下方留出它那条，关掉就收回。
+     *
+     * 为什么不用 XML 里的固定值：fitCenter 下画面高度只由画面宽度决定，
+     * 固定下限（上一版 272dp）比 3:2 画面高出一截，多出来的是一条纯黑死带
+     * （真机量得 192px = 58dp）—— 网格线按整框铺所以跟着跑偏，用户读成「画面上下被裁」。
+     * 那条带还不够直方图站：量得直方图顶边压在画面底边上方 8dp，等于又吃掉一截画面。
+     * 没帧时画面高为 0，退回 `remote_lv_min_h` 兜住空态，开始监看按钮仍有落点。
+     */
+    private fun applyLvBottomReserve() {
+        val b = _binding ?: return
+        val floor = resources.getDimensionPixelSize(R.dimen.remote_lv_min_h)
+        val pictureH = b.ivLiveView.height
+        val reserve = if (b.viewHistogram.visibility == View.VISIBLE) {
+            resources.getDimensionPixelSize(R.dimen.remote_lv_hist_reserve)
+        } else {
+            0
+        }
+        val target = if (pictureH > 0) pictureH + reserve else floor
+        // 网格线只铺画面那一段：原来是 match_parent，框里一旦留出直方图那条，
+        // 三分线就落到画面外，构图辅助对不上取景内容。
+        val gridLp = b.viewGrid.layoutParams
+        val gridH = if (pictureH > 0) pictureH else ViewGroup.LayoutParams.MATCH_PARENT
+        if (gridLp != null && gridLp.height != gridH) {
+            gridLp.height = gridH
+            b.viewGrid.requestLayout()
+        }
+        if (target == lvBottomPx) return
+        lvBottomPx = target
+        b.liveContainer.minimumHeight = target
     }
 
     private fun showFocusIndicator(x: Float, y: Float) {

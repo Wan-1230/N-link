@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 拍摄页取景框顶部信息条的底：由上往下渐隐。
+     原来是整条 `@color/liveview_scrim` 半透黑，底边一道硬缝压在画面上，
+     读起来像画面顶部被切掉一截；渐隐后同一行字仍压得住，但不再有那条边。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient
+        android:angle="270"
+        android:startColor="#CC000000"
+        android:centerColor="#66000000"
+        android:endColor="@android:color/transparent" />
+</shape>

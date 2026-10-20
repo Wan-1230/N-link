@@ -104,18 +104,18 @@
         android:layout_marginTop="6dp"
         android:visibility="gone" />
 
-    <!-- 实时取景（2026-10-18 改版）：容器高度改由画面自身比例决定。
-         原来是 `weight=2` 撑走 2/3 屏高，而相机给的帧是横向比例（3:2 / 16:9），
-         fitCenter 之后上下各留一大条纯黑 —— 看着像"画面被裁"，其实是框比画面大。
-         现在 adjustViewBounds 让 ImageView 跟着帧的宽高比定高，黑边收掉，
-         省下来的竖向空间全部给下方的功能区（按钮更大、多两颗常用键）。
-         minHeight 兜住"还没有画面"的状态：没帧时这里仍是一块可点的取景面板，
-         不会塌成一条线；maxHeight 兜住极端比例（机身若给 1:1 或竖幅）。 -->
+    <!-- 实时取景（2026-10-18 二次校准）：框高跟着画面走，画面宽度靠收窄左右留白拿回来。
+         原来 `weight=2` 撑走 2/3 屏高 → 上下各一大条纯黑；改成 adjustViewBounds 后
+         又用 272dp 的固定下限把黑带留在了画面下方（真机量得 192px 死黑，网格线跑偏与
+         「画面被裁」的观感都出自这条带）。fitCenter 下画面高度只由画面宽度决定，
+         所以这次动的是左右留白：8dp 让 3:2 画面从 214dp 长到 235dp。
+         容器 minHeight 只兜「还没帧」的空态；有帧时由 RemoteFragment.applyLvBottomReserve
+         按「画面高 + 直方图预留」重设，直方图关掉时框就是画面本身，不留黑。 -->
     <FrameLayout
         android:id="@+id/liveContainer"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginHorizontal="@dimen/page_margin"
+        android:layout_marginHorizontal="@dimen/remote_lv_margin"
         android:layout_marginTop="@dimen/space_8"
         android:minHeight="@dimen/remote_lv_min_h"
         android:background="@drawable/bg_liveview">
@@ -127,7 +127,6 @@
             android:adjustViewBounds="true"
             android:contentDescription="实时取景画面"
             android:maxHeight="@dimen/remote_lv_max_h"
-            android:minHeight="@dimen/remote_lv_min_h"
             android:scaleType="fitCenter" />
 
         <!-- 三分构图网格线 -->
@@ -140,12 +139,13 @@
             android:src="@drawable/bg_grid_thirds"
             android:visibility="gone" />
 
-        <!-- 顶部悬浮信息：半透黑底白字 -->
+        <!-- 顶部悬浮信息：由上往下渐隐，不再是一条硬边半透黑 —— 硬边压在画面上
+             读起来像「画面顶部被切掉一截」，而这行只是浮层。 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_gravity="top"
-            android:background="@color/liveview_scrim"
+            android:background="@drawable/bg_lv_top_scrim"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingHorizontal="14dp"
