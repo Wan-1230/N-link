@@ -1,6 +1,7 @@
 package com.nikonlink.app.camera.gallery
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -25,8 +26,52 @@ class StaDirectReadTest {
         assertEquals(CameraFileFormat.JPEG, StaDirectRead.formatFromHandle(0x29000001))
         assertEquals(CameraFileFormat.VIDEO, StaDirectRead.formatFromHandle(0x61000002))
         assertNull(StaDirectRead.formatFromHandle(0x01000000))
-        assertEquals("DSC_04660.NEF", StaDirectRead.placeholderName(0x09001234, CameraFileFormat.RAW))
-        assertEquals("DSC_00002.MP4", StaDirectRead.placeholderName(0x61000002, CameraFileFormat.VIDEO))
+        // 编号统一 4 位，与机身一致；列表阶段与落盘阶段用同一种格式
+        assertEquals("DSC_4660.NEF", StaDirectRead.placeholderName(0x09001234, CameraFileFormat.RAW))
+        assertEquals("DSC_0002.MP4", StaDirectRead.placeholderName(0x61000002, CameraFileFormat.VIDEO))
+        assertEquals("Z30_6546.JPG", StaDirectRead.placeholderName(0x29191992, CameraFileFormat.JPEG, "Z30"))
+    }
+
+    @Test
+    fun `卡内文件名 sRGB 与 AdobeRGB 两种形态`() {
+        assertEquals("Z30_1001.JPG", StaDirectRead.cardName("Z30", 1001, adobeRgb = false, ext = "JPG"))
+        assertEquals("_Z301001.JPG", StaDirectRead.cardName("Z30", 1001, adobeRgb = true, ext = "JPG"))
+        assertEquals(
+            "_DSC0007.NEF",
+            StaDirectRead.nameFromNumber(7, CameraFileFormat.RAW, 0x09000007, adobeRgb = true)
+        )
+    }
+
+    @Test
+    fun `前缀只接受 3 位大写字母数字`() {
+        assertTrue(StaDirectRead.isPlausiblePrefix("Z30"))
+        assertTrue(StaDirectRead.isPlausiblePrefix("DSC"))
+        assertFalse(StaDirectRead.isPlausiblePrefix("z30"))
+        assertFalse(StaDirectRead.isPlausiblePrefix("Z3"))
+        assertFalse(StaDirectRead.isPlausiblePrefix("NIKON"))
+        assertFalse(StaDirectRead.isPlausiblePrefix(null))
+    }
+
+    @Test
+    fun `0x1014 字符串属性描述解出当前值`() {
+        fun ptpString(v: String): ByteArray {
+            val chars = v + "\u0000"
+            val b = ByteBuffer.allocate(1 + chars.length * 2).order(ByteOrder.LITTLE_ENDIAN)
+            b.put(chars.length.toByte())
+            chars.forEach { b.putShort(it.code.toShort()) }
+            return b.array()
+        }
+        val head = ByteBuffer.allocate(5).order(ByteOrder.LITTLE_ENDIAN)
+            .putShort(0xD0AA.toShort()).putShort(0xFFFF.toShort()).put(1).array()
+        val data = head + ptpString("DSC") + ptpString("Z30") + byteArrayOf(0)
+        assertEquals(0xD0AA to "Z30", StaDirectRead.parseStringPropDesc(data))
+
+        // 非字符串型（UINT8）不解
+        val u8 = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+            .putShort(0xD06C.toShort()).putShort(0x0002).put(1).put(0).put(1).put(0).array()
+        assertNull(StaDirectRead.parseStringPropDesc(u8))
+        // 截断
+        assertNull(StaDirectRead.parseStringPropDesc(head + byteArrayOf(4, 0x44)))
     }
 
     @Test
@@ -71,6 +116,17 @@ class StaDirectReadTest {
         val thumb = head.copyOfRange(info.embeddedJpegs[1].first.toInt(), info.embeddedJpegs[1].last.toInt() + 1)
         assertTrue(StaDirectRead.isCompleteJpeg(thumb))
         assertEquals("DSC_1234.JPG", StaDirectRead.nameFromNumber(info.fileNumber, CameraFileFormat.JPEG, 0x29000001))
+    }
+
+    @Test
+    fun `EXIF ColorSpace 为 Uncalibrated 时按 AdobeRGB 命名`() {
+        assertFalse(StaDirectRead.parseHead(buildJpegWithExifAndMpf(colorSpace = 1), utc).adobeRgb)
+        val info = StaDirectRead.parseHead(buildJpegWithExifAndMpf(colorSpace = 0xFFFF), utc)
+        assertTrue(info.adobeRgb)
+        assertEquals(
+            "_Z301234.JPG",
+            StaDirectRead.nameFromNumber(info.fileNumber, CameraFileFormat.JPEG, 0x29000001, "Z30", info.adobeRgb)
+        )
     }
 
     @Test
@@ -150,13 +206,21 @@ class StaDirectReadTest {
         it[len - 2] = 0xFF.toByte(); it[len - 1] = 0xD9.toByte()
     }
 
-    private fun buildJpegWithExifAndMpf(): ByteArray {
+    private fun buildJpegWithExifAndMpf(colorSpace: Int? = null): ByteArray {
         // EXIF TIFF：IFD0@8 → ExifIFD@200；IFD1@100 → 缩略图@400（64B）
         val t = Tiff(480)
         t.b.putInt(4, 8)
         t.ifd(8, listOf(intArrayOf(0x8769, 4, 1, 200)), next = 100)
         t.ifd(100, listOf(intArrayOf(0x0201, 4, 1, 400), intArrayOf(0x0202, 4, 1, 64)), next = 0)
-        t.ifd(200, listOf(intArrayOf(0x9003, 2, 20, 300), intArrayOf(0x9211, 4, 1, 1234)), next = 0)
+        t.ifd(
+            200,
+            listOfNotNull(
+                intArrayOf(0x9003, 2, 20, 300),
+                intArrayOf(0x9211, 4, 1, 1234),
+                colorSpace?.let { intArrayOf(0xA001, 3, 1, it) }
+            ),
+            next = 0
+        )
         t.ascii(300, "2026:10:18 18:26:01")
         System.arraycopy(tinyJpeg(64), 0, t.b.array(), 400, 64)
         val exifTiff = t.b.array()

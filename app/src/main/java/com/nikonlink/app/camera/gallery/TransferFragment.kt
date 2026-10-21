@@ -909,6 +909,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
         } else {
             renderActionButtons()
         }
+        renderQueuePill()
         adapter.notifyDataSetChanged()
     }
 
@@ -1067,6 +1068,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
                     } else if (selected.isEmpty()) {
                         binding.bottomBar.visibility = View.GONE
                     }
+                    renderQueuePill()
                 }
             }
             launch {
@@ -1187,6 +1189,16 @@ class TransferFragment : Fragment(), GlassInsetAware {
             }
         }
 
+        // 下载队列入口：「下载中 n/m」，点开是队列面板
+        binding.btnQueue.pressEffect()
+        binding.btnQueue.setOnClickListener {
+            TransferQueueSheet(requireContext(), viewLifecycleOwner, viewModel).show()
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            combine(viewModel.queue, viewModel.transferState) { _, _ -> Unit }
+                .collect { renderQueuePill() }
+        }
+
         // 下载进度：灰度确定进度条 + 百分比
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.transferState.collect { state ->
@@ -1221,6 +1233,16 @@ class TransferFragment : Fragment(), GlassInsetAware {
                 }
             }
         }
+    }
+
+    /** 队列入口：有任务时显示；多选操作栏占着同一位置时让位。 */
+    private fun renderQueuePill() {
+        if (_binding == null) return
+        val text = TransferQueueSummary.of(viewModel.queue.value)
+            .pillText(paused = viewModel.transferState.value is TransferState.Paused)
+        val show = text != null && binding.bottomBar.visibility != View.VISIBLE
+        binding.btnQueue.text = text
+        binding.btnQueue.visibility = if (show) View.VISIBLE else View.GONE
     }
 
     /** 需求 3：记下当前第一个可见照片的 handle，供关闭隐藏开关后恢复位置 */

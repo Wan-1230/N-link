@@ -358,6 +358,26 @@
             </FrameLayout>
         </LinearLayout>
 
+    <!-- 下载队列入口：队列里有任务时浮在标签行上方，「下载中 n/m」，点开是队列面板。
+         多选操作栏出现时让位（两者同一位置，操作栏优先）。 -->
+    <TextView
+        android:id="@+id/btnQueue"
+        android:layout_width="wrap_content"
+        android:layout_height="36dp"
+        android:layout_marginBottom="@dimen/space_12"
+        android:background="@drawable/bg_chip_selected"
+        android:contentDescription="下载队列"
+        android:gravity="center"
+        android:minWidth="48dp"
+        android:paddingHorizontal="@dimen/space_16"
+        android:textColor="@color/on_primary"
+        android:textSize="@dimen/font_caption"
+        android:textStyle="bold"
+        android:visibility="gone"
+        app:layout_constraintBottom_toTopOf="@id/albumTabRow"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
     <!-- 底部悬浮操作栏（多选模式）：下载 / 删除 / 分享 / 全选 -->
     <LinearLayout
         android:id="@+id/bottomBar"

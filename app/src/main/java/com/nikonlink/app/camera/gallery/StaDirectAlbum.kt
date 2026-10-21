@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * - `sta_list`：列表来源（9434 / 9421）、条数、文件名来源、耗时
  * - `sta_thumb` / `sta_hd`：前几张缩略图 / 高清的来源与大小，之后只计数
  * - `sta_name`：下载时从文件头补出的真实文件名
+ * - `sta_prefix`：「文件命名」前缀的探测过程（字符串型设备属性的候选、选中的属性码、耗时）
  */
 internal class StaDirectAlbum(
     private val ptp: PtpSessionManager,
@@ -58,6 +59,12 @@ internal class StaDirectAlbum(
         /** 保护位按需读取总预算；超时返回空，让上层明确提示"读不到"而不是给半份清单。 */
         private const val PROTECT_READ_BUDGET_MS = 20_000L
 
+        /** 前缀探测的总时长上限：逐个 0x1014 走同一条命令通道，不能拖住首屏列表。 */
+        private const val PREFIX_SCAN_BUDGET_MS = 4000L
+        private const val PREFIX_SCAN_MAX_PROPS = 400
+        /** 已知装着个人信息的字符串属性（ArtistName / CopyrightInfo），不读也不记。 */
+        private val PRIVATE_PROPS = setOf(0xD072, 0xD073)
+
         private const val FORMAT_JPEG = 0x3801
         private const val FORMAT_NEF = 0xB103
         private const val FORMAT_MOV = 0x300D
@@ -71,6 +78,10 @@ internal class StaDirectAlbum(
     @Volatile private var cacheGeneration = -1
     /** 两次相册加载并发进来时只探测一次，后到的等结论（2026-10-19 日志里隔 17ms 各探了一遍）。 */
     private val probeMutex = Mutex()
+
+    /** 本会话的文件名前缀：null = 还没探测；探测不到时为 [StaDirectRead.DEFAULT_PREFIX]。 */
+    @Volatile private var prefix: String? = null
+    private val prefixMutex = Mutex()
 
     /** 本会话里 0x9530 是否可用：null = 还没试过。 */
     @Volatile private var partialImageOk: Boolean? = null
@@ -92,6 +103,7 @@ internal class StaDirectAlbum(
         synchronized(headCache) { headCache.clear() }
         resolvedNames.clear()
         sizes.clear()
+        prefix = null
         partialImageOk = null
         thumbLogged.set(0)
         hdLogged.set(0)
@@ -215,15 +227,16 @@ internal class StaDirectAlbum(
         }
         meta.values.forEach { if (it.size > 0) sizes.putIfAbsent(it.handle, it.size) }
 
-        // ③ 文件名：0x9805 只问 0xDC07 → 0x9803 逐个 → 占位
+        // ③ 文件名：0x9805 只问 0xDC07 → 0x9803 逐个 → 占位（前缀取自「文件命名」设置）
         val nameSource = fetchNames(wanted)
+        val pfx = if (wanted.all { resolvedNames.containsKey(it) }) StaDirectRead.DEFAULT_PREFIX else filePrefix()
 
         val files = wanted.mapNotNull { h ->
             val format = StaDirectRead.formatFromHandle(h) ?: return@mapNotNull null
             val size = sizes[h] ?: return@mapNotNull null
             CameraFile(
                 handle = h,
-                fileName = resolvedNames[h] ?: StaDirectRead.placeholderName(h, format),
+                fileName = resolvedNames[h] ?: StaDirectRead.placeholderName(h, format, pfx),
                 size = size,
                 formatCode = when (format) {
                     CameraFileFormat.RAW -> FORMAT_NEF
@@ -377,9 +390,10 @@ internal class StaDirectAlbum(
         sizes[handle] = size
         val head = head(handle, size)
         val info = head?.let { StaDirectRead.parseHead(it) }
+        val pfx = filePrefix()
         val name = resolvedNames[handle]
-            ?: StaDirectRead.nameFromNumber(info?.fileNumber, format, handle)
-            ?: StaDirectRead.placeholderName(handle, format)
+            ?: StaDirectRead.nameFromNumber(info?.fileNumber, format, handle, pfx, info?.adobeRgb == true)
+            ?: StaDirectRead.placeholderName(handle, format, pfx)
         return CameraFile(
             handle = handle,
             fileName = name,
@@ -511,7 +525,9 @@ internal class StaDirectAlbum(
     private fun rememberName(handle: Int, info: StaDirectRead.HeadInfo) {
         if (resolvedNames.containsKey(handle)) return
         val format = StaDirectRead.formatFromHandle(handle) ?: return
-        StaDirectRead.nameFromNumber(info.fileNumber, format, handle)?.let { resolvedNames[handle] = it }
+        val pfx = prefix ?: StaDirectRead.DEFAULT_PREFIX
+        StaDirectRead.nameFromNumber(info.fileNumber, format, handle, pfx, info.adobeRgb)
+            ?.let { resolvedNames[handle] = it }
     }
 
     /**
@@ -521,13 +537,96 @@ internal class StaDirectAlbum(
     suspend fun resolveFileName(file: CameraFile): String {
         resolvedNames[file.handle]?.let { return it }
         val format = StaDirectRead.formatFromHandle(file.handle) ?: return file.fileName
-        if (file.fileName != StaDirectRead.placeholderName(file.handle, format)) return file.fileName
+        val pfx = filePrefix()
+        // 列表可能是在前缀探测出来之前建的（或上一会话的任务），两种占位名都认
+        val placeholders = setOf(
+            StaDirectRead.placeholderName(file.handle, format, pfx),
+            StaDirectRead.placeholderName(file.handle, format)
+        )
+        if (file.fileName !in placeholders) return file.fileName
         val head = head(file.handle, file.size) ?: return file.fileName
         val info = StaDirectRead.parseHead(head)
         rememberName(file.handle, info)
         val name = resolvedNames[file.handle] ?: return file.fileName
-        eventLogger.event("sta_name", "handle" to "0x%08X".format(file.handle), "name" to name)
+        eventLogger.event(
+            "sta_name",
+            "handle" to "0x%08X".format(file.handle),
+            "name" to name,
+            "prefix" to pfx,
+            "number" to info.fileNumber,
+            "adobe_rgb" to info.adobeRgb
+        )
         return name
+    }
+
+    /**
+     * 本会话的文件名前缀（「设定菜单 › 文件命名」）。
+     *
+     * 公开资料（libgphoto2 ptp.h）没有收录这一项的属性码，所以按形态找：
+     * 遍历 DeviceInfo 声明的厂商属性，逐个 `0x1014 GetDevicePropDesc`，挑出字符串型、
+     * 当前值是 3 位大写字母/数字的那一个。只有一个候选时才采用，多个或没有都退回 `DSC`。
+     * 整个过程写进 `sta_prefix` 事件（候选的属性码与取值），真机日志据此确认属性码。
+     * 每个会话只探测一次。
+     */
+    suspend fun filePrefix(): String {
+        prefix?.let { return it }
+        return prefixMutex.withLock {
+            prefix ?: detectPrefix().also { prefix = it }
+        }
+    }
+
+    private suspend fun detectPrefix(): String {
+        val start = System.currentTimeMillis()
+        val supported = ptp.lastSupportedDeviceProps
+        if (supported == null) {
+            eventLogger.event("sta_prefix", "result" to StaDirectRead.DEFAULT_PREFIX, "reason" to "no_prop_list")
+            return StaDirectRead.DEFAULT_PREFIX
+        }
+        val props = supported.filter { it in 0xD000..0xDFFF && it !in PRIVATE_PROPS }
+            .sorted().take(PREFIX_SCAN_MAX_PROPS)
+        val candidates = mutableListOf<Pair<Int, String>>()
+        val strings = mutableListOf<String>()
+        var scanned = 0
+        var failed = 0
+        var firstFailCode: String? = null
+        // 按截止时间停，不在命令中途取消（取消会让命令通道上留半截应答）
+        val deadline = start + PREFIX_SCAN_BUDGET_MS
+        var finished = true
+        for (code in props) {
+            if (System.currentTimeMillis() > deadline) { finished = false; break }
+            run {
+                scanned++
+                val r = withTimeoutOrNull(CMD_TIMEOUT_MS) {
+                    ptp.sendCommandWithData(PtpConstants.OP_GET_DEVICE_PROP_DESC, listOf(code))
+                }
+                if (r !is PtpDataResult.Success) {
+                    failed++
+                    if (firstFailCode == null) firstFailCode = r.codeHex()
+                    return@run
+                }
+                val (_, value) = StaDirectRead.parseStringPropDesc(r.data) ?: return@run
+                // 只记形态，不记原文：字符串属性里可能有用户自填的信息
+                strings += "%04x:%d".format(code, value.length)
+                if (StaDirectRead.isPlausiblePrefix(value)) candidates += code to value
+            }
+        }
+        val chosen = candidates.singleOrNull()
+        val result = chosen?.second ?: StaDirectRead.DEFAULT_PREFIX
+        eventLogger.event(
+            "sta_prefix",
+            "result" to result,
+            "prop" to chosen?.first?.let { "0x%04X".format(it) },
+            "candidates" to candidates.joinToString(",") { "0x%04X=%s".format(it.first, it.second) },
+            "string_props" to strings.joinToString(","),
+            "vendor_props" to props.size,
+            "scanned" to scanned,
+            "failed" to failed,
+            "fail_code" to firstFailCode,
+            "complete" to finished,
+            "ms" to (System.currentTimeMillis() - start)
+        )
+        Timber.tag(TAG).i("STA file prefix=%s candidates=%s", result, candidates)
+        return result
     }
 
     private fun logThumb(handle: Int, src: String, jpeg: ByteArray?, headBytes: Int, ranges: Int = 0): ByteArray? {

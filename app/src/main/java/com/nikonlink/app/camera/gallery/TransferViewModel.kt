@@ -1842,6 +1842,9 @@ class TransferViewModel @Inject constructor(
     fun pauseTransfer() = transferManager.pause()
     fun resumeTransfer() = transferManager.resume()
     fun cancelAll() = transferManager.cancelAll()
+    fun retryFailedTransfers() = transferManager.retryFailed()
+    fun clearFinishedTransfers() = transferManager.clearFinished()
+    fun removeTransfer(handle: Int) = transferManager.removeTask(handle)
 }
 
 /**
