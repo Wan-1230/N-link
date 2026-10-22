@@ -83,6 +83,19 @@ class ProtectionFilterTest {
     }
 
     @Test
+    fun `已保护专用筛选只按保护位，不把评级算进来`() {
+        val protectedOnly = file(1, 0x0001)
+        val ratedOnly = file(2, null).copy(rating = 5)
+        val unknown = file(3, null)
+
+        val kept = listOf(protectedOnly, ratedOnly, unknown)
+            .filter { PhotoFilter.PROTECTED_ONLY.matches(it) }
+        assertEquals(listOf(protectedOnly.handle), kept.map { it.handle })
+        // 「已筛选」仍覆盖保护或评级，两个入口语义互不吞并
+        assertTrue(PhotoFilter.PROTECTED.matches(ratedOnly))
+    }
+
+    @Test
     fun `既有筛选取值不受新增项影响`() {
         val raw = file(1, 0x0001)
         assertTrue(PhotoFilter.ALL.matches(raw))

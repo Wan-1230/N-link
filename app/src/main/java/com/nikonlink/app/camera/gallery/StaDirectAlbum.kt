@@ -1,5 +1,6 @@
 package com.nikonlink.app.camera.gallery
 
+import com.nikonlink.app.device.ptp.MtpObjectProp
 import com.nikonlink.app.device.ptp.MtpObjectPropListParser
 import com.nikonlink.app.device.ptp.PtpConstants
 import com.nikonlink.app.device.ptp.PtpDataResult
@@ -9,6 +10,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -50,6 +53,10 @@ internal class StaDirectAlbum(
         private const val HEAD_CACHE_MAX = 48
         private const val LOG_SAMPLE = 3
         private const val PER_HANDLE_NAME_MAX = 3000
+        /** 保护位逐个读取：连续失败几次就收手（机身拒绝时不要打满整卡）。 */
+        private const val PROTECT_FAIL_BREAK = 3
+        /** 保护位按需读取总预算；超时返回空，让上层明确提示"读不到"而不是给半份清单。 */
+        private const val PROTECT_READ_BUDGET_MS = 20_000L
 
         private const val FORMAT_JPEG = 0x3801
         private const val FORMAT_NEF = 0xB103
@@ -286,6 +293,81 @@ internal class StaDirectAlbum(
             )
         } as? PtpDataResult.Success ?: return null
         return readPtpString(r.data)?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * 按需读取机内保护位（0xDC03），只读、不写。
+     *
+     * STA「连接到电脑」下 0x1008/0x9805 被机身锁成 0x200F，列表阶段拿不到保护位；
+     * 这里按需补读：先试一次 `0x9805` 只问保护列，失败再逐个 `0x9803`。
+     * 机身若连 0x9803 也拒，**返回空 Map** —— 上层据此提示"当前连接方式读不到"，
+     * 不能把未知当成"全部未保护"（会把用户按过保护键的照片筛没）。
+     *
+     * 逐个读取有 3 连败熔断与 20s 总预算，避免在拒读机身上把整卡句柄打一遍。
+     * 只有**全部目标句柄都拿到值**才返回，半份清单同样视为失败。
+     */
+    suspend fun readProtection(handles: List<Int>): Map<Int, Int?> {
+        val wanted = handles.filter { StaDirectRead.isMediaHandle(it) }.distinct()
+        if (wanted.isEmpty()) return emptyMap()
+        val start = System.currentTimeMillis()
+        val statuses = LinkedHashMap<Int, Int?>()
+
+        // ① 0x9805 只问 0xDC03：一次往返覆盖全卡（与文件名批量读取同一问法）
+        val bulk = withTimeoutOrNull(CMD_TIMEOUT_MS * 2) {
+            ptp.sendCommandWithData(
+                PtpConstants.OP_MTP_GET_OBJECT_PROP_LIST,
+                listOf(
+                    MtpObjectProp.ALL, 0, MtpObjectProp.PROTECTION_STATUS, 0, 0
+                )
+            )
+        }
+        val bulkCode = bulk.codeHex()
+        if (bulk is PtpDataResult.Success) {
+            MtpObjectPropListParser.parse(bulk.data)?.forEach { p ->
+                val value = p.protectionStatus
+                if (value != null && p.handle in wanted) statuses[p.handle] = value
+            }
+        }
+
+        // ② 批量没覆盖到的逐个 0x9803
+        var probes = 0
+        var consecutiveFailures = 0
+        for (h in wanted) {
+            if (statuses.containsKey(h)) continue
+            if (System.currentTimeMillis() - start > PROTECT_READ_BUDGET_MS) break
+            probes++
+            val r = withTimeoutOrNull(CMD_TIMEOUT_MS) {
+                ptp.sendCommandWithData(
+                    PtpConstants.OP_MTP_GET_OBJECT_PROP_VALUE,
+                    listOf(h, MtpObjectProp.PROTECTION_STATUS)
+                )
+            }
+            val value = (r as? PtpDataResult.Success)?.data
+                ?.takeIf { it.size >= 2 }
+                ?.let {
+                    ByteBuffer.wrap(it).order(ByteOrder.LITTLE_ENDIAN)
+                        .short.toInt() and 0xFFFF
+                }
+            if (value == null) {
+                consecutiveFailures++
+                if (consecutiveFailures >= PROTECT_FAIL_BREAK) break
+            } else {
+                consecutiveFailures = 0
+                statuses[h] = value
+            }
+        }
+
+        val complete = statuses.size == wanted.size
+        eventLogger.event(
+            "sta_protect",
+            "requested" to wanted.size,
+            "hits" to statuses.size,
+            "bulk_9805" to bulkCode,
+            "probes_9803" to probes,
+            "complete" to complete,
+            "ms" to (System.currentTimeMillis() - start)
+        )
+        return if (complete) statuses else emptyMap()
     }
 
     /** 新对象事件（0xC101）在直读模式下的单条构建。 */

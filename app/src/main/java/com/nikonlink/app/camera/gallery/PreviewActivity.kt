@@ -301,10 +301,15 @@ class PreviewActivity : AppCompatActivity() {
         binding.vpPreview.setCurrentItem(currentPosition, false)
         binding.vpPreview.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
             override fun onPageSelected(position: Int) {
-                currentPosition = position
-                file = files[position]
+                // 删除尾部/最后一张时，ViewPager2 可能在 adapter 数量已缩小的瞬间
+                // 仍回调旧下标。这里必须夹紧，不能让 files[position] 越界闪退。
+                if (files.isEmpty()) return
+                val safe = position.coerceIn(0, files.lastIndex)
+                if (safe != position) binding.vpPreview.setCurrentItem(safe, false)
+                currentPosition = safe
+                file = files[safe]
                 // ViewPager2 不直接暴露 findViewHolder，用绑定时登记的下标映射来取
-                currentZoomView = zoomViews.get(position)
+                currentZoomView = zoomViews.get(safe)
                 updateTopBar()
                 // 换页 = 玻璃背后的整张图都变了，纹理必须作废重采
                 previewGlass?.invalidate()
@@ -453,7 +458,13 @@ class PreviewActivity : AppCompatActivity() {
             PageViewHolder(createPageViews())
 
         override fun onBindViewHolder(holder: PageViewHolder, position: Int) {
-            val f = files[position]
+            // 数据源可能在布局批次之间被删除操作缩短：越界页清空后跳过，
+            // 等下一次 notify 再绑定，不能让 RecyclerView 的绑定路径抛 IOOBE。
+            val f = files.getOrNull(position) ?: run {
+                holder.pv.iv.setImageBitmap(null)
+                holder.pv.progress.visibility = View.GONE
+                return
+            }
             holder.pv.error.visibility = View.GONE
             holder.pv.progress.visibility = View.VISIBLE
             holder.pv.iv.setImageBitmap(null)
@@ -800,13 +811,17 @@ class PreviewActivity : AppCompatActivity() {
                     }
                     photoMarkRepository.unmark(listOf(target))
                     val remaining = files.toMutableList().also { it.removeAt(pos) }
-                    files = remaining
-                    binding.vpPreview.adapter?.notifyDataSetChanged()
                     if (remaining.isEmpty()) {
+                        // 先收页面：空 adapter 时若再触发 onPageSelected，旧代码会
+                        // 用 files[0] 访问空列表。这里不再先 notify 再 finish。
                         NlFeedback.show(this@PreviewActivity, "已删除")
                         finish()
                         return@launch
                     }
+                    files = remaining
+                    // 精确移除一格而不是全量刷新：ViewPager2 能据此把当前页
+                    // 收敛到有效下标，删最后一张时不会短暂停在已不存在的尾页。
+                    binding.vpPreview.adapter?.notifyItemRemoved(pos)
                     currentPosition = pos.coerceAtMost(remaining.lastIndex)
                     file = remaining[currentPosition]
                     binding.vpPreview.setCurrentItem(currentPosition, false)

@@ -82,6 +82,14 @@ class TransferManager @Inject constructor(
         // 兼容只支持小分块的老相机（部分机型 GetPartialObject 上限 ~1MB）
         private const val PARTIAL_CHUNK_SIZE = 4 * 1024 * 1024
         private const val MIN_PARTIAL_CHUNK_SIZE = 1024 * 1024
+        /**
+         * 链路断开后的重连等待上限。
+         *
+         * 大文件首次失败若伴随会话断开，上层 ConnectionManager 会自动重连；
+         * 旧逻辑固定 1.5s 后就重试，重连尚未完成时第二次必然失败，临时文件随即被删，
+         * 断点续传等于白做。这里等会话回来后再试，最长 30s。
+         */
+        private const val TRANSFER_RECONNECT_WAIT_MS = 30_000L
         // 媒体列表分页 limit=18，逐页加载避免一次性阻塞
         private const val PAGE_SIZE = 18
         /** ObjectInfo 读取并发窗口（PTP 命令通道本身串行，窗口用于 USB 多段与响应叠加） */
@@ -91,6 +99,9 @@ class TransferManager @Inject constructor(
         private const val OBJECT_INFO_TIMEOUT_MS = 8000L
         private const val OBJECT_HANDLES_TIMEOUT_MS = 15000L
         private const val STORAGE_IDS_TIMEOUT_MS = 10000L
+        /** 按需补读保护位的总预算与熔断（仅用户点「已保护」时触发，不拖慢常规列表加载）。 */
+        private const val PROTECT_FALLBACK_BUDGET_MS = 20_000L
+        private const val PROTECT_FAIL_BREAK = 3
 
         /**
          * MTP 批量元数据（0x9805）整体兜底超时。
@@ -324,6 +335,61 @@ class TransferManager @Inject constructor(
     suspend fun fetchPhotoList(
         onPage: ((List<CameraFile>) -> Unit)? = null
     ): List<CameraFile> = fetchPhotoListDetailed(onPage).files
+
+    /**
+     * 按需读取机内保护状态（PTP `0xDC03 ProtectionStatus`）。
+     *
+     * 普通 AP/USB/未锁 STA 的列表在 0x1008 / 0x9805 阶段已带回保护位；只有 STA
+     * 「连接到电脑」的直读模式拿不到（0x1008/0x9805 被机身锁），需要走私有直读引擎
+     * 的按需读取。返回空 Map = 当前通道读不到，调用方必须明确提示而不是当成"没保护"。
+     */
+    suspend fun fetchProtectionStatuses(files: List<CameraFile>): Map<Int, Int?> {
+        val transport = currentTransport()
+        if (!transport.isConnected || files.isEmpty()) return emptyMap()
+        if (staDirect(transport)) {
+            return withContext(Dispatchers.IO) {
+                staAlbum.readProtection(files.map { it.handle })
+            }
+        }
+
+        val known = files.mapNotNull { f ->
+            f.protectionStatus?.let { f.handle to it }
+        }.toMap()
+        if (known.size == files.size) return known
+
+        // 批量属性（0x9805）哪些列随机型而定；缺保护列时按需逐张 0x1008 补读。
+        // 只读、限时、连续失败即收手；半份清单不作为结果，避免未知被当成未保护。
+        return withContext(Dispatchers.IO) {
+            val out = LinkedHashMap<Int, Int?>(known)
+            var probes = 0
+            var consecutiveFailures = 0
+            val start = System.currentTimeMillis()
+            for (f in files) {
+                if (out.containsKey(f.handle)) continue
+                if (System.currentTimeMillis() - start > PROTECT_FALLBACK_BUDGET_MS) break
+                probes++
+                val info = withTimeoutOrNull(OBJECT_INFO_TIMEOUT_MS) {
+                    runCatching { transport.objectInfo(f.handle) }.getOrNull()
+                }
+                val status = info?.let { parseObjectInfo(f.handle, it)?.protectionStatus }
+                if (status == null) {
+                    consecutiveFailures++
+                    if (consecutiveFailures >= PROTECT_FAIL_BREAK) break
+                } else {
+                    consecutiveFailures = 0
+                    out[f.handle] = status
+                }
+            }
+            eventLogger.event(
+                "protect_fallback",
+                "requested" to files.size,
+                "hits" to out.size,
+                "probes_1008" to probes,
+                "complete" to (out.size == files.size)
+            )
+            if (out.size == files.size) out else emptyMap()
+        }
+    }
 
     /**
      * 相册列表拉取结果（失败兜底所需的结构化信息）。
@@ -809,6 +875,9 @@ class TransferManager @Inject constructor(
                 outcome = outcome
             )
         )
+        // 整段下载期间放宽命令通道超时，并让心跳/event 静默豁免判死。
+        // 不能只依赖单条分块命令的 bulkDepth：分块间隙会归零，长视频仍会被自己掐断。
+        transport.setBulkTransferActive(true)
         return try {
             if (tempFile.length() > file.size) {
                 tempFile.delete()
@@ -843,8 +912,9 @@ class TransferManager @Inject constructor(
                 file.fileName
             }
             val prepared = prepareFileToSave(tempFile, file)
-            val savedPath = saveFileToMediaStore(prepared, saveName)
+            val save = saveFileToMediaStore(prepared, saveName, file.format)
             if (prepared !== tempFile) runCatching { prepared.delete() }  // 压缩副本已进相册，别留在缓存目录里累积
+            val savedPath = (save as? SaveOutcome.Saved)?.path
             if (savedPath != null) {
                 // 已下载原图 → 用原图生成高清缩略图回填缓存（0x90C4/0x100A 的小图从此不再展示）。
                 // 挪到关键路径之外：全尺寸 JPEG 解码 + 缩放重编码要几百毫秒，串行卡在
@@ -877,8 +947,14 @@ class TransferManager @Inject constructor(
                 postMessage(msg)
                 TransferResult.Success(savedPath)
             } else {
+                val reason = (save as? SaveOutcome.Failed)?.reason
+                    ?: "保存失败：无法写入相册"
                 recordTransfer("storage")
-                TransferResult.Failed("保存失败：存储空间不足或无写入权限")
+                eventLogger.event(
+                    "download_fail", "handle" to file.handle,
+                    "reason" to "storage", "detail" to reason
+                )
+                TransferResult.Failed(reason)
             }
         } catch (e: CancellationException) {
             throw e
@@ -887,6 +963,8 @@ class TransferManager @Inject constructor(
             recordTransfer("error:${e.javaClass.simpleName}")
             eventLogger.event("download_fail", "handle" to file.handle, "reason" to (e.message ?: "unknown"))
             TransferResult.Failed(e.message ?: "未知错误")
+        } finally {
+            transport.setBulkTransferActive(false)
         }
     }
 
@@ -1495,7 +1573,20 @@ class TransferManager @Inject constructor(
         var result = downloadOnce(task)
         if (result is TransferResult.Failed) {
             Timber.tag(TAG).w("Task retry after failure: ${task.file.fileName}（${result.reason}）")
-            delay(1500)
+            if (!hasActiveSession()) {
+                // 会话已断：等上层自动重连完成再续传（临时文件仍在，downloadToFile 从断点继续）。
+                val recovered = withTimeoutOrNull(TRANSFER_RECONNECT_WAIT_MS) {
+                    while (!hasActiveSession()) delay(500)
+                    true
+                } ?: false
+                eventLogger.event(
+                    "transfer_reconnect_wait",
+                    "handle" to task.file.handle,
+                    "recovered" to recovered
+                )
+            } else {
+                delay(1500)
+            }
             result = downloadOnce(task)
         }
 
@@ -1698,39 +1789,73 @@ class TransferManager @Inject constructor(
         }
     }
 
+    private sealed class SaveOutcome {
+        data class Saved(val path: String) : SaveOutcome()
+        data class Failed(val reason: String) : SaveOutcome()
+    }
+
     /**
      * 将下载完成的临时文件保存到 MediaStore（Android Scoped Storage）。
-     * 保存路径按设置「save_path」选择 DCIM/N-Link 或 Download/N-Link。
+     *
+     * 集合必须按类型/目录分流：视频 MIME 插进 Images 集合会被 MediaProvider 拒绝，
+     * 而 Download 目录对 Images/Video 都不是合法主目录。此前后者统一写 Images，
+     * 于是视频（以及设置成 Download 目录时的照片）会落不进相册，却被统一报成
+     * 「存储空间不足或无写入权限」。
      */
-    private fun saveFileToMediaStore(file: File, fileName: String): String? {
+    private fun saveFileToMediaStore(
+        file: File,
+        fileName: String,
+        format: CameraFileFormat
+    ): SaveOutcome {
+        val relativePath = if (settings.savePath == AppSettings.SAVE_PATH_DOWNLOAD) {
+            Environment.DIRECTORY_DOWNLOADS + "/N-Link"
+        } else {
+            Environment.DIRECTORY_DCIM + "/N-Link"
+        }
+        val toDownloadDir = settings.savePath == AppSettings.SAVE_PATH_DOWNLOAD
+        val isVideo = format == CameraFileFormat.VIDEO ||
+            fileName.endsWith(".MOV", ignoreCase = true) ||
+            fileName.endsWith(".MP4", ignoreCase = true)
+        val (collectionUri, collectionName) = when {
+            toDownloadDir -> MediaStore.Downloads.EXTERNAL_CONTENT_URI to "downloads"
+            isVideo -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI to "video"
+            else -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI to "images"
+        }
+
+        // 硬空间校验：剩余空间连文件本身都放不下时，insert/写入必然失败。
+        // 提前给出可核对数字，避免把 MediaProvider 的任意异常都报成"空间不足"。
+        val freeBytes = runCatching {
+            android.os.StatFs(Environment.getExternalStorageDirectory().absolutePath).availableBytes
+        }.getOrNull()
+        if (freeBytes != null && file.length() > 0 && freeBytes < file.length()) {
+            return SaveOutcome.Failed(
+                "保存失败：存储空间不足（剩余 ${formatBytes(freeBytes)}，需要 ${formatBytes(file.length())}）"
+            )
+        }
+
         return try {
-            val relativePath = if (settings.savePath == AppSettings.SAVE_PATH_DOWNLOAD) {
-                Environment.DIRECTORY_DOWNLOADS + "/N-Link"
-            } else {
-                Environment.DIRECTORY_DCIM + "/N-Link"
-            }
             val contentValues = ContentValues().apply {
-                put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
-                put(MediaStore.Images.Media.MIME_TYPE, getMimeType(fileName))
-                put(MediaStore.Images.Media.RELATIVE_PATH, relativePath)
-                put(MediaStore.Images.Media.IS_PENDING, 1)
+                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(MediaStore.MediaColumns.MIME_TYPE, getMimeType(fileName))
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
 
             val resolver = context.contentResolver
-            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
-                ?: return null
+            val uri = resolver.insert(collectionUri, contentValues)
+                ?: return SaveOutcome.Failed("保存失败：相册不接受该文件（${getMimeType(fileName)}）")
 
             val output = resolver.openOutputStream(uri)
             if (output == null) {
                 resolver.delete(uri, null, null)
-                return null
+                return SaveOutcome.Failed("保存失败：无法打开相册写入流")
             }
             output.use { out ->
                 file.inputStream().use { input -> input.copyTo(out) }
             }
 
             contentValues.clear()
-            contentValues.put(MediaStore.Images.Media.IS_PENDING, 0)
+            contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
             resolver.update(uri, contentValues, null, null)
 
             // B5/O3：补一次媒体库扫描。
@@ -1739,11 +1864,17 @@ class TransferManager @Inject constructor(
             // 要手动刷新才看得到」。这里主动通知一次，让新照片即时可见。
             notifyMediaScanner(uri, relativePath, fileName)
 
-            Timber.tag(TAG).i("Saved to MediaStore: $fileName")
-            uri.toString()
+            Timber.tag(TAG).i("Saved to MediaStore(%s): %s", collectionName, fileName)
+            SaveOutcome.Saved(uri.toString())
+        } catch (e: SecurityException) {
+            Timber.tag(TAG).e(e, "No permission to save to MediaStore")
+            SaveOutcome.Failed("保存失败：没有相册写入权限")
+        } catch (e: java.io.IOException) {
+            Timber.tag(TAG).e(e, "Failed to write MediaStore")
+            SaveOutcome.Failed("保存失败：写入相册中断（${e.message ?: "IO 错误"}）")
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Failed to save to MediaStore")
-            null
+            SaveOutcome.Failed("保存失败：${e.message ?: "未知错误"}")
         }
     }
 
@@ -1964,6 +2095,8 @@ private interface CameraTransport {
         sink: OutputStream? = null
     ): ByteArray?
     suspend fun deleteObject(handle: Int): Boolean
+    /** 整段传输标记：WiFi PTP 下放宽命令超时并豁免心跳/event 静默判死；USB/AP no-op。 */
+    fun setBulkTransferActive(active: Boolean)
 }
 
 private class PtpTransport(
@@ -1988,6 +2121,7 @@ private class PtpTransport(
     override suspend fun partialObject(handle: Int, offset: Int, size: Int, sink: OutputStream?): ByteArray? =
         ptp.getPartialObject(handle, offset, size, sink)
     override suspend fun deleteObject(handle: Int): Boolean = ptp.deleteObject(handle)
+    override fun setBulkTransferActive(active: Boolean) = ptp.setBulkTransferActive(active)
 }
 
 private class UsbTransport(
@@ -2007,6 +2141,7 @@ private class UsbTransport(
     override suspend fun partialObject(handle: Int, offset: Int, size: Int, sink: OutputStream?): ByteArray? =
         usb.getPartialObject(handle, offset, size, sink)
     override suspend fun deleteObject(handle: Int): Boolean = usb.deleteObject(handle)
+    override fun setBulkTransferActive(active: Boolean) = Unit
 }
 
 /**
@@ -2073,4 +2208,6 @@ private class ApTransport(
             true
         }.getOrDefault(false)
     }
+
+    override fun setBulkTransferActive(active: Boolean) = Unit
 }

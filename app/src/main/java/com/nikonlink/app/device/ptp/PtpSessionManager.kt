@@ -89,6 +89,18 @@ class PtpSessionManager @Inject constructor(
          */
         private const val EVENT_READ_TIMEOUT_MS = 45000
         private const val EVENT_PING_TIMEOUT_MS = 1500
+
+        /** 命令通道常规读超时（会话建立后由 15s 降至 10s）。 */
+        private const val COMMAND_SO_TIMEOUT_MS = 10000
+
+        /**
+         * 批量/大文件传输期间命令通道读超时。
+         *
+         * 4MB 分块在 2.4GHz 或弱信号下可能超过 10s，整份 GetObject 的首包等待更久；
+         * 10s 档会在数据仍然正常流动时把命令读判失败，表现为大视频传到一半中断。
+         * 传输结束还原 [COMMAND_SO_TIMEOUT_MS]，不影响空闲会话的断链检测速度。
+         */
+        private const val BULK_TRANSFER_SO_TIMEOUT_MS = 60000
     }
 
     private var commandSocket: Socket? = null
@@ -132,7 +144,7 @@ class PtpSessionManager @Inject constructor(
         private set
 
     /**
-     * 当前会话是否经 STA（相机连路由器/手机热点）建立。STA 下尼康固件对标准对象命令
+     * 当前会话是否经 STA（相机连路由器/手机热点）建立。STA 下尼康固件对常规对象命令
      * 加访问锁（0x1008/0x100A/0x101B/0x9805 回 0x200F），相册据此改走私有直读命令。
      */
     @Volatile
@@ -587,7 +599,7 @@ class PtpSessionManager @Inject constructor(
             }
 
             // 缩短断联检测时间：会话建立后命令通道超时降至 10s
-            commandSocket?.soTimeout = 10000
+            commandSocket?.soTimeout = COMMAND_SO_TIMEOUT_MS
             // 事件通道不再无限阻塞（0）；45s 无入站即由读超时唤醒并判死，
             // 与心跳的 30s 判死窗口形成双保险，避免半开连接下永久挂起
             eventSocket?.soTimeout = EVENT_READ_TIMEOUT_MS
@@ -1024,7 +1036,33 @@ class PtpSessionManager @Inject constructor(
     /** 当前在途的批量传输数（>0 时心跳不判死，见 PRD v2.2 §5.2/§5.3）。 */
     private val bulkDepth = AtomicInteger(0)
 
-    fun isBulkTransferActive(): Boolean = bulkDepth.get() > 0
+    /**
+     * 整段传输（从一个文件开始到落盘/失败）的引用计数。
+     *
+     * [bulkDepth] 只覆盖「单条 PTP 命令的执行期」，分块之间会归零；event 读超时、
+     * 心跳判死恰好可能落在分块间隙，于是长传输仍会被自己掐断。这个计数由传输层
+     * 在整段下载外圈持有，和 [bulkDepth] 一起决定是否进入传输豁免。
+     */
+    private val transferBulkRefCount = AtomicInteger(0)
+
+    /**
+     * 标记整段批量/大文件传输开始/结束（引用计数，支持并发任务叠加）。
+     * 传输期间放宽命令通道读超时，并让心跳与 event 静默豁免判死。
+     */
+    fun setBulkTransferActive(active: Boolean) {
+        val depth = if (active) {
+            transferBulkRefCount.incrementAndGet()
+        } else {
+            transferBulkRefCount.updateAndGet { (it - 1).coerceAtLeast(0) }
+        }
+        runCatching {
+            commandSocket?.soTimeout =
+                if (depth > 0) BULK_TRANSFER_SO_TIMEOUT_MS else COMMAND_SO_TIMEOUT_MS
+        }
+    }
+
+    fun isBulkTransferActive(): Boolean =
+        bulkDepth.get() > 0 || transferBulkRefCount.get() > 0
 
     /**
      * 删除相机存储卡中的对象。
@@ -1243,6 +1281,15 @@ class PtpSessionManager @Inject constructor(
                     false
                 }
                 if (!pingOk) {
+                    // 传输期间写 Ping 失败先不判死：命令通道的数据仍在流动时，
+                    // 写失败可能只是 event 通道短暂拥塞；交给业务侧的 60s 命令超时兜底。
+                    // 传输结束后下一轮心跳会重新判死，不会永久放过真断链。
+                    if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.TRANSFER_HEARTBEAT) &&
+                        isBulkTransferActive()
+                    ) {
+                        Timber.tag(TAG).w("keepAlive ping write failed during bulk transfer, deferring")
+                        continue
+                    }
                     markLinkError("ping_write_failed")
                     break
                 }
@@ -1252,12 +1299,13 @@ class PtpSessionManager @Inject constructor(
                     // 相机回了 Pong 或主动发了探针：链路活
                     missedBeats = 0
                 } else if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.TRANSFER_HEARTBEAT) &&
-                    bulkDepth.get() > 0
+                    isBulkTransferActive()
                 ) {
                     // v2.2（G7，v2.0.2 PRD §二-2）：批量传输在途时相机把带宽和固件注意力
                     // 都给了命令通道，event 通道长时间静默是**正常**的。旧实现在这里累计
                     // missedBeats 并在 ~30s 判死，于是大文件/视频下载被自己的心跳掐断。
-                    // 写失败仍然会走上面的 ping_write_failed 分支判死，不会漏掉真断链。
+                    // isBulkTransferActive 同时覆盖单条命令与整段下载，分块间隙不再漏判。
+                    missedBeats = 0
                     Timber.tag(TAG).v("keepAlive: silence during bulk transfer, not counting")
                 } else {
                     missedBeats++
@@ -1272,7 +1320,7 @@ class PtpSessionManager @Inject constructor(
                 // 兜底：event 通道超过 30s 毫无活动即判定链路已死，交给上层恢复流程
                 if (System.currentTimeMillis() - lastEventActivityAt > NO_ACTIVITY_TIMEOUT_MS &&
                     !(connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.TRANSFER_HEARTBEAT) &&
-                        bulkDepth.get() > 0)
+                        isBulkTransferActive())
                 ) {
                     Timber.tag(TAG).w(
                         "keepAlive: no event-channel activity for ${NO_ACTIVITY_TIMEOUT_MS}ms, link dead"
@@ -1293,7 +1341,7 @@ class PtpSessionManager @Inject constructor(
                     if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.STA_FAST_IDLE_REFRESH))
                         IDLE_REFRESH_FAST_MS else IDLE_REFRESH_AFTER_MS
                 if (connFlags.isEnabled(com.nikonlink.app.device.connect.ConnFlags.SESSION_IDLE_REFRESH) &&
-                    bulkDepth.get() == 0 &&
+                    !isBulkTransferActive() &&
                     System.currentTimeMillis() - lastCommandAt > refreshAfterMs
                 ) {
                     runCatching { sendCommand(PtpConstants.OP_NIKON_DEVICE_READY) }
@@ -1385,18 +1433,30 @@ class PtpSessionManager @Inject constructor(
                         }
 
                         is EventStreamPump.Outcome.Idle -> {
-                            if (!silenceHold) {
+                            val bulk = connFlags.isEnabled(
+                                com.nikonlink.app.device.connect.ConnFlags.TRANSFER_HEARTBEAT
+                            ) && isBulkTransferActive()
+                            if (bulk) {
+                                // 传输期相机把注意力放在命令通道，event 45s 无入站是正常态。
+                                // 这一支此前只看 EVENT_SILENCE_HOLD（默认关），于是大视频传到
+                                // 一半仍会被 event 读超时判死；整段传输标记必须独立豁免。
+                                Timber.tag(TAG).i(
+                                    "event channel idle ${EVENT_READ_TIMEOUT_MS}ms, tolerated during transfer"
+                                )
+                                eventLogger.event("event_idle_hold", "bulk" to 1)
+                            } else if (!silenceHold) {
                                 // 旧行为：45s 无入站即判死。传大文件时相机本就静默，这一支正是
                                 // "下载中自己掐自己"的来历 —— 所以才要闸门单独管它。
                                 markLinkError("event_read_timeout")
                                 break
+                            } else {
+                                // 静默不等于断链：真断链时命令通道会自己失败（数据读超时 / 写异常），
+                                // 心跳的 no_response_xN 也仍在算，只是不再由 event 侧抢先判死。
+                                Timber.tag(TAG).i(
+                                    "event channel idle ${EVENT_READ_TIMEOUT_MS}ms, tolerated (bulk=${bulkDepth.get()})"
+                                )
+                                eventLogger.event("event_idle_hold", "bulk" to bulkDepth.get())
                             }
-                            // 静默不等于断链：真断链时命令通道会自己失败（数据读超时 / 写异常），
-                            // 心跳的 no_response_xN 也仍在算，只是不再由 event 侧抢先判死。
-                            Timber.tag(TAG).i(
-                                "event channel idle ${EVENT_READ_TIMEOUT_MS}ms, tolerated (bulk=${bulkDepth.get()})"
-                            )
-                            eventLogger.event("event_idle_hold", "bulk" to bulkDepth.get())
                         }
 
                         is EventStreamPump.Outcome.Partial -> {
