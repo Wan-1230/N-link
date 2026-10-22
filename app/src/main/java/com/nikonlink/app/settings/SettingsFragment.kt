@@ -553,7 +553,7 @@ class SettingsFragment : Fragment(), GlassInsetAware {
                 { connFlags.setEnabled(ConnFlags.AP_LV_PROFILE_ALIGN, it) }
             ),
             LabFlag(
-                UiFlags.PROTECT_SELECT, "「已保护」筛选（FR-16，默认关）",
+                UiFlags.PROTECT_SELECT, "「已保护 / 已筛选」筛选（FR-16，默认开）",
                 { UiFlags.protectSelectEnabled(c) },
                 { UiFlags.set(c, UiFlags.PROTECT_SELECT, it) }
             ),
@@ -833,8 +833,8 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         styleTopBar()
         binding.settingsScroll.setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
             topBarFx?.onScroll(scrollY)
-            // 滚动增量交给采集器，顶栏的采样窗口跟着平移（否则背景是 150ms 一格的幻灯片）
-            (activity as? MainActivity)?.dockBackdrop?.requestRefresh(scrollY - oldScrollY)
+            // 只记采样窗口位移；滚动期间不采集、不模糊，停稳后玻璃层补采一次
+            (activity as? MainActivity)?.dockBackdrop?.onScroll(scrollY - oldScrollY)
         }
     }
 

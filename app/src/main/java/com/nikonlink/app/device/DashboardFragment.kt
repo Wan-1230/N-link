@@ -1948,8 +1948,8 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         styleTopBar()
         binding.scrollContent.setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
             topBarFx?.onScroll(scrollY)
-            // 把这一帧的滚动增量交给采集器：采样窗口跟着平移，顶栏玻璃才真的跟随滚动
-            (activity as? MainActivity)?.dockBackdrop?.requestRefresh(scrollY - oldScrollY)
+            // 只记采样窗口位移；滚动期间不采集、不模糊，停稳后玻璃层补采一次
+            (activity as? MainActivity)?.dockBackdrop?.onScroll(scrollY - oldScrollY)
         }
     }
 

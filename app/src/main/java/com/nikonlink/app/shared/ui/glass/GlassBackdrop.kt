@@ -165,10 +165,21 @@ class GlassCoordinator private constructor(val source: View) {
         private const val MIN_REFRESH_MS = 150L
 
         /**
-         * 滚动期的采集间隔。比静止期密，是因为这时候背景真的在动：
-         * 14fps 足以让"内容从玻璃底下划过"连续，而一次采集 ≈1~2ms、占空比 ≈3%。
+         * 滚动停止判定的静默窗口（仅用于没有滚动状态回调的 ScrollView 页面）。
+         *
+         * RecyclerView 页面由 [setScrolling] 直接跟随 DRAGGING/SETTLING；ScrollView 只能
+         * 靠"多久没有新的滚动增量"推断。120ms 比一帧长得多，不会在 fling 途中误判。
          */
-        private const val SCROLL_REFRESH_MS = 70L
+        private const val SCROLL_SETTLE_MS = 120L
+
+        /**
+         * 停稳后到补采之间的延迟。
+         *
+         * 采集要在主线程把整棵内容树软件绘制一遍（1/8 尺寸），紧跟最后一帧会正好撞上
+         * fling 收尾。隔两帧再采，用户感知不到背景对齐的 80ms，但最容易被拖慢的那一帧
+         * 已经被让过去了。
+         */
+        private const val SCROLL_CAPTURE_DELAY_MS = 80L
 
         fun attach(source: View): GlassCoordinator {
             val existing = source.getTag(R.id.glass_coordinator) as? GlassCoordinator
@@ -301,32 +312,87 @@ class GlassCoordinator private constructor(val source: View) {
      */
     var minRefreshMs: Long = MIN_REFRESH_MS
 
-    /** 滚动中：采集降频（不冻采）的开关，见 [setScrollSuppressing] */
-    private var degraded = false
-
     /**
-     * 滚动期间**降频而不冻采**（PRD §8.2 第 4 条的实现修正）。
+     * 是否正在滚动/惯性中（绘制层据此跳过透镜与亮度采样）。
      *
-     * 原本按 AC-6 的做法是 fling 期间完全停采，省下整条列表的帧预算。但 dock 悬浮玻璃
-     * 要的就是「内容从玻璃底下划过」这一眼：停采会让背景在整段滚动里定格、
-     * 手指停住时突然跳一帧，反而更像贴纸而不像玻璃。
-     * 一张 1/8 纹理（长边 ≤320px ≈ 3.7 万像素）连采带糊约 1~2ms，
-     * 于是滚动期间把间隔放宽到 [SCROLL_REFRESH_MS]（≈14fps）—— 观感连续，预算仍可控。
+     * 滚动期间**一律不采集**：一次采集要把整个内容列软件绘制进小位图、跑三趟可分离
+     * 模糊、再过饱和度 LUT，全部在主线程。PRD v2.3 的 AC-6 原本就写着 fling 零采集，
+     * 后来为了"内容从玻璃底下划过"改成 14fps，代价是每隔 70ms 就有一次整树绘制与
+     * 模糊挤进滚动帧 —— 这正是快速上下滑动掉帧的直接来源。
+     *
+     * 停采不会让玻璃变成贴纸：采样窗口靠 [shiftY] 随内容平移，滚动中看到的仍是
+     * 连续的模糊背景，只是不再纠偏；停稳后补采一次把位置对齐。
      */
-    fun setScrollSuppressing(suppress: Boolean) {
-        if (degraded == suppress) return
-        degraded = suppress
-        // 停住的那一刻补采一次，把背景对齐到最终位置
-        if (!suppress) invalidate()
+    @Volatile
+    var isScrolling: Boolean = false
+        private set
+
+    /** 最近一次滚动增量的时间戳，[scrollIdle] 用它确认真的停了 */
+    private var lastScrollAt = 0L
+
+    private val scrollIdle: Runnable = object : Runnable {
+        override fun run() {
+            val idleFor = SystemClock.uptimeMillis() - lastScrollAt
+            if (idleFor < SCROLL_SETTLE_MS) {
+                source.postDelayed(this, SCROLL_SETTLE_MS - idleFor)
+                return
+            }
+            isScrolling = false
+            invalidateSoon()
+        }
     }
 
-    /** 按当前是否滚动中的节流间隔，请求一次重采（滚动回调与玻璃面绘制都走这里）。
+    /** 停稳后的补采，延后两帧避开 fling 收尾 */
+    private val settleCapture = Runnable { invalidate() }
+
+    /**
+     * 显式滚动状态（RecyclerView 的 DRAGGING/SETTLING 直接映射过来）。
      *
-     *  [dy] = 这一帧内容又滚过了多少像素。累计进 [shiftY] 后即使这次被节流挡掉，
-     *  采样窗口也不会丢位移 —— 位移是**每帧免费**的，重采只负责纠正漂移。
+     * 比"增量静默推断"准确：惯性滚动中即使某几帧没有位移，也仍然是滚动期。
      */
-    fun requestRefresh(dy: Int = 0) {
-        if (dy != 0) shiftY += dy
+    fun setScrolling(active: Boolean) {
+        if (active) {
+            source.removeCallbacks(scrollIdle)
+            source.removeCallbacks(settleCapture)
+            isScrolling = true
+        } else {
+            source.removeCallbacks(scrollIdle)
+            if (!isScrolling) return
+            isScrolling = false
+            invalidateSoon()
+        }
+    }
+
+    /**
+     * 滚动增量入口（ScrollView 页面用；RecyclerView 页面在 [setScrolling] 之外也得喂，
+     * 否则采样窗口不会平移）。
+     *
+     * [dy] 只累加进 [shiftY]，**不触发采集**。每帧成本就是一次加法，采样窗口的
+     * 平移是免费的；重采只发生在停稳之后。
+     */
+    fun onScroll(dy: Int) {
+        if (dy == 0) return
+        shiftY += dy
+        lastScrollAt = SystemClock.uptimeMillis()
+        if (isScrolling) return
+        isScrolling = true
+        source.removeCallbacks(settleCapture)
+        source.postDelayed(scrollIdle, SCROLL_SETTLE_MS)
+    }
+
+    private fun invalidateSoon() {
+        source.removeCallbacks(settleCapture)
+        source.postDelayed(settleCapture, SCROLL_CAPTURE_DELAY_MS)
+    }
+
+    /**
+     * 请求一次重采（玻璃面绘制发现没有可用纹理时走这里）。
+     *
+     * 滚动中若已经有纹理，直接拒绝这次请求；首帧没有任何纹理时仍然允许采一次，
+     * 否则整段滚动玻璃都是空的。滚动增量请走 [onScroll]，它只记位移、不采集。
+     */
+    fun requestRefresh() {
+        if (isScrolling && textureReady) return
         if (scheduled) return
         if (SystemClock.uptimeMillis() - lastRefreshAt < refreshInterval) return
         schedule()
@@ -347,8 +413,7 @@ class GlassCoordinator private constructor(val source: View) {
         get() {
             // 传输期整屏让路：采集间隔翻倍（PRD §8.4 第 2 条 / AC-7）。
             // 与 base() 里"CPU 侧模糊退成静态 tint"是同一个开关的两半。
-            val base = if (degraded) minOf(SCROLL_REFRESH_MS, minRefreshMs) else minRefreshMs
-            return if (GlassBudget.transferring) base * 2 else base
+            return if (GlassBudget.transferring) minRefreshMs * 2 else minRefreshMs
         }
 
     val textureReady: Boolean get() = tex != null && texW > 0 && texH > 0
@@ -368,6 +433,11 @@ class GlassCoordinator private constructor(val source: View) {
         // 旧纹理要作废，累计的滚动位移也就没有意义了 —— 不清零会把采样窗口错位的
         // 上一帧内容当成本帧背景
         shiftY = 0
+        // 滚动期不采：等 setScrolling(false) / scrollIdle 统一补采
+        if (isScrolling) {
+            source.removeCallbacks(settleCapture)
+            return
+        }
         schedule()
     }
 
@@ -410,6 +480,7 @@ class GlassCoordinator private constructor(val source: View) {
         scheduled = true
         source.post {
             scheduled = false
+            if (isScrolling && textureReady) return@post
             refreshNow()
         }
     }
@@ -487,6 +558,9 @@ class GlassCoordinator private constructor(val source: View) {
 
     /** 内存吃紧时释放纹理，下次采集重建（PRD §8.3） */
     fun release() {
+        source.removeCallbacks(scrollIdle)
+        source.removeCallbacks(settleCapture)
+        isScrolling = false
         tex?.recycle()
         tex = null
         pix = null

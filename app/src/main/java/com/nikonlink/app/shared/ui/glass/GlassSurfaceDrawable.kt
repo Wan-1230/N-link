@@ -256,7 +256,9 @@ class GlassSurfaceDrawable(
         // ---- ② 染色 tint（含对比度自适应） ----
         // v2.6.2：亮度取自**本面在纹理里的那块区域**，不是整屏平均（见 [GlassCoordinator.regionLuminance]）。
         // 只有真的压了文字的面（onColor != 0）才需要算，纯装饰面跳过这次采样。
-        val lum = if (backdropUsed && coord != null && m.onColor != 0) {
+        // 滚动中跳过：regionLuminance 每帧一次 Bitmap.getPixels，而滚动期纹理本来就不重采，
+        // 区域亮度没有新信息；沿用静止期的 EMA 还能避免 tint 随滚动呼吸。
+        val lum = if (backdropUsed && coord != null && m.onColor != 0 && !coord.isScrolling) {
             val raw = coord.regionLuminance(srcRect)
             if (raw < 0f) {
                 lumEma
@@ -265,7 +267,7 @@ class GlassSurfaceDrawable(
                 lumEma
             }
         } else {
-            -1f
+            lumEma
         }
         fill.shader = null
         fill.style = Paint.Style.FILL
@@ -365,7 +367,11 @@ class GlassSurfaceDrawable(
         val sh = srcRect.height()
         if (sw < 2 || sh < 2) return false
 
-        if (m.lensStrengthDp <= 0f) {
+        if (m.lensStrengthDp <= 0f || coord.isScrolling) {
+            // 滚动中直接贴纹理，跳过透镜：
+            // 透镜缓存按"采样区域"失效，而滚动每帧 shiftY 都在变，区域每帧都算移动 →
+            // readRegion + warp 会在每一帧重算。快速滑动时折射本来就看不清，先用
+            // 一次位图 blit 保住帧率；停稳后 generation 更新，下一帧自动恢复透镜。
             canvas.drawBitmap(tex, srcRect, boundsRect, bitmapPaint)
             return true
         }

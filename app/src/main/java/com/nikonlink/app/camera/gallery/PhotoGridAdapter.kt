@@ -85,22 +85,29 @@ class PhotoGridAdapter(
     private var marked: Set<Int> = emptySet()
     private var downloaded: Set<Int> = emptySet()
 
+    /**
+     * handle → 扁平位置。缩略图是按单张到达的，UI 只需要刷新那一格；
+     * 没有这张表就只能先 `indexOfFirst` 扫全表，或者在每次到达时重绑整个可见范围。
+     */
+    private var positionByHandle: Map<Int, Int> = emptyMap()
+
     /** 当前展示的照片列表（不含日期标题）。排序变更后供 Fragment 定位锚点项用 */
     val currentList: List<CameraFile>
         get() = items.mapNotNull { (it as? PhotoGridItem.Photo)?.file }
 
     /**
-     * B2：只重绘指定范围的**缩略图**（局部 payload 刷新，不走全量 DiffUtil）。
+     * B2：只重绘**单张**缩略图（局部 payload 刷新，不走全量 DiffUtil）。
      *
-     * 背景：缩略图是逐张到达的，旧逻辑每来一张就 `submit()` 一次 —— 主线程
-     * `buildItems` O(n) + `DiffUtil` O(n)，快速滑动时几十张连发会把主线程占满，
-     * 表现为卡住 / 花屏 / 堆叠。改为批量到达时只重绘可见的十几项。
+     * 缩略图是一张一张到达的。旧实现每到达一张就刷新整个可见范围，
+     * 屏幕上十几二十个格子全部重绑；快速滑动时 PTP 队列接连落地，主线程被反复占满。
+     *
+     * 不按可见性过滤：RecyclerView 的 item cache 会保留刚滚出的 ViewHolder，
+     * 漏发更新会让它带着"没图"的中间态再次进屏。更新操作只对已挂载的 holder
+     * 产生实际绑定，屏幕外的位置几乎零成本。
      */
-    fun notifyThumbRangeChanged(first: Int, count: Int) {
-        if (first < 0 || count <= 0) return
-        val safeCount = count.coerceAtMost(itemCount - first)
-        if (safeCount <= 0) return
-        notifyItemRangeChanged(first, safeCount, PAYLOAD_THUMB)
+    fun notifyThumbChanged(handle: Int) {
+        val position = positionByHandle[handle] ?: return
+        notifyItemChanged(position, PAYLOAD_THUMB)
     }
 
     /** 多选模式：显示对勾容器 */
@@ -147,6 +154,12 @@ class PhotoGridAdapter(
         loadedThumbs = newThumbs
         marked = newMarked
         downloaded = newDownloaded
+
+        val positions = HashMap<Int, Int>(newFlat.size)
+        newFlat.forEachIndexed { index, item ->
+            if (item is PhotoGridItem.Photo) positions[item.file.handle] = index
+        }
+        positionByHandle = positions
 
         DiffUtil.calculateDiff(object : DiffUtil.Callback() {
             override fun getOldListSize() = oldItems.size
@@ -232,8 +245,7 @@ class PhotoGridAdapter(
         (items.getOrNull(position) as? PhotoGridItem.Photo)?.file
 
     /** 照片在扁平序列（含标题行）中的位置，找不到返回 -1 */
-    fun indexOfHandle(handle: Int): Int =
-        items.indexOfFirst { it is PhotoGridItem.Photo && it.file.handle == handle }
+    fun indexOfHandle(handle: Int): Int = positionByHandle[handle] ?: -1
 
     /**
      * 构造扁平展示序列：按日期分组时在「相邻同日」的照片段前插入标题行。
@@ -315,14 +327,9 @@ class PhotoGridAdapter(
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
         when (val item = items[position]) {
             is PhotoGridItem.Photo -> {
+                // 缩略图请求与占位态统一由 applyThumb 负责：滚动中不请求、只落占位，
+                // 停稳后 Fragment 会按可见范围补一次
                 (holder as GridViewHolder).bind(item.file, animate = false)
-                // 快速滑动期间不发起缩略图请求：这些请求绝大多数在停下前就已滚出
-                // 视野，白白挤占 PTP 通道（相机侧串行处理），反而让停下后真正
-                // 需要的那一批排到队尾 → 停在屏幕上却迟迟不出图。
-                // 停止滚动后由 Fragment 统一为可见项补请求。
-                if (!fastScrolling && !cache.hasInMemory(item.file.handle)) {
-                    onRequestThumb(item.file)
-                }
             }
             is PhotoGridItem.DateHeader -> (holder as DateHeaderViewHolder).bind(item)
         }
@@ -364,28 +371,50 @@ class PhotoGridAdapter(
 
     override fun getItemCount(): Int = items.size
 
+    /**
+     * 放大 ViewHolder 回收池。默认每种类型只留 5 个，三列网格快速甩动时回收池
+     * 周转不过来，会不停走 onCreateViewHolder（inflate 一整棵树）——这是滑动中
+     * 另一处明显的主线程尖峰。
+     */
+    fun configureRecycledViewPool(pool: RecyclerView.RecycledViewPool) {
+        pool.setMaxRecycledViews(TYPE_PHOTO, 24)
+        pool.setMaxRecycledViews(TYPE_DATE_HEADER, 6)
+    }
+
     /** 日期分组标题行 */
     inner class DateHeaderViewHolder(
         private val binding: ItemPhotoDateHeaderBinding
     ) : RecyclerView.ViewHolder(binding.root) {
 
+        /** 当前标题行对应的整组 handle；点击监听只装一次，绑定只换数据 */
+        private var handles: List<Int> = emptyList()
+
+        /** 上次渲染的全选态：同一状态重复 bind 不再重新取 drawable / ColorStateList */
+        private var renderedAllSelected: Boolean? = null
+
         init {
             binding.tvSelectGroup.pressEffect()
+            binding.tvSelectGroup.setOnClickListener { onToggleGroupSelection(handles) }
         }
 
         fun bind(header: PhotoGridItem.DateHeader) {
-            binding.tvDate.text = header.label
-            binding.tvSelectGroup.pressEffect()
-            binding.tvSelectGroup.setOnClickListener { onToggleGroupSelection(header.handles) }
+            handles = header.handles
+            if (binding.tvDate.text?.toString() != header.label) {
+                binding.tvDate.text = header.label
+            }
             applySelection(isGroupAllSelected(header, selected))
         }
 
         /** 组内全选时按钮反色，文案切成「取消全选」 */
         fun applySelection(allSelected: Boolean) {
-            binding.tvSelectGroup.text =
-                itemView.context.getString(
-                    if (allSelected) R.string.album_group_deselect_all else R.string.album_group_select_all
-                )
+            if (renderedAllSelected == allSelected) return
+            renderedAllSelected = allSelected
+            val text = itemView.context.getString(
+                if (allSelected) R.string.album_group_deselect_all else R.string.album_group_select_all
+            )
+            if (binding.tvSelectGroup.text?.toString() != text) {
+                binding.tvSelectGroup.text = text
+            }
             binding.tvSelectGroup.setBackgroundResource(
                 if (allSelected) R.drawable.bg_chip_selected else R.drawable.bg_chip
             )
@@ -411,6 +440,25 @@ class PhotoGridAdapter(
          */
         private var boundHandle: Int = -1
 
+        /** 当前格子的文件；点击回调在绑定后按 `bindingAdapterPosition` 取值 */
+        private var boundFile: CameraFile? = null
+
+        init {
+            // 监听器只装一次：每次 bind 都 new 两个 lambda 会在快速滑动时持续制造垃圾
+            binding.root.setOnClickListener {
+                val file = boundFile ?: return@setOnClickListener
+                val position = bindingAdapterPosition
+                if (position != RecyclerView.NO_POSITION) onItemClick(file, position)
+            }
+            binding.root.setOnLongClickListener {
+                val file = boundFile ?: return@setOnLongClickListener false
+                val position = bindingAdapterPosition
+                if (position == RecyclerView.NO_POSITION) return@setOnLongClickListener false
+                onItemLongClick(file, position)
+                true
+            }
+        }
+
         /** 取消在途动画并摘掉监听器，杜绝 cancel 后的残留回调。 */
         private fun cancelAnimators() {
             currentAnimators?.let { animator ->
@@ -420,20 +468,26 @@ class PhotoGridAdapter(
             currentAnimators = null
         }
 
+        /** 只在真正变化时赋值：避免重复 invalidate / 属性动画调度 */
+        private fun setVisibility(view: View, visibility: Int) {
+            if (view.visibility != visibility) view.visibility = visibility
+        }
+
         /** 把所有可能被动画改写的属性一次性复位，消除复用带来的中间态残影。 */
         private fun resetAnimatableProperties() {
-            binding.root.alpha = 1f
-            binding.checkContainer.alpha = 1f
-            binding.checkContainer.scaleX = 1f
-            binding.checkContainer.scaleY = 1f
-            binding.viewSelectedMask.alpha = 1f
+            if (binding.root.alpha != 1f) binding.root.alpha = 1f
+            if (binding.checkContainer.alpha != 1f) binding.checkContainer.alpha = 1f
+            if (binding.checkContainer.scaleX != 1f) binding.checkContainer.scaleX = 1f
+            if (binding.checkContainer.scaleY != 1f) binding.checkContainer.scaleY = 1f
+            if (binding.viewSelectedMask.alpha != 1f) binding.viewSelectedMask.alpha = 1f
         }
 
         fun bind(file: CameraFile, animate: Boolean) {
             cancelAnimators()
             resetAnimatableProperties()
             boundHandle = file.handle
-            binding.tvFormatBadge.text = when (file.format) {
+            boundFile = file
+            val badge = when (file.format) {
                 // FR-17：合并后这一格代表"这一次拍摄"，角标必须说清里面有两张——
                 // 否则界面看着是一张 NEF、实际排队是两个文件，用户无从核对
                 CameraFileFormat.RAW -> if (file.pairedJpegHandle != null) "RAW+JPG" else "RAW"
@@ -441,26 +495,23 @@ class PhotoGridAdapter(
                 CameraFileFormat.VIDEO -> "视频"
                 else -> "文件"
             }
+            if (binding.tvFormatBadge.text?.toString() != badge) {
+                binding.tvFormatBadge.text = badge
+            }
             applySelection(file.handle in selected, animate)
             applyThumb(file)
             applyMark(file.handle in marked)
             applyDownloaded(file.handle in downloaded)
-
-            binding.root.setOnClickListener { onItemClick(file, adapterPosition) }
-            binding.root.setOnLongClickListener {
-                onItemLongClick(file, adapterPosition)
-                true
-            }
         }
 
         /** F1：星形标记角标（常驻，非多选态也可见） */
         fun applyMark(isMarked: Boolean) {
-            binding.ivMarkBadge.visibility = if (isMarked) View.VISIBLE else View.GONE
+            setVisibility(binding.ivMarkBadge, if (isMarked) View.VISIBLE else View.GONE)
         }
 
         /** F2：已下载角标（右下角对勾胶囊） */
         fun applyDownloaded(isDownloaded: Boolean) {
-            binding.tvDownloadedBadge.visibility = if (isDownloaded) View.VISIBLE else View.GONE
+            setVisibility(binding.tvDownloadedBadge, if (isDownloaded) View.VISIBLE else View.GONE)
         }
 
         /** 选中状态渲染 + 勾选/取消动画（每次切换都触发） */
@@ -473,9 +524,9 @@ class PhotoGridAdapter(
             val handleAtStart = boundHandle
 
             if (isSelected) {
-                binding.checkContainer.visibility = View.VISIBLE
-                binding.viewSelectedMask.visibility = View.VISIBLE
-                binding.root.alpha = 0.92f
+                setVisibility(binding.checkContainer, View.VISIBLE)
+                setVisibility(binding.viewSelectedMask, View.VISIBLE)
+                if (binding.root.alpha != 0.92f) binding.root.alpha = 0.92f
                 if (shouldAnimate) {
                     // 对勾: 缩放+淡入 0.15s；遮罩: 淡入
                     binding.checkContainer.scaleX = 0.5f
@@ -525,12 +576,14 @@ class PhotoGridAdapter(
                         start()
                     }
                 } else {
-                    binding.checkContainer.visibility =
+                    setVisibility(
+                        binding.checkContainer,
                         if (multiSelectMode) View.INVISIBLE else View.GONE
-                    binding.viewSelectedMask.visibility = View.GONE
+                    )
+                    setVisibility(binding.viewSelectedMask, View.GONE)
                     binding.checkContainer.alpha = 1f
                     binding.viewSelectedMask.alpha = 1f
-                    binding.root.alpha = 1f
+                    if (binding.root.alpha != 1f) binding.root.alpha = 1f
                 }
             }
         }
@@ -539,14 +592,27 @@ class PhotoGridAdapter(
         fun applyThumb(file: CameraFile) {
             val bmp = cache.fromMemory(file.handle)
             if (bmp != null) {
-                binding.progressThumb.visibility = View.GONE
-                binding.ivThumb.setImageBitmap(bmp)
+                setVisibility(binding.progressThumb, View.GONE)
+                // 用位图实例本身做去重：同一张图重复 bind 不再触发一次纹理上传；
+                // 高清替换时是新 Bitmap，tag 不同，自然会换上去。
+                if (binding.ivThumb.tag !== bmp) {
+                    binding.ivThumb.setImageBitmap(bmp)
+                    binding.ivThumb.tag = bmp
+                }
             } else {
-                binding.progressThumb.visibility = View.VISIBLE
-                binding.ivThumb.setImageBitmap(null)
+                if (binding.ivThumb.tag != null) {
+                    binding.ivThumb.setImageDrawable(null)
+                    binding.ivThumb.tag = null
+                }
+                // 滚动中不启动 indeterminate：一屏十几二十个转圈各自 60fps 重绘，
+                // 而快速滑动时没人看得清；停稳后可见范围刷新会恢复。
+                setVisibility(
+                    binding.progressThumb,
+                    if (fastScrolling) View.GONE else View.VISIBLE
+                )
                 // 局部 payload 刷新也要能自愈：内存被 LruCache 驱逐后，只重绘不补请求
                 // 会把这个格子永远留在转圈态。requestThumbnail 内部按 handle 去重，
-                // 与 onBindViewHolder 里的按需请求重复调用不会多发一次网络请求。
+                // 与可见范围补请求重复调用不会多发一次网络请求。
                 if (!fastScrolling) onRequestThumb(file)
             }
         }

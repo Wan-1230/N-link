@@ -1,129 +1,127 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 相册网格项：方形缩略图 + 右上角黑色对勾 + 左下角格式角标 -->
+<!--
+  相册网格项：方形缩略图 + 右上角黑色对勾 + 左下角格式角标。
+
+  只用一层 ConstraintLayout：旧版外面再套一层只为做 1:1 的 ConstraintLayout，
+  每个格子多一次 measure/layout，快速滑动时新格子的布局成本直接翻倍。
+  现在比例约束放在缩略图自己身上，其余覆盖层都钉在缩略图四边。
+-->
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:padding="1dp">
 
-    <androidx.constraintlayout.widget.ConstraintLayout
+    <!-- 缩略图 -->
+    <ImageView
+        android:id="@+id/ivThumb"
         android:layout_width="0dp"
         android:layout_height="0dp"
+        android:background="@color/panel_2"
+        android:contentDescription="照片缩略图"
+        android:scaleType="centerCrop"
         app:layout_constraintDimensionRatio="1:1"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent">
+        app:layout_constraintTop_toTopOf="parent" />
 
-        <!-- 缩略图 -->
+    <!-- 加载中占位：极简线性 -->
+    <ProgressBar
+        android:id="@+id/progressThumb"
+        android:layout_width="20dp"
+        android:layout_height="20dp"
+        android:indeterminateTint="@color/on_surface_variant"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="@id/ivThumb"
+        app:layout_constraintEnd_toEndOf="@id/ivThumb"
+        app:layout_constraintStart_toStartOf="@id/ivThumb"
+        app:layout_constraintTop_toTopOf="@id/ivThumb" />
+
+    <!-- 选中遮罩：轻微降低透明度 -->
+    <View
+        android:id="@+id/viewSelectedMask"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@color/photo_scrim_select"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="@id/ivThumb"
+        app:layout_constraintEnd_toEndOf="@id/ivThumb"
+        app:layout_constraintStart_toStartOf="@id/ivThumb"
+        app:layout_constraintTop_toTopOf="@id/ivThumb" />
+
+    <!-- 左上角星形标记（模块 4.2：与右上角多选对勾分离，选中态不再重叠） -->
+    <ImageView
+        android:id="@+id/ivMarkBadge"
+        android:layout_width="18dp"
+        android:layout_height="18dp"
+        android:layout_margin="6dp"
+        android:contentDescription="已标记"
+        android:src="@drawable/ic_star"
+        android:visibility="gone"
+        app:layout_constraintStart_toStartOf="@id/ivThumb"
+        app:layout_constraintTop_toTopOf="@id/ivThumb" />
+
+    <!-- 右上角黑色对勾标记 -->
+    <FrameLayout
+        android:id="@+id/checkContainer"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_margin="6dp"
+        android:visibility="gone"
+        app:layout_constraintEnd_toEndOf="@id/ivThumb"
+        app:layout_constraintTop_toTopOf="@id/ivThumb">
+
         <ImageView
-            android:id="@+id/ivThumb"
-            android:layout_width="0dp"
-            android:layout_height="0dp"
-            android:background="@color/panel_2"
-            android:contentDescription="照片缩略图"
-            android:scaleType="centerCrop"
-            app:layout_constraintBottom_toBottomOf="parent"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent" />
+            android:id="@+id/checkImage"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="已选中" />
 
-        <!-- 加载中占位：极简线性 -->
-        <ProgressBar
-            android:id="@+id/progressThumb"
-            android:layout_width="20dp"
-            android:layout_height="20dp"
-            android:indeterminateTint="@color/on_surface_variant"
-            app:layout_constraintBottom_toBottomOf="parent"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent" />
-
-        <!-- 选中遮罩：轻微降低透明度 -->
-        <View
-            android:id="@+id/viewSelectedMask"
-            android:layout_width="0dp"
-            android:layout_height="0dp"
-            android:background="@color/photo_scrim_select"
-            android:visibility="gone"
-            app:layout_constraintBottom_toBottomOf="parent"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent" />
-
-        <!-- 左上角星形标记（模块 4.2：与右上角多选对勾分离，选中态不再重叠） -->
         <ImageView
-            android:id="@+id/ivMarkBadge"
-            android:layout_width="18dp"
-            android:layout_height="18dp"
-            android:layout_margin="6dp"
-            android:contentDescription="已标记"
-            android:src="@drawable/ic_star"
-            android:visibility="gone"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent" />
+            android:layout_width="14dp"
+            android:layout_height="14dp"
+            android:layout_gravity="center"
+            android:contentDescription="对勾"
+            android:src="@drawable/ic_check"
+            app:tint="@color/on_primary" />
+    </FrameLayout>
 
-        <!-- 右上角黑色对勾标记 -->
-        <FrameLayout
-            android:id="@+id/checkContainer"
-            android:layout_width="24dp"
-            android:layout_height="24dp"
-            android:layout_margin="6dp"
-            android:visibility="gone"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintTop_toTopOf="parent">
+    <!-- 左下角格式 / 时长角标 -->
+    <TextView
+        android:id="@+id/tvFormatBadge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="6dp"
+        android:background="@color/photo_scrim_badge"
+        android:paddingHorizontal="6dp"
+        android:paddingVertical="2dp"
+        android:text="JPG"
+        android:textColor="@color/white"
+        android:textSize="@dimen/font_foot"
+        android:textStyle="bold"
+        app:layout_constraintBottom_toBottomOf="@id/ivThumb"
+        app:layout_constraintStart_toStartOf="@id/ivThumb" />
 
-            <ImageView
-                android:id="@+id/checkImage"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:contentDescription="已选中" />
-
-            <ImageView
-                android:layout_width="14dp"
-                android:layout_height="14dp"
-                android:layout_gravity="center"
-                android:contentDescription="对勾"
-                android:src="@drawable/ic_check"
-                app:tint="@color/on_primary" />
-        </FrameLayout>
-
-        <!-- 左下角格式 / 时长角标 -->
-        <TextView
-            android:id="@+id/tvFormatBadge"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_margin="6dp"
-            android:background="@color/photo_scrim_badge"
-            android:paddingHorizontal="6dp"
-            android:paddingVertical="2dp"
-            android:text="JPG"
-            android:textColor="@color/white"
-            android:textSize="@dimen/font_foot"
-            android:textStyle="bold"
-            app:layout_constraintBottom_toBottomOf="parent"
-            app:layout_constraintStart_toStartOf="parent" />
-
-        <!--
-          右下角已下载角标（F2 / v1.3.0 强化）：✓ + 「已下载」文字胶囊。
-          旧版只有 9sp 的 ✓，辨识度太低（用户反馈"看不到已下载标记"），
-          现在明确写出「已下载」；窄格子由 Android 的 wrap_content + maxLines=1 自适应。
-          视觉口径与左下角格式角标一致（同底色、同圆角半径）。
-        -->
-        <TextView
-            android:id="@+id/tvDownloadedBadge"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_margin="6dp"
-            android:background="@color/photo_scrim_name"
-            android:maxLines="1"
-            android:paddingHorizontal="6dp"
-            android:paddingVertical="3dp"
-            android:text="@string/tv_downloaded_badge_text"
-            android:textColor="@color/white"
-            android:textSize="@dimen/font_foot"
-            android:textStyle="bold"
-            android:visibility="gone"
-            app:layout_constraintBottom_toBottomOf="parent"
-            app:layout_constraintEnd_toEndOf="parent" />
-    </androidx.constraintlayout.widget.ConstraintLayout>
+    <!--
+      右下角已下载角标（F2 / v1.3.0 强化）：✓ + 「已下载」文字胶囊。
+      旧版只有 9sp 的 ✓，辨识度太低（用户反馈"看不到已下载标记"），
+      现在明确写出「已下载」；窄格子由 Android 的 wrap_content + maxLines=1 自适应。
+      视觉口径与左下角格式角标一致（同底色、同圆角半径）。
+    -->
+    <TextView
+        android:id="@+id/tvDownloadedBadge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_margin="6dp"
+        android:background="@color/photo_scrim_name"
+        android:maxLines="1"
+        android:paddingHorizontal="6dp"
+        android:paddingVertical="3dp"
+        android:text="@string/tv_downloaded_badge_text"
+        android:textColor="@color/white"
+        android:textSize="@dimen/font_foot"
+        android:textStyle="bold"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="@id/ivThumb"
+        app:layout_constraintEnd_toEndOf="@id/ivThumb" />
 </androidx.constraintlayout.widget.ConstraintLayout>

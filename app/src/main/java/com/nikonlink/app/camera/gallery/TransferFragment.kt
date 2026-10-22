@@ -40,8 +40,6 @@ import com.nikonlink.app.MainActivity
 import com.nikonlink.app.R
 import com.nikonlink.app.databinding.FragmentTransferBinding
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -84,6 +82,22 @@ class TransferFragment : Fragment(), GlassInsetAware {
 
     /** 模块 4.3：用户主动刷新后，数据合并完成时强制回列表顶部 */
     private var pendingScrollToTop = false
+
+    // ---- 滚动期渲染让路 ----
+    // 快速上下滑时唯一必须每帧做的是 RecyclerView 自己的滚动；缩略图到达、DiffUtil、
+    // 玻璃采集都属于"可以晚 100ms 再做"的活。这里把三类工作统一收纳到滚动停止后再做。
+
+    /** 当前网格滚动状态。ON_IDLE 之外一律不重绑、不提交、不采集 */
+    private var gridScrollState = RecyclerView.SCROLL_STATE_IDLE
+    private val isGridScrolling: Boolean
+        get() = gridScrollState != RecyclerView.SCROLL_STATE_IDLE
+
+    /** 滚动期间到达的缩略图 handle，停止后按单项 payload 刷新 */
+    private val pendingThumbHandles = LinkedHashSet<Int>()
+    private var thumbFlushPosted = false
+
+    /** 滚动期间被推迟的列表提交（标记/已下载等后台状态变化） */
+    private var pendingDeferredSubmit = false
 
     /** 视S2：骨架屏 alpha 脉冲（加载期循环，收尾时取消） */
     private var skeletonPulse: android.animation.ObjectAnimator? = null
@@ -214,32 +228,44 @@ class TransferFragment : Fragment(), GlassInsetAware {
                 override fun getSpanSize(position: Int): Int =
                     if (adapter.isHeaderAt(position)) 3 else 1
             }
+            initialPrefetchItemCount = 9
         }
         binding.gridPhotos.adapter = adapter
-        // 快速滑动保护：滑动期间关掉格子动画并暂停缩略图请求，
-        // 滚动停止后统一补请求可见项。详见 PhotoGridAdapter.fastScrolling 的说明。
+        // 外层尺寸不随内容变化（match_parent），固定尺寸可省掉每次 notify 后的 requestLayout。
+        binding.gridPhotos.setHasFixedSize(true)
+        // 屏幕外多留几屏已绑定 ViewHolder：来回快滑时命中缓存，少了重新 bind 的文本/监听/图片set。
+        binding.gridPhotos.setItemViewCacheSize(12)
+        adapter.configureRecycledViewPool(binding.gridPhotos.recycledViewPool)
+        // 快速滑动保护：滚动期间关掉格子动画、暂停缩略图请求、暂停玻璃背景采集；
+        // 停止后统一补请求、补刷新、补采集。见 PhotoGridAdapter.fastScrolling 说明。
         binding.gridPhotos.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
                 topBarFx?.onScroll(rv.computeVerticalScrollOffset())
-                // dock 悬浮玻璃：把滚动增量交给采集器（采样窗口每帧免费平移），
-                // 并持续重采，照片才看得见从玻璃底下划过
-                glassBackdrop?.requestRefresh(dy)
+                // 只累计纹理采样窗口的位移（一次加法），不触发任何采集/模糊/布局
+                glassBackdrop?.onScroll(dy)
             }
 
             override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                gridScrollState = newState
                 val fast = newState != RecyclerView.SCROLL_STATE_IDLE
                 adapter.setFastScrolling(fast)
                 // 高清升级通道同步挂起/放行：滑动中不发起 0x90C4（数百 KB/张），
                 // 停止后队列统一放行（见 TransferViewModel.upgradeThumbnailToHd）
                 viewModel.setFastScrolling(fast)
-                // PRD §8.2 第 4 条 / AC-6：滚动期间采集降频（不冻采），停住后补采一次对齐位置
-                glassBackdrop?.setScrollSuppressing(fast)
-                if (!fast) requestVisibleThumbnails()
+                // 滚动态冻结玻璃采集：整树软件绘制 + 三趟模糊不再挤进滚动帧
+                glassBackdrop?.setScrolling(fast)
+                // 数量可观的 indeterminate ProgressBar 在快速滑动时没有阅读价值，
+                // 却会各自 60fps 重绘；先藏起来，停稳后由可见范围刷新按需恢复
+                if (fast) hideVisibleThumbSpinners()
+                if (!fast) onGridSettled()
             }
         })
-        // 缩短 item 变更动画时长：默认 250ms 在连续 payload 刷新时会层层叠加，
-        // 视觉上就是"上一次还没播完下一次又来了"的堆叠感
-        (binding.gridPhotos.itemAnimator as? SimpleItemAnimator)?.changeDuration = 120L
+        // 局部刷新（勾选/缩略图）用 payload 自己更新视图，不需要 RecyclerView 再做
+        // 一次 change 动画；保留 add/remove 动画用于筛选与排序。
+        (binding.gridPhotos.itemAnimator as? SimpleItemAnimator)?.apply {
+            supportsChangeAnimations = false
+            changeDuration = 0L
+        }
         // 模块 4.4：滑动多选事件接管（未激活时完全透传，不影响滚动/点击）
         dragSelect = DragSelectController(
             recyclerView = binding.gridPhotos,
@@ -291,6 +317,88 @@ class TransferFragment : Fragment(), GlassInsetAware {
     }
 
     /**
+     * 滚动停止后的统一收口。顺序很重要：
+     * ① 先补可能被推迟的列表提交（位置表会重建）；
+     * ② 再按新位置补发缩略图请求；
+     * ③ 最后按项刷新已到达的缩略图与可见范围的占位态。
+     *
+     * 这些工作以前分散在五个 Flow 收集器里随时触发，缩略图一张一张到达就会反复
+     * 重绑整个可见范围、频繁跑 DiffUtil；现在滚动期间全部挂起，只在停稳后做一次。
+     */
+    private fun onGridSettled() {
+        if (_binding == null) return
+        if (pendingDeferredSubmit) {
+            pendingDeferredSubmit = false
+            syncAdapterNow()
+        }
+        requestVisibleThumbnails()
+        flushPendingThumbUpdates()
+        // 只把"滚动中藏起来的占位"就地恢复，不做可见范围 notify：
+        // 停止滚动时再让 RecyclerView 重绑一屏，正是最容易在收尾帧掉帧的时机。
+        restoreVisibleThumbSpinners()
+    }
+
+    /** 滚动中把屏幕上正在转的圈停掉：它们没有阅读价值，却各自 60fps 重绘 */
+    private fun hideVisibleThumbSpinners() {
+        val rv = binding.gridPhotos
+        for (i in 0 until rv.childCount) {
+            rv.getChildAt(i).findViewById<View>(R.id.progressThumb)?.visibility = View.GONE
+        }
+    }
+
+    /** 停稳后只给真正缺图的格子恢复转圈，其余格子一个属性都不动 */
+    private fun restoreVisibleThumbSpinners() {
+        val rv = binding.gridPhotos
+        for (i in 0 until rv.childCount) {
+            val child = rv.getChildAt(i)
+            val thumb = child.findViewById<android.widget.ImageView>(R.id.ivThumb) ?: continue
+            val progress = child.findViewById<View>(R.id.progressThumb) ?: continue
+            val missing = thumb.drawable == null
+            val want = if (missing) View.VISIBLE else View.GONE
+            if (progress.visibility != want) progress.visibility = want
+        }
+    }
+
+    /** 缩略图到达：滚动中先记账，停稳后按单项 payload 刷新，绝不整段重绑 */
+    private fun enqueueThumbUpdate(handle: Int) {
+        pendingThumbHandles.add(handle)
+        if (isGridScrolling || thumbFlushPosted) return
+        thumbFlushPosted = true
+        binding.gridPhotos.postOnAnimation {
+            thumbFlushPosted = false
+            if (_binding == null || isGridScrolling) return@postOnAnimation
+            flushPendingThumbUpdates()
+        }
+    }
+
+    private fun flushPendingThumbUpdates() {
+        if (pendingThumbHandles.isEmpty()) return
+        pendingThumbHandles.forEach { handle -> adapter.notifyThumbChanged(handle) }
+        pendingThumbHandles.clear()
+    }
+
+    /** 所有列表状态变化统一走这里；[deferWhileScrolling] 的后台状态在滚动中只置位 */
+    private fun syncAdapter(deferWhileScrolling: Boolean) {
+        if (deferWhileScrolling && isGridScrolling) {
+            pendingDeferredSubmit = true
+            return
+        }
+        pendingDeferredSubmit = false
+        syncAdapterNow()
+    }
+
+    private fun syncAdapterNow() {
+        adapter.submit(
+            viewModel.uiPhotos.value,
+            viewModel.selectedHandles.value,
+            viewModel.thumbnails.value,
+            viewModel.markedHandles.value,
+            viewModel.downloadedHandles.value,
+            groupByDate = shouldGroupByDate()
+        )
+    }
+
+    /**
      * 是否按日期分组展示。
      *
      * 仅「拍摄时间」排序下生效：时间排序天然按日成块，插标题行不会打乱顺序；
@@ -324,7 +432,9 @@ class TransferFragment : Fragment(), GlassInsetAware {
         PhotoFilter.values().forEach { filter ->
             // FR-16：「已保护」是闸门后的新增项。闸门关着时连标签都不生成，
             // 标签行与 v2.3.2 逐位一致；开着时也要等机身报了保护状态才露出来（见 renderProtectChip）。
-            if (filter == PhotoFilter.PROTECTED && !UiFlags.protectSelectEnabled(requireContext())) {
+            if ((filter == PhotoFilter.PROTECTED || filter == PhotoFilter.PROTECTED_ONLY) &&
+                !UiFlags.protectSelectEnabled(requireContext())
+            ) {
                 return@forEach
             }
             val chip = TextView(requireContext()).apply {
@@ -388,6 +498,22 @@ class TransferFragment : Fragment(), GlassInsetAware {
         chip.text = chipState.label
         chip.visibility = if (onCameraAlbum && chipState.shown) View.VISIBLE else View.GONE
         if (!chipState.shown && viewModel.photoFilter.value == PhotoFilter.PROTECTED) {
+            viewModel.setPhotoFilter(PhotoFilter.ALL)
+        }
+    }
+
+    /**
+     * 「已保护」专用入口：只随相机相册出现。
+     *
+     * 与「已筛选」不同，这个入口不依赖列表阶段是否已带回保护列——STA 直读下
+     * 列表里没有 0xDC03，但用户仍然应该能看到入口；首次点选时由 ViewModel
+     * 按需补读，读不到再明确提示并退回「全部」。
+     */
+    private fun renderProtectedOnlyChip(chipState: ProtectChip, onCameraAlbum: Boolean) {
+        val chip = chipViews[PhotoFilter.PROTECTED_ONLY] ?: return
+        chip.text = chipState.label
+        chip.visibility = if (onCameraAlbum) View.VISIBLE else View.GONE
+        if (!onCameraAlbum && viewModel.photoFilter.value == PhotoFilter.PROTECTED_ONLY) {
             viewModel.setPhotoFilter(PhotoFilter.ALL)
         }
     }
@@ -550,8 +676,22 @@ class TransferFragment : Fragment(), GlassInsetAware {
         if (!hidden && _binding != null) {
             renderAlbumTabs(viewModel.activeAlbum.value)
         }
-        // 离开本页时复位采集态：fling 中途切走会把"滚动中"的降频档一直带到别的页面
-        if (hidden) glassBackdrop?.setScrollSuppressing(false)
+        // 离开本页时复位滚动/采集状态：fling 中途切走会把"滚动中"的冻结态带到别的页面
+        if (hidden) {
+            glassBackdrop?.setScrolling(false)
+            gridScrollState = RecyclerView.SCROLL_STATE_IDLE
+            adapter.setFastScrolling(false)
+            viewModel.setFastScrolling(false)
+            // 被滚动让路挂起的后台提交/缩略图刷新要在页还活着时收口，
+            // 否则切走再切回来会停在一个"标记/已下载角标没更新、格子没出图"的中间态
+            if (_binding != null) {
+                flushPendingThumbUpdates()
+                if (pendingDeferredSubmit) {
+                    pendingDeferredSubmit = false
+                    syncAdapterNow()
+                }
+            }
+        }
     }
 
     private fun setupPullRefresh() {
@@ -818,10 +958,16 @@ class TransferFragment : Fragment(), GlassInsetAware {
             viewModel.onlyNotDownloaded.collect { renderNotDownloadedChip(it) }
         }
 
-        // FR-16：「已保护」标签——机身真的报了保护状态、且停在相机相册时才出现
+        // FR-16：「已筛选」标签——机身真的报了保护/评级状态、且停在相机相册时才出现
         viewLifecycleOwner.lifecycleScope.launch {
             combine(viewModel.protectChip, viewModel.activeAlbum) { chip, source -> chip to source }
                 .collect { (chip, source) -> renderProtectChip(chip, source == AlbumSource.CAMERA) }
+        }
+
+        // 「已保护」专用入口：始终挂在相机相册，未读到保护位时由首次点选触发补读
+        viewLifecycleOwner.lifecycleScope.launch {
+            combine(viewModel.protectedOnlyChip, viewModel.activeAlbum) { chip, source -> chip to source }
+                .collect { (chip, source) -> renderProtectedOnlyChip(chip, source == AlbumSource.CAMERA) }
         }
 
         viewLifecycleOwner.lifecycleScope.launch {
@@ -864,14 +1010,8 @@ class TransferFragment : Fragment(), GlassInsetAware {
         viewLifecycleOwner.lifecycleScope.launch {
             launch {
                 viewModel.uiPhotos.collect { list ->
-                    adapter.submit(
-                        list,
-                        viewModel.selectedHandles.value,
-                        viewModel.thumbnails.value,
-                        viewModel.markedHandles.value,
-                        viewModel.downloadedHandles.value,
-                        groupByDate = shouldGroupByDate()
-                    )
+                    // 切源/刷新/排序是用户主动动作，必须立即生效，不参与滚动让路
+                    syncAdapter(deferWhileScrolling = false)
                     // 模块 4.3：滚动复位必须在「最终（排序后）列表」submit 之后再执行，
                     // 否则会被后续提交再次移动视口（跳底→弹回的两段运动）
                     // 需求 3：关闭隐藏开关后回到关闭前的第一个可见项（找不到则回顶部）
@@ -917,15 +1057,9 @@ class TransferFragment : Fragment(), GlassInsetAware {
                 }
             }
             launch {
+                // 勾选是交互反馈，滚动中（含拖动多选自动滚动）也不能延后
                 viewModel.selectedHandles.collect { selected ->
-                    adapter.submit(
-                        viewModel.uiPhotos.value,
-                        selected,
-                        viewModel.thumbnails.value,
-                        viewModel.markedHandles.value,
-                        viewModel.downloadedHandles.value,
-                        groupByDate = shouldGroupByDate()
-                    )
+                    syncAdapter(deferWhileScrolling = false)
                     binding.tvSelectedCount.text = "已选 ${selected.size} 项"
                     if (multiSelectMode) {
                         binding.bottomBar.visibility = View.VISIBLE
@@ -936,71 +1070,21 @@ class TransferFragment : Fragment(), GlassInsetAware {
                 }
             }
             launch {
-                // B2：缩略图逐张到达，旧逻辑每来一张就全量 submit（主线程 buildItems + DiffUtil 各 O(n)），
-                // 快速滑动时几十张连发会把主线程占满 → 卡住 / 花屏 / 堆叠。
-                // 改为：先只重绘可见范围（十几项，廉价），静默 100ms 后再补一次全量 submit 收口。
-                var fullSubmitJob: Job? = null
-                viewModel.thumbnails.collect { thumbs ->
-                    val lm = binding.gridPhotos.layoutManager as? GridLayoutManager
-                    val first = lm?.findFirstVisibleItemPosition() ?: -1
-                    val last = lm?.findLastVisibleItemPosition() ?: -1
-                    if (first >= 0 && last >= first) {
-                        adapter.notifyThumbRangeChanged(first, last - first + 1)
-                    }
-                    fullSubmitJob?.cancel()
-                    fullSubmitJob = launch {
-                        delay(THUMB_FULL_SUBMIT_DELAY_MS)
-                        if (_binding == null) return@launch
-                        adapter.submit(
-                            viewModel.uiPhotos.value,
-                            viewModel.selectedHandles.value,
-                            viewModel.thumbnails.value,
-                            viewModel.markedHandles.value,
-                            viewModel.downloadedHandles.value,
-                            groupByDate = shouldGroupByDate()
-                        )
-                    }
-                }
+                // 缩略图逐张到达：只记 handle，停稳后按单项 payload 刷新。
+                // 旧实现每来一张就 notifyItemRangeChanged(整个可见范围) 并在一段静默后
+                // 再跑一次全量 DiffUtil —— 快速滑动时 PTP 队列里的图接连落地，
+                // 每次都会让屏幕上十几二十个格子重新绑定，主线程被反复占满。
+                viewModel.thumbArrivals.collect { handle -> enqueueThumbUpdate(handle) }
             }
             launch {
-                // 渐进式缩略图：高清替换小图时 handle 集合不变，Set 相等不会触发上面的流，
-                // 因此单独监听升级计数，只重绘**可见范围**（十几项），避免全量 DiffUtil。
-                // 必须带 PAYLOAD_THUMB：不带 payload 会走 onBindViewHolder 全量重绑，
-                // 而全量重绑又对「内存里已被 LruCache 驱逐」的格子补发缩略图请求 →
-                // 一次高清替换引发一整批 PTP 请求，与正在跑的原图下载抢同一条串行命令通道
-                // （网格批量下载单张变慢的自激回路就在这里闭合）。
-                viewModel.thumbUpgradeTick.collect { tick ->
-                    if (tick == 0L) return@collect
-                    val lm = binding.gridPhotos.layoutManager as? GridLayoutManager ?: return@collect
-                    val first = lm.findFirstVisibleItemPosition()
-                    val last = lm.findLastVisibleItemPosition()
-                    if (first >= 0 && last >= first) {
-                        adapter.notifyThumbRangeChanged(first, last - first + 1)
-                    }
-                }
-            }
-            launch {
+                // 打标/下载完成是后台状态，滚动中先挂起，停稳后一次提交收口
                 viewModel.markedHandles.collect {
-                    adapter.submit(
-                        viewModel.uiPhotos.value,
-                        viewModel.selectedHandles.value,
-                        viewModel.thumbnails.value,
-                        it,
-                        viewModel.downloadedHandles.value,
-                        groupByDate = shouldGroupByDate()
-                    )
+                    syncAdapter(deferWhileScrolling = true)
                 }
             }
             launch {
                 viewModel.downloadedHandles.collect {
-                    adapter.submit(
-                        viewModel.uiPhotos.value,
-                        viewModel.selectedHandles.value,
-                        viewModel.thumbnails.value,
-                        viewModel.markedHandles.value,
-                        it,
-                        groupByDate = shouldGroupByDate()
-                    )
+                    syncAdapter(deferWhileScrolling = true)
                 }
             }
             launch {
@@ -1198,6 +1282,9 @@ class TransferFragment : Fragment(), GlassInsetAware {
      */
     private fun restyleGlass() {
         if (_binding == null) return
+        // 玻璃总闸可能在本页存活期间被切换：坐标器要跟着换，
+        // 否则关掉玻璃后滚动仍会驱动旧坐标器做整树采集
+        glassBackdrop = (activity as? MainActivity)?.dockBackdrop
         renderChips(viewModel.photoFilter.value)
         binding.bottomBar.applyGlass(glassBackdrop) { GlassTokens.floatingBar(it.context) }
         styleAlbumTabRow()
@@ -1284,12 +1371,6 @@ class TransferFragment : Fragment(), GlassInsetAware {
     companion object {
         /** F1 大额保护阈值：全选超过该张数时批量下载前二次确认（PRD F1 AC-10） */
         private const val LARGE_SELECTION_WARNING = 200
-
-        /**
-         * B2：缩略图合并刷新窗口。窗口内只重绘可见范围，静默该时长后
-         * 再补一次全量 submit 收口（保证选中态/角标等最终一致）。
-         */
-        private const val THUMB_FULL_SUBMIT_DELAY_MS = 100L
 
         /** 滚动停止后向前/向后额外预热的格子数（3 列网格，6 ≈ 两行） */
         private const val PRELOAD_SPAN = 6

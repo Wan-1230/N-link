@@ -229,6 +229,32 @@ class TransferViewModel @Inject constructor(
         .map { protectChipOf(it) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, ProtectChip(false, PhotoFilter.PROTECTED.label))
 
+    /**
+     * 「已保护」专用入口的呈现状态。
+     *
+     * 与 [protectChip]（保护键 **或** 评级，展示为「已筛选」）分开：用户明确要看的是
+     * 机内按过保护键的那批照片。入口始终挂在相机相册上，读到前不带数字；STA 直读下
+     * 用户第一次点它时才按需补读 0xDC03（见 [ensureProtectionStatuses]）。
+     */
+    val protectedOnlyChip: StateFlow<ProtectChip> = _photoList
+        .map { files ->
+            val count = protectedCountOf(files)
+            ProtectChip(
+                shown = true,
+                label = if (count == 0) {
+                    PhotoFilter.PROTECTED_ONLY.label
+                } else {
+                    "${PhotoFilter.PROTECTED_ONLY.label} $count"
+                }
+            )
+        }
+        .stateIn(
+            viewModelScope, SharingStarted.Eagerly,
+            ProtectChip(true, PhotoFilter.PROTECTED_ONLY.label)
+        )
+
+    private var protectionFetchJob: Job? = null
+
     /** F1：批量下载完成后弹「清除这些标记」确认的一次性事件（载荷 = 可清除张数） */
     private val _clearMarksPrompt = MutableSharedFlow<Int>(extraBufferCapacity = 1)
 
@@ -279,7 +305,13 @@ class TransferViewModel @Inject constructor(
         // FR-16：同 F2 的理由，「已保护」也只对相机源生效——本地文件的 CameraFile
         // 永远没有机内保护列，套上去会把整栏清成空的。
         val effective =
-            if (filter == PhotoFilter.PROTECTED && source != AlbumSource.CAMERA) PhotoFilter.ALL else filter
+            if ((filter == PhotoFilter.PROTECTED || filter == PhotoFilter.PROTECTED_ONLY) &&
+                source != AlbumSource.CAMERA
+            ) {
+                PhotoFilter.ALL
+            } else {
+                filter
+            }
         val kept = photos.filter { effective.matches(it) }
         // FR-17：成对显示只对相机源，且**在筛选之后**做——在筛剩的集合里配对，
         // 意味着"被隐藏的那张一定在同视图里可见"，不会出现 RAW 被筛掉而 JPG 悄悄消失。
@@ -333,6 +365,20 @@ class TransferViewModel @Inject constructor(
     /** 已完成缩略图加载的 handle 集合（只用于局部刷新负载），Bitmap 统一由 ThumbnailCache 管理 */
     private val _thumbnails = MutableStateFlow<Set<Int>>(emptySet())
     val thumbnails: StateFlow<Set<Int>> = _thumbnails.asStateFlow()
+
+    /**
+     * 单张缩略图"已就绪/已升级"事件。
+     *
+     * UI 不再监听整个 [thumbnails] 集合：集合每变一次就刷新整个可见范围，等于一张图到达
+     * 让二十个格子重绑。这里只告诉界面"哪一个 handle 变了"，由 UI 按单项 payload 刷新。
+     * `extraBufferCapacity` 只防 tryEmit 失败丢弃——真的丢了也有下一次全量提交兜底。
+     */
+    private val _thumbArrivals = MutableSharedFlow<Int>(extraBufferCapacity = 256)
+    val thumbArrivals: SharedFlow<Int> = _thumbArrivals.asSharedFlow()
+
+    private fun publishThumbReady(handle: Int) {
+        _thumbArrivals.tryEmit(handle)
+    }
 
     /** 缩略图按需加载并发控制（可见项优先，最多 3 个并发 PTP 请求） */
     private val thumbSemaphore = Semaphore(3)
@@ -391,13 +437,6 @@ class TransferViewModel @Inject constructor(
      * 这些格子再向相机要 0x90C4 是纯粹的倒退与带宽浪费，直接不再发。
      */
     private val localHdThumbs = mutableSetOf<Int>()
-
-    /**
-     * 缩略图「内容更新」计数器：高清替换小图时 handle 集合并未变化，
-     * Set 相等不会触发 StateFlow 发射，因此用递增计数通知 UI 重绘可见项。
-     */
-    private val _thumbUpgradeTick = MutableStateFlow(0L)
-    val thumbUpgradeTick: StateFlow<Long> = _thumbUpgradeTick.asStateFlow()
 
     private val _message = MutableStateFlow("")
     val message: StateFlow<String> = _message.asStateFlow()
@@ -497,19 +536,16 @@ class TransferViewModel @Inject constructor(
         // 高清缩略图升级：下载原图后本地已生成高清缩略图（内存 + 磁盘都已回填），
         // 这里**只重绘、绝不再走 PTP**。旧实现转手调用 requestThumbnail(handle)，
         // 而该 handle 此时已在 _thumbnails 里 → 落到 upgradeThumbnailToHd → 向相机
-        // 重取一次 0x90C4：每下载一张就白插队一次几百 KB 的传输，还会再 bump 一次
-        // 升级计数触发网格局部重绘 → 被 LruCache 驱逐的格子又发请求，形成自激循环。
+        // 重取一次 0x90C4：每下载一张就白插队一次几百 KB 的传输，还会再发一次
+        // 缩略图到达事件 → 被 LruCache 驱逐的格子又发请求，形成自激循环。
         // 这即是「网格批量下载时单张明显变慢」的主要放大器。
         viewModelScope.launch {
             transferManager.thumbnailUpgrades.collect { handle ->
                 pendingThumbs.remove(handle)
                 pendingHdThumbs.remove(handle)
                 localHdThumbs.add(handle)
-                if (handle in _thumbnails.value) {
-                    _thumbUpgradeTick.value = _thumbUpgradeTick.value + 1
-                } else {
-                    _thumbnails.value = _thumbnails.value + handle
-                }
+                _thumbnails.value = _thumbnails.value + handle
+                publishThumbReady(handle)
             }
         }
         // 原图批量传输期间让路：传输结束后把攒下的缩略图请求一次性补发。
@@ -1160,13 +1196,8 @@ class TransferViewModel @Inject constructor(
             // 本地缩略图同时落盘：进程重启后二次打开直接读盘秒出，
             // 不必再逐张走 MediaStore 解码
             thumbnailCache.putBitmap(handle, bitmap, persist = true)
-            if (_thumbnails.value.contains(handle)) {
-                // handle 已在集合（此前加载过、内存被驱逐后重载）：Set 相等
-                // 不会触发 StateFlow 发射，用升级计数通知网格重绘可见项
-                _thumbUpgradeTick.value = _thumbUpgradeTick.value + 1
-            } else {
-                _thumbnails.value = _thumbnails.value + handle
-            }
+            _thumbnails.value = _thumbnails.value + handle
+            publishThumbReady(handle)
         }
     }
 
@@ -1246,11 +1277,8 @@ class TransferViewModel @Inject constructor(
                     viewModelScope.launch {
                         val bitmap = thumbnailCache.get(handle, thumbnailCache.tileMaxEdgePx)
                         if (bitmap != null) {
-                            if (handle in _thumbnails.value) {
-                                _thumbUpgradeTick.value = _thumbUpgradeTick.value + 1
-                            } else {
-                                _thumbnails.value = _thumbnails.value + handle
-                            }
+                            _thumbnails.value = _thumbnails.value + handle
+                            publishThumbReady(handle)
                         } else {
                             upgradeThumbnailToHd(handle)
                         }
@@ -1286,6 +1314,7 @@ class TransferViewModel @Inject constructor(
                     }
                     if (bitmap != null) {
                         _thumbnails.value = _thumbnails.value + handle
+                        publishThumbReady(handle)
                         // 第二段：后台升高清（不阻塞本通道）
                         upgradeThumbnailToHd(handle)
                     }
@@ -1331,7 +1360,7 @@ class TransferViewModel @Inject constructor(
                     // 会按预览档从磁盘现解（见 ThumbnailCache.get 的档位策略）
                     if (thumbnailCache.putBytes(handle, hd, thumbnailCache.tileMaxEdgePx) != null) {
                         _thumbnails.value = _thumbnails.value + handle
-                        _thumbUpgradeTick.value = _thumbUpgradeTick.value + 1
+                        publishThumbReady(handle)
                     }
                 } catch (e: Exception) {
                     Timber.tag("TransferVM").d("HD thumb upgrade failed handle=$handle: ${e.message}")
@@ -1379,12 +1408,70 @@ class TransferViewModel @Inject constructor(
                 val bitmap = thumbnailCache.fromMemory(handle)
                     ?: thumbnailCache.get(handle, thumbnailCache.tileMaxEdgePx) ?: continue
                 _thumbnails.value = _thumbnails.value + handle
+                publishThumbReady(handle)
             }
         }
     }
 
     fun setPhotoFilter(filter: PhotoFilter) {
         _photoFilter.value = filter
+        if (filter == PhotoFilter.PROTECTED_ONLY && _activeAlbum.value == AlbumSource.CAMERA) {
+            ensureProtectionStatuses()
+        }
+    }
+
+    /**
+     * STA 直读模式的列表阶段不带 0xDC03（0x1008/0x9805 被机身锁），只有用户切到
+     * 「已保护」时才补读一次，避免每次进相册都为全卡逐张读取拖慢列表。
+     * 读不到时退回「全部」并明确提示，绝不把未知当成"全部未保护"。
+     */
+    private fun ensureProtectionStatuses() {
+        if (protectionFetchJob?.isActive == true) return
+        val files = _photoList.value
+        // 未连接时先给准确原因；否则会落到"相册还没加载完"，与真实状态不符。
+        if (!transferManager.hasActiveSession()) {
+            _message.value = "相机未连接，无法读取保护状态"
+            if (_photoFilter.value == PhotoFilter.PROTECTED_ONLY) {
+                _photoFilter.value = PhotoFilter.ALL
+            }
+            return
+        }
+        // 空列表必须放在 all{} 之前：空集合的 all 恒为 true，会误判成"已知"。
+        if (files.isEmpty()) {
+            _message.value = "相册还没加载完，请稍后再试"
+            if (_photoFilter.value == PhotoFilter.PROTECTED_ONLY) {
+                _photoFilter.value = PhotoFilter.ALL
+            }
+            return
+        }
+        // 只看保护列，不看评级；部分文件没报时也要补读，不能拿半份数据下结论。
+        if (files.all { it.protectionKnown }) return
+        protectionFetchJob = viewModelScope.launch {
+            _message.value = "正在读取机内保护状态…"
+            val statuses = transferManager.fetchProtectionStatuses(files)
+            if (statuses.isEmpty()) {
+                _message.value = "当前连接方式无法读取机内保护状态"
+                if (_photoFilter.value == PhotoFilter.PROTECTED_ONLY) {
+                    _photoFilter.value = PhotoFilter.ALL
+                }
+                return@launch
+            }
+            // 读取期间可能发生重连/换卡：列表已变就丢弃这轮结果，避免把旧卡的保护位
+            // 套到新列表复用的 handle 上。
+            if (_photoList.value.map { it.handle }.toSet() != files.map { it.handle }.toSet()) {
+                _message.value = "列表已更新，请重新选择「已保护」"
+                return@launch
+            }
+            _photoList.value = _photoList.value.map { f ->
+                statuses[f.handle]?.let { f.copy(protectionStatus = it) } ?: f
+            }
+            val count = _photoList.value.count { it.isProtected }
+            _message.value = when {
+                _photoFilter.value != PhotoFilter.PROTECTED_ONLY -> "已读取机内保护状态"
+                count == 0 -> "机内没有标记为已保护的照片"
+                else -> "已读取保护状态，筛出 $count 张"
+            }
+        }
     }
 
     fun toggleSelection(handle: Int) {
@@ -1767,7 +1854,7 @@ enum class AlbumSource(val label: String) {
 }
 
 /**
- * 影像筛选：全部 / 照片 / 视频 / RAW / JPG
+ * 影像筛选：全部 / 照片 / 视频 / RAW / JPG / 已筛选 / 已保护
  * （旧「按日期」选项无实际过滤逻辑，已移除）
  *
  * [PROTECTED] 属 v2.5 FR-16，受 `UiFlags.PROTECT_SELECT` 控制：**标签行在闸门关闭时
@@ -1784,7 +1871,16 @@ enum class PhotoFilter(val label: String) {
      * 标签用「已筛选」而不是「已保护」：这一档现在覆盖两种机内标记方式，
      * 写「已保护」会让打了星却没按保护键的照片出现得莫名其妙。
      */
-    PROTECTED("已筛选");
+    PROTECTED("已筛选"),
+
+    /**
+     * 只按机内保护键筛选（非零即已保护），不把评级算进来。
+     *
+     * 与 [PROTECTED] 分开是因为「已保护」是用户在机身上按下的确定性动作；
+     * 评级混入会让"我明明按了保护键"的照片和打过星的混在一起。STA 直读下
+     * 列表阶段读不到保护位时，由 ViewModel 在首次切到本档时按需补读 0xDC03。
+     */
+    PROTECTED_ONLY("已保护");
 
     fun matches(file: CameraFile): Boolean {
         return when (this) {
@@ -1796,6 +1892,7 @@ enum class PhotoFilter(val label: String) {
             // 未报告（保护列与评级列都没报）的文件按「未筛选」处理：宁缺毋滥，
             // 筛出来少几张可以解释，混进一堆没筛过的让下载的人自己挑是更坏的结果。
             PROTECTED -> file.isScreenedInCamera
+            PROTECTED_ONLY -> file.isProtected
         }
     }
 }

@@ -209,6 +209,8 @@ class MainActivity : AppCompatActivity() {
      */
     private fun applyDock() {
         val glass = UiFlags.glassEnabled(this)
+        dockGlassEnabled = glass
+        if (!glass) dockCoordinator = null
         val bar = binding.bottomBar
         val barLp = bar.layoutParams as android.widget.FrameLayout.LayoutParams
 
@@ -271,15 +273,18 @@ class MainActivity : AppCompatActivity() {
         contentInsetsChanged()
     }
 
-    /**
-     * dock 的背景纹理源 = 整个内容区（一张 1/8 降采样、复用的位图）。
-     * 页面滚动时要驱动它重采，否则玻璃底下是定格的 —— 见 [GlassCoordinator.requestRefresh]。
-     */
+    /** 页面滚动时要驱动它重采，否则玻璃底下是定格的 —— 见 [GlassCoordinator.onScroll]。
+     *
+     * 缓存句柄：滚动回调每帧都会取这个属性，不能每次 `UiFlags.glassEnabled` 读 prefs
+     * 再 `attach`。开关变化由 [applyDock] 同步失效。 */
+    private var dockCoordinator: GlassCoordinator? = null
+    private var dockGlassEnabled = false
+
     val dockBackdrop: GlassCoordinator?
-        get() = if (UiFlags.glassEnabled(this)) {
-            GlassCoordinator.attach(binding.fragmentContainer)
-        } else {
-            null
+        get() {
+            if (!dockGlassEnabled) return null
+            return dockCoordinator
+                ?: GlassCoordinator.attach(binding.fragmentContainer).also { dockCoordinator = it }
         }
 
     private fun contentInsetsChanged() {
