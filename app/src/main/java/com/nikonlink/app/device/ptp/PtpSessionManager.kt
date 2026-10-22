@@ -143,11 +143,6 @@ class PtpSessionManager @Inject constructor(
     var lastSupportedOperations: Set<Int>? = null
         private set
 
-    /** 同一次 `GetDeviceInfo` 里的 DevicePropertiesSupported；`null` = 不知道。 */
-    @Volatile
-    var lastSupportedDeviceProps: Set<Int>? = null
-        private set
-
     /**
      * 当前会话是否经 STA（相机连路由器/手机热点）建立。STA 下尼康固件对常规对象命令
      * 加访问锁（0x1008/0x100A/0x101B/0x9805 回 0x200F），相册据此改走私有直读命令。
@@ -539,7 +534,6 @@ class PtpSessionManager @Inject constructor(
                 // 就知道相机当前模式支不支持它。解析失败保持 null（= 不知道，不拦）。
                 val ops = PtpDeviceInfo.parseOperations(deviceInfo.data)
                 lastSupportedOperations = ops
-                lastSupportedDeviceProps = PtpDeviceInfo.parseDeviceProps(deviceInfo.data)
                 // FR-36：同一次应答里顺手记下机身自报 Model（设备页的相机全称用它，
                 // 不用等参数轮询那一整轮）。失败=null，UI 回落下一个来源。
                 lastDeviceModel = PtpDeviceInfo.parseModel(deviceInfo.data)
@@ -581,7 +575,6 @@ class PtpSessionManager @Inject constructor(
                 )
             } else {
                 lastSupportedOperations = null
-                lastSupportedDeviceProps = null
                 lastDeviceModel = null
                 Timber.tag(TAG).w("GetDeviceInfo before OpenSession not OK (non-fatal)")
             }
@@ -1129,12 +1122,6 @@ class PtpSessionManager @Inject constructor(
      */
     suspend fun getDevicePropValue(propCode: Int): ByteArray? {
         val result = sendCommandWithData(PtpConstants.OP_GET_DEVICE_PROP_VALUE, listOf(propCode))
-        return (result as? PtpDataResult.Success)?.data
-    }
-
-    /** `0x1014 GetDevicePropDesc` 原始载荷；失败返回 null。 */
-    suspend fun getDevicePropDesc(propCode: Int): ByteArray? {
-        val result = sendCommandWithData(PtpConstants.OP_GET_DEVICE_PROP_DESC, listOf(propCode))
         return (result as? PtpDataResult.Success)?.data
     }
 

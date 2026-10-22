@@ -117,11 +117,4 @@ class PtpDeviceInfoTest {
             PtpDeviceInfo.parseOperations(bad)
         )
     }
-
-    @Test
-    fun `DevicePropertiesSupported 跳过操作与事件两个数组`() {
-        val raw = deviceInfo(model = "NIKON Z 30", properties = listOf(0x5001, 0xD06C, 0xD0AA))
-        assertEquals(setOf(0x5001, 0xD06C, 0xD0AA), PtpDeviceInfo.parseDeviceProps(raw))
-        assertNull(PtpDeviceInfo.parseDeviceProps(raw.copyOf(30)))
-    }
 }

@@ -70,55 +70,26 @@ object StaDirectRead {
         else -> "BIN"
     }
 
-    /** 机身默认文件名前缀；读不到「文件命名」设置时用它。 */
+    /**
+     * 文件名前缀。STA 下机身「文件命名」设置读不到（Z30 实测：DeviceInfo 只声明 3 个厂商属性，
+     * 没有前缀），也拿不到真实文件名，统一用机身默认的 `DSC`。
+     */
     const val DEFAULT_PREFIX = "DSC"
 
     /**
-     * 尼康卡内文件名：sRGB 为 `XXX_nnnn`，AdobeRGB 为 `_XXXnnnn`（XXX = 「文件命名」前缀）。
+     * 尼康卡内文件名：sRGB 为 `DSC_nnnn`，AdobeRGB 为 `_DSCnnnn`。
      * 编号统一 4 位，与机身一致（0001–9999）。
      */
-    fun cardName(prefix: String, number: Int, adobeRgb: Boolean, ext: String): String =
-        if (adobeRgb) "_%s%04d.%s".format(prefix, number, ext) else "%s_%04d.%s".format(prefix, number, ext)
+    fun cardName(number: Int, adobeRgb: Boolean, ext: String): String =
+        if (adobeRgb) "_%s%04d.%s".format(DEFAULT_PREFIX, number, ext)
+        else "%s_%04d.%s".format(DEFAULT_PREFIX, number, ext)
 
     /**
      * 拿不到真实文件名时的占位名：编号取句柄低 16 位（Z30 实测与卡内文件号一致）。
      * 读到文件头里的编号 / 色彩空间后由 [nameFromNumber] 校正。
      */
-    fun placeholderName(handle: Int, format: CameraFileFormat, prefix: String = DEFAULT_PREFIX): String =
-        cardName(prefix, handle and 0xFFFF, false, extensionFor(format, handle))
-
-    /**
-     * 「文件命名」前缀的合法形态：机身只允许 3 位大写字母 / 数字（含下划线）。
-     * 用来从字符串型设备属性里挑出前缀候选。
-     */
-    fun isPlausiblePrefix(value: String?): Boolean =
-        value != null && Regex("[A-Z0-9_]{3}").matches(value)
-
-    /**
-     * 解 `0x1014 GetDevicePropDesc` 里的字符串当前值：
-     * `u16 code, u16 dataType, u8 getSet, STRING factoryDefault, STRING current, …`。
-     * 不是字符串型（dataType ≠ 0xFFFF）或长度不够返回 null。
-     */
-    fun parseStringPropDesc(data: ByteArray): Pair<Int, String>? {
-        if (data.size < 7) return null
-        val code = (data[0].toInt() and 0xFF) or ((data[1].toInt() and 0xFF) shl 8)
-        val type = (data[2].toInt() and 0xFF) or ((data[3].toInt() and 0xFF) shl 8)
-        if (type != 0xFFFF) return null
-        var p = 5
-        fun str(): String? {
-            if (p >= data.size) return null
-            val n = data[p].toInt() and 0xFF
-            p += 1
-            if (n == 0) return ""
-            if (p + n * 2 > data.size) return null
-            val v = String(data, p, n * 2, Charsets.UTF_16LE).trimEnd('\u0000')
-            p += n * 2
-            return v
-        }
-        str() ?: return null          // FactoryDefault
-        val current = str() ?: return null
-        return code to current
-    }
+    fun placeholderName(handle: Int, format: CameraFileFormat): String =
+        cardName(handle and 0xFFFF, false, extensionFor(format, handle))
 
     /** `0x9434` 单条：handle / 大小 / 拍摄时间（机身本地时间，按手机时区换算）。 */
     data class MetaEntry(val handle: Int, val size: Long, val captureTimeMillis: Long?)
@@ -243,9 +214,8 @@ object StaDirectRead {
         number: Int?,
         format: CameraFileFormat,
         handle: Int,
-        prefix: String = DEFAULT_PREFIX,
         adobeRgb: Boolean = false
-    ): String? = number?.let { cardName(prefix, it, adobeRgb, extensionFor(format, handle)) }
+    ): String? = number?.let { cardName(it, adobeRgb, extensionFor(format, handle)) }
 
     fun parseExifDate(raw: String, zone: ZoneId = ZoneId.systemDefault()): Long? {
         val s = raw.trim()

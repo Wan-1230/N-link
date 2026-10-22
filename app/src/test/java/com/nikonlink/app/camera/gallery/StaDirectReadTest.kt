@@ -29,49 +29,17 @@ class StaDirectReadTest {
         // 编号统一 4 位，与机身一致；列表阶段与落盘阶段用同一种格式
         assertEquals("DSC_4660.NEF", StaDirectRead.placeholderName(0x09001234, CameraFileFormat.RAW))
         assertEquals("DSC_0002.MP4", StaDirectRead.placeholderName(0x61000002, CameraFileFormat.VIDEO))
-        assertEquals("Z30_6546.JPG", StaDirectRead.placeholderName(0x29191992, CameraFileFormat.JPEG, "Z30"))
+        assertEquals("DSC_6546.JPG", StaDirectRead.placeholderName(0x29191992, CameraFileFormat.JPEG))
     }
 
     @Test
     fun `卡内文件名 sRGB 与 AdobeRGB 两种形态`() {
-        assertEquals("Z30_1001.JPG", StaDirectRead.cardName("Z30", 1001, adobeRgb = false, ext = "JPG"))
-        assertEquals("_Z301001.JPG", StaDirectRead.cardName("Z30", 1001, adobeRgb = true, ext = "JPG"))
+        assertEquals("DSC_1001.JPG", StaDirectRead.cardName(1001, adobeRgb = false, ext = "JPG"))
+        assertEquals("_DSC1001.JPG", StaDirectRead.cardName(1001, adobeRgb = true, ext = "JPG"))
         assertEquals(
             "_DSC0007.NEF",
             StaDirectRead.nameFromNumber(7, CameraFileFormat.RAW, 0x09000007, adobeRgb = true)
         )
-    }
-
-    @Test
-    fun `前缀只接受 3 位大写字母数字`() {
-        assertTrue(StaDirectRead.isPlausiblePrefix("Z30"))
-        assertTrue(StaDirectRead.isPlausiblePrefix("DSC"))
-        assertFalse(StaDirectRead.isPlausiblePrefix("z30"))
-        assertFalse(StaDirectRead.isPlausiblePrefix("Z3"))
-        assertFalse(StaDirectRead.isPlausiblePrefix("NIKON"))
-        assertFalse(StaDirectRead.isPlausiblePrefix(null))
-    }
-
-    @Test
-    fun `0x1014 字符串属性描述解出当前值`() {
-        fun ptpString(v: String): ByteArray {
-            val chars = v + "\u0000"
-            val b = ByteBuffer.allocate(1 + chars.length * 2).order(ByteOrder.LITTLE_ENDIAN)
-            b.put(chars.length.toByte())
-            chars.forEach { b.putShort(it.code.toShort()) }
-            return b.array()
-        }
-        val head = ByteBuffer.allocate(5).order(ByteOrder.LITTLE_ENDIAN)
-            .putShort(0xD0AA.toShort()).putShort(0xFFFF.toShort()).put(1).array()
-        val data = head + ptpString("DSC") + ptpString("Z30") + byteArrayOf(0)
-        assertEquals(0xD0AA to "Z30", StaDirectRead.parseStringPropDesc(data))
-
-        // 非字符串型（UINT8）不解
-        val u8 = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
-            .putShort(0xD06C.toShort()).putShort(0x0002).put(1).put(0).put(1).put(0).array()
-        assertNull(StaDirectRead.parseStringPropDesc(u8))
-        // 截断
-        assertNull(StaDirectRead.parseStringPropDesc(head + byteArrayOf(4, 0x44)))
     }
 
     @Test
@@ -124,8 +92,8 @@ class StaDirectReadTest {
         val info = StaDirectRead.parseHead(buildJpegWithExifAndMpf(colorSpace = 0xFFFF), utc)
         assertTrue(info.adobeRgb)
         assertEquals(
-            "_Z301234.JPG",
-            StaDirectRead.nameFromNumber(info.fileNumber, CameraFileFormat.JPEG, 0x29000001, "Z30", info.adobeRgb)
+            "_DSC1234.JPG",
+            StaDirectRead.nameFromNumber(info.fileNumber, CameraFileFormat.JPEG, 0x29000001, info.adobeRgb)
         )
     }
 

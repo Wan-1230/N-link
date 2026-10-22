@@ -736,39 +736,6 @@ object PtpDeviceInfo {
     }
 
     /**
-     * 解 `DevicePropertiesSupported`：OperationsSupported、EventsSupported 之后的第三个 AUINT16。
-     * 任何一步越界返回 null（= 不知道）。
-     */
-    fun parseDeviceProps(raw: ByteArray?): Set<Int>? {
-        if (raw == null || raw.size < 12) return null
-        return try {
-            var p = 0
-            fun u16(): Int {
-                val v = (raw[p].toInt() and 0xFF) or ((raw[p + 1].toInt() and 0xFF) shl 8)
-                p += 2
-                return v
-            }
-            fun count(): Int? {
-                if (p + 4 > raw.size) return null
-                val n = u16() or (u16() shl 16)
-                return n.takeIf { it >= 0 && it <= (raw.size - p) / 2 }
-            }
-            p += 2 + 4 + 2              // StandardVersion / VendorExtensionID / VendorExtensionVersion
-            val descChars = raw[p].toInt() and 0xFF
-            p += 1 + descChars * 2      // VendorExtensionDesc
-            p += 2                      // FunctionalMode
-            repeat(2) {                 // OperationsSupported / EventsSupported
-                val n = count() ?: return null
-                p += n * 2
-            }
-            val n = count() ?: return null
-            (0 until n).mapTo(HashSet(n * 2)) { u16() }
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    /**
      * 解 `Model` —— 机身自报的型号原文（FR-36，如 `NIKON Z 50II`）。
      *
      * Model 前面压着五个 AUINT16 与一个 STRING，**只能顺序解码**到它，不能按偏移直取；
