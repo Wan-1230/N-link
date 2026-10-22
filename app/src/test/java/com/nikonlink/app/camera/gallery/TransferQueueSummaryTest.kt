@@ -2,6 +2,7 @@ package com.nikonlink.app.camera.gallery
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TransferQueueSummaryTest {
@@ -37,10 +38,12 @@ class TransferQueueSummaryTest {
     }
 
     @Test
-    fun `全部成功或空队列不显示入口`() {
+    fun `全部成功显示已完成，空队列不显示入口`() {
         assertNull(TransferQueueSummary.of(emptyList()).pillText(paused = false))
-        assertNull(
-            TransferQueueSummary.of(listOf(task(1, TransferTaskStatus.COMPLETED))).pillText(paused = false)
+        val done = TransferQueueSummary.of(
+            listOf(task(1, TransferTaskStatus.COMPLETED), task(2, TransferTaskStatus.COMPLETED))
         )
+        assertEquals("已完成 2/2", done.pillText(paused = false))
+        assertTrue(done.allDone)
     }
 }

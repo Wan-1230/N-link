@@ -40,6 +40,8 @@ import com.nikonlink.app.MainActivity
 import com.nikonlink.app.R
 import com.nikonlink.app.databinding.FragmentTransferBinding
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -70,6 +72,9 @@ class TransferFragment : Fragment(), GlassInsetAware {
     private val chipViews = mutableMapOf<PhotoFilter, TextView>()
     private var chipNotDownloaded: TextView? = null
     private var multiSelectMode = false
+
+    /** 队列全部完成后延时收起入口的任务 */
+    private var queuePillHideJob: Job? = null
 
     /** 模块 4.4：长按滑动多选控制器（未激活时事件完全透传） */
     private var dragSelect: DragSelectController? = null
@@ -205,7 +210,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
                     // 与 uiPhotos 的索引不是一回事；按 handle 反查才是可靠位置。
                     val list = viewModel.uiPhotos.value
                     val startPos = list.indexOfFirst { it.handle == file.handle }.coerceAtLeast(0)
-                    PreviewActivity.start(requireContext(), list, startPos)
+                    PreviewActivity.start(requireContext(), list, startPos, viewModel::pairedFileOf)
                 }
             },
             onItemLongClick = { file, position ->
@@ -909,7 +914,6 @@ class TransferFragment : Fragment(), GlassInsetAware {
         } else {
             renderActionButtons()
         }
-        renderQueuePill()
         adapter.notifyDataSetChanged()
     }
 
@@ -1068,7 +1072,6 @@ class TransferFragment : Fragment(), GlassInsetAware {
                     } else if (selected.isEmpty()) {
                         binding.bottomBar.visibility = View.GONE
                     }
-                    renderQueuePill()
                 }
             }
             launch {
@@ -1235,14 +1238,24 @@ class TransferFragment : Fragment(), GlassInsetAware {
         }
     }
 
-    /** 队列入口：有任务时显示；多选操作栏占着同一位置时让位。 */
+    /**
+     * 队列入口：有任务时显示「下载中 n/m」；失败项一直留着（点开可重试）；
+     * 全部成功后显示「已完成」[QUEUE_DONE_LINGER_MS] 再收起，不常驻占位。
+     */
     private fun renderQueuePill() {
         if (_binding == null) return
-        val text = TransferQueueSummary.of(viewModel.queue.value)
-            .pillText(paused = viewModel.transferState.value is TransferState.Paused)
-        val show = text != null && binding.bottomBar.visibility != View.VISIBLE
+        val summary = TransferQueueSummary.of(viewModel.queue.value)
+        val text = summary.pillText(paused = viewModel.transferState.value is TransferState.Paused)
+        queuePillHideJob?.cancel()
+        queuePillHideJob = null
         binding.btnQueue.text = text
-        binding.btnQueue.visibility = if (show) View.VISIBLE else View.GONE
+        binding.btnQueue.visibility = if (text != null) View.VISIBLE else View.GONE
+        if (summary.allDone) {
+            queuePillHideJob = viewLifecycleOwner.lifecycleScope.launch {
+                delay(QUEUE_DONE_LINGER_MS)
+                if (_binding != null) binding.btnQueue.visibility = View.GONE
+            }
+        }
     }
 
     /** 需求 3：记下当前第一个可见照片的 handle，供关闭隐藏开关后恢复位置 */
@@ -1391,6 +1404,9 @@ class TransferFragment : Fragment(), GlassInsetAware {
     }
 
     companion object {
+        /** 队列全部成功后「已完成 n/n」的停留时长 */
+        private const val QUEUE_DONE_LINGER_MS = 3000L
+
         /** F1 大额保护阈值：全选超过该张数时批量下载前二次确认（PRD F1 AC-10） */
         private const val LARGE_SELECTION_WARNING = 200
 

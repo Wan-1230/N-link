@@ -18,11 +18,15 @@ data class TransferQueueSummary(
     /** 当前进行到第几张（1 起）。 */
     val position: Int get() = (finished + if (downloading > 0) 1 else 0).coerceIn(0, total)
 
-    /** 底部入口文案；null = 不显示入口（队列空，或全部成功结束）。 */
+    /** 本批全部成功结束（入口只短暂显示「已完成」后收起）。 */
+    val allDone: Boolean get() = total > 0 && active == 0 && failed == 0
+
+    /** 底部入口文案；null = 不显示入口（队列空）。 */
     fun pillText(paused: Boolean): String? = when {
         active > 0 && paused -> "已暂停 $position/$total"
         active > 0 -> "下载中 $position/$total"
         failed > 0 -> "$failed 项下载失败"
+        allDone -> "已完成 $completed/$total"
         else -> null
     }
 

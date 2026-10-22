@@ -158,4 +158,31 @@ class RawJpegPairingTest {
         val empty = RawJpegPairing.plan(emptyList())
         assertEquals(files, RawJpegPairing.expand(files, empty, RawJpegPairing.DownloadMode.BOTH) { null })
     }
+
+    @Test
+    fun `合并格只带 pairedJpegHandle 时也能把 JPG 找回来（预览页单张下载）`() {
+        // 预览页拿不到完整列表，只知道这一格和它被藏起的 JPG
+        val raw = nef(10).copy(pairedJpegHandle = 11)
+        val jpeg = jpg(11)
+        val plan = RawJpegPairing.Plan(setOf(11), mapOf(10 to 11), mapOf(11 to 10))
+        val out = RawJpegPairing.expand(listOf(raw), plan, RawJpegPairing.DownloadMode.BOTH, byHandle(listOf(raw, jpeg)))
+        assertEquals(listOf(10, 11), out.map { it.handle })
+    }
+
+    @Test
+    fun `STA 直读列表：同一次拍摄的 NEF 与 JPG 句柄低位相同，网格成对下载两张都排队`() {
+        // 2026-10-21 Z30 真机：一次 RAW+JPG 拍摄 = 0x091919A3(NEF) + 0x291919A3(JPG)，
+        // 列表名都由句柄低 16 位生成，所以主干相同、能配上
+        val all = listOf(0x291919A1, 0x091919A2, 0x291919A2, 0x091919A3, 0x291919A3).map { h ->
+            val format = StaDirectRead.formatFromHandle(h)!!
+            file(h, StaDirectRead.placeholderName(h, format), format)
+        }
+        val plan = RawJpegPairing.plan(all)
+        val grid = RawJpegPairing.applyMerge(all, plan)
+        // 网格只剩三格：单 JPG 6561，以及两个带 +JPG 的 RAW 格
+        assertEquals(listOf(0x291919A1, 0x091919A2, 0x091919A3), grid.map { it.handle })
+        val selected = grid.filter { it.handle == 0x091919A3 }
+        val out = RawJpegPairing.expand(selected, plan, RawJpegPairing.DownloadMode.BOTH, byHandle(all))
+        assertEquals(listOf("DSC_6563.NEF", "DSC_6563.JPG"), out.map { it.fileName })
+    }
 }

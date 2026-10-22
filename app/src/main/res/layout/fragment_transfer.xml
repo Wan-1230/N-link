@@ -358,8 +358,9 @@
             </FrameLayout>
         </LinearLayout>
 
-    <!-- 下载队列入口：队列里有任务时浮在标签行上方，「下载中 n/m」，点开是队列面板。
-         多选操作栏出现时让位（两者同一位置，操作栏优先）。 -->
+    <!-- 下载队列入口：队列里有任务时浮在多选操作栏上方，「下载中 n/m」，点开是队列面板。
+         挂在 bottomBar 顶上：操作栏 GONE 时 ConstraintLayout 把它收成标签行顶部的一个点，
+         入口自然落到标签行上方 12dp；操作栏出现时入口跟着上移，两者不重叠。 -->
     <TextView
         android:id="@+id/btnQueue"
         android:layout_width="wrap_content"
@@ -374,7 +375,7 @@
         android:textSize="@dimen/font_caption"
         android:textStyle="bold"
         android:visibility="gone"
-        app:layout_constraintBottom_toTopOf="@id/albumTabRow"
+        app:layout_constraintBottom_toTopOf="@id/bottomBar"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
 

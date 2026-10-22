@@ -1819,6 +1819,13 @@ class TransferViewModel @Inject constructor(
      * 配对表从**完整的相机列表**算而不是从当前筛过的列表算：查搭档要查得到被
      * 隐藏掉的那张 JPG，否则"成对下载"会悄悄退化成"只下 RAW"。
      */
+    /** 合并格被藏起的另一张（预览页下载时要用）；未开成对显示或没配对返回 null。 */
+    fun pairedFileOf(file: CameraFile): CameraFile? {
+        if (!rawPairOn) return null
+        val handle = file.pairedJpegHandle ?: return null
+        return _photoList.value.firstOrNull { it.handle == handle }
+    }
+
     private fun enqueuePairs(files: List<CameraFile>) {
         if (!rawPairOn || files.isEmpty()) {
             transferManager.enqueue(files)
