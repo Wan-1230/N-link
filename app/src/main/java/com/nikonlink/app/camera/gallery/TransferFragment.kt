@@ -16,6 +16,7 @@ import android.widget.PopupMenu
 import android.widget.TextView
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.content.ContextCompat
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
@@ -72,6 +73,13 @@ class TransferFragment : Fragment(), GlassInsetAware {
     private val chipViews = mutableMapOf<PhotoFilter, TextView>()
     private var chipNotDownloaded: TextView? = null
     private var multiSelectMode = false
+
+    /** 多选态拦截返回键：先退出多选，不走 MainActivity 的「再按一次退出」 */
+    private val exitMultiSelectOnBack = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            if (multiSelectMode) setMultiSelectMode(false)
+        }
+    }
 
     /** 队列全部完成后延时收起入口的任务 */
     private var queuePillHideJob: Job? = null
@@ -165,6 +173,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
         restyleGlass()
         UiFlags.observe(this) { restyleGlass() }
         super.onViewCreated(view, savedInstanceState)
+        requireActivity().onBackPressedDispatcher.addCallback(viewLifecycleOwner, exitMultiSelectOnBack)
         setupGrid()
         setupChips()
         setupAlbumTabs()
@@ -814,11 +823,13 @@ class TransferFragment : Fragment(), GlassInsetAware {
                         "已选 ${viewModel.selectedHandles.value.size} 张，" +
                             "批量下载原图会占用较多电量与时间，继续吗？"
                     )
-                    .setPositiveButton("继续") { _, _ -> viewModel.downloadMarkedSelected() }
+                    .setPositiveButton("继续") { _, _ ->
+                        if (viewModel.downloadMarkedSelected() > 0) finishMultiSelectAfterAction()
+                    }
                     .setNegativeButton("取消", null)
                     .show()
             } else {
-                viewModel.downloadSelected()
+                if (viewModel.downloadSelected()) finishMultiSelectAfterAction()
             }
         }
 
@@ -833,7 +844,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
                     else "确定要从相机存储卡删除 $count 个文件吗？此操作不可恢复。"
                 )
                 .setPositiveButton(if (isLocal) "删除本地" else "删除") { _, _ ->
-                    viewModel.deleteSelected()
+                    if (viewModel.deleteSelected()) finishMultiSelectAfterAction()
                 }
                 .setNegativeButton("取消", null)
                 .show()
@@ -841,11 +852,12 @@ class TransferFragment : Fragment(), GlassInsetAware {
 
         binding.btnShare.pressEffect()
         binding.btnShare.setOnClickListener {
-            when (viewModel.activeAlbum.value) {
+            val started = when (viewModel.activeAlbum.value) {
                 // F4：相机源分享走「预览副本」链路（长边 2048，默认剥离 GPS）
                 AlbumSource.CAMERA -> viewModel.shareSelectedCameraCopies()
                 else -> shareLocalSelected()
             }
+            if (started) finishMultiSelectAfterAction()
         }
     }
 
@@ -874,13 +886,14 @@ class TransferFragment : Fragment(), GlassInsetAware {
         popup.show()
     }
 
-    private fun shareLocalSelected() {
+    private fun shareLocalSelected(): Boolean {
         val uris = viewModel.selectedLocalUris()
         if (uris.isEmpty()) {
             viewModel.showMessage("请先选择要分享的本地文件")
-            return
+            return false
         }
         shareUris(uris, "分享本地文件")
+        return true
     }
 
     /** 统一的多文件分享面板（本地分享与 F4 预览副本共用） */
@@ -904,10 +917,37 @@ class TransferFragment : Fragment(), GlassInsetAware {
         }
     }
 
+    /**
+     * 下载 / 删除 / 分享真正发起之后退出多选：操作已交给队列或系统面板，
+     * 留在多选态只会让人忘了自己还在选（选中集已被各操作在发起时拷走，清掉不影响执行）。
+     * 「已标记」栏本身就是常驻多选的工作台，只清选中、不退出。
+     */
+    private fun finishMultiSelectAfterAction() {
+        if (_binding == null) return
+        if (viewModel.activeAlbum.value == AlbumSource.MARKED) {
+            viewModel.clearSelection()
+        } else if (multiSelectMode) {
+            setMultiSelectMode(false)
+        }
+    }
+
+    /** 多选态标题改成「已选 N 项」，一眼看出还在选择中；退出后恢复页面标题 */
+    private fun renderSelectionTitle() {
+        if (_binding == null) return
+        binding.tvTitle.text = if (multiSelectMode) {
+            "已选 ${viewModel.selectedHandles.value.size} 项"
+        } else {
+            getString(R.string.tv_title_text_3)
+        }
+    }
+
     private fun setMultiSelectMode(enabled: Boolean) {
         multiSelectMode = enabled
         adapter.multiSelectMode = enabled
+        // 「已标记」栏常驻多选，返回键照常交给 MainActivity
+        exitMultiSelectOnBack.isEnabled = enabled && viewModel.activeAlbum.value != AlbumSource.MARKED
         binding.btnMultiSelect.text = if (enabled) "取消" else "多选"
+        renderSelectionTitle()
         if (!enabled) {
             binding.bottomBar.visibility = View.GONE
             viewModel.clearSelection()
@@ -1066,6 +1106,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
                 viewModel.selectedHandles.collect { selected ->
                     syncAdapter(deferWhileScrolling = false)
                     binding.tvSelectedCount.text = "已选 ${selected.size} 项"
+                    renderSelectionTitle()
                     if (multiSelectMode) {
                         binding.bottomBar.visibility = View.VISIBLE
                         renderMarkButton()
