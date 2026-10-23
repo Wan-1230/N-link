@@ -188,6 +188,8 @@
     <string name="txt_开发选项">开发选项</string>
     <string name="txt_回退闸门">回退闸门 · 仅调试包</string>
     <string name="txt_通用设置">通用设置</string>
+    <string name="txt_后台运行">后台运行</string>
+    <string name="txt_后台运行说明">息屏或切到后台时继续下载、保持相机连接</string>
     <string name="txt_深浅色模式">深浅色模式</string>
     <string name="tv_theme_value_text">跟随系统</string>
     <string name="txt_清除缓存">清除缓存</string>

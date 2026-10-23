@@ -32,10 +32,12 @@ import com.nikonlink.app.settings.SettingsFragment
 import com.nikonlink.app.camera.gallery.TransferFragment
 import com.nikonlink.app.device.service.ConnectionService
 import com.nikonlink.app.shared.common.AppEventLogger
+import com.nikonlink.app.shared.common.AppSettings
 import com.nikonlink.app.shared.ui.glass.GlassCoordinator
 import com.nikonlink.app.shared.ui.glass.GlassInsetAware
 import com.nikonlink.app.shared.ui.glass.GlassRegistry
 import com.nikonlink.app.shared.ui.glass.GlassTokens
+import com.nikonlink.app.shared.ui.glass.NlGlass
 import com.nikonlink.app.shared.ui.glass.UiFlags
 import com.nikonlink.app.shared.ui.glass.applyGlass
 import com.nikonlink.app.shared.ui.pressEffect
@@ -89,6 +91,9 @@ class MainActivity : AppCompatActivity() {
 
     @Inject
     lateinit var eventLogger: AppEventLogger
+
+    @Inject
+    lateinit var settings: AppSettings
 
     /** 上一次按下返回键的时间戳；0 表示当前不在「待退出」窗口内 */
     private var lastBackPressedAt = 0L
@@ -145,6 +150,9 @@ class MainActivity : AppCompatActivity() {
             onPermissionsGranted()
         } else {
             Timber.tag(TAG).w("Some permissions denied")
+            // 后台运行询问与蓝牙/通知权限彼此独立：用户拒了系统权限，
+            // 首次启动的后台授权仍要问一次，否则这一项永远没有入口。
+            maybePromptBackgroundRun()
         }
     }
 
@@ -432,20 +440,44 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onPermissionsGranted() {
-        requestBatteryOptimizationExemption()
+        maybePromptBackgroundRun()
         startConnectionService()
+    }
+
+    /**
+     * 首次启动的后台运行授权询问。
+     *
+     * 旧版每次启动只要没豁免就拉起系统电池优化弹窗，用户拒绝后下次启动还会被拦；
+     * 现在只在**第一次**启动问一次，拒绝后不再自动弹，入口让给设置页的开关。
+     * 标记在弹窗前写入，Activity 重建/旋转不会重复弹。
+     */
+    private fun maybePromptBackgroundRun() {
+        if (settings.backgroundRunPromptShown) return
+        val powerManager = getSystemService(PowerManager::class.java)
+        val alreadyAllowed = powerManager?.isIgnoringBatteryOptimizations(packageName) == true
+        settings.backgroundRunPromptShown = true
+        if (alreadyAllowed) return
+        NlGlass.dialog(this)
+            .setTitle("允许后台运行")
+            .setMessage(
+                "为了在息屏或切到其他应用时继续下载照片、保持相机连接，" +
+                    "请允许 N-Link 在后台运行。\n\n" +
+                    "选择「暂不」后不再自动提示；以后可在「设置 → 通用设置 → 后台运行」中开启。"
+            )
+            .setPositiveButton("允许") { _, _ -> requestBatteryOptimizationExemption() }
+            .setNegativeButton("暂不", null)
+            .show()
     }
 
     private fun requestBatteryOptimizationExemption() {
         val powerManager = getSystemService(PowerManager::class.java)
-        if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
-            try {
-                startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                    data = Uri.parse("package:$packageName")
-                })
-            } catch (e: Exception) {
-                Timber.tag(TAG).w("Cannot request battery optimization: ${e.message}")
-            }
+        if (powerManager.isIgnoringBatteryOptimizations(packageName)) return
+        try {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:$packageName")
+            })
+        } catch (e: Exception) {
+            Timber.tag(TAG).w("Cannot request battery optimization: ${e.message}")
         }
     }
 

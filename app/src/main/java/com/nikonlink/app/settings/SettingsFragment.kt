@@ -9,6 +9,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -137,6 +139,9 @@ class SettingsFragment : Fragment(), GlassInsetAware {
     private fun restoreState() {
         binding.switchAutoDownload.isChecked = settings.autoDownload
         binding.switchWifi5G.isChecked = settings.preferWifi5GHz
+        // 后台运行开关按系统真实豁免状态回显（不是另存一份偏好）：用户可能在
+        // 系统设置里改过，回到本页时必须显示当前事实。
+        binding.switchBackgroundRun.isChecked = isBackgroundRunAllowed()
         // v2.2 回退总闸：关闭后所有新连接逻辑回到 v2.1.1 行为
         binding.switchConn22.isChecked = connFlags.masterEnabled()
         // v2.3 玻璃回退总闸 + 可访问性开关（PRD §9.4）
@@ -265,6 +270,18 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         binding.switchWifi5G.setOnCheckedChangeListener { _, checked ->
             settings.preferWifi5GHz = checked
             eventLogger.event("setting", "key" to "wifi_band_5g_prefer", "value" to checked)
+        }
+
+        // 后台运行：首次启动弹窗拒绝后的补救入口。开关状态直接映射系统的
+        // 电池优化豁免，不另存偏好——开启要过系统确认，关闭则只能去系统设置撤销。
+        binding.switchBackgroundRun.setOnCheckedChangeListener { _, checked ->
+            if (syncingBackgroundSwitch) return@setOnCheckedChangeListener
+            eventLogger.event("setting", "key" to "background_run", "value" to checked)
+            if (checked) {
+                if (!isBackgroundRunAllowed()) requestBackgroundRun()
+            } else {
+                showDisableBackgroundRunDialog()
+            }
         }
 
         // v2.2 连接改造总闸。多数开关是每次调用时读取、立即生效；
@@ -805,6 +822,58 @@ class SettingsFragment : Fragment(), GlassInsetAware {
             .setPositiveButton("确定") { _, _ -> onPick(options[selection]) }
             .setNegativeButton("取消", null)
             .show()
+    }
+
+    /** 系统是否已把本应用排除在电池优化之外（= 允许后台运行） */
+    private fun isBackgroundRunAllowed(): Boolean {
+        val ctx = context ?: return false
+        return ctx.getSystemService(PowerManager::class.java)
+            ?.isIgnoringBatteryOptimizations(ctx.packageName) == true
+    }
+
+    /** 静默回写开关，避免 setChecked 触发用户分支 */
+    private var syncingBackgroundSwitch = false
+
+    private fun renderBackgroundRunSwitch() {
+        if (_binding == null) return
+        syncingBackgroundSwitch = true
+        binding.switchBackgroundRun.isChecked = isBackgroundRunAllowed()
+        syncingBackgroundSwitch = false
+    }
+
+    /** 拉起系统的「忽略电池优化」确认页；失败退到应用详情页由用户手动设置 */
+    private fun requestBackgroundRun() {
+        val ctx = requireContext()
+        val packageUri = Uri.parse("package:${ctx.packageName}")
+        val opened = runCatching {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, packageUri))
+        }.isSuccess
+        if (!opened) {
+            runCatching {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri))
+            }.onFailure { NlFeedback.show(ctx, "无法打开系统设置，请手动在电池设置中允许后台运行") }
+        }
+        // 从系统页返回时 onResume 会按真实状态回写；这里先保持用户点击后的样子。
+    }
+
+    private fun showDisableBackgroundRunDialog() {
+        NlGlass.dialog(requireContext())
+            .setTitle("关闭后台运行")
+            .setMessage("系统不允许应用自行撤销后台运行权限。请在系统电池设置中把 N-Link 移出「不优化 / 无限制」列表。")
+            .setPositiveButton("去设置") { _, _ ->
+                runCatching {
+                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                }.onFailure { NlFeedback.show(requireContext(), "无法打开系统设置") }
+            }
+            .setNegativeButton("取消", null)
+            .setOnDismissListener { renderBackgroundRunSwitch() }
+            .show()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 从系统电池设置返回后刷新开关；首次 onResume 早于视图创建时判空跳过
+        renderBackgroundRunSwitch()
     }
 
     private fun formatCacheSize(context: Context): String {

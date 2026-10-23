@@ -16,6 +16,7 @@ import android.widget.PopupMenu
 import android.widget.TextView
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.content.ContextCompat
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
@@ -40,6 +41,8 @@ import com.nikonlink.app.MainActivity
 import com.nikonlink.app.R
 import com.nikonlink.app.databinding.FragmentTransferBinding
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -70,6 +73,19 @@ class TransferFragment : Fragment(), GlassInsetAware {
     private val chipViews = mutableMapOf<PhotoFilter, TextView>()
     private var chipNotDownloaded: TextView? = null
     private var multiSelectMode = false
+
+    /** 多选态拦截返回键：先退出多选，不走 MainActivity 的「再按一次退出」 */
+    private val exitMultiSelectOnBack = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            if (multiSelectMode) setMultiSelectMode(false)
+        }
+    }
+
+    /** 返回回调延迟到本页首次显示时注册，确保排在 MainActivity 的回调之后 */
+    private var backCallbackRegistered = false
+
+    /** 队列全部完成后延时收起入口的任务 */
+    private var queuePillHideJob: Job? = null
 
     /** 模块 4.4：长按滑动多选控制器（未激活时事件完全透传） */
     private var dragSelect: DragSelectController? = null
@@ -160,6 +176,10 @@ class TransferFragment : Fragment(), GlassInsetAware {
         restyleGlass()
         UiFlags.observe(this) { restyleGlass() }
         super.onViewCreated(view, savedInstanceState)
+        // 首帧后再注册：保证晚于 MainActivity.onCreate 里注册的返回回调
+        binding.root.post {
+            if (_binding != null && !isHidden) ensureBackCallbackRegistered()
+        }
         setupGrid()
         setupChips()
         setupAlbumTabs()
@@ -205,7 +225,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
                     // 与 uiPhotos 的索引不是一回事；按 handle 反查才是可靠位置。
                     val list = viewModel.uiPhotos.value
                     val startPos = list.indexOfFirst { it.handle == file.handle }.coerceAtLeast(0)
-                    PreviewActivity.start(requireContext(), list, startPos)
+                    PreviewActivity.start(requireContext(), list, startPos, viewModel::pairedFileOf)
                 }
             },
             onItemLongClick = { file, position ->
@@ -673,6 +693,13 @@ class TransferFragment : Fragment(), GlassInsetAware {
     /** Tab show/hide 不走 onResume：显示时补一次 Tab 指示器渲染（首帧只有 1 个 Tab 的修复） */
     override fun onHiddenChanged(hidden: Boolean) {
         super.onHiddenChanged(hidden)
+        if (hidden) {
+            exitMultiSelectOnBack.isEnabled = false
+        } else {
+            ensureBackCallbackRegistered()
+            exitMultiSelectOnBack.isEnabled =
+                multiSelectMode && viewModel.activeAlbum.value != AlbumSource.MARKED
+        }
         if (!hidden && _binding != null) {
             renderAlbumTabs(viewModel.activeAlbum.value)
         }
@@ -809,11 +836,13 @@ class TransferFragment : Fragment(), GlassInsetAware {
                         "已选 ${viewModel.selectedHandles.value.size} 张，" +
                             "批量下载原图会占用较多电量与时间，继续吗？"
                     )
-                    .setPositiveButton("继续") { _, _ -> viewModel.downloadMarkedSelected() }
+                    .setPositiveButton("继续") { _, _ ->
+                        if (viewModel.downloadMarkedSelected() > 0) finishMultiSelectAfterAction()
+                    }
                     .setNegativeButton("取消", null)
                     .show()
             } else {
-                viewModel.downloadSelected()
+                if (viewModel.downloadSelected()) finishMultiSelectAfterAction()
             }
         }
 
@@ -828,7 +857,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
                     else "确定要从相机存储卡删除 $count 个文件吗？此操作不可恢复。"
                 )
                 .setPositiveButton(if (isLocal) "删除本地" else "删除") { _, _ ->
-                    viewModel.deleteSelected()
+                    if (viewModel.deleteSelected()) finishMultiSelectAfterAction()
                 }
                 .setNegativeButton("取消", null)
                 .show()
@@ -836,11 +865,12 @@ class TransferFragment : Fragment(), GlassInsetAware {
 
         binding.btnShare.pressEffect()
         binding.btnShare.setOnClickListener {
-            when (viewModel.activeAlbum.value) {
+            val started = when (viewModel.activeAlbum.value) {
                 // F4：相机源分享走「预览副本」链路（长边 2048，默认剥离 GPS）
                 AlbumSource.CAMERA -> viewModel.shareSelectedCameraCopies()
                 else -> shareLocalSelected()
             }
+            if (started) finishMultiSelectAfterAction()
         }
     }
 
@@ -869,13 +899,14 @@ class TransferFragment : Fragment(), GlassInsetAware {
         popup.show()
     }
 
-    private fun shareLocalSelected() {
+    private fun shareLocalSelected(): Boolean {
         val uris = viewModel.selectedLocalUris()
         if (uris.isEmpty()) {
             viewModel.showMessage("请先选择要分享的本地文件")
-            return
+            return false
         }
         shareUris(uris, "分享本地文件")
+        return true
     }
 
     /** 统一的多文件分享面板（本地分享与 F4 预览副本共用） */
@@ -899,10 +930,50 @@ class TransferFragment : Fragment(), GlassInsetAware {
         }
     }
 
+    /**
+     * 下载 / 删除 / 分享真正发起之后退出多选：操作已交给队列或系统面板，
+     * 留在多选态只会让人忘了自己还在选（选中集已被各操作在发起时拷走，清掉不影响执行）。
+     * 「已标记」栏本身就是常驻多选的工作台，只清选中、不退出。
+     */
+    private fun finishMultiSelectAfterAction() {
+        if (_binding == null) return
+        if (viewModel.activeAlbum.value == AlbumSource.MARKED) {
+            viewModel.clearSelection()
+        } else if (multiSelectMode) {
+            setMultiSelectMode(false)
+        }
+    }
+
+    /**
+     * 本页首次显示时注册返回回调。
+     *
+     * 不能放在 onViewCreated：四个 Fragment 常驻，本页启动时是 hide 状态，
+     * 且那时的注册会排在 MainActivity 的返回回调之前（多选态按返回会被
+     * 「再按一次退出」抢走）。放在实际显示后注册，才能稳定优先处理。
+     */
+    private fun ensureBackCallbackRegistered() {
+        if (backCallbackRegistered) return
+        activity?.onBackPressedDispatcher?.addCallback(exitMultiSelectOnBack)
+        backCallbackRegistered = true
+    }
+
+    /** 多选态标题改成「已选 N 项」，退出后恢复页面标题 */
+    private fun renderSelectionTitle() {
+        if (_binding == null) return
+        binding.tvTitle.text = if (multiSelectMode) {
+            "已选 ${viewModel.selectedHandles.value.size} 项"
+        } else {
+            getString(R.string.tv_title_text_3)
+        }
+    }
+
     private fun setMultiSelectMode(enabled: Boolean) {
         multiSelectMode = enabled
         adapter.multiSelectMode = enabled
+        // 「已标记」栏常驻多选，返回键照常交给 MainActivity
+        exitMultiSelectOnBack.isEnabled = enabled && viewModel.activeAlbum.value != AlbumSource.MARKED
         binding.btnMultiSelect.text = if (enabled) "取消" else "多选"
+        renderSelectionTitle()
         if (!enabled) {
             binding.bottomBar.visibility = View.GONE
             viewModel.clearSelection()
@@ -1010,6 +1081,12 @@ class TransferFragment : Fragment(), GlassInsetAware {
         viewLifecycleOwner.lifecycleScope.launch {
             launch {
                 viewModel.uiPhotos.collect { list ->
+                    // 需求 3：分页加载期间"最上方的照片固定在顶部"。
+                    // 只在提交前就停在顶部、且没有在滚动时补一次 scrollToPosition(0)：
+                    // 新页面里的更新照片插到前面后，视口仍钉在第 0 位，顶部始终是
+                    // 当前已加载的最新一张；用户往下翻过则完全不打扰。
+                    val pinTopWhileLoading =
+                        viewModel.isLoading.value && !isGridScrolling && isGridAtTop()
                     // 切源/刷新/排序是用户主动动作，必须立即生效，不参与滚动让路
                     syncAdapter(deferWhileScrolling = false)
                     // 模块 4.3：滚动复位必须在「最终（排序后）列表」submit 之后再执行，
@@ -1029,8 +1106,14 @@ class TransferFragment : Fragment(), GlassInsetAware {
                             }
                         }
                     }
-                    if (pendingScrollToTop) {
+                    // 下拉/手动刷新的回顶必须等加载收尾：分页途中就滚顶，
+                    // 会让人看到"先跳到半截列表顶部、完成后又被最终列表顶一下"。
+                    if (pendingScrollToTop && !viewModel.isLoading.value) {
                         pendingScrollToTop = false
+                        binding.gridPhotos.post {
+                            if (_binding != null) binding.gridPhotos.scrollToPosition(0)
+                        }
+                    } else if (pinTopWhileLoading) {
                         binding.gridPhotos.post {
                             if (_binding != null) binding.gridPhotos.scrollToPosition(0)
                         }
@@ -1061,6 +1144,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
                 viewModel.selectedHandles.collect { selected ->
                     syncAdapter(deferWhileScrolling = false)
                     binding.tvSelectedCount.text = "已选 ${selected.size} 项"
+                    renderSelectionTitle()
                     if (multiSelectMode) {
                         binding.bottomBar.visibility = View.VISIBLE
                         renderMarkButton()
@@ -1143,9 +1227,19 @@ class TransferFragment : Fragment(), GlassInsetAware {
                     if (emptyVisible) View.VISIBLE else View.GONE
                 binding.ivEmptyIcon.visibility =
                     if (emptyVisible) View.VISIBLE else View.GONE
-                // 仅收起下拉刷新圈；滚动复位挪到 uiPhotos 最终提交之后（见下方 collector）——
-                // 旧版在这里滚顶会插在「排序后的最终列表 submit」之前，产生「跳底再弹回」两段运动
-                if (!loading) binding.swipeRefresh.isRefreshing = false
+                // 仅收起下拉刷新圈；滚动复位优先在 uiPhotos 最终提交之后执行（见上方 collector）。
+                // 这里补一个兜底：刷新前后列表内容完全一样时 StateFlow 会按相等值折叠，
+                // uiPhotos 不再发射，pendingScrollToTop 会一直挂着 —— 用户点了刷新却
+                // 停在原位置，下一次任意列表变化还会突然被拉到顶部。
+                if (!loading) {
+                    binding.swipeRefresh.isRefreshing = false
+                    if (pendingScrollToTop) {
+                        pendingScrollToTop = false
+                        binding.gridPhotos.post {
+                            if (_binding != null) binding.gridPhotos.scrollToPosition(0)
+                        }
+                    }
+                }
             }
         }
 
@@ -1187,40 +1281,54 @@ class TransferFragment : Fragment(), GlassInsetAware {
             }
         }
 
-        // 下载进度：灰度确定进度条 + 百分比
+        // 下载队列入口：「下载中 n/m」，点开是队列面板
+        binding.btnQueue.pressEffect()
+        binding.btnQueue.setOnClickListener {
+            TransferQueueSheet(requireContext(), viewLifecycleOwner, viewModel).show()
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            combine(viewModel.queue, viewModel.transferState) { _, _ -> Unit }
+                .collect { renderQueuePill() }
+        }
+
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.transferState.collect { state ->
                 when (state) {
-                    is TransferState.Idle -> {
-                        binding.progressDownload.visibility = View.GONE
-                        binding.progressDownload.isIndeterminate = false
-                    }
-                    is TransferState.Downloading -> {
-                        val totalKnown = state.total > 0 && state.total != 0xFFFFFFFFL
-                        binding.progressDownload.visibility = View.VISIBLE
-                        binding.progressDownload.isIndeterminate = !totalKnown
-                        val speed = formatSpeed(viewModel.transferSpeedBps.value)
-                        if (totalKnown) {
-                            val pct = (state.received * 100 / state.total).toInt().coerceIn(0, 100)
-                            binding.progressDownload.progress = pct
-                            binding.tvMessage.text = "下载中 ${state.file.fileName} · $pct%$speed"
-                        } else {
-                            binding.progressDownload.progress = 0
-                            binding.tvMessage.text = "下载中 ${state.file.fileName} · 大小未知$speed"
-                        }
-                    }
-                    is TransferState.Paused -> {
-                        binding.tvMessage.text = "传输已暂停"
-                        binding.progressDownload.isIndeterminate = false
-                    }
-                    is TransferState.Completed -> {
-                        binding.progressDownload.visibility = View.GONE
-                        binding.progressDownload.isIndeterminate = false
-                        binding.tvMessage.text = "已完成: ${state.file.fileName}"
-                    }
+                    is TransferState.Downloading ->
+                        binding.tvMessage.text =
+                            "下载中 ${state.file.fileName}${formatSpeed(viewModel.transferSpeedBps.value)}"
+                    is TransferState.Paused -> binding.tvMessage.text = "传输已暂停"
+                    is TransferState.Completed -> binding.tvMessage.text = "已完成: ${state.file.fileName}"
+                    is TransferState.Idle -> Unit
                 }
             }
         }
+    }
+
+    /**
+     * 队列入口：有任务时显示「下载中 n/m」；失败项一直留着（点开可重试）；
+     * 全部成功后显示「已完成」[QUEUE_DONE_LINGER_MS] 再收起，不常驻占位。
+     */
+    private fun renderQueuePill() {
+        if (_binding == null) return
+        val summary = TransferQueueSummary.of(viewModel.queue.value)
+        val text = summary.pillText(paused = viewModel.transferState.value is TransferState.Paused)
+        queuePillHideJob?.cancel()
+        queuePillHideJob = null
+        binding.btnQueue.text = text
+        binding.btnQueue.visibility = if (text != null) View.VISIBLE else View.GONE
+        if (summary.allDone) {
+            queuePillHideJob = viewLifecycleOwner.lifecycleScope.launch {
+                delay(QUEUE_DONE_LINGER_MS)
+                if (_binding != null) binding.btnQueue.visibility = View.GONE
+            }
+        }
+    }
+
+    /** 列表是否停在顶部（加载期顶部钉住的判据） */
+    private fun isGridAtTop(): Boolean {
+        if (_binding == null) return false
+        return !binding.gridPhotos.canScrollVertically(-1)
     }
 
     /** 需求 3：记下当前第一个可见照片的 handle，供关闭隐藏开关后恢复位置 */
@@ -1358,6 +1466,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
     override fun onDockSpaceChanged(dockSpace: Int) = applyDockSpace()
 
     override fun onDestroyView() {
+        exitMultiSelectOnBack.isEnabled = false
         UiFlags.unobserve(this)
         dockInsetGrid = null
         dockInsetTabs = null
@@ -1369,6 +1478,9 @@ class TransferFragment : Fragment(), GlassInsetAware {
     }
 
     companion object {
+        /** 队列全部成功后「已完成 n/n」的停留时长 */
+        private const val QUEUE_DONE_LINGER_MS = 3000L
+
         /** F1 大额保护阈值：全选超过该张数时批量下载前二次确认（PRD F1 AC-10） */
         private const val LARGE_SELECTION_WARNING = 200
 

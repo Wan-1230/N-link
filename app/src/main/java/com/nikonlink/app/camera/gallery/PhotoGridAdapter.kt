@@ -514,6 +514,34 @@ class PhotoGridAdapter(
             setVisibility(binding.tvDownloadedBadge, if (isDownloaded) View.VISIBLE else View.GONE)
         }
 
+        /** 当前画着的是实心圈还是空心圈：null = 还没画过。只在变化时换背景，滚动重绑不重复设置 */
+        private var renderedRingFilled: Boolean? = null
+
+        /** 选择圈：实心带勾 = 已选；空心 = 多选态下未选 */
+        private fun showRing(filled: Boolean) {
+            if (renderedRingFilled != filled) {
+                renderedRingFilled = filled
+                binding.checkImage.setBackgroundResource(
+                    if (filled) R.drawable.bg_select_filled else R.drawable.bg_select_ring
+                )
+            }
+            setVisibility(binding.checkTick, if (filled) View.VISIBLE else View.GONE)
+        }
+
+        /** 未选中的终态：多选态留一个空心圈提示「可选」，非多选态整个隐藏 */
+        private fun showIdle() {
+            setVisibility(binding.viewSelectedMask, View.GONE)
+            if (multiSelectMode) {
+                showRing(filled = false)
+                setVisibility(binding.checkContainer, View.VISIBLE)
+                if (binding.checkContainer.alpha != 1f) binding.checkContainer.alpha = 1f
+                if (binding.checkContainer.scaleX != 1f) binding.checkContainer.scaleX = 1f
+                if (binding.checkContainer.scaleY != 1f) binding.checkContainer.scaleY = 1f
+            } else {
+                setVisibility(binding.checkContainer, View.GONE)
+            }
+        }
+
         /** 选中状态渲染 + 勾选/取消动画（每次切换都触发） */
         fun applySelection(isSelected: Boolean, animate: Boolean) {
             // 取消在途动画并摘监听：cancel 后 onAnimationEnd 仍会回调的时代结束
@@ -524,6 +552,7 @@ class PhotoGridAdapter(
             val handleAtStart = boundHandle
 
             if (isSelected) {
+                showRing(filled = true)
                 setVisibility(binding.checkContainer, View.VISIBLE)
                 setVisibility(binding.viewSelectedMask, View.VISIBLE)
                 if (binding.root.alpha != 0.92f) binding.root.alpha = 0.92f
@@ -551,8 +580,12 @@ class PhotoGridAdapter(
                     binding.viewSelectedMask.alpha = 1f
                 }
             } else {
-                if (shouldAnimate && binding.checkContainer.visibility == View.VISIBLE) {
-                    // 取消勾选: 对勾淡出缩小后隐藏
+                // 只有从「实心带勾」退回时才播收起动画；本来就是空心圈的格子直接落终态，
+                // 否则每次刷新都会看到空心圈缩一下又弹回来
+                val wasFilled = binding.checkContainer.visibility == View.VISIBLE &&
+                    binding.checkTick.visibility == View.VISIBLE
+                if (shouldAnimate && wasFilled) {
+                    // 取消勾选: 对勾淡出缩小后回到空心圈 / 隐藏
                     currentAnimators = AnimatorSet().apply {
                         playTogether(
                             ObjectAnimator.ofFloat(binding.checkContainer, View.SCALE_X, 1f, 0.5f),
@@ -568,19 +601,13 @@ class PhotoGridAdapter(
                                 // 这张旧照片的收尾动作必须作废，否则会把新格子的
                                 // 对勾/遮罩改掉（快速滑动花屏的直接来源）
                                 if (boundHandle != handleAtStart) return
-                                binding.checkContainer.visibility =
-                                    if (multiSelectMode) View.INVISIBLE else View.GONE
-                                binding.viewSelectedMask.visibility = View.GONE
+                                showIdle()
                             }
                         })
                         start()
                     }
                 } else {
-                    setVisibility(
-                        binding.checkContainer,
-                        if (multiSelectMode) View.INVISIBLE else View.GONE
-                    )
-                    setVisibility(binding.viewSelectedMask, View.GONE)
+                    showIdle()
                     binding.checkContainer.alpha = 1f
                     binding.viewSelectedMask.alpha = 1f
                     if (binding.root.alpha != 1f) binding.root.alpha = 1f

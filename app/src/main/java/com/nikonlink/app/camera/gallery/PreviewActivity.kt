@@ -66,14 +66,29 @@ class PreviewActivity : AppCompatActivity() {
         private const val EXTRA_STORAGE_IDS = "storage_ids"
         private const val EXTRA_CAPTURE_TIMES = "capture_times"
         private const val EXTRA_POSITION = "position"
+        // FR-17 合并格的另一张：按 files 下标对齐，-1 = 没有配对。被合并掉的 JPG 不在 files 里，
+        // 下载时要靠这几列把它找回来，否则「成对下载」在预览页会退化成只下 RAW
+        private const val EXTRA_PAIR_HANDLES = "pair_handles"
+        private const val EXTRA_PAIR_NAMES = "pair_names"
+        private const val EXTRA_PAIR_SIZES = "pair_sizes"
+        private const val EXTRA_PAIR_FORMAT_CODES = "pair_format_codes"
+        private const val EXTRA_PAIR_STORAGE_IDS = "pair_storage_ids"
 
         /** 单张入口（兼容 TransferFragment 现有调用）：内部转成只含一张的列表 */
         fun start(context: Context, file: CameraFile) {
             start(context, listOf(file), 0)
         }
 
-        /** 整组入口：传入列表 + 起始位置 */
-        fun start(context: Context, files: List<CameraFile>, position: Int) {
+        /**
+         * 整组入口：传入列表 + 起始位置。
+         * [pairOf]：合并格的另一张（RAW 格 → 被藏起的 JPG），预览页下载时按成对设置一起入队。
+         */
+        fun start(
+            context: Context,
+            files: List<CameraFile>,
+            position: Int,
+            pairOf: (CameraFile) -> CameraFile? = { null }
+        ) {
             val safePos = position.coerceIn(0, (files.size - 1).coerceAtLeast(0))
             context.startActivity(Intent(context, PreviewActivity::class.java).apply {
                 putExtra(EXTRA_HANDLES, files.map { it.handle }.toIntArray())
@@ -83,6 +98,14 @@ class PreviewActivity : AppCompatActivity() {
                 putExtra(EXTRA_STORAGE_IDS, files.map { it.storageId }.toIntArray())
                 putExtra(EXTRA_CAPTURE_TIMES, files.map { it.captureTimeMillis ?: 0L }.toLongArray())
                 putExtra(EXTRA_POSITION, safePos)
+                val pairs = files.map(pairOf)
+                if (pairs.any { it != null }) {
+                    putExtra(EXTRA_PAIR_HANDLES, pairs.map { it?.handle ?: -1 }.toIntArray())
+                    putExtra(EXTRA_PAIR_NAMES, pairs.map { it?.fileName ?: "" }.toTypedArray())
+                    putExtra(EXTRA_PAIR_SIZES, pairs.map { it?.size ?: 0L }.toLongArray())
+                    putExtra(EXTRA_PAIR_FORMAT_CODES, pairs.map { it?.formatCode ?: 0 }.toIntArray())
+                    putExtra(EXTRA_PAIR_STORAGE_IDS, pairs.map { it?.storageId ?: 0 }.toIntArray())
+                }
             })
         }
     }
@@ -114,6 +137,9 @@ class PreviewActivity : AppCompatActivity() {
     /** 整组照片（由 Intent 基本类型数组重建，format 用 classifyFormat 还原） */
     private lateinit var files: List<CameraFile>
 
+    /** 合并格的另一张：handle → 被藏起的那张（见 [EXTRA_PAIR_HANDLES]） */
+    private var pairs: Map<Int, CameraFile> = emptyMap()
+
     /** 当前页的缩放视图（供返回键先复位缩放、翻页后重新指向） */
     private var currentZoomView: PreviewZoomImageView? = null
 
@@ -136,6 +162,7 @@ class PreviewActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         files = buildFilesFromIntent()
+        pairs = buildPairsFromIntent(files)
         if (files.isEmpty()) {
             // 极端兜底：没有任何数据直接关闭，避免空 ViewPager 崩溃
             finish()
@@ -292,6 +319,52 @@ class PreviewActivity : AppCompatActivity() {
                 captureTimeMillis = captureTimes.getOrNull(i)?.takeIf { it > 0 }
             )
         }
+    }
+
+    private fun buildPairsFromIntent(files: List<CameraFile>): Map<Int, CameraFile> {
+        val handles = intent.getIntArrayExtra(EXTRA_PAIR_HANDLES) ?: return emptyMap()
+        val names = intent.getStringArrayExtra(EXTRA_PAIR_NAMES) ?: arrayOf()
+        val sizes = intent.getLongArrayExtra(EXTRA_PAIR_SIZES) ?: longArrayOf()
+        val formatCodes = intent.getIntArrayExtra(EXTRA_PAIR_FORMAT_CODES) ?: intArrayOf()
+        val storageIds = intent.getIntArrayExtra(EXTRA_PAIR_STORAGE_IDS) ?: intArrayOf()
+        val out = HashMap<Int, CameraFile>()
+        for (i in files.indices) {
+            val h = handles.getOrNull(i) ?: continue
+            if (h == -1) continue
+            val name = names.getOrNull(i) ?: ""
+            val fc = formatCodes.getOrNull(i) ?: 0
+            out[files[i].handle] = CameraFile(
+                handle = h,
+                fileName = name,
+                size = sizes.getOrNull(i) ?: 0,
+                formatCode = fc,
+                storageId = storageIds.getOrNull(i) ?: 0,
+                format = classifyFormat(fc, name)
+            )
+        }
+        return out
+    }
+
+    /**
+     * 当前这一格按「RAW+JPEG 下载方式」展开成要入队的文件（与相册网格的 enqueuePairs 同一套规则）。
+     * 没有配对的格子原样返回。
+     */
+    private fun filesToDownload(target: CameraFile): List<CameraFile> {
+        val twin = pairs[target.handle] ?: return listOf(target)
+        val raw = if (target.format == CameraFileFormat.RAW) target else twin
+        val jpeg = if (target.format == CameraFileFormat.RAW) twin else target
+        val plan = RawJpegPairing.Plan(
+            hiddenJpegHandles = setOf(jpeg.handle),
+            jpegOfRaw = mapOf(raw.handle to jpeg.handle),
+            rawOfJpeg = mapOf(jpeg.handle to raw.handle)
+        )
+        val mode = when (settings.rawPairDownloadMode) {
+            AppSettings.RAW_PAIR_MODE_RAW -> RawJpegPairing.DownloadMode.RAW_ONLY
+            AppSettings.RAW_PAIR_MODE_JPEG -> RawJpegPairing.DownloadMode.JPEG_ONLY
+            else -> RawJpegPairing.DownloadMode.BOTH
+        }
+        val byHandle = mapOf(raw.handle to raw, jpeg.handle to jpeg)
+        return RawJpegPairing.expand(listOf(target), plan, mode) { byHandle[it] }
     }
 
     private fun setupViewPager() {
@@ -533,7 +606,7 @@ class PreviewActivity : AppCompatActivity() {
                 } else {
                     photoMarkRepository.mark(listOf(file))
                     if (settings.markAutoDownload && transferManager.hasActiveSession()) {
-                        transferManager.enqueue(listOf(file))
+                        transferManager.enqueue(filesToDownload(file))
                     }
                 }
             }.onFailure { e ->
@@ -773,7 +846,7 @@ class PreviewActivity : AppCompatActivity() {
         binding.progressDownload.visibility = View.VISIBLE
         binding.progressDownload.isIndeterminate = true
         binding.tvDownloadLabel.text = "排队中"
-        transferManager.enqueue(listOf(file))
+        transferManager.enqueue(filesToDownload(file))
     }
 
     /**

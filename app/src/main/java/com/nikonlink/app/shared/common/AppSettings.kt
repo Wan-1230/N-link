@@ -78,6 +78,16 @@ class AppSettings @Inject constructor(
         set(value) = prefs.edit().putBoolean("wifi_band_5g_prefer", value).apply()
 
     /**
+     * 首次启动的后台运行授权弹窗是否已经问过。
+     *
+     * 只要弹过一次就置 true（无论用户点「允许」还是「暂不」）：拒绝后不再每次
+     * 启动都拦一次，后续入口放在「设置 → 通用设置 → 后台运行」。
+     */
+    var backgroundRunPromptShown: Boolean
+        get() = prefs.getBoolean("background_run_prompt_shown", false)
+        set(value) = prefs.edit().putBoolean("background_run_prompt_shown", value).apply()
+
+    /**
      * 亮度直方图开关（优化项 4）：遥控拍摄界面是否显示实时直方图。
      * 默认关闭——直方图是进阶工具，默认铺开会遮挡取景画面。
      */

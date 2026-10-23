@@ -98,6 +98,11 @@ class PtpIpLink(
             val s = socketFactory.createSocket()
             s.tcpNoDelay = true
             s.keepAlive = true
+            // 接收窗口要在 connect 之前定，SYN 里协商的窗口缩放才算数。
+            // 与 STA/ApPtpClient 的 4MB 口径一致：大文件连续数据相位不再被
+            // 小窗口掐成一段段等 ACK。
+            runCatching { s.receiveBufferSize = 4 * 1024 * 1024 }
+            runCatching { s.sendBufferSize = 1024 * 1024 }
             s.connect(InetSocketAddress(endpoint.host, endpoint.port), CONNECT_TIMEOUT_MS)
             s.soTimeout = SO_TIMEOUT_MS
             cmdSocket = s

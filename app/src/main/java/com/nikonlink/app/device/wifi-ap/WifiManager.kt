@@ -29,7 +29,8 @@ import javax.inject.Singleton
 @Singleton
 class WifiManager @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val connFlags: com.nikonlink.app.device.connect.ConnFlags
+    private val connFlags: com.nikonlink.app.device.connect.ConnFlags,
+    private val settings: com.nikonlink.app.shared.common.AppSettings
 ) {
     companion object {
         private const val TAG = "WifiManager"
@@ -98,7 +99,9 @@ class WifiManager @Inject constructor(
      * PRD 7.1: 优先使用 Infrastructure 模式（相机作为 AP）
      */
     suspend fun connectToCamera(credential: WifiCredential): Boolean {
-        return connectToCamera(credential, preferBand5GHz = false)
+        // 设置页的「5GHz 频段优先」此前只是存了个值、从未参与请求；这里接上。
+        // 默认仍为关：相机只支持 2.4GHz 时，先请求 5GHz 会多等一轮超时再回退。
+        return connectToCamera(credential, preferBand5GHz = settings.preferWifi5GHz)
     }
 
     /**
@@ -348,6 +351,19 @@ class WifiManager @Inject constructor(
     private fun applyFrequency(frequencyMhz: Int) {
         _wifiFrequencyMhz.value = frequencyMhz
         Timber.tag(TAG).i("WiFi band resolved: %s (%d MHz)", bandLabel(frequencyMhz), frequencyMhz)
+    }
+
+    /**
+     * 下载分块策略要用的频段读数（MHz）：优先用已解析的缓存值，没有就现读系统
+     * 当前 WiFi 连接。传 0 = 未知（USB / 未连接 / ROM 不返回），调用方按保守值处理。
+     */
+    fun currentFrequencyMhz(): Int {
+        val cached = _wifiFrequencyMhz.value
+        if (cached > 0) return cached
+        return runCatching {
+            @Suppress("DEPRECATION")
+            wifiManager.connectionInfo?.frequency ?: 0
+        }.getOrDefault(0)
     }
 
     /**

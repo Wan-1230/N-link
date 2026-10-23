@@ -52,8 +52,9 @@ object AppModule {
     @Singleton
     fun provideWifiManager(
         @ApplicationContext context: Context,
-        connFlags: com.nikonlink.app.device.connect.ConnFlags
-    ): WifiManager = WifiManager(context, connFlags)
+        connFlags: com.nikonlink.app.device.connect.ConnFlags,
+        settings: com.nikonlink.app.shared.common.AppSettings
+    ): WifiManager = WifiManager(context, connFlags, settings)
 
     @Provides
     @Singleton

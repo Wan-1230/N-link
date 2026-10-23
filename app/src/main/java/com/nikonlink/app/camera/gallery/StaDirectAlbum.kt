@@ -378,7 +378,7 @@ internal class StaDirectAlbum(
         val head = head(handle, size)
         val info = head?.let { StaDirectRead.parseHead(it) }
         val name = resolvedNames[handle]
-            ?: StaDirectRead.nameFromNumber(info?.fileNumber, format, handle)
+            ?: StaDirectRead.nameFromNumber(info?.fileNumber, format, handle, info?.adobeRgb == true)
             ?: StaDirectRead.placeholderName(handle, format)
         return CameraFile(
             handle = handle,
@@ -511,7 +511,8 @@ internal class StaDirectAlbum(
     private fun rememberName(handle: Int, info: StaDirectRead.HeadInfo) {
         if (resolvedNames.containsKey(handle)) return
         val format = StaDirectRead.formatFromHandle(handle) ?: return
-        StaDirectRead.nameFromNumber(info.fileNumber, format, handle)?.let { resolvedNames[handle] = it }
+        StaDirectRead.nameFromNumber(info.fileNumber, format, handle, info.adobeRgb)
+            ?.let { resolvedNames[handle] = it }
     }
 
     /**
@@ -526,7 +527,13 @@ internal class StaDirectAlbum(
         val info = StaDirectRead.parseHead(head)
         rememberName(file.handle, info)
         val name = resolvedNames[file.handle] ?: return file.fileName
-        eventLogger.event("sta_name", "handle" to "0x%08X".format(file.handle), "name" to name)
+        eventLogger.event(
+            "sta_name",
+            "handle" to "0x%08X".format(file.handle),
+            "name" to name,
+            "number" to info.fileNumber,
+            "adobe_rgb" to info.adobeRgb
+        )
         return name
     }
 

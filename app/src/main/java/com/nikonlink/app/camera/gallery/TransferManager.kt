@@ -81,6 +81,16 @@ class TransferManager @Inject constructor(
         // 大分块降低每字节往返开销（4MB/RTT），失败时减半降级到 1MB，
         // 兼容只支持小分块的老相机（部分机型 GetPartialObject 上限 ~1MB）
         private const val PARTIAL_CHUNK_SIZE = 4 * 1024 * 1024
+
+        /**
+         * 5GHz / 6GHz 链路上的分段大小。
+         *
+         * 带宽越高，单块在途时间越短，"每块一次的命令往返 + 数据相位起停"占的比例
+         * 就越大；分块翻倍到 8MB 把这项固定开销减半。2.4GHz 仍保持 4MB：
+         * 弱链路下单块越大越容易撞上超时，收益也不如 5GHz 明显。
+         * 相机不支持 8MB 时沿用既有降级链（8→4→2→1MB），不会卡死。
+         */
+        private const val PARTIAL_CHUNK_SIZE_5G = 8 * 1024 * 1024
         private const val MIN_PARTIAL_CHUNK_SIZE = 1024 * 1024
         /**
          * 链路断开后的重连等待上限。
@@ -139,6 +149,13 @@ class TransferManager @Inject constructor(
         private const val REQ_CODE_VIEW = 2101
         private const val REQ_CODE_SHARE = 2102
 
+        /** 可以重新排队的任务状态（再点下载 / 「重试失败」） */
+        private val RETRYABLE_STATUSES = setOf(TransferTaskStatus.FAILED, TransferTaskStatus.CANCELLED)
+        /** 已结束、可从队列清除的任务状态 */
+        private val FINISHED_STATUSES = setOf(
+            TransferTaskStatus.COMPLETED, TransferTaskStatus.FAILED, TransferTaskStatus.CANCELLED
+        )
+
         /** 深链附加位：通知「查看」落相册页本地照片源 */
         const val EXTRA_OPEN_GALLERY_LOCAL = "open_gallery_local"
     }
@@ -189,6 +206,15 @@ class TransferManager @Inject constructor(
     val transferState: StateFlow<TransferState> = _transferState.asStateFlow()
 
     private val _queue = MutableStateFlow<List<TransferTask>>(emptyList())
+
+    /**
+     * 发布队列快照（调用方须持有 queueMutex，或在 start() 之前）。
+     * 任务对象是原地改状态的，必须逐个 copy：只 toList() 的话新旧列表元素是同一批引用，
+     * StateFlow 判等相同就不发射，界面拿不到状态变化。
+     */
+    private fun publishQueue() {
+        _queue.value = transferQueue.map { it.copy() }
+    }
     val queue: StateFlow<List<TransferTask>> = _queue.asStateFlow()
 
     /** 全链路优化: 面向用户的消息流（成功/失败/通道切换都有反馈，不再静默） */
@@ -999,45 +1025,69 @@ class TransferManager @Inject constructor(
         }
 
         val startOffset = totalReceived
-        var chunkSize = PARTIAL_CHUNK_SIZE
+
+        // AP 通道（相机热点直连）：从 0 开始优先走一次 GetObject 整对象流式下载。
+        // 旧路径每 4MB 发一次 GetPartialObject，命令往返与响应缓冲在高速链路上占掉
+        // 可观比例；GetObject 只建一次事务，数据包直接写盘。失败时保留已落盘字节，
+        // 继续走下面的分段续传——不支持 GetObject 的机身行为与旧版一致。
+        if (transport === apTransport && startOffset == 0L) {
+            val wholeOk = downloadWhole(transport, file, target, onProgress)
+            if (wholeOk) return DownloadOutcome.Complete
+            totalReceived = target.length().coerceAtMost(file.size)
+            if (totalReceived >= file.size) return DownloadOutcome.Complete
+        }
+
+        // 分块策略按当前 WiFi 频段选：5GHz/6GHz 用 8MB，2.4GHz/未知保持 4MB。
+        // 必须在进入循环前定值——传输中途换频段时继续用原值，避免同一文件的分块
+        // 大小来回跳。
+        var chunkSize = initialChunkSize(transport)
         var abortedBeyondRange = false
-        while (totalReceived < file.size) {
-            val remaining = (file.size - totalReceived).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-            val size = minOf(chunkSize, remaining)
 
-            // v2.2（G10）：标准 PTP GetPartialObject 的 offset 是 **32 位**，>2GB 的文件
-            // 续传时 totalReceived.toInt() 会回绕成负数、把文件写坏（旧版 4K 长 MOV 必现）。
-            // 尼康/MTP 的 64 位变体（GetPartialObject64 = 0x95C1，厂商扩展区）要按机身验证后才能用，
-            // 这里先安全退出续传，由下面的整文件下载兜底。
-            if (!ResumePolicy.offsetFits(totalReceived, size)) {
-                Timber.tag(TAG).w(
-                    "Resume offset %d beyond 32-bit partial range, aborting chunked resume",
-                    totalReceived
-                )
-                abortedBeyondRange = true
-                break
-            }
+        // 整段下载共用一条输出流：旧实现每个分块都 open/close 一次，
+        // 在 2.4GHz 上每张照片都要多做十几次文件系统调用，属于纯开销。
+        FileOutputStream(target, true).use { out ->
+            while (totalReceived < file.size) {
+                val remaining = (file.size - totalReceived).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                val size = minOf(chunkSize, remaining)
 
-            // WiFi 与 USB 统一流式写盘：partialObject 的数据阶段直接写入 sink，
-            // 内存 O(64KB)（USB 事务层按容器重组流式转发，不再整块缓冲）
-            val before = target.length()
-            var wrote = -1L
-            FileOutputStream(target, true).use { out ->
-                val result = transport.partialObject(file.handle, totalReceived.toInt(), size, out)
-                wrote = if (result == null) -1L else (target.length() - before)
-            }
-            if (wrote < 0L) {
-                if (chunkSize > MIN_PARTIAL_CHUNK_SIZE) {
-                    chunkSize /= 2
-                    Timber.tag(TAG).w("Partial chunk degraded to ${chunkSize / 1024}KB for ${file.fileName}")
-                    continue
+                // v2.2（G10）：标准 PTP GetPartialObject 的 offset 是 **32 位**，>2GB 的文件
+                // 续传时 totalReceived.toInt() 会回绕成负数、把文件写坏（旧版 4K 长 MOV 必现）。
+                // 尼康/MTP 的 64 位变体（GetPartialObject64 = 0x95C1，厂商扩展区）要按机身验证后才能用，
+                // 这里先安全退出续传，由下面的整文件下载兜底。
+                if (!ResumePolicy.offsetFits(totalReceived, size)) {
+                    Timber.tag(TAG).w(
+                        "Resume offset %d beyond 32-bit partial range, aborting chunked resume",
+                        totalReceived
+                    )
+                    abortedBeyondRange = true
+                    break
                 }
-                break
-            }
-            if (wrote == 0L) break  // 相机返回 OK 但无新数据，视为文件尾
 
-            totalReceived = target.length()
-            onProgress?.invoke(totalReceived, file.size)
+                // WiFi 与 USB 统一流式写盘：partialObject 的数据阶段直接写入 sink，
+                // 内存 O(64KB)（USB 事务层按容器重组流式转发，不再整块缓冲）
+                val before = target.length()
+                val result = transport.partialObject(file.handle, totalReceived.toInt(), size, out)
+                val wrote = if (result == null) -1L else (target.length() - before)
+                if (wrote < 0L) {
+                    // 命令失败前可能已经落了半块数据：截回分块起点，下一次续传
+                    // 才不会被"旧偏移 + 新追加"拼出重复字节。
+                    if (target.length() > before) {
+                        runCatching { out.channel.truncate(before) }
+                    }
+                    if (chunkSize > MIN_PARTIAL_CHUNK_SIZE) {
+                        chunkSize /= 2
+                        Timber.tag(TAG).w(
+                            "Partial chunk degraded to ${chunkSize / 1024}KB for ${file.fileName}"
+                        )
+                        continue
+                    }
+                    break
+                }
+                if (wrote == 0L) break  // 相机返回 OK 但无新数据，视为文件尾
+
+                totalReceived = target.length()
+                onProgress?.invoke(totalReceived, file.size)
+            }
         }
 
         if (totalReceived >= file.size) return DownloadOutcome.Complete
@@ -1054,6 +1104,23 @@ class TransferManager @Inject constructor(
             }
         }
         return if (abortedBeyondRange) DownloadOutcome.BeyondResumeRange else DownloadOutcome.LinkBroken
+    }
+
+    /**
+     * 本次传输的初始分块大小：USB 不动（协议层由事务容器统一重组）；
+     * WiFi 按频段给 5GHz/6GHz 更大的分块。频段未知时保持旧的 4MB，
+     * 不为了"看起来更快"去赌机身上限。
+     */
+    private fun initialChunkSize(transport: CameraTransport): Int {
+        if (transport === usbTransport) return PARTIAL_CHUNK_SIZE
+        val freq = runCatching { wifiManager.currentFrequencyMhz() }.getOrDefault(0)
+        val highBand = freq in 4900..5895 || freq >= 5925
+        val size = if (highBand) PARTIAL_CHUNK_SIZE_5G else PARTIAL_CHUNK_SIZE
+        Timber.tag(TAG).i(
+            "Transfer chunk=${size / 1024}KB band=%s",
+            if (freq > 0) "${freq}MHz" else "unknown"
+        )
+        return size
     }
 
     /** 整文件下载（不支持部分传输时的兜底路径；WiFi/USB 统一流式写盘） */
@@ -1241,7 +1308,8 @@ class TransferManager @Inject constructor(
 
     /**
      * 入队去重实现（协程内执行），两层过滤：
-     * 1. 队列中已存在同 handle 的任务（PENDING/DOWNLOADING/COMPLETED 都算）→ 丢弃，挡住重复点击
+     * 1. 队列中已存在同 handle 的任务（PENDING/DOWNLOADING/COMPLETED 都算）→ 丢弃，挡住重复点击；
+     *    FAILED/CANCELLED 的任务原地重置为 PENDING（再点一次下载 = 重试）
      * 2. transfer_history 中已成功传输的 handle → 丢弃，不发起任何 PTP 传输
      * 3. 全部被过滤时给出明确提示，不静默返回
      */
@@ -1253,16 +1321,38 @@ class TransferManager @Inject constructor(
 
         val accepted = mutableListOf<CameraFile>()
         queueMutex.withLock {
-            val knownHandles = transferQueue.mapTo(mutableSetOf()) { it.file.handle }
+            // 新批次（队列里没有还在跑的任务）：先清掉上一批已完成的，「n/m」只算这一批；
+            // 失败的留着，用户还能在队列页看到并重试
+            if (transferQueue.none { it.status == TransferTaskStatus.PENDING || it.status == TransferTaskStatus.DOWNLOADING }) {
+                transferQueue.removeAll { it.status == TransferTaskStatus.COMPLETED }
+            }
+            val byHandle = transferQueue.associateBy { it.file.handle }
+            val knownHandles = byHandle.keys.toMutableSet()
+            val revived = mutableListOf<TransferTask>()
             for (file in files) {
-                if (file.handle in knownHandles) continue   // 队列内去重
                 if (file.handle in transferred) continue    // 已传输去重
+                val existing = byHandle[file.handle]
+                if (existing != null && existing.status in RETRYABLE_STATUSES && revived.none { it === existing }) {
+                    revived += existing                     // 失败过的任务：重新排队
+                    accepted += file
+                    continue
+                }
+                if (file.handle in knownHandles) continue   // 队列内去重
                 knownHandles += file.handle                 // 同一批内部也去重
                 accepted += file
             }
+            revived.forEach { task ->
+                task.status = TransferTaskStatus.PENDING
+                task.failReason = null
+                // 重新排到队尾，和新点的文件一起按点击顺序下载
+                transferQueue.remove(task)
+                transferQueue.add(task)
+            }
+            val revivedHandles = revived.mapTo(HashSet()) { it.file.handle }
+            val fresh = accepted.filter { it.handle !in revivedHandles }
             if (accepted.isNotEmpty()) {
-                transferQueue.addAll(accepted.map { TransferTask(it, TransferTaskStatus.PENDING) })
-                _queue.value = transferQueue.toList()   // S3: 快照在锁内生成
+                transferQueue.addAll(fresh.map { TransferTask(it, TransferTaskStatus.PENDING) })
+                publishQueue()   // S3: 快照在锁内生成
             }
         }
 
@@ -1490,6 +1580,67 @@ class TransferManager @Inject constructor(
         }
     }
 
+    /** 重试队列里所有失败 / 已取消的任务。 */
+    fun retryFailed() {
+        val scope = this.scope ?: return
+        scope.launch {
+            val n = queueMutex.withLock {
+                val failed = transferQueue.filter { it.status in RETRYABLE_STATUSES }
+                failed.forEach {
+                    it.status = TransferTaskStatus.PENDING
+                    it.failReason = null
+                }
+                if (failed.isNotEmpty()) publishQueue()
+                failed.size
+            }
+            if (n == 0) return@launch
+            eventLogger.event("queue_retry_failed", "count" to n)
+            if (batchStartedAt == 0L) {
+                batchMutex.withLock { if (batchStartedAt == 0L) batchStartedAt = System.currentTimeMillis() }
+            }
+            processQueue()
+        }
+    }
+
+    /** 清除已结束的任务（已完成 / 失败 / 已取消），不影响正在下载和排队中的。 */
+    fun clearFinished() {
+        val scope = this.scope
+        if (scope == null) {
+            transferQueue.removeAll { it.status in FINISHED_STATUSES }
+            publishQueue()
+            return
+        }
+        scope.launch {
+            val removed = queueMutex.withLock {
+                val done = transferQueue.filter { it.status in FINISHED_STATUSES }
+                transferQueue.removeAll(done)
+                publishQueue()
+                done
+            }
+            removed.forEach { it.tempFile?.delete() }
+            if (removed.isNotEmpty()) eventLogger.event("queue_clear_finished", "count" to removed.size)
+        }
+    }
+
+    /** 从队列里移除单个还没开始的任务（排队中 / 失败 / 已取消）；正在下载的用暂停或全部取消。 */
+    fun removeTask(handle: Int) {
+        val scope = this.scope ?: return
+        scope.launch {
+            val removed = queueMutex.withLock {
+                val task = transferQueue.firstOrNull {
+                    it.file.handle == handle && it.status != TransferTaskStatus.DOWNLOADING
+                } ?: return@withLock null
+                transferQueue.remove(task)
+                publishQueue()
+                if (transferQueue.none { it.status == TransferTaskStatus.PENDING || it.status == TransferTaskStatus.DOWNLOADING }) {
+                    _transferState.value = TransferState.Idle
+                }
+                task
+            }
+            removed?.tempFile?.delete()
+        }
+    }
+
     /**
      * 取出下一个待下载任务并启动下载协程。
      *
@@ -1513,7 +1664,7 @@ class TransferManager @Inject constructor(
             task.status = TransferTaskStatus.DOWNLOADING
             val tempFile = File(tempDir, "tmp_${task.file.handle}.bin")
             task.tempFile = tempFile
-            _queue.value = transferQueue.toList()
+            publishQueue()
             resetTransferSpeed()
             _transferState.value = TransferState.Downloading(
                 task.file,
@@ -1541,7 +1692,7 @@ class TransferManager @Inject constructor(
             queueMutex.withLock {
                 nextTask.status = TransferTaskStatus.PENDING
                 if (currentTask === nextTask) currentTask = null
-                _queue.value = transferQueue.toList()
+                publishQueue()
             }
             Timber.tag(TAG).w("scope unavailable, task stays PENDING: ${nextTask.file.fileName}")
             return
@@ -1599,6 +1750,7 @@ class TransferManager @Inject constructor(
         when (result) {
             is TransferResult.Failed -> {
                 // 全链路优化: 失败原因上抛给用户，不静默
+                task.failReason = result.reason
                 postMessage("下载失败: ${task.file.fileName}（${result.reason}）")
                 task.tempFile?.delete()
                 task.tempFile = null
@@ -1653,7 +1805,7 @@ class TransferManager @Inject constructor(
                     task.status = TransferTaskStatus.COMPLETED
                     postMessage("${task.file.fileName} 已下载过，自动跳过")
                 }
-                _queue.value = transferQueue.toList()
+                publishQueue()
                 if (currentTask === task) currentTask = null
                 currentJob = null
                 if (transferQueue.none { it.status == TransferTaskStatus.PENDING }) {
@@ -1833,6 +1985,9 @@ class TransferManager @Inject constructor(
             )
         }
 
+        val resolver = context.contentResolver
+        // 插入后写入失败要删掉半成品，免得相册里留一条 0 字节的条目
+        var inserted: Uri? = null
         return try {
             val contentValues = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
@@ -1841,9 +1996,9 @@ class TransferManager @Inject constructor(
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
 
-            val resolver = context.contentResolver
             val uri = resolver.insert(collectionUri, contentValues)
                 ?: return SaveOutcome.Failed("保存失败：相册不接受该文件（${getMimeType(fileName)}）")
+            inserted = uri
 
             val output = resolver.openOutputStream(uri)
             if (output == null) {
@@ -1868,12 +2023,15 @@ class TransferManager @Inject constructor(
             SaveOutcome.Saved(uri.toString())
         } catch (e: SecurityException) {
             Timber.tag(TAG).e(e, "No permission to save to MediaStore")
+            inserted?.let { runCatching { resolver.delete(it, null, null) } }
             SaveOutcome.Failed("保存失败：没有相册写入权限")
         } catch (e: java.io.IOException) {
             Timber.tag(TAG).e(e, "Failed to write MediaStore")
+            inserted?.let { runCatching { resolver.delete(it, null, null) } }
             SaveOutcome.Failed("保存失败：写入相册中断（${e.message ?: "IO 错误"}）")
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Failed to save to MediaStore")
+            inserted?.let { runCatching { resolver.delete(it, null, null) } }
             SaveOutcome.Failed("保存失败：${e.message ?: "未知错误"}")
         }
     }
@@ -2017,7 +2175,9 @@ private val VIDEO_FORMAT_CODES = setOf(0x300A, 0x300B, 0x300D, 0xB104, 0xB982, 0
 data class TransferTask(
     val file: CameraFile,
     var status: TransferTaskStatus,
-    var tempFile: File? = null
+    var tempFile: File? = null,
+    /** 最近一次失败的原因（队列页展示用）；重新排队时清空。 */
+    var failReason: String? = null
 )
 
 enum class TransferTaskStatus {
@@ -2170,16 +2330,25 @@ private class ApTransport(
         onProgress: ((Long, Long) -> Unit)?,
         sink: OutputStream?
     ): ByteArray? {
+        if (sink != null) {
+            // AP 引擎自带整对象流式下载（GetObject）：数据包直接写 sink，
+            // 不在内存里攒 ByteArrayOutputStream，也不按 4MB 反复发分段命令。
+            // 失败返回 null，上层会回退到分段续传。
+            val bridge = ap.bridge() ?: return null
+            val ok = bridge.download(handle.toLong(), sink) { received, total ->
+                onProgress?.invoke(received, total)
+            }
+            return if (ok) ByteArray(0) else null
+        }
         val session = ap.session() ?: return null
-        val out = if (sink == null) java.io.ByteArrayOutputStream() else null
+        val out = java.io.ByteArrayOutputStream()
         var received = 0L
         session.readObject(handle.toLong(), 0L) { chunk ->
             received += chunk.size
-            if (sink != null) sink.write(chunk) else out!!.write(chunk)
+            out.write(chunk)
             onProgress?.invoke(received, 0L)
         }
-        // sink 模式下用非 null 表示成功（与旧通道的返回约定一致）
-        return out?.toByteArray() ?: ByteArray(0)
+        return out.toByteArray()
     }
 
     override suspend fun thumbnail(handle: Int): ByteArray? =

@@ -115,8 +115,8 @@
     </HorizontalScrollView>
 
     <!-- O2：剩余下载进度（已下载 M/N · 剩余 K 张）——仅相机照片源可见。
-         放在 chip 行下方、下载进度条上方，纵向线性约束，不与任何控件重叠。
-         注意：不能挂在 tvMessage 上——它在 layoutEmpty 空态内，列表非空时整个空态都是 GONE。 -->
+         放在 chip 行下方，网格从它下面开始；注意：不能挂在 tvMessage 上——
+         它在 layoutEmpty 空态内，列表非空时整个空态都是 GONE。 -->
     <TextView
         android:id="@+id/tvDownloadStats"
         android:layout_width="0dp"
@@ -130,22 +130,6 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/chipScroll" />
 
-    <!-- 下载确定进度条（0-100%） -->
-    <ProgressBar
-        android:id="@+id/progressDownload"
-        style="@style/Widget.AppCompat.ProgressBar.Horizontal"
-        android:layout_width="0dp"
-        android:layout_height="3dp"
-        android:layout_marginHorizontal="@dimen/page_margin"
-        android:max="100"
-        android:progress="0"
-        android:progressTint="@color/text_primary"
-        android:progressBackgroundTint="@color/outline"
-        android:visibility="gone"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/tvDownloadStats" />
-
     <!-- 下拉刷新容器 + 影像网格：3 列等宽方形 -->
     <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
         android:id="@+id/swipeRefresh"
@@ -155,7 +139,7 @@
         app:layout_constraintBottom_toTopOf="@id/albumTabRow"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/progressDownload">
+        app:layout_constraintTop_toBottomOf="@id/tvDownloadStats">
 
         <FrameLayout
             android:layout_width="match_parent"
@@ -357,6 +341,27 @@
                 </LinearLayout>
             </FrameLayout>
         </LinearLayout>
+
+    <!-- 下载队列入口：队列里有任务时浮在多选操作栏上方，「下载中 n/m」，点开是队列面板。
+         挂在 bottomBar 顶上：操作栏 GONE 时 ConstraintLayout 把它收成标签行顶部的一个点，
+         入口自然落到标签行上方 12dp；操作栏出现时入口跟着上移，两者不重叠。 -->
+    <TextView
+        android:id="@+id/btnQueue"
+        android:layout_width="wrap_content"
+        android:layout_height="36dp"
+        android:layout_marginBottom="@dimen/space_12"
+        android:background="@drawable/bg_chip_selected"
+        android:contentDescription="下载队列"
+        android:gravity="center"
+        android:minWidth="48dp"
+        android:paddingHorizontal="@dimen/space_16"
+        android:textColor="@color/on_primary"
+        android:textSize="@dimen/font_caption"
+        android:textStyle="bold"
+        android:visibility="gone"
+        app:layout_constraintBottom_toTopOf="@id/bottomBar"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
 
     <!-- 底部悬浮操作栏（多选模式）：下载 / 删除 / 分享 / 全选 -->
     <LinearLayout

@@ -40,6 +40,8 @@ class AppSettingsTest {
         assertEquals(AppSettings.SAVE_PATH_DCIM, settings.savePath)
         assertEquals(AppSettings.CONN_PREF_USB, settings.connectionPreference)
         assertFalse(settings.preferWifi5GHz)
+        // 首次启动的后台授权弹窗默认未问过（见 MainActivity.maybePromptBackgroundRun）
+        assertFalse(settings.backgroundRunPromptShown)
         assertFalse(settings.autoDownload)
         // F1/F4 新增开关的默认态：全部关闭（PRD 约定）
         assertFalse(settings.markAutoDownload)
@@ -55,6 +57,7 @@ class AppSettingsTest {
         settings.savePath = AppSettings.SAVE_PATH_DOWNLOAD
         settings.connectionPreference = AppSettings.CONN_PREF_WIFI
         settings.preferWifi5GHz = true
+        settings.backgroundRunPromptShown = true
         settings.autoDownload = true
         settings.markAutoDownload = true
         settings.shareKeepGps = true
@@ -65,6 +68,7 @@ class AppSettingsTest {
         verify { editor.putString("save_path", AppSettings.SAVE_PATH_DOWNLOAD) }
         verify { editor.putString("conn_pref", AppSettings.CONN_PREF_WIFI) }
         verify { editor.putBoolean("wifi_band_5g_prefer", true) }
+        verify { editor.putBoolean("background_run_prompt_shown", true) }
         verify { editor.putBoolean("auto_download", true) }
         verify { editor.putBoolean("mark_auto_download", true) }
         verify { editor.putBoolean("share_keep_gps", true) }
