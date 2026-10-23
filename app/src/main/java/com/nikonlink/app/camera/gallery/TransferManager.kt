@@ -970,8 +970,7 @@ class TransferManager @Inject constructor(
                     "download_fail", "handle" to file.handle,
                     "reason" to "storage", "detail" to reason
                 )
-                // 保存失败重试不会变好（同一个集合、同一份文件），不走自动重试
-                TransferResult.Failed(reason, retryable = false)
+                TransferResult.Failed(reason)
             }
         } catch (e: CancellationException) {
             throw e
@@ -1672,7 +1671,7 @@ class TransferManager @Inject constructor(
         // v0.1.2 的 repeat(2) 没有成功终止条件，成功后又跑一轮，
         // 而首轮成功已删除临时文件，第二轮会重新完整下载并二次落盘，产生 "xxx (1).JPG"。
         var result = downloadOnce(task)
-        if (result is TransferResult.Failed && result.retryable) {
+        if (result is TransferResult.Failed) {
             Timber.tag(TAG).w("Task retry after failure: ${task.file.fileName}（${result.reason}）")
             if (!hasActiveSession()) {
                 // 会话已断：等上层自动重连完成再续传（临时文件仍在，downloadToFile 从断点继续）。
@@ -2149,8 +2148,7 @@ sealed class TransferState {
  */
 sealed class TransferResult {
     data class Success(val path: String) : TransferResult()
-    /** [retryable] = false：重试也不会变好的失败（如落相册被系统拒绝），队列不自动再试。 */
-    data class Failed(val reason: String, val retryable: Boolean = true) : TransferResult()
+    data class Failed(val reason: String) : TransferResult()
     data object Cancelled : TransferResult()
 }
 
