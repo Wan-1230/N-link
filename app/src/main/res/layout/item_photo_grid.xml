@@ -61,7 +61,7 @@
         app:layout_constraintStart_toStartOf="@id/ivThumb"
         app:layout_constraintTop_toTopOf="@id/ivThumb" />
 
-    <!-- 右上角黑色对勾标记 -->
+    <!-- 右上角选择圈：多选态每格都有（空心 = 未选，实心带勾 = 已选），非多选态隐藏 -->
     <FrameLayout
         android:id="@+id/checkContainer"
         android:layout_width="24dp"
@@ -78,6 +78,7 @@
             android:contentDescription="已选中" />
 
         <ImageView
+            android:id="@+id/checkTick"
             android:layout_width="14dp"
             android:layout_height="14dp"
             android:layout_gravity="center"

@@ -71,11 +71,25 @@ object StaDirectRead {
     }
 
     /**
-     * 拿不到真实文件名时的占位名：`DSC_<句柄低 16 位>.<ext>`。
-     * 低 16 位不是卡内编号，只保证同一张卡内唯一、可读；读到文件头里的编号后会被替换。
+     * 文件名前缀。STA 下机身「文件命名」设置读不到（Z30 实测：DeviceInfo 只声明 3 个厂商属性，
+     * 没有前缀），也拿不到真实文件名，统一用机身默认的 `DSC`。
+     */
+    const val DEFAULT_PREFIX = "DSC"
+
+    /**
+     * 尼康卡内文件名：sRGB 为 `DSC_nnnn`，AdobeRGB 为 `_DSCnnnn`。
+     * 编号统一 4 位，与机身一致（0001–9999）。
+     */
+    fun cardName(number: Int, adobeRgb: Boolean, ext: String): String =
+        if (adobeRgb) "_%s%04d.%s".format(DEFAULT_PREFIX, number, ext)
+        else "%s_%04d.%s".format(DEFAULT_PREFIX, number, ext)
+
+    /**
+     * 拿不到真实文件名时的占位名：编号取句柄低 16 位（Z30 实测与卡内文件号一致）。
+     * 读到文件头里的编号 / 色彩空间后由 [nameFromNumber] 校正。
      */
     fun placeholderName(handle: Int, format: CameraFileFormat): String =
-        "DSC_%05d.%s".format(handle and 0xFFFF, extensionFor(format, handle))
+        cardName(handle and 0xFFFF, false, extensionFor(format, handle))
 
     /** `0x9434` 单条：handle / 大小 / 拍摄时间（机身本地时间，按手机时区换算）。 */
     data class MetaEntry(val handle: Int, val size: Long, val captureTimeMillis: Long?)
@@ -117,11 +131,15 @@ object StaDirectRead {
         }.getOrNull()
     }
 
-    /** 文件头解析结果：拍摄时间、卡内文件编号、内嵌 JPEG 区间（按长度降序）。 */
+    /**
+     * 文件头解析结果：拍摄时间、卡内文件编号、内嵌 JPEG 区间（按长度降序）。
+     * [adobeRgb]：EXIF ColorSpace = 0xFFFF（Uncalibrated，尼康 AdobeRGB 的写法），决定文件名形态。
+     */
     data class HeadInfo(
         val captureTimeMillis: Long?,
         val fileNumber: Int?,
-        val embeddedJpegs: List<LongRange>
+        val embeddedJpegs: List<LongRange>,
+        val adobeRgb: Boolean = false
     )
 
     /**
@@ -137,6 +155,7 @@ object StaDirectRead {
         val jpegs = mutableListOf<LongRange>()
         var date: String? = null
         var fileNumber: Int? = null
+        var colorSpace: Long? = null
         if (tiffStart >= 0) {
             val tiff = TiffReader(head, tiffStart)
             var makerNote: TiffValue? = null
@@ -145,6 +164,7 @@ object StaDirectRead {
                     TAG_DATETIME_ORIGINAL -> date = value.asString() ?: date
                     TAG_DATETIME -> if (date == null) date = value.asString()
                     TAG_IMAGE_NUMBER -> fileNumber = value.asLong()?.toInt()
+                    TAG_COLOR_SPACE -> colorSpace = value.asLong()
                     TAG_MAKER_NOTE -> makerNote = value
                 }
             }
@@ -184,13 +204,18 @@ object StaDirectRead {
             captureTimeMillis = date?.let { parseExifDate(it, zone) },
             fileNumber = fileNumber?.takeIf { it in 1..9999 },
             embeddedJpegs = jpegs.distinct().filter { it.last > it.first }
-                .sortedByDescending { it.last - it.first }
+                .sortedByDescending { it.last - it.first },
+            adobeRgb = colorSpace == 0xFFFFL
         )
     }
 
-    /** 卡内编号可读时给出 `DSC_nnnn.EXT`，否则 null。 */
-    fun nameFromNumber(number: Int?, format: CameraFileFormat, handle: Int): String? =
-        number?.let { "DSC_%04d.%s".format(it, extensionFor(format, handle)) }
+    /** 卡内编号可读时给出卡内文件名（见 [cardName]），否则 null。 */
+    fun nameFromNumber(
+        number: Int?,
+        format: CameraFileFormat,
+        handle: Int,
+        adobeRgb: Boolean = false
+    ): String? = number?.let { cardName(it, adobeRgb, extensionFor(format, handle)) }
 
     fun parseExifDate(raw: String, zone: ZoneId = ZoneId.systemDefault()): Long? {
         val s = raw.trim()
@@ -299,6 +324,7 @@ object StaDirectRead {
     private const val TAG_DATETIME = 0x0132
     private const val TAG_DATETIME_ORIGINAL = 0x9003
     private const val TAG_IMAGE_NUMBER = 0x9211
+    private const val TAG_COLOR_SPACE = 0xA001
     private const val TAG_EXIF_IFD = 0x8769
     private const val TAG_SUB_IFDS = 0x014A
     private const val TAG_JPEG_OFFSET = 0x0201

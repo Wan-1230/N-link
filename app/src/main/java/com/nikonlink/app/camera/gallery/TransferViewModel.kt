@@ -1633,21 +1633,22 @@ class TransferViewModel @Inject constructor(
      * 相机源多选「分享」：为选中的 JPEG 生成预览副本后拉起分享面板。
      * RAW/视频不在副本支持范围，计入跳过并提示（PRD F4 AC-4）。
      */
-    fun shareSelectedCameraCopies() {
+    /** @return 是否开始生成副本（false = 前置校验没过，调用方应保留选中） */
+    fun shareSelectedCameraCopies(): Boolean {
         val selected = selectedCameraFiles()
         if (selected.isEmpty()) {
             _message.value = "请先选择要分享的照片"
-            return
+            return false
         }
         if (!transferManager.hasActiveSession()) {
             _message.value = "相机未连接，无法生成分享副本"
-            return
+            return false
         }
         val eligible = selected.filter { previewShareExporter.supportsPreviewCopy(it) }
         val skippedCount = selected.size - eligible.size
         if (eligible.isEmpty()) {
             _message.value = "所选文件暂不支持生成分享副本（RAW/视频请先下载原图）"
-            return
+            return false
         }
         viewModelScope.launch {
             _shareExportProgress.value = 0 to eligible.size
@@ -1662,6 +1663,7 @@ class TransferViewModel @Inject constructor(
             }
             _shareExportDone.emit(result)
         }
+        return true
     }
 
 
@@ -1700,27 +1702,28 @@ class TransferViewModel @Inject constructor(
         _message.value = "已加入队列: ${files.size} 个文件"
     }
 
-    fun downloadSelected() {
+    /** @return 是否真的交给了下载队列（false = 前置校验没过，调用方应保留选中让用户改） */
+    fun downloadSelected(): Boolean {
         // F1：已标记栏的下载入口走专用链路（跳过已下载 + 完成后清标记提示）
         if (_activeAlbum.value == AlbumSource.MARKED) {
-            downloadMarkedSelected()
-            return
+            return downloadMarkedSelected() > 0
         }
         val selected = displayedPhotos.value.filter { it.handle in _selectedHandles.value }
         if (selected.isEmpty()) {
             _message.value = "请先选择要下载的照片"
-            return
+            return false
         }
         if (_activeAlbum.value == AlbumSource.LOCAL) {
             _message.value = "本地照片已保存在手机，可分享或删除"
-            return
+            return false
         }
         if (!transferManager.hasActiveSession() && !usbPtpManager.isConnected()) {
             _message.value = "相机未连接，无法下载"
-            return
+            return false
         }
         enqueuePairs(selected)
         _message.value = "已加入队列: ${selected.size} 个文件"
+        return true
     }
 
     /**
@@ -1752,20 +1755,21 @@ class TransferViewModel @Inject constructor(
         return out.values.toList()
     }
 
-    fun deleteSelected() {
+    /** @return 是否真的发起了删除（false = 前置校验没过，调用方应保留选中） */
+    fun deleteSelected(): Boolean {
         // F1：已标记栏的删除目标取「标记 ∩ 相机列表」，不落到本地相册
         val selected = selectedCameraFiles()
         if (selected.isEmpty()) {
             _message.value = "请先选择要删除的照片"
-            return
+            return false
         }
         if (_activeAlbum.value == AlbumSource.LOCAL) {
             deleteLocalSelected(selected)
-            return
+            return true
         }
         if (!transferManager.hasActiveSession()) {
             _message.value = "相机未连接，无法删除"
-            return
+            return false
         }
         // v2.6.4：JPEG+RAW 合并显示模式下，一格代表**一次拍摄**，配对的那一格在界面上是
         // 隐藏的（见 RawJpegPairing），所以选中集里只有 RAW 的句柄。只删 RAW 会留下
@@ -1786,6 +1790,7 @@ class TransferViewModel @Inject constructor(
             photoMarkRepository.unmark(selected.filter { it.handle in deletedSet })
             _message.value = "已从相机删除 ${deleted.size} 个文件"
         }
+        return true
     }
 
     fun downloadFiltered() {
@@ -1819,6 +1824,13 @@ class TransferViewModel @Inject constructor(
      * 配对表从**完整的相机列表**算而不是从当前筛过的列表算：查搭档要查得到被
      * 隐藏掉的那张 JPG，否则"成对下载"会悄悄退化成"只下 RAW"。
      */
+    /** 合并格被藏起的另一张（预览页下载时要用）；未开成对显示或没配对返回 null。 */
+    fun pairedFileOf(file: CameraFile): CameraFile? {
+        if (!rawPairOn) return null
+        val handle = file.pairedJpegHandle ?: return null
+        return _photoList.value.firstOrNull { it.handle == handle }
+    }
+
     private fun enqueuePairs(files: List<CameraFile>) {
         if (!rawPairOn || files.isEmpty()) {
             transferManager.enqueue(files)
@@ -1842,6 +1854,9 @@ class TransferViewModel @Inject constructor(
     fun pauseTransfer() = transferManager.pause()
     fun resumeTransfer() = transferManager.resume()
     fun cancelAll() = transferManager.cancelAll()
+    fun retryFailedTransfers() = transferManager.retryFailed()
+    fun clearFinishedTransfers() = transferManager.clearFinished()
+    fun removeTransfer(handle: Int) = transferManager.removeTask(handle)
 }
 
 /**
