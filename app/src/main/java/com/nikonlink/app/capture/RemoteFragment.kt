@@ -32,6 +32,7 @@ import com.nikonlink.app.shared.ui.glass.applyGlass
 import com.nikonlink.app.R
 import com.nikonlink.app.databinding.DialogParamPickerBinding
 import com.nikonlink.app.databinding.FragmentRemoteBinding
+import com.nikonlink.app.camera.liveview.CameraAfArea
 import com.nikonlink.app.camera.liveview.FocusTapMapper
 import com.nikonlink.app.camera.liveview.LiveViewHostRegistry
 import com.nikonlink.app.camera.liveview.LvFrame
@@ -360,24 +361,64 @@ class RemoteFragment : Fragment(), GlassInsetAware {
         }
         if (target == lvBottomPx) return
         lvBottomPx = target
-        b.liveContainer.minimumHeight = target
+        // 必须显式定高，不能只设 minimumHeight：
+        // 容器里还有 viewFlash / viewGrid 两个 match_parent 子视图，当容器自身是
+        // wrap_content 时，FrameLayout 会把 match_parent 子视图按「可用高度」测量，
+        // 于是一闪白（快门）或开网格就把整个取景框撑到页面剩余高度——真机看到的是
+        // 画面停在顶部、下半屏全黑、按钮居中，像是「监看框被瞬间拉长到全屏」。
+        // 给容器一个由画面高度算出的精确高度后，match_parent 子视图只能填满该高度。
+        // 有帧时清掉 XML 的 272dp 下限，否则它会比 3:2 画面高出一小条、底部留黑带。
+        b.liveContainer.minimumHeight = if (pictureH > 0) 0 else floor
+        val lp = b.liveContainer.layoutParams
+        if (lp.height != target) {
+            lp.height = target
+            b.liveContainer.layoutParams = lp
+        }
+    }
+
+    /** 点击框的隐藏令牌：相机回显更新位置时，旧框的 900ms 收尾不能把新框一起收掉 */
+    private var focusIndicatorToken = 0
+
+    /** 相机回显的真实 AF 区域：把取景框里的对焦标记移到相机实际位置 */
+    private fun showCameraAfIndicator(area: CameraAfArea) {
+        if (_binding == null) return
+        val rect = FocusTapMapper.displayedImageRect(binding.ivLiveView) ?: return
+        val x = binding.ivLiveView.left + rect.left + area.centerX * rect.width()
+        val y = binding.ivLiveView.top + rect.top + area.centerY * rect.height()
+        // 相机回显位置比点击位置权威：停留更久，且不重新播淡入
+        showFocusIndicatorAt(x, y, holdMs = 1_200L, animate = false)
     }
 
     private fun showFocusIndicator(x: Float, y: Float) {
+        showFocusIndicatorAt(x, y, holdMs = 900L, animate = true)
+    }
+
+    private fun showFocusIndicatorAt(x: Float, y: Float, holdMs: Long, animate: Boolean) {
+        if (_binding == null) return
+        val token = ++focusIndicatorToken
         val size = dp(56f)
-        binding.viewFocusIndicator.translationX = (x - size / 2).coerceIn(0f, binding.liveContainer.width - size)
-        binding.viewFocusIndicator.translationY = (y - size / 2).coerceIn(0f, binding.liveContainer.height - size)
-        binding.viewFocusIndicator.animate().cancel()
-        binding.viewFocusIndicator.visibility = View.VISIBLE
-        binding.viewFocusIndicator.alpha = 0f
-        binding.viewFocusIndicator.animate().alpha(1f).setDuration(Motion.FAST).start()
-        binding.viewFocusIndicator.postDelayed({
-            if (_binding != null) {
-                binding.viewFocusIndicator.animate().alpha(0f).setDuration(Motion.SLOW)
-                    .withEndAction { if (_binding != null) binding.viewFocusIndicator.visibility = View.GONE }
+        val indicator = binding.viewFocusIndicator
+        indicator.animate().cancel()
+        indicator.translationX = (x - size / 2).coerceIn(0f, binding.liveContainer.width - size)
+        indicator.translationY = (y - size / 2).coerceIn(0f, binding.liveContainer.height - size)
+        indicator.visibility = View.VISIBLE
+        if (animate) {
+            indicator.alpha = 0f
+            indicator.animate().alpha(1f).setDuration(Motion.FAST).start()
+        } else {
+            indicator.alpha = 1f
+        }
+        indicator.postDelayed({
+            if (_binding != null && token == focusIndicatorToken) {
+                indicator.animate().alpha(0f).setDuration(Motion.SLOW)
+                    .withEndAction {
+                        if (_binding != null && token == focusIndicatorToken) {
+                            indicator.visibility = View.GONE
+                        }
+                    }
                     .start()
             }
-        }, 900)
+        }, holdMs)
     }
 
     // ---------------- 参数行（滚轮选择器） ----------------
@@ -993,6 +1034,12 @@ class RemoteFragment : Fragment(), GlassInsetAware {
     private fun observe() {
         // 监看帧渲染：跳过 Nikon 头部定位 SOI、解码、降采样，全部交给解码器。
         // 与全屏页同一条渲染链（B1 必须两页同改同验），这里只做投递。
+        viewLifecycleOwner.lifecycleScope.launch {
+            liveViewViewModel.cameraAfArea.collect { area ->
+                if (area != null) showCameraAfIndicator(area)
+            }
+        }
+
         viewLifecycleOwner.lifecycleScope.launch {
             liveViewViewModel.latestFrame.collect { frame ->
                 frameDecoder?.submit(frame.data)

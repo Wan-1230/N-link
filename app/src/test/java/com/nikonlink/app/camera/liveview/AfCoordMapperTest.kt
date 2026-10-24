@@ -60,6 +60,24 @@ class AfCoordMapperTest {
     }
 
     @Test
+    fun `known wholeSize maps one-to-one without aspect conversion`() {
+        // 帧头 wholeSize=4000x3000 时四角/中心必须与旧标称域完全一致
+        assertEquals(0 to 0, AfCoordMapper.mapToBox(0f, 0f, 4000, 3000))
+        assertEquals(4000 to 3000, AfCoordMapper.mapToBox(1f, 1f, 4000, 3000))
+        assertEquals(2000 to 1500, AfCoordMapper.mapToBox(0.5f, 0.5f, 4000, 3000))
+        // 非 4:3 的自报 wholeSize（如 6000x4000）按 x/y 同系数映射
+        assertEquals(3000 to 2000, AfCoordMapper.mapToBox(0.5f, 0.5f, 6000, 4000))
+    }
+
+    @Test
+    fun `invalid wholeSize falls back to legacy mapper`() {
+        assertEquals(
+            AfCoordMapper.map(0.5f, 0.5f, 0, 0),
+            AfCoordMapper.mapToBox(0.5f, 0.5f, 0, 0)
+        )
+    }
+
+    @Test
     fun `edge taps stay on the edge - letterbox regression guard`() {
         // 旧 letterbox 实现：3:2 帧点顶部会发出 y≈167（箱 5.6% 处），相机对焦点
         // 因此系统性地偏离点击。新实现四角必须精确落在箱角。

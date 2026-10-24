@@ -217,6 +217,9 @@ class RemoteShootingManager @Inject constructor(
         // 帧循环按「连续 5 次无帧」阈值在 ~1s 内自停监看——用户感知即
         // 「遥控画面下点快门后监看经常断开」。
         liveViewManager.grantFrameErrorGrace()
+        // 从按下快门（含 AF 等待）到曝光/写卡结束，相机都可能回黑色监看帧；
+        // 窗口从按下时算起，覆盖用户感知到的整个“快门瞬间”。
+        liveViewManager.beginCaptureGuard()
         return withContext(Dispatchers.IO) {
             try {
                 _shootingState.value = ShootingState.CAPTURING
@@ -228,6 +231,7 @@ class RemoteShootingManager @Inject constructor(
                     delay(focusWaitMs)
                 }
                 // 第三步: 释放快门（走当前通道：USB / AP / WiFi）
+                // 曝光瞬间相机会回一帧全黑监看图；窗口内由 LiveViewManager 丢弃并保留上一帧
                 val success = ch().capture()
                 if (success) {
                     _shotCount.value++

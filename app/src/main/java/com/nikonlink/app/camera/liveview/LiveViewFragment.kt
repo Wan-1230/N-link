@@ -652,33 +652,60 @@ class LiveViewFragment : Fragment() {
         showFocusIndicator(tapX, tapY)
     }
 
+    /** 点击框的隐藏令牌：相机回显更新位置时，旧的 750ms 收尾不能把新框收掉 */
+    private var focusIndicatorToken = 0
+
     private fun showFocusIndicator(x: Float, y: Float) {
+        showFocusIndicatorAt(x, y, holdMs = 750L, animate = true)
+    }
+
+    /**
+     * 相机回显的真实 AF 区域 → 屏幕位置。
+     * 用 imageMatrix 的显示矩形反算（含双指缩放/平移），与点击归一化同一口径。
+     */
+    private fun showCameraAfIndicator(area: CameraAfArea) {
+        if (_binding == null) return
+        val rect = FocusTapMapper.displayedImageRect(binding.ivLiveView) ?: return
+        val x = rect.left + area.centerX * rect.width()
+        val y = rect.top + area.centerY * rect.height()
+        showFocusIndicatorAt(x, y, holdMs = 1_200L, animate = false)
+    }
+
+    private fun showFocusIndicatorAt(x: Float, y: Float, holdMs: Long, animate: Boolean) {
+        if (_binding == null) return
+        val token = ++focusIndicatorToken
         val size = dp(FOCUS_INDICATOR_SIZE)
         binding.viewFocusIndicator.animate().cancel()
         binding.viewFocusIndicator.visibility = View.VISIBLE
         binding.viewFocusIndicator.translationX = x - size / 2f
         binding.viewFocusIndicator.translationY = y - size / 2f
-        binding.viewFocusIndicator.alpha = 0f
-        binding.viewFocusIndicator.scaleX = 0.6f
-        binding.viewFocusIndicator.scaleY = 0.6f
-        binding.viewFocusIndicator.animate()
-            .alpha(1f)
-            .scaleX(1.15f)
-            .scaleY(1.15f)
-            .setDuration(Motion.FAST)
-            .withEndAction {
-                if (_binding != null) {
-                    binding.viewFocusIndicator.animate()
-                        .scaleX(1f)
-                        .scaleY(1f)
-                        .setDuration(Motion.INSTANT)
-                        .start()
+        if (!animate) {
+            binding.viewFocusIndicator.alpha = 1f
+            binding.viewFocusIndicator.scaleX = 1f
+            binding.viewFocusIndicator.scaleY = 1f
+        } else {
+            binding.viewFocusIndicator.alpha = 0f
+            binding.viewFocusIndicator.scaleX = 0.6f
+            binding.viewFocusIndicator.scaleY = 0.6f
+            binding.viewFocusIndicator.animate()
+                .alpha(1f)
+                .scaleX(1.15f)
+                .scaleY(1.15f)
+                .setDuration(Motion.FAST)
+                .withEndAction {
+                    if (_binding != null) {
+                        binding.viewFocusIndicator.animate()
+                            .scaleX(1f)
+                            .scaleY(1f)
+                            .setDuration(Motion.INSTANT)
+                            .start()
+                    }
                 }
-            }
-            .start()
+                .start()
+        }
         binding.viewFocusIndicator.postDelayed({
-            if (_binding != null) hideFocusIndicator()
-        }, 750)
+            if (_binding != null && token == focusIndicatorToken) hideFocusIndicator()
+        }, holdMs)
     }
 
     private fun hideFocusIndicator() {
@@ -966,6 +993,13 @@ class LiveViewFragment : Fragment() {
             viewModel.latestFrame.collect { frame ->
                 // B1：这里只投递字节，解码与上屏都在解码器里做，主线程不再解 JPEG
                 frameDecoder?.submit(frame.data)
+            }
+        }
+
+        // 相机回显的真实 AF 区域：触摸对焦成功后把本地框从“点击处”移到相机实际位置
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewModel.cameraAfArea.collect { area ->
+                if (area != null) showCameraAfIndicator(area)
             }
         }
 

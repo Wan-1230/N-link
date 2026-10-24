@@ -24,6 +24,7 @@ class LiveViewViewModel @Inject constructor(
     val gridOverlay: StateFlow<GridOverlay> = liveViewManager.gridOverlay
     val zoomLevel: StateFlow<Float> = liveViewManager.zoomLevel
     val errorMessage: StateFlow<String?> = liveViewManager.errorMessage
+    val cameraAfArea: StateFlow<CameraAfArea?> = liveViewManager.cameraAfArea
 
     /**
      * 本 VM 在监看会话里的宿主标识（A5/S1）。

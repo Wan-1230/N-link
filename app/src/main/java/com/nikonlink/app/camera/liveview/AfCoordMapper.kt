@@ -28,6 +28,18 @@ object AfCoordMapper {
     }
 
     /**
+     * 已知相机自报 wholeSize 时的精确换算（[LiveViewHeader] 解析成功）。
+     * 官方实现就是 `afX = tapX / (viewWidth / wholeWidth)`、x/y 同一系数。
+     */
+    fun mapToBox(nx: Float, ny: Float, boxWidth: Int, boxHeight: Int): Pair<Int, Int> {
+        if (boxWidth <= 0 || boxHeight <= 0) return map(nx, ny, 0, 0)
+        val afX = (nx * boxWidth).roundToInt().coerceIn(0, boxWidth)
+        val afY = (ny * boxHeight).roundToInt().coerceIn(0, boxHeight)
+        return afX to afY
+    }
+
+    /**
+     * 旧路径（帧头解析失败时的 4000×3000 标称域兜底）。
      * @param nx 归一化 X（0..1，相对监看图像内容）
      * @param ny 归一化 Y（0..1，相对监看图像内容）
      * @return AF 坐标 (x ∈ 0..4000, y ∈ 0..箱高)，已钳位在箱内

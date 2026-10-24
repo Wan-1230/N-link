@@ -201,6 +201,38 @@ class LiveViewManager @Inject constructor(
     @Volatile
     private var framePixelHeight = 0
 
+    /**
+     * 相机自报的帧头几何（wholeSize / displayArea / AF 区域）。
+     * 解析成功时 ChangeAfArea 用它代替 4000×3000 标称域；失败时保持旧路径。
+     */
+    @Volatile
+    private var liveViewHeader: LiveViewHeader.Info? = null
+    @Volatile
+    private var lastHeaderParseMs = 0L
+    @Volatile
+    private var headerLogKey = ""
+
+    /** 触摸对焦后等待相机回显 AF 区域的窗口（epoch ms） */
+    private var afWatchStartedMs = 0L
+    private var afWatchUntilMs = 0L
+    private var afAreaEventSent = false
+
+    /** 相机回显的对焦点（归一化中心/宽高），供全屏页把本地框移到真实位置 */
+    private val _cameraAfArea = MutableStateFlow<CameraAfArea?>(null)
+    val cameraAfArea: StateFlow<CameraAfArea?> = _cameraAfArea.asStateFlow()
+
+    /**
+     * 快门黑帧抑制窗口（epoch ms）。相机在曝光瞬间会回一帧全黑/近黑 JPEG，
+     * App 原样上屏就是用户看到的“瞬间黑框全屏”。只在窗口内丢弃黑帧、保留上一帧；
+     * 窗口外行为不变，避免夜景被误杀。
+     */
+    @Volatile
+    private var captureGuardUntilMs = 0L
+    private var captureBlackoutLogged = false
+
+    /** 仅帧循环线程访问：最近 30 帧的 JPEG 字节数，用于判断异常小帧 */
+    private val recentFrameSizes = java.util.ArrayDeque<Int>()
+
     /** 进入无线控制模式前的曝光程序模式，停止监看时恢复（wireless control mode exited） */
     private var savedExposureMode: ByteArray? = null
 
@@ -514,9 +546,19 @@ class LiveViewManager @Inject constructor(
         }
         _liveViewState.value = LiveViewState.STOPPED
         _fps.value = 0
-        // 帧尺寸随本次监看会话失效，下次启动重新解析
+        // 帧尺寸与帧头几何随本次监看会话失效，下次启动重新解析
         framePixelWidth = 0
         framePixelHeight = 0
+        liveViewHeader = null
+        lastHeaderParseMs = 0L
+        headerLogKey = ""
+        afWatchStartedMs = 0L
+        afWatchUntilMs = 0L
+        afAreaEventSent = false
+        captureGuardUntilMs = 0L
+        captureBlackoutLogged = false
+        recentFrameSizes.clear()
+        _cameraAfArea.value = null
         // 停止监看后退出无线控制模式，恢复原曝光程序模式
         restoreExposureModeIfNeeded()
         Timber.tag(TAG).i("Live View stopped")
@@ -602,6 +644,7 @@ class LiveViewManager @Inject constructor(
                         frameArrived = true
                         val latency = System.currentTimeMillis() - frameStart
                         _latency.value = latency
+                        observeFrameMetadata(imageData, frameStart)
 
                         val frame = LiveViewFrame(
                             data = imageData,
@@ -625,15 +668,20 @@ class LiveViewManager @Inject constructor(
                         }
                         // 连续拉取下相机会重复回同一帧：尺寸与首尾字节都没变就跳过上屏，
                         // 省掉一次解码与一次全屏重绘（链路照常保持忙碌）
+                        // 拍摄窗口内的近全黑帧不上屏：保留上一帧，避免快门瞬间整屏黑框
+                        val blackout = shouldDropCaptureBlackout(imageData, System.currentTimeMillis())
+                        if (!blackout) trackFrameSize(imageData.size)
                         val duplicate = isApChannel() && isSameFrame(imageData)
-                        if (!duplicate && _latestFrame.tryEmit(frame)) baselineMetrics.lvFrameDelivered()
-                        if (!duplicate) baselineMetrics.lvFrameBytes(imageData.size)
+                        if (!duplicate && !blackout && _latestFrame.tryEmit(frame)) {
+                            baselineMetrics.lvFrameDelivered()
+                        }
+                        if (!duplicate && !blackout) baselineMetrics.lvFrameBytes(imageData.size)
                         consecutiveErrors = 0
                         stallCount = 0
 
                         // FPS 计算：只数**真正换了画面**的帧。连续拉取下相机重复回同一帧时
                         // 拉取次数远高于换帧次数，按拉取次数算会把 15fps 显示成 30fps
-                        if (!duplicate) frameCount++
+                        if (!duplicate && !blackout) frameCount++
                         val now = System.currentTimeMillis()
                         if (now - lastFpsTime >= 1000) {
                             _fps.value = frameCount
@@ -693,6 +741,160 @@ class LiveViewManager @Inject constructor(
      */
     fun grantFrameErrorGrace(durationMs: Long = 6000L) {
         errorGraceUntilMs = System.currentTimeMillis() + durationMs
+    }
+
+    /**
+     * 开启快门黑帧抑制窗口。由拍摄入口在真正释放快门前调用。
+     * 只抑制窗口内“近全黑”的帧；正常帧照常上屏，窗口结束后行为与旧版一致。
+     */
+    fun beginCaptureGuard(durationMs: Long = 4_000L) {
+        captureGuardUntilMs = System.currentTimeMillis() + durationMs
+        captureBlackoutLogged = false
+    }
+
+    /** @return true = 这一帧是拍摄窗口内的黑帧，调用方应丢弃、保留上一帧 */
+    private fun shouldDropCaptureBlackout(data: ByteArray, now: Long): Boolean {
+        if (now >= captureGuardUntilMs) return false
+        if (!isMostlyDarkJpeg(data)) return false
+        if (!captureBlackoutLogged) {
+            captureBlackoutLogged = true
+            eventLogger.event(
+                "lv_blackout",
+                "kb" to data.size / 1024,
+                "median_kb" to medianFrameSize() / 1024,
+                "guard_ms" to (captureGuardUntilMs - now).coerceAtLeast(0)
+            )
+            Timber.tag(TAG).i("Capture blackout frame dropped: %d bytes", data.size)
+        }
+        return true
+    }
+
+    /**
+     * 降采样到 ~64px 后算暗像素占比。阈值取 99% 像素 luma < 12：
+     * 夜景画面通常仍有少量灯光/高光，不会 99% 全暗；曝光遮黑帧则几乎全黑。
+     */
+    private fun isMostlyDarkJpeg(data: ByteArray): Boolean {
+        val start = LvFrame.findJpegStart(data)
+        if (start <= 0 || data.size - start < 2) return false
+        return runCatching {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(data, start, data.size - start, bounds)
+            val maxDim = maxOf(bounds.outWidth, bounds.outHeight)
+            if (maxDim <= 0) return false
+            var sample = 1
+            while (maxDim / (sample * 2) >= 64) sample *= 2
+            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+            val bitmap = BitmapFactory.decodeByteArray(data, start, data.size - start, opts)
+                ?: return false
+            try {
+                val w = bitmap.width
+                val h = bitmap.height
+                if (w <= 0 || h <= 0) return false
+                val stepX = (w / 64).coerceAtLeast(1)
+                val stepY = (h / 64).coerceAtLeast(1)
+                var dark = 0
+                var total = 0
+                var y = 0
+                while (y < h) {
+                    var x = 0
+                    while (x < w) {
+                        val c = bitmap.getPixel(x, y)
+                        val luma = (((c shr 16) and 0xFF) * 299 +
+                            ((c shr 8) and 0xFF) * 587 +
+                            (c and 0xFF) * 114) / 1000
+                        if (luma < 12) dark++
+                        total++
+                        x += stepX
+                    }
+                    y += stepY
+                }
+                total > 0 && dark.toLong() * 100 >= total.toLong() * 99
+            } finally {
+                bitmap.recycle()
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun trackFrameSize(size: Int) {
+        if (recentFrameSizes.size >= 30) recentFrameSizes.removeFirst()
+        recentFrameSizes.addLast(size)
+    }
+
+    private fun medianFrameSize(): Int {
+        if (recentFrameSizes.isEmpty()) return 0
+        return recentFrameSizes.sorted()[recentFrameSizes.size / 2]
+    }
+
+    /**
+     * 解析帧头几何（降频：每 500ms 一次；触摸对焦回显窗口内逐帧解析）。
+     * 只读字节，不改帧流；解析失败时 liveViewHeader 保持上一份/为 null。
+     */
+    private fun observeFrameMetadata(data: ByteArray, now: Long) {
+        val inAfWatch = now >= afWatchStartedMs && now < afWatchUntilMs
+        if (liveViewHeader != null && !inAfWatch && now - lastHeaderParseMs < 500L) return
+        val info = LiveViewHeader.parse(data) ?: return
+        lastHeaderParseMs = now
+        liveViewHeader = info
+
+        val key = "${info.majorVersion}.${info.minorVersion}:" +
+            "${info.wholeWidth}x${info.wholeHeight}"
+        if (key != headerLogKey) {
+            headerLogKey = key
+            eventLogger.event(
+                "lv_geometry",
+                "major" to info.majorVersion,
+                "minor" to info.minorVersion,
+                "header" to info.headerBytes,
+                "jpeg" to "${info.jpegWidth}x${info.jpegHeight}",
+                "whole" to "${info.wholeWidth}x${info.wholeHeight}",
+                "display" to "${info.displayWidth}x${info.displayHeight}",
+                "display_center" to "${info.displayCenterX},${info.displayCenterY}",
+                "rotation" to info.rotation,
+                "af_count" to info.afAreaCount,
+                "af_selected" to info.selectedAfIndex,
+                "tracking" to info.trackingState
+            )
+            Timber.tag(TAG).i(
+                "LV header: %dx%d header=%d jpeg=%dx%d whole=%dx%d " +
+                    "display=%dx%d center=%d,%d rot=%d af=%d sel=%d tracking=%d",
+                info.majorVersion, info.minorVersion, info.headerBytes,
+                info.jpegWidth, info.jpegHeight,
+                info.wholeWidth, info.wholeHeight,
+                info.displayWidth, info.displayHeight,
+                info.displayCenterX, info.displayCenterY, info.rotation,
+                info.afAreaCount, info.selectedAfIndex, info.trackingState
+            )
+        }
+
+        if (!inAfWatch) return
+        // AF 还在驱动时不回显：此时相机会先把区域挪到目标格，再返回最终点
+        if (info.focusDrive != 0) return
+        // 下发 AF 区域后有 settle 延时，过早读到的可能仍是上一轮区域
+        if (now - afWatchStartedMs < AF_AREA_SETTLE_MS + 150L) return
+        val area = info.activeAfArea() ?: return
+        val rect = info.normalizedRect(area) ?: return
+        _cameraAfArea.value = CameraAfArea(
+            centerX = rect.centerX,
+            centerY = rect.centerY,
+            width = rect.width,
+            height = rect.height
+        )
+        if (!afAreaEventSent) {
+            afAreaEventSent = true
+            eventLogger.event(
+                "af_indicator",
+                "mode" to "camera_area",
+                "center" to "${area.centerX},${area.centerY}",
+                "area" to "${area.width}x${area.height}",
+                "role" to area.role.name,
+                "normalized" to "${rect.centerX},${rect.centerY}",
+                "whole" to "${info.wholeWidth}x${info.wholeHeight}",
+                "display" to "${info.displayWidth}x${info.displayHeight}",
+                "display_center" to "${info.displayCenterX},${info.displayCenterY}",
+                "focus_state" to info.focusState,
+                "af_mode" to info.afMode
+            )
+        }
     }
 
     /**
@@ -911,10 +1113,17 @@ class LiveViewManager @Inject constructor(
                     // 触发 AF 驱动：稍等 AF 区域生效后再驱动，部分机型立刻驱动会仍按旧区域对焦
                     delay(AF_AREA_SETTLE_MS)
                     lv().afDrive()
+                    val header = liveViewHeader
+                    // 开始接收相机回显：帧循环会把本地框移到相机实际 AF 区域
+                    afWatchStartedMs = System.currentTimeMillis()
+                    afWatchUntilMs = afWatchStartedMs + 4_000L
+                    afAreaEventSent = false
+                    _cameraAfArea.value = null
                     Timber.tag(TAG).d(
                         "Touch focus: tap=($x,$y) -> af=($afX,$afY) " +
                             "frame=${framePixelWidth}x$framePixelHeight " +
-                            "box=${PtpConstants.AF_COORD_MAX_X}x${mapTapToAfCoord(1f, 1f).second}"
+                            "box=${header?.wholeWidth ?: PtpConstants.AF_COORD_MAX_X}x" +
+                            "${header?.wholeHeight ?: mapTapToAfCoord(1f, 1f).second}"
                     )
                     // 下发成功后再回读相机 AF 相关属性，尝试确认相机真实对焦点。
                     // 候选码语义尚未经真机标定，现仅打日志、不解析坐标；无法确认时
@@ -942,25 +1151,27 @@ class LiveViewManager @Inject constructor(
     }
 
     /**
-     * 归一化点击 (nx,ny ∈ 0..1，相对监看图像内容) → 相机 AF 坐标 (0..AF_COORD_MAX_X, 0..AF_COORD_MAX_Y)。
+     * 归一化点击 (nx,ny ∈ 0..1，相对监看 JPEG 内容) → ChangeAfArea(0x9205) 的 whole 坐标。
      *
-     * 坐标域口径（2026-10-12 对相机厂商官方应用与一款成熟第三方控制应用的报文分析，
-     * 两者独立收敛到同一结论）：
-     * - 相机 ChangeAfArea(0x9205) 的两个参数就在 **live view 图像的 wholeSize 像素空间**：
-     *   厂商官方应用用 `afX = tapX / (viewWidth / wholeWidth)` 的单系数线性映射，AF 区域
-     *   回读（centerX/centerY/width/height）也在同一空间直接作画；另一款第三方实现用
-     *   `归一化 × displayArea`（displayArea 缺省即 wholeSize）——结论一致。
-     * - wholeSize 与图像**同宽高比**：官方应用把图像画满 wholeSize 箱后 AF 框才与画面
-     *   重合（其绘制流程先按 bitmap 画图、再按 wholeSize 缩放画 AF 框），故正确换算
-     *   是按帧真实宽高比线性映射，而不是把帧塞进一个固定 4:3 的箱。
-     * - 历史误区：9295a29（2026-09-17）按「AF 箱固定 4:3」把帧 letterbox 进 4000×3000。
-     *   该假设无实机标定（v2.0.2 PRD 自承常数取自第三方实现日志的粗略观察），真机反馈
-     *   对焦点仍与点击不符——帧≠4:3 时纵向被系统性压缩，边缘偏移可达约 11%。
+     * 2026-10 按版本化帧头结构重新核对：
+     * - 帧头 20/22 是 **displayWidth/Height**，24/26 是 **displayCenterX/Y**；
+     *   以前把 20..26 当成 x/y/w/h，display 一有裁切，AF 框就会整体偏移。
+     * - AF 记录 (width,height,centerX,centerY) 在 whole 像素域；映射到屏幕要先减
+     *   displayLeft/Top 再除以 displayWidth/Height（回显正是这条公式）。
+     * - 点击是它的逆运算：`afX = displayLeft + nx * displayWidth`。
+     * - 历史误区：固定 4:3 箱 / 直接乘 wholeSize 都只在 display==whole 时成立。
      *
-     * 纯换算在 [AfCoordMapper]（可单测）；这里只负责取本会话帧尺寸。
+     * 有帧头时由 [LiveViewHeader.Info.afCoordFromNormalized] 统一换算（纯函数、可单测）；
+     * 没有帧头（老机身）才退回按实际帧尺寸线性映射。
      */
-    private fun mapTapToAfCoord(nx: Float, ny: Float): Pair<Int, Int> =
-        AfCoordMapper.map(nx, ny, framePixelWidth, framePixelHeight)
+    private fun mapTapToAfCoord(nx: Float, ny: Float): Pair<Int, Int> {
+        val header = liveViewHeader
+        // 与 AF 回显同一条口径：点击的是 display 区域，而 ChangeAfArea 要 whole 坐标。
+        // 有 display 时先补回 displayLeft/Top，再按 display 宽高等比放大；
+        // 没有可用 display 时才退回 whole/帧比例（老机身）。
+        header?.afCoordFromNormalized(nx, ny)?.let { return it }
+        return AfCoordMapper.map(nx, ny, framePixelWidth, framePixelHeight)
+    }
 
     /**
      * 当前是否走 AP 直连（帧循环里每次现查，链路切换后立即生效）。
@@ -1152,6 +1363,14 @@ data class LiveViewFrame(
     override fun equals(other: Any?): Boolean = this === other
     override fun hashCode(): Int = timestamp.hashCode()
 }
+
+/** 相机帧头回显的对焦区域，坐标均已按 wholeSize 归一化到 0..1。 */
+data class CameraAfArea(
+    val centerX: Float,
+    val centerY: Float,
+    val width: Float,
+    val height: Float
+)
 
 /**
  * 构图辅助线类型
