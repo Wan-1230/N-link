@@ -13,6 +13,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.exifinterface.media.ExifInterface
 import com.camerakit.ptp.getLargeThumbnail
 import com.camerakit.ptp.rawObjectInfo
 import com.nikonlink.app.MainActivity
@@ -108,6 +109,10 @@ class TransferManager @Inject constructor(
         /** 单个 ObjectInfo/对象列表请求的兜底超时：坏句柄/链路抖动不允许拖死整页加载 */
         private const val OBJECT_INFO_TIMEOUT_MS = 8000L
         private const val OBJECT_HANDLES_TIMEOUT_MS = 15000L
+        /** 镜头 EXIF 只读 JPEG 文件头这一段：APP1 段在 SOI 之后、SOS 之前，128KB 足够 */
+        private const val LENS_EXIF_HEAD_BYTES = 128 * 1024
+        /** 镜头 EXIF 只回看最近若干个对象（RAW+JPEG 混排时需跨过 NEF） */
+        private const val LENS_EXIF_SCAN_LIMIT = 10
         private const val STORAGE_IDS_TIMEOUT_MS = 10000L
         /** 按需补读保护位的总预算与熔断（仅用户点「已保护」时触发，不拖慢常规列表加载）。 */
         private const val PROTECT_FALLBACK_BUDGET_MS = 20_000L
@@ -185,6 +190,9 @@ class TransferManager @Inject constructor(
     // 批量口径 = 「队列从空到非空的一次连续排空」：单张给 查看/分享 两个 action，
     // 多张聚合为一条摘要（避免连拍 50 张弹 50 条通知）。
     private data class BatchEntry(val fileName: String, val path: String, val sizeBytes: Long)
+
+    /** 镜头 EXIF 扫描串行化：设备页与相册页可能同时触发，避免重复扫同一批对象 */
+    private val lensExifMutex = Mutex()
 
     private val batchMutex = Mutex()
     private val batchFiles = mutableListOf<BatchEntry>()
@@ -779,6 +787,58 @@ class TransferManager @Inject constructor(
             }
         } catch (e: Exception) {
             Timber.tag(TAG).w(e, "Regenerate thumbnail failed for handle=$handle")
+        }
+    }
+
+    /**
+     * 从相机**最近一张 JPEG** 的 EXIF 读取镜头品牌/型号。
+     *
+     * 为什么必须读照片：Nikon 的 PTP 镜头属性只有 LensID 与焦距/光圈规格，
+     * 没有品牌字符串；规格表也无法覆盖所有副厂镜头。机身写入 JPEG 的
+     * LensMake/LensModel 是更可靠的来源。
+     *
+     * 只读每个候选对象的前 128KB（GetPartialObject），不下载整张原图；
+     * 最近的对象可能是 NEF，向后最多看 10 个，遇到第一张有镜头信息的 JPEG 即返回。
+     * 任何一步失败都返回 null，调用方保留规格回退，不阻塞设备页。
+     */
+    suspend fun readLatestPhotoLensExif(): CameraLensExif? = withContext(Dispatchers.IO) {
+        lensExifMutex.withLock<CameraLensExif?> {
+            val transport = currentTransport()
+            if (!transport.isConnected) return@withLock null
+
+            val handles = withTimeoutOrNull(OBJECT_HANDLES_TIMEOUT_MS) {
+                transport.objectHandles(0xFFFFFFFF.toInt())
+            }?.takeIf { it.isNotEmpty() } ?: withTimeoutOrNull(OBJECT_HANDLES_TIMEOUT_MS) {
+                transport.storageIds().firstOrNull()?.let { transport.objectHandles(it) }
+            }?.takeIf { it.isNotEmpty() } ?: return@withLock null
+
+            for (handle in handles.asReversed().take(LENS_EXIF_SCAN_LIMIT)) {
+                val infoBytes = withTimeoutOrNull(OBJECT_INFO_TIMEOUT_MS) {
+                    transport.objectInfo(handle)
+                } ?: continue
+                val file = parseObjectInfo(handle, infoBytes) ?: continue
+                if (file.format != CameraFileFormat.JPEG) continue
+
+                val head = withTimeoutOrNull(OBJECT_INFO_TIMEOUT_MS) {
+                    transport.partialObject(handle, 0, LENS_EXIF_HEAD_BYTES)
+                } ?: continue
+                val parsed: CameraLensExif? = runCatching {
+                    val exif = ExifInterface(head.inputStream())
+                    val make = exif.getAttribute(ExifInterface.TAG_LENS_MAKE)
+                        ?.trim()?.takeIf { it.isNotBlank() }
+                    val model = exif.getAttribute(ExifInterface.TAG_LENS_MODEL)
+                        ?.trim()?.takeIf { it.isNotBlank() }
+                    if (make == null && model == null) null else CameraLensExif(make, model)
+                }.getOrNull()
+                if (parsed != null) {
+                    Timber.tag(TAG).i(
+                        "Lens EXIF from latest photo handle=$handle make=%s model=%s",
+                        parsed.make, parsed.model
+                    )
+                    return@withLock parsed
+                }
+            }
+            null
         }
     }
 
@@ -2085,6 +2145,12 @@ class TransferManager @Inject constructor(
         }
     }
 }
+
+/** 相机照片 EXIF 里的镜头信息（LensMake 可为空，LensModel 一般总有） */
+data class CameraLensExif(
+    val make: String?,
+    val model: String?
+)
 
 /**
  * 相机文件信息

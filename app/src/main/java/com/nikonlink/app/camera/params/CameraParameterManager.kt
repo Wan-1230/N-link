@@ -322,6 +322,25 @@ class CameraParameterManager @Inject constructor(
         )
     }
 
+    /** 上一轮读到的 LensID：变化时先清掉旧镜头名/规格，避免换镜头后继续显示上一支 */
+    private var lastLensId: Int? = null
+
+    /** 当前镜头指纹（LensID + 规格）；变化时作废上一支镜头的 EXIF 名称 */
+    @Volatile
+    private var currentLensKey: String? = null
+
+    /** 从最近照片 EXIF 解析出的镜头名，按 [exifLensKey] 绑定到具体镜头 */
+    @Volatile
+    private var exifLensName: String? = null
+
+    @Volatile
+    private var exifLensKey: String? = null
+
+    @Volatile
+    private var exifLensLastAttemptMs = 0L
+
+    private var exifLensFetchJob: Job? = null
+
     /**
      * 镜头信息：除拼展示用的 [CameraInfo.lensName] 外，
      * 还要把焦段与两端最大光圈结构化保存，供 [apertureOptions] 生成与镜头联动的档位。
@@ -331,6 +350,17 @@ class CameraParameterManager @Inject constructor(
      */
     private suspend fun readLensInfo() {
         val lensId = readPropOrNull(PtpConstants.PROP_NIKON_LENS_ID)?.let(::readUInt)
+        if (lensId != null && lensId != lastLensId) {
+            lastLensId = lensId
+            _cameraInfo.value = _cameraInfo.value.copy(
+                lensName = "",
+                lensFocalMinMm = 0.0,
+                lensFocalMaxMm = 0.0,
+                lensMaxApAtMinFocalX100 = 0,
+                lensMaxApAtMaxFocalX100 = 0,
+                lensApertureRangeKnown = false
+            )
+        }
         val focalMin = readPropOrNull(PtpConstants.PROP_NIKON_FOCAL_LENGTH_MIN)
             ?.let { readUInt(it) / 100.0 }
         val focalMax = readPropOrNull(PtpConstants.PROP_NIKON_FOCAL_LENGTH_MAX)
@@ -347,7 +377,25 @@ class CameraParameterManager @Inject constructor(
         // 两端最大光圈都要读到才认为光圈范围已知；只有一侧时无法安全插值，仍走回退
         val apertureRangeKnown = apMinX100 != null && apMaxX100 != null
 
-        val lensName = buildLensName(lensId, focalMinMm, focalMaxMm, apMinX100, apMaxX100)
+        val lensKey = buildLensKey(lensId, focalMinMm, focalMaxMm, apMinX100, apMaxX100)
+        if (lensKey != currentLensKey) {
+            currentLensKey = lensKey
+            exifLensName = null
+            exifLensKey = null
+        }
+
+        val catalogName = LensCatalog.displayName(focalMinMm, focalMaxMm, apMinX100, apMaxX100)
+        // 规格表命中优先（品牌/型号确定）；目录外镜头用最近照片 EXIF 的 LensMake/LensModel；
+        // 两者都没有时才退回「只显示焦段/光圈」。
+        val exifName = exifLensName?.takeIf { exifLensKey == lensKey && it.isNotBlank() }
+        val lensName = when {
+            catalogName != null -> catalogName
+            exifName != null -> exifName
+            else -> buildLensName(lensId, focalMinMm, focalMaxMm, apMinX100, apMaxX100, catalogName)
+        }
+        if (catalogName == null && exifName == null) {
+            scheduleExifLensFetch(lensKey)
+        }
         if (lensName.isNotBlank() || apertureRangeKnown) {
             _cameraInfo.value = _cameraInfo.value.copy(
                 lensName = lensName.ifBlank { _cameraInfo.value.lensName },
@@ -358,6 +406,10 @@ class CameraParameterManager @Inject constructor(
                 lensApertureRangeKnown = apertureRangeKnown
             )
         }
+        Timber.tag(TAG).d(
+            "Lens: id=%s focal=%s..%s ap=%s..%s catalog=%s exif=%s",
+            lensId, focalMinMm, focalMaxMm, apMinX100, apMaxX100, catalogName, exifName
+        )
         if (apertureRangeKnown) {
             Timber.tag(TAG).d(
                 "Lens aperture range: ${focalMinMm ?: 0.0}-${focalMaxMm ?: 0.0}mm " +
@@ -780,21 +832,18 @@ class CameraParameterManager @Inject constructor(
     /**
      * 由规格（焦段 + 两端最大光圈）合成镜头展示名。
      *
-     * **不再硬编码 "NIKKOR" 前缀**（v1.3.0 修复）：
-     * 机身私有属性只给得出 LensID 与规格，给不出品牌字符串；此前无条件拼 "NIKKOR"
-     * 会把适马 / 腾龙 / 蔡司等第三方镜头显示成尼康原厂，属于确定性错误展示。
-     * 现在只呈现**客观可得的规格**，拿不到就退化为「未知镜头」，
-     * 既不冒充原厂，也不把内部 LensID 暴露给用户。
-     *
-     * 注：原厂型号精确名（如 "NIKKOR Z 24-70mm f/2.8 S"）需要维护 LensID→型号表，
-     * 按 PRD Q1 决策留待后续按真机实测补全（当前为 A 方案）。
+     * 机身私有属性只给得出 LensID 与规格，给不出品牌字符串；LensID 没有公开映射，
+     * 按 ID 猜品牌会把适马 / 腾龙显示成尼康原厂。因此品牌/型号只按**规格唯一匹配**
+     * [LensCatalog]：命中就显示完整型号；无匹配或同规格多支镜头时只显示客观规格，
+     * 绝不猜品牌。读不到任何规格才退化为「未知镜头」。
      */
     private fun buildLensName(
         lensId: Int?,
         focalMinMm: Double?,
         focalMaxMm: Double?,
         apMinX100: Int?,
-        apMaxX100: Int?
+        apMaxX100: Int?,
+        catalogName: String?
     ): String {
         val focalRange = when {
             focalMinMm != null && focalMaxMm != null && focalMinMm != focalMaxMm ->
@@ -810,9 +859,48 @@ class CameraParameterManager @Inject constructor(
         }
         val specs = listOf(focalRange, aperture).filter { it.isNotBlank() }.joinToString(" ")
         return when {
+            catalogName != null -> catalogName
             specs.isNotBlank() -> specs
             lensId != null && lensId > 0 -> "未知镜头"
             else -> ""
+        }
+    }
+
+    private fun buildLensKey(
+        lensId: Int?,
+        focalMinMm: Double?,
+        focalMaxMm: Double?,
+        apMinX100: Int?,
+        apMaxX100: Int?
+    ): String = buildString {
+        append(lensId ?: -1)
+        append(':').append(focalMinMm ?: 0.0)
+        append(':').append(focalMaxMm ?: 0.0)
+        append(':').append(apMinX100 ?: 0)
+        append(':').append(apMaxX100 ?: 0)
+    }
+
+    /**
+     * 目录外镜头：异步读最近照片 EXIF 补品牌/型号，不阻塞 readAll。
+     *
+     * 同一镜头 60 秒内最多尝试一次；卡片无照片/全是 NEF 时静默失败，
+     * 保留「焦段 f/x」的规格回退。换镜头（lensKey 变化）会立即重新尝试。
+     */
+    private fun scheduleExifLensFetch(lensKey: String) {
+        if (exifLensFetchJob?.isActive == true) return
+        val now = System.currentTimeMillis()
+        if (exifLensKey == lensKey && now - exifLensLastAttemptMs < 60_000L) return
+        val scope = scope ?: return
+        exifLensKey = lensKey
+        exifLensLastAttemptMs = now
+        exifLensFetchJob = scope.launch(Dispatchers.IO) {
+            val exif = runCatching { transferManager.readLatestPhotoLensExif() }.getOrNull()
+                ?: return@launch
+            val name = LensCatalog.composeDisplayName(exif.make, exif.model) ?: return@launch
+            if (currentLensKey != lensKey) return@launch
+            exifLensName = name
+            _cameraInfo.value = _cameraInfo.value.copy(lensName = name)
+            Timber.tag(TAG).i("Lens name from latest photo EXIF: %s", name)
         }
     }
 
