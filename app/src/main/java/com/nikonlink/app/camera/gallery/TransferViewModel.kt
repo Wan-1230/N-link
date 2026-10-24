@@ -76,6 +76,9 @@ class TransferViewModel @Inject constructor(
          */
         private const val CAPTURE_SYNC_WINDOW_MS = 800L
 
+        /** 长边达到这个值就认为磁盘里已是高清缩略图，不再向相机重取 */
+        private const val HD_THUMB_MIN_EDGE_PX = 900
+
         /**
          * 相册整体加载硬顶：任何单请求卡顿叠加都不允许把加载圈挂到天荒地老。
          * 超时后保留旧列表、复位加载态并给出可操作提示（下拉重试）。
@@ -421,6 +424,8 @@ class TransferViewModel @Inject constructor(
      */
     private val hdThumbSemaphore = Semaphore(2)
     private val pendingHdThumbs = mutableSetOf<Int>()
+    /** 本进程内已确认高清（或磁盘已是高清）的 handle，避免重复发 0x90C4 */
+    private val hdThumbDone = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
 
     /**
      * 批量原图传输期间攒下来的缩略图请求（PRD v2.2 G9）。
@@ -1240,6 +1245,7 @@ class TransferViewModel @Inject constructor(
             val deletedHandles = files.map { it.handle }.toSet()
             _localPhotos.value = _localPhotos.value.filterNot { it.handle in deletedHandles }
             _thumbnails.value = _thumbnails.value - deletedHandles
+            hdThumbDone.removeAll(deletedHandles)
             _selectedHandles.value = emptySet()
             _message.value = if (deleted > 0) "已删除 $deleted 个本地文件" else "删除失败，请检查文件权限"
             // v1.3.0（需求 3）：本地文件没了 → 相机照片页的「已下载」状态必须同步恢复为未下载
@@ -1279,9 +1285,10 @@ class TransferViewModel @Inject constructor(
                         if (bitmap != null) {
                             _thumbnails.value = _thumbnails.value + handle
                             publishThumbReady(handle)
-                        } else {
-                            upgradeThumbnailToHd(handle)
                         }
+                        // 不管磁盘回填成功与否都尝试高清：旧实现磁盘命中就直接返回，
+                        // 于是上一版留下的 160/640 小图会永久占坑，重进相册永远不清晰。
+                        upgradeThumbnailToHd(handle)
                     }
                 } else {
                     upgradeThumbnailToHd(handle)
@@ -1299,8 +1306,13 @@ class TransferViewModel @Inject constructor(
                     // 让位的请求不置任何状态，滚回来时重绑/补请求会再次发起。
                     val window = visibleThumbWindow
                     if (window != null && handle !in window) return@withPermit
-                    var bitmap = thumbnailCache.fromMemory(handle)
-                        ?: thumbnailCache.get(handle, thumbnailCache.tileMaxEdgePx)
+                    // 内存里可能只是首屏小图（160/640），不够格子尺寸时仍要走磁盘/网络，
+                    // 否则 fromMemory 会把低清图当成命中，高清永远没机会上屏；
+                    // 磁盘也还没有时再回退小图，避免重复发同一张小图请求。
+                    val mem = thumbnailCache.fromMemory(handle)
+                    var bitmap = mem?.takeIf {
+                        maxOf(it.width, it.height) >= thumbnailCache.tileMaxEdgePx
+                    } ?: thumbnailCache.get(handle, thumbnailCache.tileMaxEdgePx) ?: mem
                     if (bitmap == null) {
                         // 让路：原图批量传输期间不占用串行命令通道发缩略图，
                         // 传输结束由 drainDeferredThumbnails 整批补发
@@ -1320,6 +1332,15 @@ class TransferViewModel @Inject constructor(
                     }
                 } finally {
                     pendingThumbs.remove(handle)
+                    // 首屏最后一批小图收尾时，把让路攒下的 HD 升级续上。
+                    // 旧实现只在 HD 任务自己的 finally 里续发，而首屏路径根本没有 HD
+                    // 任务跑起来（升级在 pendingThumbs 非空时被全部塞进让路队列），
+                    // 于是队列永远不消费——进相册看到的一直是 160/640 小图。
+                    if (pendingThumbs.isEmpty() && deferredHdThumbs.isNotEmpty() &&
+                        !transferManager.isBulkTransferRunning()
+                    ) {
+                        drainDeferredHdThumbs()
+                    }
                 }
             }
         }
@@ -1334,7 +1355,7 @@ class TransferViewModel @Inject constructor(
      * ② 原图批量传输在跑，让路到传输结束后补发。
      */
     private fun upgradeThumbnailToHd(handle: Int) {
-        if (handle < 0 || handle in localHdThumbs) return
+        if (handle < 0 || handle in localHdThumbs || handle in hdThumbDone) return
         if (transferManager.isBulkTransferRunning()) {
             deferredHdThumbs.add(handle)
             return
@@ -1343,7 +1364,10 @@ class TransferViewModel @Inject constructor(
         // 共用机身唯一的串行 PTP 命令通道——首屏 30 个格子各自触发升级时，
         // 数百 KB 的 0x90C4 会插在后续格子的几 KB 小图前面，网格转圈期被拉长。
         // 还有小图请求在排队时，HD 先进让路队列（drainDeferredThumbnails 统一放行）。
-        if (pendingThumbs.isNotEmpty()) {
+        // 注意要排除**当前 handle 自己**：首屏路径是在自己的小图请求还没结束时调用
+        // 本函数的，旧判据 pendingThumbs.isNotEmpty() 恒为 true，所有升级都被无限
+        // 让路，网格永远停在低清。
+        if (pendingThumbs.any { it != handle }) {
             deferredHdThumbs.add(handle)
             return
         }
@@ -1355,10 +1379,20 @@ class TransferViewModel @Inject constructor(
             _fastScrolling.first { !it }
             hdThumbSemaphore.withPermit {
                 try {
+                    // 磁盘里已经是高清（例如上次会话已升级）就不再向相机重取；
+                    // 旧的单键磁盘缓存可能还留着 160/640 小图，此时继续升级。
+                    val diskEdge = withContext(Dispatchers.IO) {
+                        thumbnailCache.diskMaxEdge(handle)
+                    }
+                    if (diskEdge >= HD_THUMB_MIN_EDGE_PX) {
+                        hdThumbDone.add(handle)
+                        return@withPermit
+                    }
                     val hd = transferManager.fetchThumbnail(handle) ?: return@withPermit
                     // 内存位图按网格档解码：磁盘原样存高清字节，预览页要大图时
                     // 会按预览档从磁盘现解（见 ThumbnailCache.get 的档位策略）
                     if (thumbnailCache.putBytes(handle, hd, thumbnailCache.tileMaxEdgePx) != null) {
+                        hdThumbDone.add(handle)
                         _thumbnails.value = _thumbnails.value + handle
                         publishThumbReady(handle)
                     }
@@ -1409,6 +1443,9 @@ class TransferViewModel @Inject constructor(
                     ?: thumbnailCache.get(handle, thumbnailCache.tileMaxEdgePx) ?: continue
                 _thumbnails.value = _thumbnails.value + handle
                 publishThumbReady(handle)
+                // 预热命中的可能只是上一版留下的 160/640 小图；这里补一次高清升级，
+                // 否则 adapter 看到内存已有图就再也不会触发 requestThumbnail。
+                upgradeThumbnailToHd(handle)
             }
         }
     }
@@ -1785,6 +1822,7 @@ class TransferViewModel @Inject constructor(
             val deletedSet = deleted.toSet()
             _photoList.value = _photoList.value.filterNot { it.handle in deletedSet }
             _thumbnails.value = _thumbnails.value - deletedSet
+            hdThumbDone.removeAll(deletedSet)
             _selectedHandles.value = _selectedHandles.value - deletedSet
             // F1 AC-6：相机端文件已删，对应标记即时失效清理，避免「已标记」栏出现残影
             photoMarkRepository.unmark(selected.filter { it.handle in deletedSet })

@@ -16,7 +16,6 @@ import android.widget.PopupMenu
 import android.widget.TextView
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.content.ContextCompat
-import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
@@ -74,15 +73,28 @@ class TransferFragment : Fragment(), GlassInsetAware {
     private var chipNotDownloaded: TextView? = null
     private var multiSelectMode = false
 
-    /** 多选态拦截返回键：先退出多选，不走 MainActivity 的「再按一次退出」 */
-    private val exitMultiSelectOnBack = object : OnBackPressedCallback(false) {
-        override fun handleOnBackPressed() {
-            if (multiSelectMode) setMultiSelectMode(false)
-        }
-    }
+    /** 进入「已标记」前的常规相册；返回键离开标记栏时回到原处，而不是一律回相机相册 */
+    private var albumBeforeMarked = AlbumSource.CAMERA
 
-    /** 返回回调延迟到本页首次显示时注册，确保排在 MainActivity 的回调之后 */
-    private var backCallbackRegistered = false
+    /**
+     * 返回键先由 MainActivity 的返回链路询问本页（见 MainActivity.handleTabBackPress）。
+     *
+     * 为什么不各自注册 OnBackPressedCallback：真机复现证明返回键会被排在后面的
+     * 「再按一次退出」回调抢走——回调顺序取决于注册时机，而本页是常驻 Tab，
+     * 时机在不同启动路径下并不稳定。改成主页面显式询问当前页，天然与顺序无关。
+     *
+     * @return true 表示已消费（退出了多选/离开已标记栏），false 交回主页面继续处理
+     */
+    fun handleBackPress(): Boolean {
+        if (!multiSelectMode || isHidden) return false
+        if (viewModel.activeAlbum.value == AlbumSource.MARKED) {
+            // 「已标记」本身就是常驻多选工作台：返回的语义是先离开这个视图，
+            // 回到进入前的相册；source collector 会同步退出多选。
+            viewModel.setAlbum(albumBeforeMarked)
+        }
+        setMultiSelectMode(false)
+        return true
+    }
 
     /** 队列全部完成后延时收起入口的任务 */
     private var queuePillHideJob: Job? = null
@@ -176,10 +188,6 @@ class TransferFragment : Fragment(), GlassInsetAware {
         restyleGlass()
         UiFlags.observe(this) { restyleGlass() }
         super.onViewCreated(view, savedInstanceState)
-        // 首帧后再注册：保证晚于 MainActivity.onCreate 里注册的返回回调
-        binding.root.post {
-            if (_binding != null && !isHidden) ensureBackCallbackRegistered()
-        }
         setupGrid()
         setupChips()
         setupAlbumTabs()
@@ -693,13 +701,6 @@ class TransferFragment : Fragment(), GlassInsetAware {
     /** Tab show/hide 不走 onResume：显示时补一次 Tab 指示器渲染（首帧只有 1 个 Tab 的修复） */
     override fun onHiddenChanged(hidden: Boolean) {
         super.onHiddenChanged(hidden)
-        if (hidden) {
-            exitMultiSelectOnBack.isEnabled = false
-        } else {
-            ensureBackCallbackRegistered()
-            exitMultiSelectOnBack.isEnabled =
-                multiSelectMode && viewModel.activeAlbum.value != AlbumSource.MARKED
-        }
         if (!hidden && _binding != null) {
             renderAlbumTabs(viewModel.activeAlbum.value)
         }
@@ -944,19 +945,6 @@ class TransferFragment : Fragment(), GlassInsetAware {
         }
     }
 
-    /**
-     * 本页首次显示时注册返回回调。
-     *
-     * 不能放在 onViewCreated：四个 Fragment 常驻，本页启动时是 hide 状态，
-     * 且那时的注册会排在 MainActivity 的返回回调之前（多选态按返回会被
-     * 「再按一次退出」抢走）。放在实际显示后注册，才能稳定优先处理。
-     */
-    private fun ensureBackCallbackRegistered() {
-        if (backCallbackRegistered) return
-        activity?.onBackPressedDispatcher?.addCallback(exitMultiSelectOnBack)
-        backCallbackRegistered = true
-    }
-
     /** 多选态标题改成「已选 N 项」，退出后恢复页面标题 */
     private fun renderSelectionTitle() {
         if (_binding == null) return
@@ -970,8 +958,6 @@ class TransferFragment : Fragment(), GlassInsetAware {
     private fun setMultiSelectMode(enabled: Boolean) {
         multiSelectMode = enabled
         adapter.multiSelectMode = enabled
-        // 「已标记」栏常驻多选，返回键照常交给 MainActivity
-        exitMultiSelectOnBack.isEnabled = enabled && viewModel.activeAlbum.value != AlbumSource.MARKED
         binding.btnMultiSelect.text = if (enabled) "取消" else "多选"
         renderSelectionTitle()
         if (!enabled) {
@@ -1048,7 +1034,10 @@ class TransferFragment : Fragment(), GlassInsetAware {
                 // 离开标记栏回到常规浏览则退出多选，保持既有交互心智
                 when (source) {
                     AlbumSource.MARKED -> if (!multiSelectMode) setMultiSelectMode(true)
-                    else -> if (multiSelectMode) setMultiSelectMode(false)
+                    else -> {
+                        albumBeforeMarked = source
+                        if (multiSelectMode) setMultiSelectMode(false)
+                    }
                 }
                 if (multiSelectMode) renderActionButtons()
                 // 排序入口仅常规两源可用：「已标记」固定按标记时间倒序（PRD F1）
@@ -1466,7 +1455,6 @@ class TransferFragment : Fragment(), GlassInsetAware {
     override fun onDockSpaceChanged(dockSpace: Int) = applyDockSpace()
 
     override fun onDestroyView() {
-        exitMultiSelectOnBack.isEnabled = false
         UiFlags.unobserve(this)
         dockInsetGrid = null
         dockInsetTabs = null

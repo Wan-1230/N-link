@@ -74,6 +74,9 @@ class PreviewActivity : AppCompatActivity() {
         private const val EXTRA_PAIR_FORMAT_CODES = "pair_format_codes"
         private const val EXTRA_PAIR_STORAGE_IDS = "pair_storage_ids"
 
+        /** 低于这个长边就认为命中的是网格小图，后台换相机大预览 */
+        private const val PREVIEW_MIN_EDGE_PX = 1200
+
         /** 单张入口（兼容 TransferFragment 现有调用）：内部转成只含一张的列表 */
         fun start(context: Context, file: CameraFile) {
             start(context, listOf(file), 0)
@@ -139,6 +142,9 @@ class PreviewActivity : AppCompatActivity() {
 
     /** 合并格的另一张：handle → 被藏起的那张（见 [EXTRA_PAIR_HANDLES]） */
     private var pairs: Map<Int, CameraFile> = emptyMap()
+
+    /** 预览页正在后台换高清的 handle，避免翻页重绑时重复请求同一张 */
+    private val previewHdInFlight = mutableSetOf<Int>()
 
     /** 当前页的缩放视图（供返回键先复位缩放、翻页后重新指向） */
     private var currentZoomView: PreviewZoomImageView? = null
@@ -553,22 +559,59 @@ class PreviewActivity : AppCompatActivity() {
      */
     private fun loadInto(f: CameraFile, holder: PageViewHolder, position: Int) {
         lifecycleScope.launch {
-            var bitmap = withContext(Dispatchers.IO) { thumbnailCache.get(f.handle) }
+            var bitmap = withContext(Dispatchers.IO) {
+                thumbnailCache.get(f.handle, ThumbnailCache.PREVIEW_EDGE_PX)
+            }
             if (bitmap == null) {
                 val bytes = withContext(Dispatchers.IO) {
                     runCatching { transferManager.fetchThumbnail(f.handle) }.getOrNull()
                 }
                 if (bytes != null) {
-                    bitmap = withContext(Dispatchers.IO) { thumbnailCache.putBytes(f.handle, bytes) }
+                    bitmap = withContext(Dispatchers.IO) {
+                        thumbnailCache.putBytes(f.handle, bytes, ThumbnailCache.PREVIEW_EDGE_PX)
+                    }
                 }
             }
             if (holder.bindingAdapterPosition != position) return@launch // 已被复用，丢弃结果
             if (bitmap != null) {
                 holder.pv.iv.setImageBitmap(bitmap)
                 holder.pv.progress.visibility = View.GONE
+                upgradePreviewIfNeeded(f, holder, position, bitmap)
             } else {
                 holder.pv.progress.visibility = View.GONE
                 holder.pv.error.visibility = View.VISIBLE
+            }
+        }
+    }
+
+    /**
+     * 预览页命中磁盘里的网格小图时，后台再换一次相机大预览（0x90C4 / STA 内嵌 1620）。
+     * 只对相机源生效，且以“比当前图更大”为唯一替换条件——STA 没有大内嵌图时
+     * fetchThumbnail 仍可能返回 640，不会把已经显示的图换成更糊的。
+     */
+    private fun upgradePreviewIfNeeded(
+        f: CameraFile,
+        holder: PageViewHolder,
+        position: Int,
+        current: android.graphics.Bitmap
+    ) {
+        if (f.handle < 0) return
+        if (maxOf(current.width, current.height) >= PREVIEW_MIN_EDGE_PX) return
+        if (!previewHdInFlight.add(f.handle)) return
+        lifecycleScope.launch {
+            try {
+                val bytes = withContext(Dispatchers.IO) {
+                    runCatching { transferManager.fetchThumbnail(f.handle) }.getOrNull()
+                } ?: return@launch
+                val hd = withContext(Dispatchers.IO) {
+                    thumbnailCache.putBytes(f.handle, bytes, ThumbnailCache.PREVIEW_EDGE_PX)
+                } ?: return@launch
+                if (holder.bindingAdapterPosition != position) return@launch
+                if (maxOf(hd.width, hd.height) > maxOf(current.width, current.height)) {
+                    holder.pv.iv.setImageBitmap(hd)
+                }
+            } finally {
+                previewHdInFlight.remove(f.handle)
             }
         }
     }

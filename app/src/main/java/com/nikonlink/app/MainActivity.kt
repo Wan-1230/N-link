@@ -315,6 +315,10 @@ class MainActivity : AppCompatActivity() {
     private fun setupBackExit() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                // 先问当前页是否要消费返回（相册多选态要先退出多选）。
+                // 不依赖各页 OnBackPressedCallback 的注册顺序——真机上返回键会被
+                // 本回调抢走，表现为「多选时按返回有时直接触发再按一次退出」。
+                if (handleTabBackPress()) return
                 val now = System.currentTimeMillis()
                 if (now - lastBackPressedAt > BACK_EXIT_INTERVAL_MS) {
                     lastBackPressedAt = now
@@ -325,6 +329,12 @@ class MainActivity : AppCompatActivity() {
                 finish()
             }
         })
+    }
+
+    /** 当前可见 Tab 是否消费本次返回；目前只有相册多选态会消费。 */
+    private fun handleTabBackPress(): Boolean {
+        val visible = tabFragments.firstOrNull { !it.isHidden } ?: return false
+        return (visible as? TransferFragment)?.handleBackPress() == true
     }
 
     override fun onNewIntent(intent: Intent) {

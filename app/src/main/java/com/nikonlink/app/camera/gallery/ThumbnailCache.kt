@@ -45,11 +45,12 @@ class ThumbnailCache @Inject constructor(
         private const val MAX_MEMORY_KB = 64 * 1024   // 64MB
 
         /**
-         * 预览档解码目标长边。相册网格单格 300px+（高 dpi 下更高），旧值 512 之下源图常常只有
-         * 160×120，放大显示必然模糊；配合 0x90C4 高清缩略图提到 1024，同时保留
-         * inSampleSize 降采样控制内存。
+         * 预览档解码目标长边。相机大预览（0x90C4 / STA 内嵌 1620×1080）本身就是这一档，
+         * 1024 会把 1620 源再降采样一次；1600 直接解到源图尺寸，1280p 屏幕上放大看
+         * 也不再糊。inSampleSize 仍保证大图不会按原尺寸解码。
          */
-        private const val MAX_EDGE_PX = 1024
+        const val PREVIEW_EDGE_PX = 1600
+        private const val MAX_EDGE_PX = PREVIEW_EDGE_PX
 
         /** 网格档解码目标的上下限：小屏不低于 256（够 3 列方格），平板不超过 512 */
         private const val TILE_EDGE_MIN_PX = 256
@@ -159,10 +160,21 @@ class ThumbnailCache @Inject constructor(
         maxEdgePx: Int = MAX_EDGE_PX
     ): Bitmap? = withContext(Dispatchers.IO) {
         val bitmap = decode(bytes, maxEdgePx) ?: return@withContext null
-        memory.put(handle, bitmap)
+        // 小图请求可能晚于后台高清/预览页完成，不能把内存里更大的位图降级成小图
+        val existing = memory.get(handle)
+        if (existing == null ||
+            maxOf(bitmap.width, bitmap.height) >= maxOf(existing.width, existing.height)
+        ) {
+            memory.put(handle, bitmap)
+        }
         scope.launch {
-            runCatching { diskFile(handle).writeBytes(bytes) }
-                .onFailure { Timber.tag(TAG).w("thumb disk write failed for $handle: ${it.message}") }
+            runCatching {
+                val file = diskFile(handle)
+                // 同一 handle 只有一个磁盘键：首屏几 KB 的小图不能覆盖后台升级/预览页
+                // 刚写下的高清字节（Nikon 缩略图体积与分辨率强相关，字节数可直接比较）。
+                if (file.exists() && file.length() > bytes.size) return@runCatching
+                file.writeBytes(bytes)
+            }.onFailure { Timber.tag(TAG).w("thumb disk write failed for $handle: ${it.message}") }
         }
         bitmap
     }
@@ -191,6 +203,20 @@ class ThumbnailCache @Inject constructor(
     }
 
     fun diskFile(handle: Int): File = File(diskDir, "$handle.jpg")
+
+    /**
+     * 磁盘缓存里图片的长边（读 JPEG 头，不解像素）；没有缓存返回 0。
+     * 用于判断“已经升级过高清”，避免每次重进相册都向相机重取 0x90C4。
+     */
+    fun diskMaxEdge(handle: Int): Int {
+        val file = diskFile(handle)
+        if (!file.exists()) return 0
+        return runCatching {
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, options)
+            maxOf(options.outWidth, options.outHeight)
+        }.getOrDefault(0)
+    }
 
     fun clear() {
         memory.evictAll()
