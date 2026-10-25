@@ -82,6 +82,13 @@ class ConnectionManager @Inject constructor(
         /** STA 主机注册标记：相机已记住本机 GUID（门控解除） */
         private const val PREFS_STA_HOST_REGISTERED = "sta_host_registered"
 
+        /**
+         * FR-39②：注册成功时相机所在的 /24 前缀（如 "192.168.1"）。
+         * 只存前缀不存 SSID/BSSID —— 与 [emitEnvironment] 的脱敏边界一致
+         * （日志允许记局域网 IP，不允许记 SSID 原文）。
+         */
+        private const val PREFS_STA_HOSTREG_SUBNET = "sta_hostreg_subnet"
+
         // P0：目标地址分级取值的来源标识（event 字段，便于日志区分真实地址与兜底）
         private const val SOURCE_BLE_CREDENTIAL = "ble_credential"
         private const val SOURCE_DISCOVERED = "discovered"
@@ -461,6 +468,23 @@ class ConnectionManager @Inject constructor(
 
         // 旧 AP 连接链路（learnFirst 网关学习 + apTiming 短时序起轮）已删除：
         // AP 连接一律走工作树方案（com.camerakit.client）。此处只服务 STA。
+        // FR-39②：换网校验 —— 注册声称附着"当时相机所在的 /24"。目标前缀对不上，
+        // 说明相机很可能在新网络里重建过连接配置（主机授权随配置文件走，得重注册）。
+        // 只重新点亮注册提示，不拦连接（让机身回包做最终裁决）。
+        if (connFlags.isEnabled(ConnFlags.STA_HOSTREG_NET_SCOPED) && _staHostRegistered.value) {
+            val recorded = prefs.getString(PREFS_STA_HOSTREG_SUBNET, null)
+            val targetPrefix = subnetPrefixOf(endpoint.host)
+            if (recorded != null && targetPrefix != null && recorded != targetPrefix) {
+                _staRegisterNeeded.value = true
+                eventLogger.event(
+                    "sta_hostreg_net_changed", "host" to endpoint.host,
+                    "recorded" to recorded, "target" to targetPrefix
+                )
+                Timber.tag(TAG).i(
+                    "hostreg subnet changed: registered on $recorded, connecting to $targetPrefix — re-arm register hint"
+                )
+            }
+        }
         beginWifiPairing(endpoint, deviceName, caller.code)
         stateMachine.dispatch(ConnectionEvent.StartConnect)
     }
@@ -589,6 +613,17 @@ class ConnectionManager @Inject constructor(
                 maybeAutoRediscover(endpoint.host, source, reason)
                 // 状态行文案由事件监听统一写入（见 observeStateMachine 的 eventListener），
                 // 这里不再重复设置，避免两处文案互相覆盖
+            },
+            // FR-39①：连接器分诊出「InitFail(1) 持续被拒 = 相机不认本机 GUID」时，
+            // 点亮"需要主机注册"引导并撤销过期声称。不动连接循环本身。
+            onHostRegNeeded = {
+                if (connFlags.isEnabled(ConnFlags.STA_INITFAIL1_HOSTREG)) {
+                    _staRegisterNeeded.value = true
+                    _statusMessage.value =
+                        "相机持续拒绝本机（主机未认可）。若相机是为当前 WiFi 新建的配置，" +
+                            "请让相机停在连接向导等待画面后点「主机注册」"
+                    eventLogger.event("sta_hostreg_hint_escalated", "host" to endpoint.host)
+                }
             }
         )
     }
@@ -639,7 +674,17 @@ class ConnectionManager @Inject constructor(
                 return@launch
             }
             val cands = runCatching {
-                scanWifiCameras(timeoutMs = 10_000L, hotspotMode = true, ptpConfirm = false, earlyExit = true)
+                // FR-39④：按当前 STA 子模式选扫描拓扑。旧值硬编码 hotspotMode=true
+                //（手机热点时代遗留）—— 同一路由器下 mDNS 套接字不绑 WiFi 网络，
+                // 组播探测走默认路由，多播受限的路由器上白丢一路发现。
+                // 网段扫描两条拓扑都能跑（内核网卡枚举兜底），此处只把 mDNS/NSD
+                // 的出口修正为真实拓扑。
+                scanWifiCameras(
+                    timeoutMs = 10_000L,
+                    hotspotMode = isPhoneHotspotMode(),
+                    ptpConfirm = false,
+                    earlyExit = true
+                )
             }.getOrDefault(emptyList())
             // 批次 C-N3：AP 拓扑下相机自任网关，扫描发现的相机**就是**那个失败地址，
             // 而旧过滤只接受「不同于失败地址」的候选，于是把它当「没发现」丢掉 ——
@@ -972,6 +1017,10 @@ class ConnectionManager @Inject constructor(
             prefs.edit().putBoolean(PREFS_STA_HOST_REGISTERED, true).apply()
             _staHostRegistered.value = true
             _staRegisterNeeded.value = false
+            // FR-39②：已连接态注册 —— 相机 IP 从最近一次的连接证据取。
+            noteHostRegSubnet(realCameraIp ?: pairedDeviceAddress?.let { addr ->
+                WifiEndpoint.parse(addr)?.host
+            })
         }
         return result
     }
@@ -1047,8 +1096,25 @@ class ConnectionManager @Inject constructor(
             prefs.edit().putBoolean(PREFS_STA_HOST_REGISTERED, true).apply()
             _staHostRegistered.value = true
             _staRegisterNeeded.value = false
+            // FR-39②：自主注册路径 —— 注册候选的 IP 就是相机当前所在网段。
+            noteHostRegSubnet(candidate.ipAddress)
         }
         return result
+    }
+
+    /** FR-39②：注册证据落 /24 前缀；IP 拿不到就不写（回落全局布尔口径）。 */
+    private fun noteHostRegSubnet(cameraIp: String?) {
+        if (!connFlags.isEnabled(ConnFlags.STA_HOSTREG_NET_SCOPED)) return
+        val prefix = cameraIp?.let { subnetPrefixOf(it) } ?: return
+        prefs.edit().putString(PREFS_STA_HOSTREG_SUBNET, prefix).apply()
+        eventLogger.event("sta_hostreg_subnet_noted", "subnet" to prefix)
+    }
+
+    /** IPv4 的 /24 前缀文本（"192.168.1.50" → "192.168.1"）；非合法 IPv4 返回 null。 */
+    private fun subnetPrefixOf(host: String): String? {
+        val parts = host.trim().split('.')
+        if (parts.size != 4 || parts.any { it.toIntOrNull() !in 0..255 }) return null
+        return parts.subList(0, 3).joinToString(".")
     }
 
     /**

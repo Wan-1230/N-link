@@ -75,6 +75,15 @@ class StaNetworkRequester @Inject constructor(
     @Volatile
     private var held: Network? = null
 
+    /**
+     * FR-39③：当前在册 callback 的请求形状 —— true=普通 WIFI 请求（路由器拓扑），
+     * false=local-only（相机 AP / 热点拓扑，FR-33 原行为）。
+     * 会话持有复用判定要求形状一致：拓扑变了（如热点→路由器）不能拿旧形状的
+     * 死注册凑合，必须拆掉重注册。
+     */
+    @Volatile
+    private var plainShapeHeld = false
+
     /** 当前持有的网络（未申请/已释放为 null）。 */
     fun heldNetwork(): Network? = held
 
@@ -117,14 +126,26 @@ class StaNetworkRequester @Inject constructor(
         // 现在：任何出口都先清掉旧 callback，保证「held 有值 ⇔ 语义明确」。
         // FR-34④ 例外：会话持有模式下若上一枚回调仍在册（未过期），**复用**而不是
         // 拆掉重注册 —— release→register 之间的毫秒级缝隙恰好可能盖住回连瞬间。
-        // 请求形状（transport WIFI ± local-only）在同一会话内不变，复用是等价的；
-        // 调试面板中途翻 STA_LOCAL_ONLY_REQUEST 属现场二分，下一轮自然重建。
+        // FR-39③：复用新增**形状一致**前置 —— 热点↔路由器拓扑切换会改变期望形状，
+        // 形状不符的旧注册（如路由器会话留下的 local-only 死注册）必须重建；
+        // 调试面板中途翻 STA_LOCAL_ONLY_REQUEST/STA_ROUTER_NET_HOLD 同理，下一轮重建。
+        // ── FR-39③：请求形状按拓扑分流 ─────────────────────────────────────────
+        // 先做一次只读预扫：当前已有一张**能覆盖相机 IP** 的 WiFi 网络 = 路由器拓扑
+        //（相机 AP/手机热点拓扑里这张网要么不存在、要么在子网过滤下匹配不到）。
+        // 路由器 WiFi 带 INTERNET 能力，local-only 请求（removeCapability(12)）
+        // 对它**永远不构成匹配**：整个会话 onAvailable/onLost 一次不来，
+        // FR-34④ 的"会话持有"对这张网是空的，掉线检测只剩 socket 错误兜底。
+        // 同类实现的拓扑分类：removeCapability(12) 服务的是**无互联网的
+        // 相机网络**；其 SHARED_ROUTER 拓扑另用普通请求绑定"当前局域网 Wi-Fi"。
+        // 闸门 [ConnFlags.STA_ROUTER_NET_HOLD] 关 = 一律 local-only（v3.4.2 逐位等价）。
+        val plainShape = connFlags.isEnabled(ConnFlags.STA_ROUTER_NET_HOLD) &&
+            findMatchingWifi(target) != null
         val reuse = synchronized(lock) {
-            sessionHold && callback != null && !callbackExpired
+            sessionHold && callback != null && !callbackExpired && plainShapeHeld == plainShape
         }
         if (!reuse) releaseCallbackOnly()
 
-        val localOnly = connFlags.isEnabled(ConnFlags.STA_LOCAL_ONLY_REQUEST)
+        val localOnly = !plainShape && connFlags.isEnabled(ConnFlags.STA_LOCAL_ONLY_REQUEST)
         val diag = connFlags.isEnabled(ConnFlags.STA_LINK_DIAG)
 
         // ── FR-33 C1：请求去掉 NET_CAPABILITY_INTERNET（local-only）────────────────
@@ -214,16 +235,23 @@ class StaNetworkRequester @Inject constructor(
         if (!reuse && registered) {
             // 写回与"死旗"同锁完成：若 onUnavailable 在 requestNetwork 返回前后
             // 立刻到达（deadFlag 已置），这里落的就是 expired=true，复用判定不会被骗。
+            // FR-39③：形状随本次注册一并落账，供下一轮复用判定比对。
             synchronized(lock) {
                 callback = cb
                 callbackExpired = deadFlag.get()
+                plainShapeHeld = plainShape
             }
         }
         // FR-33 C3：诊断 —— 请求以什么 capability 在册，是本轮真机要回答的第一问。
+        // FR-39③：caps 串带拓扑语境（router=普通形状 / local-only=热点与相机 AP）。
         if (diag) {
             eventLogger.event(
                 "net_req",
-                "caps" to if (localOnly) "local-only" else "internet",
+                "caps" to when {
+                    plainShape -> "plain-wifi(router)"
+                    localOnly -> "local-only"
+                    else -> "internet"
+                },
                 "registered" to registered,
                 "timeout" to timeoutMs,
                 "hold" to sessionHold,
@@ -315,6 +343,7 @@ class StaNetworkRequester @Inject constructor(
             val c = callback
             callback = null
             callbackExpired = false
+            plainShapeHeld = false   // FR-39③：注销即失去形状，复用判定回到"无注册"态
             available.clear()
             c
         }

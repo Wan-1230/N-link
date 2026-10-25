@@ -324,6 +324,57 @@ class ConnFlags @Inject constructor(
          */
         const val STA_LOCAL_ONLY_REQUEST = "v33_local_only_request"
 
+        // ── FR-39 同一路由器 STA（docs/STA同一路由器连接失败-根因分析与优化-2026-10-24.md）──
+        // 三条全部默认开、**不进 LOCKED**：本轮是行为修正但依赖真机回归，
+        // 逐条可关闸回退（关 = 与 v3.4.2 逐位等价），也可用总闸一键回退。
+
+        /**
+         * FR-39①：InitFail(reason=1) **持续被拒**时升级为「需主机注册」引导。
+         *
+         * 现状（v3.4.3 缺陷）：reason=1 被 [StaFailureClass] 一律归类为
+         * BUSY_OTHER_CLIENT（"连接位被占用，请在其它设备断开"），且
+         * [ConnectionManager] 的 HOSTREG_HINT_V2 分支只说"相机正忙，自动重试"。
+         * 但对同类控制应用的协议分析确认 reason=1 的主语义是
+         * **"相机拒绝客户端 GUID：不在配对模式 / 未授权主机"** —— 同一路由器
+         * 场景相机走「连接至 PC」向导新建配置文件后，必须重新完成 0x952B/0x935A
+         * 主机注册，否则每次 InitCommand 都被 reason=1 拒掉，且**等待不会自愈**。
+         *
+         * 分诊口径（不盲改 reason=1 语义，兼顾本仓真机日志里的槽位回收形态）：
+         * 连续 ≥[WifiDirectConnector.INITFAIL1_STREAK] 次且距首次 ≥45s 仍 reason=1
+         * —— 槽位半开回收按 FR-21 实测 ~35s 内完成，跨过该窗口仍在拒 = 授权问题。
+         * 升级动作只改**引导**（提示注册 + 撤销注册声称 + 失败文案），不动重试节奏。
+         * 关闸 = 旧文案逐位不变。
+         */
+        const val STA_INITFAIL1_HOSTREG = "v343_initfail1_hostreg"
+
+        /**
+         * FR-39②：主机注册声称**按网段**存储与校验，不再是一枚全局布尔。
+         *
+         * 现状：`sta_host_registered` 一次性置位后永不区分网络 —— 手机热点场景
+         * 注册过一次，切到"同一 WiFi"（相机在路由器上新建了配置文件）后按钮
+         * 仍显示"已注册"，用户得不到"换了网络要重新注册"的任何信号。
+         * 打开后：注册成功时顺手记下相机 IP 的 /24 前缀；连接发起时若目标
+         * 前缀与记录不符 → 重新亮起"需要注册"提示（不拦连接，只改引导）。
+         * 脱敏边界：只存 IP 前缀（日志口径同 `ifaces=`，允许），不存 SSID/BSSID。
+         * 关闸 = 全局布尔旧口径。
+         */
+        const val STA_HOSTREG_NET_SCOPED = "v343_hostreg_net_scoped"
+
+        /**
+         * FR-39③：网络申请形状按拓扑分流 —— 路由器 WiFi 用**普通** WIFI 请求。
+         *
+         * 现状：FR-33 的 local-only 请求（removeCapability(INTERNET)）在
+         * **有互联网能力**的路由器 WiFi 上永远不匹配 —— 同一路由器拓扑下，
+         * "会话持有"请求整个会话匹配不到任何网络：onAvailable/onLost 一次不来
+         * （掉线检测对该拓扑全盲，只剩 socket 错误兜底），系统对这张网也
+         * 不构成"有 App 在用"的持有（路由器无外网/未通过验证时可能被拆）。
+         * 同类实现对无互联网的相机网络使用 removeCapability(12)；
+         * 共享路由器拓扑则单独绑定"当前局域网 Wi-Fi"（按拓扑分类处理）。
+         * 打开后：快路径能匹配到 WiFi 网络时改注册普通 TRANSPORT_WIFI 请求
+         * （相机 AP / 热点拓扑维持 local-only 不变）。关闸 = 旧形状逐位不变。
+         */
+        const val STA_ROUTER_NET_HOLD = "v343_router_net_hold"
+
         // ── FR-34 AP 一键连接与失败归因第二轮（docs/AP连接失败与策略分析-2026-10-02.md）──
 
         /**
@@ -776,6 +827,13 @@ class ConnFlags @Inject constructor(
             // FR-33：非上网热点被系统回收的修复，默认开（这是修复不是实验：
             // 群友无「WiFi 始终开启」开关的设备不修则必掉；关闸=旧行为，现场可二分）
             STA_LOCAL_ONLY_REQUEST to true,
+            // ── FR-39 同一路由器 STA（2026-10-24）三条默认开 ──
+            // ①只改失败引导（不动重试/建链）、②只改注册提示的亮灯条件（不拦连接）、
+            // ③只改 requestNetwork 形状（手机热点/相机 AP 拓扑路径不变）——
+            // 逐条可关闸回 v3.4.2 行为，现场二分与整体回退都留了路。
+            STA_INITFAIL1_HOSTREG to true,
+            STA_HOSTREG_NET_SCOPED to true,
+            STA_ROUTER_NET_HOLD to true,
             // FR-34：七条全部默认开——①②是流程与耗时收敛（同构），③⑤修本轮
             // 日志实证的蜂窝空转（≈103s），④修「窗口过期错过回连」×3，⑥修 60s 档
             // 够不着的 14s 快速死亡，⑦纯日志。逐条可独立关闸做现场二分。

@@ -40,4 +40,27 @@ object StaFailureClass {
         !reachable -> UNREACHABLE
         else -> HANDSHAKE_FAILED
     }
+
+    /**
+     * FR-39①：InitFail(reason=1) **持续被拒** → 判定为「需主机注册」而非「槽位被占」。
+     *
+     * 为什么不能只看 reason=1：本仓真机日志里 reason=1 有两种结局 ——
+     * ① 相机在收上一代的半开会话（FR-21 实测 ~35s 内自己收干净，随后 pair_ok）；
+     * ② 相机不认本机 GUID（同一路由器拓扑：相机为路由器新建了配置文件，
+     *    本机没对**这个**配置文件做过 0x952B/0x935A 注册）—— 等待永远不会自愈。
+     * 对同类控制应用的协议分析中，reason=1 的用户提示正是
+     * "请确认相机当前处于配对模式；普通传输需使用已授权 GUID"。
+     *
+     * 分诊口径：连续 [streak] 次且距首次 [elapsedMs] —— 跨过槽位回收窗口
+     * （35s）仍在拒，才是授权问题。两条件同时满足才升级；任何一个不满足
+     * 都维持"忙/等待重试"的旧口径（含 streak=0 的首次，闸门关时根本不进来）。
+     */
+    fun initFail1NeedsHostReg(streak: Int, elapsedMs: Long): Boolean =
+        streak >= INITFAIL1_STREAK_THRESHOLD && elapsedMs >= INITFAIL1_ELAPSED_FLOOR_MS
+
+    /** 连续 reason=1 次数门槛：退避表下第 4 次失败约在首次后 ~30-46s，跨过 35s 回收窗 */
+    const val INITFAIL1_STREAK_THRESHOLD = 4
+
+    /** 距首次 reason=1 的时间下限（对齐 FR-21 的 ~35s 槽位回收 + 余量） */
+    const val INITFAIL1_ELAPSED_FLOOR_MS = 45_000L
 }

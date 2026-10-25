@@ -295,7 +295,13 @@ class WifiDirectConnector @Inject constructor(
         onWaitingCameraOk: (() -> Unit)? = null,
         onRetry: ((String?) -> Unit)? = null,
         onSuccess: () -> Unit = {},
-        onFail: (String) -> Unit = {}
+        onFail: (String) -> Unit = {},
+        /**
+         * FR-39①：本轮连接中出现「InitFail(1) 持续被拒」（跨过槽位回收窗仍被拒，
+         * 判定为相机不认本机 GUID 而非槽位被占）时回调一次。调用方用它点亮
+         * 「需要主机注册」的引导；不传则保持旧行为（仅按 BUSY 文案提示）。
+         */
+        onHostRegNeeded: (() -> Unit)? = null
     ): Job {
         val gen = ++generation
         // RC-1: 同步作废旧循环（旧 run 会在下一个校验点因 gen 过期退出），
@@ -323,7 +329,7 @@ class WifiDirectConnector @Inject constructor(
         val job = myScope.launch(Dispatchers.IO) {
             // RC-2: 起新循环前把旧会话拆干净，杜绝两条循环互相 closeSession
             mutex.withLock { runCatching { ptpSession.closeSession() } }
-            run(endpoint, gen, mode, apTiming, onWaitingCameraOk, onRetry, onSuccess, onFail)
+            run(endpoint, gen, mode, apTiming, onWaitingCameraOk, onRetry, onSuccess, onFail, onHostRegNeeded)
         }
         activeJob = job
         return job
@@ -345,7 +351,8 @@ class WifiDirectConnector @Inject constructor(
         onWaitingCameraOk: (() -> Unit)?,
         onRetry: ((String?) -> Unit)?,
         onSuccess: () -> Unit,
-        onFail: (String) -> Unit
+        onFail: (String) -> Unit,
+        onHostRegNeeded: (() -> Unit)?
     ) {
         val pairing = (mode == Mode.PAIRING)
         // FR-38：AP 链路 + 闸门开 → 短时序档。闸门关 = 与 STA 同款长轮次。
@@ -372,6 +379,16 @@ class WifiDirectConnector @Inject constructor(
         var lastApGrade: PtpIpProbe.ProbeResult? = null
         /** FR-20④：本轮是否出现过「有 WiFi 但没有一张能覆盖相机 IP」——决定报 bind_failed 还是 no_wifi_network。 */
         var rejectedBySubnetCheck = false
+        /**
+         * FR-39①：连续 InitFail(1) 的次数与首次时间戳。
+         * 分诊两种同码不同因的失败：相机收上一代半开会话（FR-21 实测 ~35s 内自愈，
+         * 重试后 pair_ok）vs 相机不认本机 GUID（同一路由器新配置文件未注册，
+         * 等待永不自愈）。跨过回收窗仍在拒才升级为主机注册引导。
+         */
+        var initFail1Streak = 0
+        var initFail1FirstAt = 0L
+        var initFail1Persistent = false
+        var hostRegHinted = false
         // RC-5: 连接生命周期内持有 WifiLock/MulticastLock，finally 保证释放
         networkMonitor.acquireLocks()
         // FR-34⑤：轮次开始时存在类 WiFi 接口 = 「链路刚才还在」的闪断型轮次。
@@ -743,7 +760,48 @@ class WifiDirectConnector @Inject constructor(
                     ackSilent = ackSilent,
                     reachable = !unreachable
                 )
-                onRetry?.invoke(null)
+
+                // ── FR-39①：reason=1 连击分诊 ─────────────────────────────────
+                // 只统计机器证据（机身回的 InitFail 码），不改重试节奏与建链路径。
+                // 持续被拒（≥4 次且距首次 ≥45s，跨过 FR-21 的 ~35s 槽位回收窗）时：
+                // "相机正忙"的解释已站不住——半开会话早该收干净了，剩下的解释是
+                // 相机不认本机 GUID（同一路由器拓扑：相机为该 WiFi 新建了配置文件，
+                // 本机没对它做过 0x952B/0x935A 注册，同类实现对 reason=1 的
+                // 提示正是"配对模式/未授权 GUID"）。升级只做三件事：留痕、回调点亮
+                // 注册引导、后续失败文案换主注册口径。
+                if (ptpSession.lastInitFailReason.value ==
+                    com.nikonlink.app.device.ptp.PtpConstants.INIT_FAIL_CONNECTION_IN_USE
+                ) {
+                    if (initFail1Streak == 0) initFail1FirstAt = System.currentTimeMillis()
+                    initFail1Streak++
+                } else {
+                    initFail1Streak = 0
+                    initFail1FirstAt = 0L
+                }
+                initFail1Persistent = connFlags.isEnabled(ConnFlags.STA_INITFAIL1_HOSTREG) &&
+                    StaFailureClass.initFail1NeedsHostReg(
+                        initFail1Streak,
+                        if (initFail1FirstAt == 0L) 0L
+                        else System.currentTimeMillis() - initFail1FirstAt
+                    )
+                val escalatedNow = initFail1Persistent && !hostRegHinted
+                if (escalatedNow) {
+                    hostRegHinted = true
+                    eventLogger.event(
+                        "sta_initfail1_streak", "gen" to gen, "streak" to initFail1Streak,
+                        "waited_ms" to (System.currentTimeMillis() - initFail1FirstAt),
+                        "host" to endpoint.host
+                    )
+                    onHostRegNeeded?.invoke()
+                    onRetry?.invoke(
+                        "相机持续拒绝本机连接（主机未认可）。若相机是为当前 WiFi 新建的配置，" +
+                            "请让相机停在连接向导等待画面后点「主机注册」，注册完成会自动接续"
+                    )
+                }
+
+                // 原 v1.3.2 行为：清掉具体等待文案。升级瞬间刚写进去的注册引导
+                // 不能被这行抹掉（UI 的 onRetry 是覆盖语义）。
+                if (!escalatedNow) onRetry?.invoke(null)
                 Timber.tag(TAG).w("WiFi connect attempt $attempt failed (${endpoint.display}), backing off")
 
                 // RC-6 附加：连续确认"相机不可达"时提前收口，别让用户干等。
@@ -880,8 +938,9 @@ class WifiDirectConnector @Inject constructor(
                     // FR-38：AP 档按最后一次探测档位给出分级文案
                     // （REFUSED=相机未开端口 / TIMEOUT=超时 / NO_ROUTE=无路由），
                     // 让"连接"按钮本身就是重试入口。
+                    // FR-39①：STA 档带上 reason=1 分诊旗标（持续被拒 → 主注册引导文案）。
                     if (apZdrop) describeApFailure(lastApGrade, lastErr, endpoint)
-                    else describeStaFailure(lastErr, endpoint),
+                    else describeStaFailure(lastErr, endpoint, initFail1Persistent),
                     recoverable = true
                 )
             )
@@ -1255,8 +1314,15 @@ class WifiDirectConnector @Inject constructor(
      * 仅扩展分支与文案，不改动调用它的连接流程（connect / resolveNetwork / 冷却 / 绑定时机）。
      * [ptpSession.lastInitFailReason] 由 PtpSessionManager 在收到 InitFail 包时写入；
      * 非 InitFail（对端关闭 / 读超时 / 事件通道失败）时为 null。
+     *
+     * @param initFail1Persistent FR-39①：reason=1 已持续被拒（分诊为"GUID 未认可"
+     *   而非"槽位被占"）。true 时 BUSY 文案换成主机注册引导；false（默认）逐位旧文案。
      */
-    private fun describeStaFailure(reason: String?, endpoint: WifiEndpoint): String {
+    private fun describeStaFailure(
+        reason: String?,
+        endpoint: WifiEndpoint,
+        initFail1Persistent: Boolean = false
+    ): String {
         val initFailReason = ptpSession.lastInitFailReason.value
         return when (reason) {
             "no_wifi_network" -> "手机未连接 WiFi：请先连上相机所在的同一个 WiFi / 热点后重试"
@@ -1264,12 +1330,24 @@ class WifiDirectConnector @Inject constructor(
             "bind_failed" ->
                 "手机连着的 WiFi 到不了相机（${endpoint.host}）。请确认连的是相机自己发出的热点；" +
                     "已连上仍报此错，请关闭移动数据与 VPN 后重试"
-            // FR-07：机身只有一个 PTP/IP 客户端槽位。这类失败用户自己就能解决，
-            // 必须和「相机在忙/在休眠」分开说 —— 后者关不掉，前者关一下对方就行。
-            StaFailureClass.BUSY_OTHER_CLIENT ->
+            // FR-39①：reason=1 持续被拒 → 主机注册引导取代"占用"文案。
+            // 旧文案让用户"去别的设备断开"——同一路由器场景现场根本没有别的设备，
+            // 相机拒的是**本机 GUID**，等待与断开都无解。双入口口径来自同类应用分析
+            // 逆向（原生 STA 菜单机型走「连接至智能设备」STA mode；其他机型走
+            // 「连接到 PC」网络设定），另附路由器访客网络/AP 隔离注意项。
+            StaFailureClass.BUSY_OTHER_CLIENT -> if (initFail1Persistent &&
+                initFailReason == PtpConstants.INIT_FAIL_CONNECTION_IN_USE
+            ) {
+                "相机持续拒绝本机连接（原因码 1：主机未认可）。\n" +
+                    "若相机是为当前 WiFi 新建的连接配置，需要重新完成主机注册：" +
+                    "让相机进入「连接至智能设备（STA mode）」或「连接至 PC」的网络设定向导、" +
+                    "停在等待画面，再回 App 点「主机注册」，完成后重新连接。\n" +
+                    "若注册后仍被拒，请确认路由器已关闭访客网络与 AP 隔离（客户端隔离）"
+            } else {
                 "相机的连接位已被占用：机身同一时刻只允许一个 PTP/IP 客户端。" +
                     "请在其它设备上断开相机（另一台手机上的 N-Link 也算），" +
                     "再让相机停在「连接至智能设备」画面重试。N-Link 没法替你把对方踢下线。"
+            }
             StaFailureClass.ACK_SILENT ->
                 "相机接受了连接，但对事件通道一言不发（多半还在休眠或正忙）。" +
                     "请按一下快门/电源键唤醒相机，让屏幕停在等待连接的画面后重试"
