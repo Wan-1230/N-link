@@ -59,6 +59,23 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="mqqwpa" />
         </intent>
+        <!-- 独立分享页要列出能接收图片/视频的应用（Android 11+ 包可见性） -->
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND_MULTIPLE" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="video/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND_MULTIPLE" />
+            <data android:mimeType="video/*" />
+        </intent>
     </queries>
 
     <application
@@ -103,6 +120,18 @@
             android:name=".camera.gallery.PreviewActivity"
             android:exported="false"
             android:theme="@style/Theme.NLink.Preview" />
+
+        <!-- 独立分享页：先展示目标应用，再按需准备预览副本/原图 -->
+        <activity
+            android:name=".camera.share.ShareActivity"
+            android:exported="false"
+            android:theme="@style/Theme.NLink" />
+
+        <!-- 相机详情页：身份/状态/能力/固件比对/位置同步 -->
+        <activity
+            android:name=".device.CameraDetailActivity"
+            android:exported="false"
+            android:theme="@style/Theme.NLink" />
 
         <!-- F7 打赏支持页（开源免费声明 + 自愿打赏） -->
         <activity

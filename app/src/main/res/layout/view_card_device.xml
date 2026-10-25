@@ -77,6 +77,17 @@
                              参数四宫格，本卡不再重复一遍（原来四行 + 相机名占了大半张卡的纵向空间，
                              却和下面的网格说的是同一批数）。卡片只保留状态行与相机全称 + 连接/断开。 -->
 
+                        <!-- 相机详情：身份/固件/能力/位置同步，仅在已连接时出现 -->
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btnCameraDetail"
+                            style="@style/NlButton.ContrastOutline"
+                            android:layout_width="match_parent"
+                            android:layout_height="44dp"
+                            android:layout_marginTop="16dp"
+                            android:maxLines="1"
+                            android:text="更多相机信息"
+                            android:visibility="gone" />
+
                         <!-- 连接 / 断开按钮 -->
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/btnConnect"

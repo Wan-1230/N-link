@@ -112,6 +112,9 @@ class DashboardFragment : Fragment(), GlassInsetAware {
     private var currentMode = ConnectMode.WIFI_AP
     private var modeTabWidth = 0
 
+    /** 取消连接后的短暂反馈窗：压住异步状态/扫描回写，避免「已取消」被立刻覆盖 */
+    private var cancelFeedbackUntil = 0L
+
     /**
      * v2.6.3：STA 页当前的**连接架构**。
      *
@@ -151,6 +154,8 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         setupApWifiEntry()
         setupStaManualIpEntry()
         setupGuideToggles()
+        setupRecentToggle()
+        setupCancelConnect()
         setupStaArch()
         paramsViewModel.readAll()
     }
@@ -266,6 +271,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 binding.swipeRefresh.isRefreshing = false
                 // 连接状态变化后统一刷新状态行（避免各处直接写 tvStatusMessage 造成互相覆盖）
                 renderStatusLine()
+                updateCancelConnectVisibility()
             }
         }
 
@@ -378,9 +384,12 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             viewModel.isWifiScanning.collect { scanning ->
                 // FR-38 后扫描按钮已从三个页签移除（连接即自动搜索）；
                 // 扫描状态仍要在状态行可见
-                if (!scanning && wifiDevices.isEmpty() && staAutoConnectArmed.not()) {
+                if (!scanning && wifiDevices.isEmpty() && staAutoConnectArmed.not() &&
+                    System.currentTimeMillis() >= cancelFeedbackUntil
+                ) {
                     binding.cardDevice.tvStatusMessage.text = "未发现 WiFi 相机"
                 }
+                updateCancelConnectVisibility()
             }
         }
 
@@ -480,6 +489,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     }
                     else -> {}
                 }
+                updateCancelConnectVisibility()
             }
         }
 
@@ -524,9 +534,27 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                     if (apUiActive) {
                         apUiActive = false
                         apStatusText = ""
+                        cameraInfoRequested = false
+                        // AP 引擎回到未连接时，旧无线状态机可能早就是 DISCONNECTED，
+                        // 不会因状态未变化而重发；这里主动把卡片从「正在连接」复位，
+                        // 否则取消 AP 连接后卡片会停在上一帧的连接中文案。
+                        if (viewModel.connectionState.value == ConnectionState.DISCONNECTED) {
+                            binding.cardDevice.tvConnectionStatus.text = "未连接"
+                            binding.cardDevice.viewStatusIndicator.backgroundTintList =
+                                ColorStateList.valueOf(
+                                    ContextCompat.getColor(
+                                        requireContext(),
+                                        R.color.on_dark_card_variant
+                                    )
+                                )
+                            binding.cardDevice.progressConnecting.visibility = View.GONE
+                            binding.cardDevice.btnConnect.visibility = View.GONE
+                            binding.cardDevice.btnDisconnect.visibility = View.GONE
+                        }
                         // 交还旧状态机：触发一次无线状态重渲染
                         renderStatusLine()
                     }
+                    updateCancelConnectVisibility()
                     return@collect
                 }
                 apUiActive = true
@@ -596,6 +624,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
                 }
                 binding.swipeRefresh.isRefreshing = false
                 renderStatusLine()
+                updateCancelConnectVisibility()
             }
         }
 
@@ -734,11 +763,22 @@ class DashboardFragment : Fragment(), GlassInsetAware {
 
             apUiActive -> apStatusText
 
+            System.currentTimeMillis() < cancelFeedbackUntil -> "已取消连接"
+
             else -> viewModel.statusMessage.value
         }
         binding.cardDevice.tvStatusMessage.text = text.ifBlank { "未连接" }
+        binding.cardDevice.btnCameraDetail.visibility =
+            if (hasConnectedCamera()) View.VISIBLE else View.GONE
         renderApWifiState()
     }
+
+    /** 详情页入口只在确实有相机通道时出现；没有相机时打开只会是一页「—」。 */
+    private fun hasConnectedCamera(): Boolean =
+        viewModel.usbState.value == UsbConnectionState.CONNECTED ||
+            viewModel.connectionState.value == ConnectionState.FULLY_CONNECTED ||
+            viewModel.connectionState.value == ConnectionState.BLE_CONNECTED ||
+            viewModel.apState.value is com.camerakit.api.CameraState.Connected
 
     /**
      * 云端解析授权（PRD v2.4 §L4）：本机解析读不出时的唯一退路要把相机原片交给第三方
@@ -769,6 +809,11 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             viewModel.disconnect()
             viewModel.disconnectUsb()
             viewModel.disconnectAp()
+        }
+
+        binding.cardDevice.btnCameraDetail.pressEffect()
+        binding.cardDevice.btnCameraDetail.setOnClickListener {
+            startActivity(Intent(requireContext(), CameraDetailActivity::class.java))
         }
 
         // STA 主机注册（式）：先引导用户在相机端进入「连接至 PC」向导，再执行注册
@@ -1204,6 +1249,7 @@ class DashboardFragment : Fragment(), GlassInsetAware {
         binding.staLists.visibility = if (staPtp) View.VISIBLE else View.GONE
         // FR-35② 的主次表达随扫描退役一并作废：连接按钮恒等宽
         applyActionEmphasis()
+        updateCancelConnectVisibility()
     }
 
     /**
@@ -1467,6 +1513,72 @@ class DashboardFragment : Fragment(), GlassInsetAware {
             chevron.animate().cancel()
             chevron.rotation = if (expanded) 0f else 180f
         }
+    }
+
+    /** 最近连接设备折叠：默认展开（与旧版信息露出一致），箭头 180°=展开。 */
+    private fun setupRecentToggle() {
+        val header = binding.recentHeader
+        val chevron = binding.recentChevron
+        val list = binding.recentDeviceList
+        chevron.contentDescription = getString(R.string.cd_collapse_recent_devices)
+        header.pressEffect()
+        header.setOnClickListener {
+            val expanded = list.visibility == View.VISIBLE
+            list.visibility = if (expanded) View.GONE else View.VISIBLE
+            chevron.animate().cancel()
+            chevron.rotation = if (expanded) 0f else 180f
+            chevron.contentDescription = getString(
+                if (expanded) R.string.cd_expand_recent_devices
+                else R.string.cd_collapse_recent_devices
+            )
+        }
+    }
+
+    /** 取消连接：停扫描/配对/重试/AP/主机注册，并抑制后台自动重连直到用户重新点连接。 */
+    private fun setupCancelConnect() {
+        binding.btnCancelConnect.pressEffect()
+        binding.btnCancelConnect.setOnClickListener {
+            staAutoConnectArmed = false
+            apWifiPollJob?.cancel()
+            apWifiPollJob = null
+            pairingDialog?.dismiss()
+            pairingDialog = null
+            viewModel.cancelConnect()
+            cancelFeedbackUntil = System.currentTimeMillis() + 3_000L
+            binding.btnCancelConnect.visibility = View.GONE
+            binding.cardDevice.tvStatusMessage.text = "已取消连接"
+            NlFeedback.show(requireContext(), "已取消连接，可重新点击「连接相机」")
+            // 反馈窗结束后补一次渲染：状态此时已回到「未连接」，
+            // 否则最后一次渲染发生在窗口内，文案会一直停在「已取消连接」。
+            viewLifecycleOwner.lifecycleScope.launch {
+                delay(3_200)
+                if (_binding != null) renderStatusLine()
+            }
+        }
+    }
+
+    /**
+     * 「取消连接」只在有流程可取消时出现：
+     * STA 扫描 / 正在连接 / 等待重试 / AP 发现与连接 / USB 建立通道。
+     * 已连接时由「断开连接」负责；FTP 推送架构没有直连流程，整行同样不出现。
+     */
+    private fun updateCancelConnectVisibility() {
+        if (_binding == null) return
+        val ftp = currentMode == ConnectMode.WIFI_STA && staArch == AppSettings.STA_ARCH_FTP
+        val state = viewModel.connectionState.value
+        val ap = viewModel.apState.value
+        val usb = viewModel.usbState.value
+        val active = viewModel.isWifiScanning.value ||
+            state == ConnectionState.CONNECTING ||
+            state == ConnectionState.ERROR_WAITING_RETRY ||
+            ap is com.camerakit.api.CameraState.Discovering ||
+            ap is com.camerakit.api.CameraState.Connecting ||
+            ap is com.camerakit.api.CameraState.AwaitingHostConfirm ||
+            ap is com.camerakit.api.CameraState.Recovering ||
+            usb == UsbConnectionState.CONNECTING ||
+            usb == UsbConnectionState.REQUESTING_PERMISSION
+        binding.btnCancelConnect.visibility =
+            if (!ftp && active) View.VISIBLE else View.GONE
     }
 
     private fun scanForCurrentMode() {

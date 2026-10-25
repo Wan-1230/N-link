@@ -224,7 +224,11 @@ class CameraParameterManager @Inject constructor(
         // 或新机身的 GetDeviceInfo 恰好不回 Model 时，设备页会把**上一台相机**的名字
         // 显示成当前相机的名字。清空后由下面的读取重填；读不到就留空，
         // 由 UI 的候选来源链回落到可信的下一个来源（而不是编一个或沿用旧的）。
-        _cameraInfo.value = _cameraInfo.value.copy(modelName = "", firmwareVersion = "")
+        _cameraInfo.value = _cameraInfo.value.copy(
+            modelName = "",
+            firmwareVersion = "",
+            serialNumber = ""
+        )
 
         withContext(Dispatchers.IO) {
             try {
@@ -502,7 +506,8 @@ class CameraParameterManager @Inject constructor(
             if (info.model.isNotBlank() || info.deviceVersion.isNotBlank()) {
                 _cameraInfo.value = _cameraInfo.value.copy(
                     modelName = info.model.ifBlank { _cameraInfo.value.modelName },
-                    firmwareVersion = info.deviceVersion
+                    firmwareVersion = info.deviceVersion,
+                    serialNumber = info.serialNumber.ifBlank { _cameraInfo.value.serialNumber }
                 )
             }
             return
@@ -516,7 +521,8 @@ class CameraParameterManager @Inject constructor(
         if (info.modelName.isNotBlank() || info.firmwareVersion.isNotBlank()) {
             _cameraInfo.value = _cameraInfo.value.copy(
                 modelName = info.modelName.ifBlank { _cameraInfo.value.modelName },
-                firmwareVersion = info.firmwareVersion
+                firmwareVersion = info.firmwareVersion,
+                serialNumber = info.serialNumber.ifBlank { _cameraInfo.value.serialNumber }
             )
         }
     }
@@ -964,6 +970,11 @@ class CameraParameterManager @Inject constructor(
     fun stopPolling() {
         pollingJob?.cancel()
         pollingJob = null
+    }
+
+    /** 相机详情页「刷新」：只重读设备信息，不动曝光参数轮询。 */
+    suspend fun refreshCameraInfoNow() = withContext(Dispatchers.IO) {
+        readCameraInfo()
     }
 
     private suspend fun readAperture() {
@@ -1972,6 +1983,8 @@ data class CameraInfo(
     val lensName: String = "",
     val firmwareVersion: String = "",
     val modelName: String = "",
+    /** 机身序列号；部分通道（AP 引擎）不提供，空串表示未读到，不代表没有 */
+    val serialNumber: String = "",
     val shutterQueryState: ShutterCountState = ShutterCountState.NONE,
     /** 广角端焦距（mm），0 = 未知 */
     val lensFocalMinMm: Double = 0.0,
