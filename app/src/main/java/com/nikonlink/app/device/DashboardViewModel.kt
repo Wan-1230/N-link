@@ -73,6 +73,11 @@ class DashboardViewModel @Inject constructor(
 
     private var lastSelectedAddress: String? = null
 
+    /** 正在跑的 WiFi 扫描 / AP 连接 / 主机注册任务：取消连接时统一停掉 */
+    private var wifiScanJob: kotlinx.coroutines.Job? = null
+    private var apConnectJob: kotlinx.coroutines.Job? = null
+    private var hostRegJob: kotlinx.coroutines.Job? = null
+
     init {
         // USB PTP 由 ConnectionManager 统一管理；这里只消费状态。
 
@@ -109,7 +114,11 @@ class DashboardViewModel @Inject constructor(
         _wifiDeviceList.value = emptyList()
         _wifiScanError.value = null
         val hotspotMode = settings.staSubMode == com.nikonlink.app.shared.common.AppSettings.STA_MODE_PHONE_HOTSPOT
-        viewModelScope.launch {
+        wifiScanJob = viewModelScope.launch {
+            _isWifiScanning.value = true
+            _wifiDeviceList.value = emptyList()
+            _wifiScanError.value = null
+            val hotspotMode = settings.staSubMode == com.nikonlink.app.shared.common.AppSettings.STA_MODE_PHONE_HOTSPOT
             try {
                 val candidates = connectionManager.scanWifiCameras(hotspotMode = hotspotMode)
                 _wifiDeviceList.value = candidates
@@ -125,6 +134,8 @@ class DashboardViewModel @Inject constructor(
                         else -> null
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _wifiDeviceList.value = emptyList()
                 _wifiScanError.value = "WiFi 扫描失败：" + (e.message ?: e.javaClass.simpleName)
@@ -174,8 +185,10 @@ class DashboardViewModel @Inject constructor(
             Timber.tag("ApKit").i("connectAp ignored: already ${st.javaClass.simpleName}")
             return
         }
+        connectionManager.resumeConnect()
+        apConnectJob?.cancel()
         apConnection.markEngaged()
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        apConnectJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             runCatching {
                 apClient.connect(com.camerakit.api.ConnectionMethod.WifiAp(host, port))
                 // demo-debug 同款：连接成功自动做一次读取验证（只读不改）
@@ -262,7 +275,7 @@ class DashboardViewModel @Inject constructor(
      */
     fun registerStaHost() {
         if (_hostReg.value is HostRegUiState.Running) return
-        viewModelScope.launch {
+        hostRegJob = viewModelScope.launch {
             _hostReg.value = HostRegUiState.Running("正在预备注册…")
             val result = connectionManager.registerStaHost { progress ->
                 _hostReg.value = HostRegUiState.Running(progress)
@@ -331,9 +344,37 @@ class DashboardViewModel @Inject constructor(
         connectionManager.disconnectDevice()
     }
 
+    /**
+     * 取消当前所有连接流程：扫描 / STA 配对与自动重试 / AP 连接 / 主机注册。
+     * 与 [disconnect] 区分：disconnect 针对已连接会话；cancel 针对「还没连上、
+     * 正在反复重试」的过程，并抑制后台自动重连直到用户重新点连接。
+     */
+    fun cancelConnect() {
+        wifiScanJob?.cancel()
+        wifiScanJob = null
+        _isWifiScanning.value = false
+        apConnectJob?.cancel()
+        val cancelledApJob = apConnectJob
+        apConnectJob = null
+        hostRegJob?.cancel()
+        hostRegJob = null
+        _hostReg.value = null
+        apConnection.disconnect()
+        usbPtpManager.disconnect()
+        connectionManager.cancelConnect()
+        // AP 引擎的 connect() 可能正卡在阻塞 socket 上，取消后仍会把状态写成 Failed；
+        // 等它退出（最多 3 秒）再清一次，保证界面最终停在「未连接」而不是「连接失败」。
+        viewModelScope.launch {
+            kotlinx.coroutines.withTimeoutOrNull(3_000) { cancelledApJob?.join() }
+            apConnection.disconnect()
+        }
+        Timber.tag("DashboardVM").i("Connection flows cancelled by user")
+    }
+
     /** USB 有线连接：检测已插入的相机 */
     fun connectUsb() {
         // 用户主动点了 USB 连接 → 允许在「总线上没有相机」时把原因写进状态
+        connectionManager.resumeConnect()
         usbPtpManager.checkExistingDevice(notifyWhenAbsent = true)
     }
 

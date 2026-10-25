@@ -141,6 +141,20 @@
                         android:text="@string/btn_mode_connect_text" />
                 </LinearLayout>
 
+                <!-- 2026-10-25：取消连接 —— 与「断开连接」区分：
+                     断开作用于已建立的会话；取消作用于正在进行的扫描/配对/自动重试，
+                     点一下即停止全部连接流程并抑制之后的自动重连，直到用户重新点连接。
+                     仅在连接中/等待重连/扫描中/AP 连接中出现。 -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnCancelConnect"
+                    style="@style/NlButton.Outline"
+                    android:layout_width="match_parent"
+                    android:layout_height="42dp"
+                    android:layout_marginTop="8dp"
+                    android:maxLines="1"
+                    android:text="@string/btn_cancel_connect_text"
+                    android:visibility="gone" />
+
                 <!-- 2026-10-18：STA 的「最近连接设备 / 已发现相机」两栏从 WiFi STA 面板里
                      搬到这里，落在操作行下方 —— 先给入口（手动输入 IP、连接相机），再列结果。
                      这两栏只服务 STA + PTP/IP 直连：FTP 推送架构下手机是接收端，
@@ -152,13 +166,35 @@
                     android:orientation="vertical"
                     android:visibility="gone">
 
-                    <TextView
-                        style="@style/NlText.GroupTitle"
-                        android:layout_width="wrap_content"
+                    <!-- 2026-10-25：最近连接设备可折叠。标题行整行可点，
+                         箭头 180°=展开、0°=收起；默认展开，保持旧布局的信息露出。 -->
+                    <LinearLayout
+                        android:id="@+id/recentHeader"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="14dp"
                         android:layout_marginBottom="@dimen/space_8"
-                        android:text="@string/txt_最近连接设备" />
+                        android:background="?attr/selectableItemBackground"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingVertical="2dp">
+
+                        <TextView
+                            style="@style/NlText.GroupTitle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/txt_最近连接设备" />
+
+                        <ImageView
+                            android:id="@+id/recentChevron"
+                            android:layout_width="20dp"
+                            android:layout_height="20dp"
+                            android:contentDescription="@string/cd_collapse_recent_devices"
+                            android:rotation="180"
+                            android:src="@drawable/ic_chevron_down"
+                            app:tint="@color/text_tertiary" />
+                    </LinearLayout>
 
                     <LinearLayout
                         android:id="@+id/recentDeviceList"

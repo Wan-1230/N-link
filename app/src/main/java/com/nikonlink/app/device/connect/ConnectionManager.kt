@@ -131,6 +131,15 @@ class ConnectionManager @Inject constructor(
     /** v1.3.2：事件级监听（失败原因可见化），与 stateListener 同生命周期 */
     private var eventListener: ((ConnectionEvent) -> Unit)? = null
     private var userDisconnectRequested = false
+
+    /**
+     * 用户点了「取消连接」：停止当前全部连接流程，并抑制后台自动重连，
+     * 直到用户显式再次发起连接（[resumeConnect]）。
+     * 与 [userDisconnectRequested] 的区别：后者只在一次状态派发周围短暂置位，
+     * 本标记必须跨「网络恢复 / PTP 断开 / 健康检查」等自动触发点持续生效。
+     */
+    @Volatile
+    private var connectCancelled = false
     private var connectedSince: Long? = null
     private var pairingJob: Job? = null
     private var recoveryJob: Job? = null
@@ -193,6 +202,7 @@ class ConnectionManager @Inject constructor(
 
     fun start(scope: CoroutineScope) {
         this.scope = scope
+        connectCancelled = false
         bleManager.start(scope)
         wifiManager.start(scope)
         ptpSession.start(scope)
@@ -239,6 +249,7 @@ class ConnectionManager @Inject constructor(
         connector.stop()
         _connectionHint.value = null
         userDisconnectRequested = false
+        connectCancelled = false
         connectedSince = null
         scope = null
         Timber.tag(TAG).i("ConnectionManager stopped")
@@ -248,6 +259,7 @@ class ConnectionManager @Inject constructor(
      * 用户触发连接（首次配对或手动重连）
      */
     fun connectToDevice(address: String) {
+        resumeConnect()
         pairedDeviceAddress = address
         userDisconnectRequested = false
         stateMachine.dispatch(ConnectionEvent.StartConnect)
@@ -279,6 +291,58 @@ class ConnectionManager @Inject constructor(
     }
 
     /**
+     * 用户重新发起连接：解除「取消连接」的自动重连抑制。
+     * 只由显式用户动作调用（点连接 / 快速连接 / 手动 IP / AP / USB）。
+     */
+    fun resumeConnect() {
+        if (connectCancelled) {
+            connectCancelled = false
+            Timber.tag(TAG).i("Auto-connect suppression cleared by user action")
+        }
+    }
+
+    /**
+     * 取消连接（与「断开连接」区分）：
+     * - 断开连接：针对已建立的会话，断开后保持未连接；
+     * - 取消连接：针对正在进行的扫描 / 配对 / 自动重试 / AP 连接 / 主机注册，
+     *   立即停掉全部流程，并抑制网络恢复、PTP 断开、健康检查等后台触发点，
+     *   直到用户重新点「连接相机」。
+     *
+     * 不关闭手机 WiFi：用户可能只是不想连相机，不想把家里路由器也断开。
+     * 连接器 / AP 引擎 / BLE / PTP 会话各自清理网络持有与套接字。
+     */
+    fun cancelConnect() {
+        connectCancelled = true
+        pairingJob?.cancel()
+        pairingJob = null
+        recoveryJob?.cancel()
+        recoveryJob = null
+        connector.cancelActive()
+        staNetworkLost = false
+        _connectionHint.value = null
+        stopScan()
+        bleManager.disconnect()
+        ptpSession.closeSession()
+        _statusMessage.value = "已取消连接"
+        // 状态机派发期间临时置位，避免状态监听里的自动重连在取消瞬间抢先触发
+        userDisconnectRequested = true
+        stateMachine.dispatch(ConnectionEvent.CameraShutdown)
+        userDisconnectRequested = false
+        // 取消反馈只停留 3 秒，之后回到中性「未连接」；用户若已重新连接则不覆盖
+        scope?.launch {
+            delay(3_000)
+            if (connectCancelled && _statusMessage.value == "已取消连接") {
+                _statusMessage.value = "未连接"
+            }
+        }
+        eventLogger.event(
+            "connect_cancel",
+            "host" to (pairedDeviceAddress ?: "-")
+        )
+        Timber.tag(TAG).i("Connection cancelled by user; auto-connect suppressed")
+    }
+
+    /**
      * 通过 WiFi 直连相机（AP/STA 均适用）。
      * RC-1/2/7/8：连接全部收敛到 WifiDirectConnector 单一入口——
      * Mutex + activeJob 槽位消灭并发 pair_start 风暴，generation 令牌保证
@@ -297,6 +361,14 @@ class ConnectionManager @Inject constructor(
          */
         caller: ConnFunnel.Caller = ConnFunnel.Caller.USER_TAP
     ) {
+        if (caller == ConnFunnel.Caller.USER_TAP) resumeConnect()
+        if (connectCancelled) {
+            eventLogger.event(
+                "connect_ignored", "host" to ipAddress, "caller" to caller.code,
+                "reason" to "cancelled_by_user"
+            )
+            return
+        }
         if (apConnection.engaged || staRegistrationActive.get() ||
             android.os.SystemClock.elapsedRealtime() < staProfileReadyAt
         ) {
@@ -485,6 +557,16 @@ class ConnectionManager @Inject constructor(
                 )
             }
         }
+        if (connectCancelled) {
+            eventLogger.event(
+                "connect_ignored", "host" to endpoint.host, "caller" to caller.code,
+                "reason" to "cancelled_before_pairing"
+            )
+            if (connFlags.isEnabled(ConnFlags.FUNNEL_CLOSE_ON_IGNORE)) {
+                funnel.fail(ConnFunnel.Reason.COOLDOWN_SKIPPED, "cancelled_by_user")
+            }
+            return
+        }
         beginWifiPairing(endpoint, deviceName, caller.code)
         stateMachine.dispatch(ConnectionEvent.StartConnect)
     }
@@ -661,7 +743,7 @@ class ConnectionManager @Inject constructor(
      *   不会形成重试风暴。
      */
     private fun maybeAutoRediscover(failedHost: String, source: String, reason: String) {
-        if (autoRediscoveryUsed || userDisconnectRequested) return
+        if (autoRediscoveryUsed || userDisconnectRequested || connectCancelled) return
         if (reason !in AUTO_REDISCOVER_REASONS) return
         autoRediscoveryUsed = true
         eventLogger.event(
@@ -806,6 +888,7 @@ class ConnectionManager @Inject constructor(
      * 后台健康检查/启动时恢复最后配对的设备。
      */
     suspend fun reconnectLastDevice(): Boolean {
+        if (connectCancelled) return false
         return try {
             val device = deviceRepository.getLastAutoConnectDevice()
             if (device != null) {
@@ -867,6 +950,7 @@ class ConnectionManager @Inject constructor(
         // BLE 连接失败（地址无效/GATT 错误）进入可恢复重试
         scope?.launch {
             bleManager.connectFailed.collect {
+                if (connectCancelled) return@collect
                 Timber.tag(TAG).w("BLE connect failed, scheduling retry")
                 stateMachine.dispatch(ConnectionEvent.ErrorOccurred("BLE 连接失败", recoverable = true))
             }
@@ -926,7 +1010,9 @@ class ConnectionManager @Inject constructor(
     /**
      * 通过 BLE 通知相机恢复 WiFi AP，同时用已缓存凭证在手机侧重连。
      */
-    fun requestWifiReconnect() {        scope?.launch {
+    fun requestWifiReconnect() {
+        if (connectCancelled) return
+        scope?.launch {
             delay(WIFI_UPGRADE_DELAY_MS)
             if (bleManager.isConnected()) {
                 bleManager.requestWifiReconnect()
@@ -1247,7 +1333,7 @@ class ConnectionManager @Inject constructor(
     private fun observeStaRecovery() {
         scope?.launch {
             wifiManager.networkAvailable.collect { network ->
-                if (staNetworkLost && !userDisconnectRequested &&
+                if (staNetworkLost && !userDisconnectRequested && !connectCancelled &&
                     pairedDeviceAddress?.startsWith("wifi:") == true &&
                     !connector.isActive
                 ) {
@@ -1385,7 +1471,7 @@ class ConnectionManager @Inject constructor(
         scope?.launch {
             ptpSession.sessionState.collect { state ->
                 if ((state == PtpSessionState.ERROR || state == PtpSessionState.DISCONNECTED) &&
-                    !userDisconnectRequested &&
+                    !userDisconnectRequested && !connectCancelled &&
                     !connector.isActive && pairingJob?.isActive != true &&
                     stateMachine.state.value != ConnectionState.DISCONNECTED &&
                     pairedDeviceAddress?.startsWith("wifi:") == true
@@ -1478,6 +1564,7 @@ class ConnectionManager @Inject constructor(
     }
 
     private fun recoverWifiSession(network: android.net.Network? = null) {
+        if (connectCancelled) return
         if (apConnection.engaged || staRegistrationActive.get() ||
             android.os.SystemClock.elapsedRealtime() < staProfileReadyAt
         ) return
@@ -1512,7 +1599,7 @@ class ConnectionManager @Inject constructor(
     private fun observeReconnectTrigger() {
         scope?.launch {
             stateMachine.state.collect { state ->
-                if (state == ConnectionState.CONNECTING && !userDisconnectRequested) {
+                if (state == ConnectionState.CONNECTING && !userDisconnectRequested && !connectCancelled) {
                     val address = pairedDeviceAddress
                     if (address != null && address.startsWith("wifi:")) {
                         // Fix STA: 状态机重试闭环补齐 WiFi 直连分支（旧逻辑只重连 BLE）
@@ -1693,6 +1780,7 @@ class ConnectionManager @Inject constructor(
     }
 
     private suspend fun reconnectLastDeviceIfPaired() {
+        if (connectCancelled) return
         try {
             val device = deviceRepository.getLastAutoConnectDevice()
             if (device != null && pairedDeviceAddress == null) {
@@ -1727,6 +1815,7 @@ class ConnectionManager @Inject constructor(
      * 其余（BLE/未配对）走完整重连流程。
      */
     fun recoverLostLink() {
+        if (connectCancelled) return
         val address = pairedDeviceAddress
         if (address != null && address.startsWith("wifi:") &&
             !connector.isActive && pairingJob?.isActive != true &&
