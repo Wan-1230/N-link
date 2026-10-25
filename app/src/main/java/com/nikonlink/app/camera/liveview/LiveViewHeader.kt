@@ -36,9 +36,20 @@ object LiveViewHeader {
         val height: Int,
         val centerX: Int,
         val centerY: Int,
-        val role: AfRole = AfRole.UNKNOWN
+        val role: AfRole = AfRole.UNKNOWN,
+        val index: Int = 0
     ) {
         val isPlausible: Boolean get() = width > 0 && height > 0
+
+        /** 记录必须完整落在 whole 像素域内；越界槽位多半是未使用槽的残留数据。 */
+        fun fitsWhole(wholeWidth: Int, wholeHeight: Int): Boolean {
+            if (!isPlausible || wholeWidth <= 0 || wholeHeight <= 0) return false
+            val left = centerX - width / 2
+            val top = centerY - height / 2
+            val right = centerX + width / 2
+            val bottom = centerY + height / 2
+            return left >= 0 && top >= 0 && right <= wholeWidth && bottom <= wholeHeight
+        }
     }
 
     /**
@@ -82,7 +93,13 @@ object LiveViewHeader {
         val displayLeft: Int get() = displayCenterX - displayWidth / 2
         val displayTop: Int get() = displayCenterY - displayHeight / 2
 
-        /** display 区域是否可用；不可用时所有换算退回 whole 域 */
+        /** JPEG 区域在 whole 中居中放置；display 缺失时的回退域（逆向实现同款）。 */
+        private val hasUsableImageArea: Boolean
+            get() = jpegWidth in 1..wholeWidth && jpegHeight in 1..wholeHeight
+        private val imageLeft: Int get() = (wholeWidth - jpegWidth) / 2
+        private val imageTop: Int get() = (wholeHeight - jpegHeight) / 2
+
+        /** display 区域是否可用；不可用时所有换算退回 JPEG 居中域 */
         val hasUsableDisplayArea: Boolean
             get() = displayWidth > 0 && displayHeight > 0 &&
                 displayLeft >= 0 && displayTop >= 0 &&
@@ -96,7 +113,7 @@ object LiveViewHeader {
          * secondary control > 未知。单点 AF 只有一个区域，走 primary 分支。
          */
         fun normalizedRect(area: AfArea): NormalizedRect? {
-            if (!area.isPlausible) return null
+            if (!area.fitsWhole(wholeWidth, wholeHeight)) return null
             val domainW: Int
             val domainH: Int
             val originX: Int
@@ -106,6 +123,11 @@ object LiveViewHeader {
                 domainH = displayHeight
                 originX = displayLeft
                 originY = displayTop
+            } else if (hasUsableImageArea) {
+                domainW = jpegWidth
+                domainH = jpegHeight
+                originX = imageLeft
+                originY = imageTop
             } else if (wholeWidth > 0 && wholeHeight > 0) {
                 domainW = wholeWidth
                 domainH = wholeHeight
@@ -125,20 +147,51 @@ object LiveViewHeader {
             return NormalizedRect(left, top, right, bottom)
         }
 
-        /** 当前应回显的 AF 区域；没有可用区域时返回 null。 */
+        /**
+         * 当前应回显的 AF 区域。
+         *
+         * 与逆向实现一致：跟踪框 > 主体检测框 > 控制框；主体检测有多个时优先选中项，
+         * 控制框优先 selected 索引对应的 primary，避免把机身边缘的次要框画成对焦点。
+         */
         fun activeAfArea(): AfArea? {
-            val plausible = afAreas.filter { it.isPlausible }
+            val plausible = afAreas.filter { it.fitsWhole(wholeWidth, wholeHeight) }
             if (plausible.isEmpty()) return null
             return plausible.firstOrNull { it.role == AfRole.TRACKING }
+                ?: plausible.firstOrNull {
+                    it.role == AfRole.SUBJECT_DETECTION && it.index == selectedAfIndex
+                }
                 ?: plausible.firstOrNull { it.role == AfRole.SUBJECT_DETECTION }
                 ?: plausible.firstOrNull { it.role == AfRole.PRIMARY_CONTROL }
                 ?: plausible.firstOrNull { it.role == AfRole.SECONDARY_CONTROL }
                 ?: plausible.first()
         }
 
+        /** whole 坐标 → 相对监看图像的归一化坐标；用于把下发点与回显点对齐比较。 */
+        fun normalizedCoord(x: Int, y: Int): Pair<Float, Float>? {
+            if (hasUsableDisplayArea) {
+                val left = displayLeft.coerceIn(0, (wholeWidth - displayWidth).coerceAtLeast(0))
+                val top = displayTop.coerceIn(0, (wholeHeight - displayHeight).coerceAtLeast(0))
+                return ((x - left).toFloat() / displayWidth).coerceIn(0f, 1f) to
+                    ((y - top).toFloat() / displayHeight).coerceIn(0f, 1f)
+            }
+            if (hasUsableImageArea) {
+                return ((x - imageLeft).toFloat() / jpegWidth).coerceIn(0f, 1f) to
+                    ((y - imageTop).toFloat() / jpegHeight).coerceIn(0f, 1f)
+            }
+            if (wholeWidth > 0 && wholeHeight > 0) {
+                return (x.toFloat() / wholeWidth).coerceIn(0f, 1f) to
+                    (y.toFloat() / wholeHeight).coerceIn(0f, 1f)
+            }
+            return null
+        }
+
         /**
          * 点击位置（相对监看 JPEG 内容，0..1）→ ChangeAfArea 的 whole 坐标。
          * 与回显换算严格互逆：displayLeft + nx * displayWidth。
+         *
+         * display 原点按逆向实现夹到 `[0, whole-display]`：displayCenter 报得比
+         * 半个 display 还靠边时，相机实际会把画面贴边显示，而不是出现负原点。
+         * display 缺失时按逆向实现回退到「JPEG 居中放在 whole 中」的域。
          */
         fun afCoordFromNormalized(nx: Float, ny: Float): Pair<Int, Int>? {
             val x: Float
@@ -146,8 +199,16 @@ object LiveViewHeader {
             val maxX: Int
             val maxY: Int
             if (hasUsableDisplayArea) {
-                x = displayLeft + nx.coerceIn(0f, 1f) * displayWidth
-                y = displayTop + ny.coerceIn(0f, 1f) * displayHeight
+                val left = displayLeft.coerceIn(0, (wholeWidth - displayWidth).coerceAtLeast(0))
+                val top = displayTop.coerceIn(0, (wholeHeight - displayHeight).coerceAtLeast(0))
+                x = left + nx.coerceIn(0f, 1f) * displayWidth
+                y = top + ny.coerceIn(0f, 1f) * displayHeight
+                maxX = wholeWidth
+                maxY = wholeHeight
+            } else if (hasUsableImageArea) {
+                // display 缺失时相机把 JPEG 居中放在 whole 中，坐标也要落在这个居中域
+                x = imageLeft + nx.coerceIn(0f, 1f) * jpegWidth
+                y = imageTop + ny.coerceIn(0f, 1f) * jpegHeight
                 maxX = wholeWidth
                 maxY = wholeHeight
             } else if (wholeWidth > 0 && wholeHeight > 0) {
@@ -196,12 +257,9 @@ object LiveViewHeader {
             }
             val maxAreas = if (major == 2) MAX_AREAS_V2 else MAX_AREAS_V1
             val declaredCount = u8(buf, 44)
-            // v1 没有可靠的 count 语义时按满槽读，靠 isPlausible/边界过滤垃圾槽
-            val count = when {
-                declaredCount in 1..maxAreas -> declaredCount
-                major == 1 -> MAX_AREAS_V1
-                else -> 0
-            }
+            // 逆向实现只按声明 count 读取；旧版 v1 在 count 不可信时读满 42 槽，
+            // 会把未使用槽的残留字节当成 AF 区域画到屏幕上，这里改为直接判无效。
+            val count = if (declaredCount in 1..maxAreas) declaredCount else 0
             val headerEnd = 8 + headerBytes
             val required = AF_AREA_OFFSET + count * 8
             if (required > data.size || required > headerEnd) return null
@@ -232,7 +290,8 @@ object LiveViewHeader {
                                 selectedIndex = selectedIndex,
                                 trackingState = tracking,
                                 reliable = classificationReliable
-                            )
+                            ),
+                            index = i
                         )
                     )
                 }

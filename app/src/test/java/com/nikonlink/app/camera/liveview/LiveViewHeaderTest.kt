@@ -145,16 +145,77 @@ class LiveViewHeaderTest {
     }
 
     @Test
-    fun `falls back to whole size when display area is not reported`() {
+    fun `prefers selected subject area among multiple subject detections`() {
+        val info = LiveViewHeader.parse(
+            header(
+                afMode = 1,
+                declaredCount = 2,
+                selectedIndex = 1,
+                trackingState = 0,
+                areas = listOf(
+                    AreaSpec(100, 100, 1000, 1000),
+                    AreaSpec(200, 200, 4000, 3000)
+                )
+            )
+        )!!
+        assertEquals(LiveViewHeader.AfRole.SUBJECT_DETECTION, info.afAreas[0].role)
+        assertEquals(LiveViewHeader.AfRole.SUBJECT_DETECTION, info.afAreas[1].role)
+        assertEquals(1, info.activeAfArea()!!.index)
+        assertEquals(4000, info.activeAfArea()!!.centerX)
+    }
+
+    @Test
+    fun `ignores area whose rectangle falls outside whole frame`() {
+        val info = LiveViewHeader.parse(
+            header(
+                afMode = 0,
+                declaredCount = 2,
+                selectedIndex = 0,
+                areas = listOf(
+                    // 右缘 6100 > whole 6000，属于未使用槽残留
+                    AreaSpec(400, 200, 5900, 2000),
+                    AreaSpec(200, 200, 3000, 2000)
+                )
+            )
+        )!!
+        val active = info.activeAfArea()!!
+        assertEquals(1, active.index)
+        assertEquals(3000, active.centerX)
+    }
+
+    @Test
+    fun `v1 zero count no longer reads all 42 slots`() {
+        val info = LiveViewHeader.parse(
+            header(major = 1, declaredCount = 0, areas = emptyList())
+        )!!
+        assertEquals(0, info.afAreaCount)
+        assertNull(info.activeAfArea())
+    }
+
+    @Test
+    fun `falls back to centered JPEG area when display area is not reported`() {
+        val info = LiveViewHeader.parse(
+            header(
+                displayW = 0, displayH = 0, displayCx = 0, displayCy = 0,
+                areas = listOf(AreaSpec(300, 200, 3000, 2000))
+            )
+        )!!
+        assertTrue(!info.hasUsableDisplayArea)
+        // JPEG 1620x1080 居中于 whole 6000x4000：left=(6000-1620)/2=2190，top=1460
+        val area = info.activeAfArea()!!
+        val rect = info.normalizedRect(area)!!
+        assertEquals(0.5f, rect.centerX, 0.0001f)
+        assertEquals(0.5f, rect.centerY, 0.0001f)
+        assertEquals(2190 + 16 to 1460 + 10, info.afCoordFromNormalized(0.01f, 0.01f))
+    }
+
+    @Test
+    fun `hides echo when area falls outside the centered JPEG fallback`() {
         val info = LiveViewHeader.parse(
             header(displayW = 0, displayH = 0, displayCx = 0, displayCy = 0)
         )!!
-        assertTrue(!info.hasUsableDisplayArea)
-        val area = info.activeAfArea()!!
-        val rect = info.normalizedRect(area)!!
-        assertEquals(4350f / 6000f, rect.centerX, 0.0001f)
-        assertEquals(2900f / 4000f, rect.centerY, 0.0001f)
-        assertEquals(60 to 40, info.afCoordFromNormalized(0.01f, 0.01f))
+        // 默认区域在 4350,2900，超出 JPEG 居中域 2190..3810 / 1460..2540
+        assertNull(info.normalizedRect(info.activeAfArea()!!))
     }
 
     @Test

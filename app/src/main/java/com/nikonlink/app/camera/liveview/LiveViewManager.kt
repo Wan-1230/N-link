@@ -97,6 +97,18 @@ class LiveViewManager @Inject constructor(
 
         /** ChangeAfArea(0x9205) 生效后再 AfDrive 的间隔 */
         private const val AF_AREA_SETTLE_MS = 150L
+
+        /** 触摸后持续按帧解析/记录 AF 回显的窗口（相机随后可能清空区域） */
+        private const val AF_ECHO_WINDOW_MS = 6_000L
+
+        /** 非触摸期间帧头解析间隔：AF 区域是常驻状态，10Hz 足够且省 CPU */
+        private const val AF_HEADER_PARSE_IDLE_MS = 100L
+
+        /** AF 回显位置去重阈值（归一化坐标），避免同一区域反复触发动效 */
+        private const val AF_AREA_EPSILON = 0.002f
+
+        /** AF 回显日志节流：区域连续跟踪时避免刷爆事件日志 */
+        private const val AF_AF_LOG_INTERVAL_MS = 300L
     }
 
     /**
@@ -215,7 +227,14 @@ class LiveViewManager @Inject constructor(
     /** 触摸对焦后等待相机回显 AF 区域的窗口（epoch ms） */
     private var afWatchStartedMs = 0L
     private var afWatchUntilMs = 0L
-    private var afAreaEventSent = false
+    private var afEchoSeen = false
+    private var afEchoMissingLogged = false
+    private var lastAfLogMs = 0L
+
+    /** 最近一次下发的 ChangeAfArea 坐标，用于把「点击点」和「相机回显点」对在同一口径 */
+    private var lastAfCommandX = -1
+    private var lastAfCommandY = -1
+    private var lastAfCommandAtMs = 0L
 
     /** 相机回显的对焦点（归一化中心/宽高），供全屏页把本地框移到真实位置 */
     private val _cameraAfArea = MutableStateFlow<CameraAfArea?>(null)
@@ -554,7 +573,12 @@ class LiveViewManager @Inject constructor(
         headerLogKey = ""
         afWatchStartedMs = 0L
         afWatchUntilMs = 0L
-        afAreaEventSent = false
+        afEchoSeen = false
+        afEchoMissingLogged = false
+        lastAfLogMs = 0L
+        lastAfCommandX = -1
+        lastAfCommandY = -1
+        lastAfCommandAtMs = 0L
         captureGuardUntilMs = 0L
         captureBlackoutLogged = false
         recentFrameSizes.clear()
@@ -826,12 +850,19 @@ class LiveViewManager @Inject constructor(
     }
 
     /**
-     * 解析帧头几何（降频：每 500ms 一次；触摸对焦回显窗口内逐帧解析）。
+     * 解析帧头几何与 AF 状态，并把相机真实 AF 区域发布给监看页。
+     *
+     * 与逆向实现的差异修正：旧版只在「触摸后 4 秒窗口」内回显，且跳过
+     * `focusDrive != 0` 的帧。相机恰恰可能在 AF 驱动期间才把最终区域写进帧头，
+     * 驱动结束后又清空，于是永远读不到回显、框停留在点击位置。
+     * 现在改为：命令下发后的 settle 窗口内先抑制旧值，之后**每帧**都可以回显。
+     *
      * 只读字节，不改帧流；解析失败时 liveViewHeader 保持上一份/为 null。
      */
     private fun observeFrameMetadata(data: ByteArray, now: Long) {
-        val inAfWatch = now >= afWatchStartedMs && now < afWatchUntilMs
-        if (liveViewHeader != null && !inAfWatch && now - lastHeaderParseMs < 500L) return
+        val inAfWatch = afWatchStartedMs > 0 && now < afWatchUntilMs
+        val minInterval = if (inAfWatch) 0L else AF_HEADER_PARSE_IDLE_MS
+        if (liveViewHeader != null && now - lastHeaderParseMs < minInterval) return
         val info = LiveViewHeader.parse(data) ?: return
         lastHeaderParseMs = now
         liveViewHeader = info
@@ -866,33 +897,100 @@ class LiveViewManager @Inject constructor(
             )
         }
 
-        if (!inAfWatch) return
-        // AF 还在驱动时不回显：此时相机会先把区域挪到目标格，再返回最终点
-        if (info.focusDrive != 0) return
-        // 下发 AF 区域后有 settle 延时，过早读到的可能仍是上一轮区域
-        if (now - afWatchStartedMs < AF_AREA_SETTLE_MS + 150L) return
-        val area = info.activeAfArea() ?: return
-        val rect = info.normalizedRect(area) ?: return
-        _cameraAfArea.value = CameraAfArea(
+        publishCameraAfArea(info, now)
+    }
+
+    /**
+     * 相机 AF 回显：每帧都尝试发布，不依赖触摸窗口。
+     * 位置变化超过 [AF_AREA_EPSILON] 才更新，避免同一区域反复触发 UI 动画。
+     */
+    private fun publishCameraAfArea(info: LiveViewHeader.Info, now: Long) {
+        // 刚下发 ChangeAfArea 时相机可能还没换区域，先别把旧值画出去
+        if (afWatchStartedMs > 0 && now - afWatchStartedMs < AF_AREA_SETTLE_MS) return
+
+        val area = info.activeAfArea()
+        val rect = area?.let { info.normalizedRect(it) }
+        if (area == null || rect == null) {
+            if (afWatchStartedMs > 0 && !afEchoSeen && !afEchoMissingLogged &&
+                now >= afWatchUntilMs
+            ) {
+                afEchoMissingLogged = true
+                eventLogger.event(
+                    "af_echo_missing",
+                    "af_count" to info.afAreaCount,
+                    "af_selected" to info.selectedAfIndex,
+                    "tracking" to info.trackingState,
+                    "af_mode" to info.afMode,
+                    "focus_drive" to info.focusDrive,
+                    "focus_state" to info.focusState,
+                    "whole" to "${info.wholeWidth}x${info.wholeHeight}",
+                    "display" to "${info.displayWidth}x${info.displayHeight}",
+                    "display_center" to "${info.displayCenterX},${info.displayCenterY}",
+                    "rotation" to info.rotation
+                )
+                Timber.tag(TAG).w(
+                    "AF echo missing after touch: count=%d sel=%d tracking=%d mode=%d drive=%d",
+                    info.afAreaCount, info.selectedAfIndex, info.trackingState,
+                    info.afMode, info.focusDrive
+                )
+            }
+            return
+        }
+
+        val next = CameraAfArea(
             centerX = rect.centerX,
             centerY = rect.centerY,
             width = rect.width,
             height = rect.height
         )
-        if (!afAreaEventSent) {
-            afAreaEventSent = true
-            eventLogger.event(
-                "af_indicator",
-                "mode" to "camera_area",
-                "center" to "${area.centerX},${area.centerY}",
-                "area" to "${area.width}x${area.height}",
-                "role" to area.role.name,
-                "normalized" to "${rect.centerX},${rect.centerY}",
-                "whole" to "${info.wholeWidth}x${info.wholeHeight}",
-                "display" to "${info.displayWidth}x${info.displayHeight}",
-                "display_center" to "${info.displayCenterX},${info.displayCenterY}",
-                "focus_state" to info.focusState,
-                "af_mode" to info.afMode
+        val prev = _cameraAfArea.value
+        if (prev != null &&
+            kotlin.math.abs(prev.centerX - next.centerX) < AF_AREA_EPSILON &&
+            kotlin.math.abs(prev.centerY - next.centerY) < AF_AREA_EPSILON &&
+            kotlin.math.abs(prev.width - next.width) < AF_AREA_EPSILON &&
+            kotlin.math.abs(prev.height - next.height) < AF_AREA_EPSILON
+        ) {
+            return
+        }
+        _cameraAfArea.value = next
+        afEchoSeen = true
+
+        if (now - lastAfLogMs < AF_AF_LOG_INTERVAL_MS) return
+        lastAfLogMs = now
+        val cmdNorm = if (lastAfCommandX >= 0) {
+            info.normalizedCoord(lastAfCommandX, lastAfCommandY)
+        } else {
+            null
+        }
+        eventLogger.event(
+            "af_indicator",
+            "mode" to "camera_area",
+            "center" to "${area.centerX},${area.centerY}",
+            "area" to "${area.width}x${area.height}",
+            "role" to area.role.name,
+            "index" to area.index,
+            "selected" to info.selectedAfIndex,
+            "normalized" to "${rect.centerX},${rect.centerY}",
+            "cmd" to if (lastAfCommandX >= 0) "$lastAfCommandX,$lastAfCommandY" else "-",
+            "cmd_normalized" to (cmdNorm?.let { "${it.first},${it.second}" } ?: "-"),
+            "cmd_age_ms" to if (lastAfCommandX >= 0) now - lastAfCommandAtMs else -1,
+            "echo_delta" to (cmdNorm?.let {
+                "${rect.centerX - it.first},${rect.centerY - it.second}"
+            } ?: "-"),
+            "whole" to "${info.wholeWidth}x${info.wholeHeight}",
+            "display" to "${info.displayWidth}x${info.displayHeight}",
+            "display_center" to "${info.displayCenterX},${info.displayCenterY}",
+            "rotation" to info.rotation,
+            "focus_drive" to info.focusDrive,
+            "focus_state" to info.focusState,
+            "af_mode" to info.afMode
+        )
+        if (cmdNorm != null) {
+            Timber.tag(TAG).i(
+                "AF echo: area=%d,%d norm=%.3f,%.3f cmd=%d,%d cmdNorm=%.3f,%.3f role=%s",
+                area.centerX, area.centerY, rect.centerX, rect.centerY,
+                lastAfCommandX, lastAfCommandY, cmdNorm.first, cmdNorm.second,
+                area.role.name
             )
         }
     }
@@ -1110,15 +1208,21 @@ class LiveViewManager @Inject constructor(
                 val response = lv().changeAfArea(afX, afY)
 
                 if (response) {
+                    // 从命令下发这一刻起进入回显窗口：settle 期间先抑制旧区域，
+                    // 之后帧循环每帧都可以把相机真实区域发布给监看页。
+                    afWatchStartedMs = System.currentTimeMillis()
+                    afWatchUntilMs = afWatchStartedMs + AF_ECHO_WINDOW_MS
+                    afEchoSeen = false
+                    afEchoMissingLogged = false
+                    lastAfLogMs = 0L
+                    lastAfCommandX = afX
+                    lastAfCommandY = afY
+                    lastAfCommandAtMs = afWatchStartedMs
+                    _cameraAfArea.value = null
                     // 触发 AF 驱动：稍等 AF 区域生效后再驱动，部分机型立刻驱动会仍按旧区域对焦
                     delay(AF_AREA_SETTLE_MS)
                     lv().afDrive()
                     val header = liveViewHeader
-                    // 开始接收相机回显：帧循环会把本地框移到相机实际 AF 区域
-                    afWatchStartedMs = System.currentTimeMillis()
-                    afWatchUntilMs = afWatchStartedMs + 4_000L
-                    afAreaEventSent = false
-                    _cameraAfArea.value = null
                     Timber.tag(TAG).d(
                         "Touch focus: tap=($x,$y) -> af=($afX,$afY) " +
                             "frame=${framePixelWidth}x$framePixelHeight " +
