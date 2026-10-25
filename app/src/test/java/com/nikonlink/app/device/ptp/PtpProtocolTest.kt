@@ -62,6 +62,23 @@ class PtpProtocolTest {
     }
 
     @Test
+    fun `data out packets carry transaction and payload for location write`() {
+        val start = StartDataPacket(transactionId = 0x01020304, totalSize = 41).toBytes()
+        assertEquals(20, start.size)
+        assertEquals(PtpConstants.PACKET_TYPE_START_DATA, intLE(start, 4))
+        assertEquals(0x01020304, intLE(start, 8))
+        assertEquals(41, intLE(start, 12))
+        assertEquals(0, intLE(start, 16)) // 64-bit total size high word
+
+        val payload = ByteArray(41) { it.toByte() }
+        val end = EndDataPacket(transactionId = 0x01020304, data = payload).toBytes()
+        assertEquals(8 + 4 + 41, end.size)
+        assertEquals(PtpConstants.PACKET_TYPE_END_DATA, intLE(end, 4))
+        assertEquals(0x01020304, intLE(end, 8))
+        assertArrayEquals(payload, end.copyOfRange(12, end.size))
+    }
+
+    @Test
     fun `command response parses response code transaction and params`() {
         val payload = ByteBuffer.allocate(14)
             .order(ByteOrder.LITTLE_ENDIAN)

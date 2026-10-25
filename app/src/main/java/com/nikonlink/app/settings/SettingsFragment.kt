@@ -6,6 +6,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -20,6 +22,8 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import com.nikonlink.app.MainActivity
+import com.nikonlink.app.camera.location.CameraLocationStatus
+import com.nikonlink.app.camera.location.CameraLocationSyncManager
 import com.nikonlink.app.shared.ui.glass.DepthLift
 import com.nikonlink.app.shared.ui.glass.DockInset
 import com.nikonlink.app.shared.ui.glass.GlassChrome
@@ -43,6 +47,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.io.File
+import java.text.DateFormat
+import java.util.Date
 import javax.inject.Inject
 
 /**
@@ -75,6 +81,37 @@ class SettingsFragment : Fragment(), GlassInsetAware {
 
     @Inject
     lateinit var updateChecker: UpdateChecker
+
+    @Inject
+    lateinit var cameraLocationSync: CameraLocationSyncManager
+
+    /** 程序化回写开关时不要再次触发权限请求 */
+    private var syncingCameraLocationSwitch = false
+
+    private val locationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            settings.cameraLocationEnabled = true
+            cameraLocationSync.onSettingChanged()
+            if (!hasFineLocationPermission()) {
+                NlFeedback.show(requireContext(), getString(R.string.camera_location_coarse_only), long = true)
+            }
+        } else {
+            settings.cameraLocationEnabled = false
+            setCameraLocationSwitch(false)
+            cameraLocationSync.onSettingChanged()
+            NlGlass.dialog(requireContext())
+                .setTitle(R.string.camera_location_permission_title)
+                .setMessage(R.string.camera_location_permission_denied)
+                .setPositiveButton(R.string.camera_location_open_settings) { _, _ ->
+                    openAppSettingsPage()
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }
+        renderCameraLocationStatus(cameraLocationSync.status.value)
+    }
 
     @Inject
     lateinit var connFlags: com.nikonlink.app.device.connect.ConnFlags
@@ -149,6 +186,8 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         binding.switchReduceTransparency.isChecked = UiFlags.reduceTransparency(requireContext())
         binding.switchMarkAutoDownload.isChecked = settings.markAutoDownload
         binding.switchShareKeepGps.isChecked = settings.shareKeepGps
+        setCameraLocationSwitch(settings.cameraLocationEnabled)
+        renderCameraLocationStatus(cameraLocationSync.status.value)
         binding.tvQualityValue.text = settings.downloadQuality
         binding.tvSavePathValue.text = settings.savePath
         binding.tvConnPrefValue.text = settings.connectionPreference
@@ -252,6 +291,8 @@ class SettingsFragment : Fragment(), GlassInsetAware {
             settings.shareKeepGps = checked
             eventLogger.event("setting", "key" to "share_keep_gps", "value" to checked)
         }
+
+        setupCameraLocation()
 
         // 相机设置
         binding.rowConnPref.pressEffect()
@@ -813,6 +854,149 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         NlFeedback.show(requireContext(), text)
     }
 
+    // ==================== 位置与隐私 ====================
+
+    private fun setupCameraLocation() {
+        setCameraLocationSwitch(settings.cameraLocationEnabled)
+        binding.switchCameraLocation.setOnCheckedChangeListener { _, checked ->
+            if (syncingCameraLocationSwitch) return@setOnCheckedChangeListener
+            if (checked) {
+                enableCameraLocation()
+            } else {
+                settings.cameraLocationEnabled = false
+                cameraLocationSync.onSettingChanged()
+                renderCameraLocationStatus(cameraLocationSync.status.value)
+                eventLogger.event("setting", "key" to "camera_location", "value" to false)
+            }
+        }
+        binding.tvCameraLocationStatus.setOnClickListener { handleCameraLocationStatusClick() }
+        binding.rowGpsExplainer.setOnClickListener { showGpsExplainer() }
+        viewLifecycleOwner.lifecycleScope.launch {
+            cameraLocationSync.status.collect { renderCameraLocationStatus(it) }
+        }
+    }
+
+    private fun enableCameraLocation() {
+        if (!hasLocationPermission()) {
+            // 开关先保持视觉开启；授权失败会回写为关闭，避免"看起来开了但其实没生效"
+            locationPermissionLauncher.launch(android.Manifest.permission.ACCESS_FINE_LOCATION)
+            return
+        }
+        settings.cameraLocationEnabled = true
+        cameraLocationSync.onSettingChanged()
+        renderCameraLocationStatus(cameraLocationSync.status.value)
+        eventLogger.event("setting", "key" to "camera_location", "value" to true)
+        if (!hasFineLocationPermission()) {
+            NlFeedback.show(requireContext(), getString(R.string.camera_location_coarse_only), long = true)
+        }
+        if (!isLocationServiceEnabled()) {
+            NlGlass.dialog(requireContext())
+                .setTitle(R.string.camera_location_service_title)
+                .setMessage(R.string.camera_location_service_message)
+                .setPositiveButton(R.string.camera_location_open_settings) { _, _ ->
+                    openLocationSettingsPage()
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }
+    }
+
+    private fun renderCameraLocationStatus(status: CameraLocationStatus) {
+        if (_binding == null) return
+        if (!settings.cameraLocationEnabled && status is CameraLocationStatus.Off) {
+            binding.tvCameraLocationStatus.visibility = View.GONE
+            return
+        }
+        binding.tvCameraLocationStatus.visibility = View.VISIBLE
+        binding.tvCameraLocationStatus.text = when (status) {
+            CameraLocationStatus.Off -> getString(R.string.camera_location_status_off)
+            CameraLocationStatus.PermissionMissing ->
+                getString(R.string.camera_location_status_permission_missing)
+            CameraLocationStatus.LocationServiceDisabled ->
+                getString(R.string.camera_location_status_service_disabled)
+            CameraLocationStatus.PausedInBackground ->
+                getString(R.string.camera_location_status_paused)
+            CameraLocationStatus.WaitingForCamera ->
+                getString(R.string.camera_location_status_waiting_camera)
+            CameraLocationStatus.Locating -> getString(R.string.camera_location_status_locating)
+            is CameraLocationStatus.Synced -> getString(
+                R.string.camera_location_status_synced,
+                DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(status.atMillis))
+            )
+            is CameraLocationStatus.Failed -> getString(
+                R.string.camera_location_status_failed,
+                if (status.code == -1) "无响应" else String.format("0x%04X", status.code)
+            )
+            CameraLocationStatus.Unsupported ->
+                getString(R.string.camera_location_status_unsupported)
+        }
+    }
+
+    private fun handleCameraLocationStatusClick() {
+        when (cameraLocationSync.status.value) {
+            CameraLocationStatus.PermissionMissing -> {
+                if (hasLocationPermission()) {
+                    cameraLocationSync.onSettingChanged()
+                } else {
+                    locationPermissionLauncher.launch(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                }
+            }
+            CameraLocationStatus.LocationServiceDisabled -> openLocationSettingsPage()
+            else -> Unit
+        }
+    }
+
+    private fun showGpsExplainer() {
+        NlGlass.dialog(requireContext())
+            .setTitle(R.string.gps_explainer_title)
+            .setMessage(R.string.gps_explainer_body)
+            .setPositiveButton("知道了", null)
+            .show()
+    }
+
+    private fun setCameraLocationSwitch(checked: Boolean) {
+        syncingCameraLocationSwitch = true
+        binding.switchCameraLocation.isChecked = checked
+        syncingCameraLocationSwitch = false
+    }
+
+    private fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(
+            requireContext(),
+            android.Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(
+                requireContext(),
+                android.Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+
+    private fun hasFineLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(
+            requireContext(),
+            android.Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+    private fun isLocationServiceEnabled(): Boolean {
+        val lm = requireContext().getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        return runCatching { lm.isLocationEnabled }.getOrDefault(false)
+    }
+
+    private fun openLocationSettingsPage() {
+        runCatching { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
+            .onFailure { toast("无法打开系统定位设置") }
+    }
+
+    private fun openAppSettingsPage() {
+        runCatching {
+            startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", requireContext().packageName, null)
+                )
+            )
+        }.onFailure { toast("无法打开应用设置") }
+    }
+
     private fun singleChoice(title: String, options: Array<String>, current: String, onPick: (String) -> Unit) {
         val checkedIdx = options.indexOf(current).coerceAtLeast(0)
         var selection = checkedIdx
@@ -874,6 +1058,11 @@ class SettingsFragment : Fragment(), GlassInsetAware {
         super.onResume()
         // 从系统电池设置返回后刷新开关；首次 onResume 早于视图创建时判空跳过
         renderBackgroundRunSwitch()
+        if (_binding != null) {
+            // 权限/定位可能在系统设置里被改动，回到本页按事实回显
+            setCameraLocationSwitch(settings.cameraLocationEnabled)
+            renderCameraLocationStatus(cameraLocationSync.status.value)
+        }
     }
 
     private fun formatCacheSize(context: Context): String {

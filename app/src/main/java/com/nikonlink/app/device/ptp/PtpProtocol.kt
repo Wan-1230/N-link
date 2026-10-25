@@ -128,7 +128,7 @@ object PtpConstants {
 
     /**
      * STA 相册直读（「连接到电脑」模式下尼康固件锁住 0x1008/0x100A/0x101B/0x9805，
-     * 这几条私有命令不受锁；定义见 libgphoto2 ptp.h）。
+     * 这几条私有命令不受锁；操作码取自公开的 PTP 相机协议资料）。
      * - 0x9421 GetObjectSize(h) → 数据相 u64 文件大小
      * - 0x9431 GetPartialObjectEx(h, offLo, offHi, lenLo, lenHi) → 数据相为该区间字节
      * - 0x9434 GetObjectsMetaData(storageId, 0, 0) → u32 ver, u32 n, n×16B{handle,size,_,s,m,h,d,mo,u16 y}
@@ -139,6 +139,16 @@ object PtpConstants {
     const val OP_NIKON_GET_PARTIAL_OBJECT_EX = 0x9431
     const val OP_NIKON_GET_OBJECTS_METADATA = 0x9434
     const val OP_NIKON_GET_PARTIAL_IMAGE = 0x9530
+
+    /**
+     * 尼康位置写入（UpdateLocation / DisableLocation 共用）。
+     *
+     * 数据阶段固定 41 字节，布局与 0x9523 的机身约定：
+     * 2B 有效期位图 + 经纬度 DMS 各 5B + 卫星数 1B + 海拔 3B + UTC 时间 7B
+     * + 有效标志 1B + 16B 大地基准（"WGS-84"）。
+     * 关闭位置时整包清零（仅有效标志为 0），参见 [com.nikonlink.app.camera.location.CameraLocationPayload]。
+     */
+    const val OP_NIKON_UPDATE_LOCATION = 0x9523
 
     // PTP Response Codes
     const val RESPONSE_OK = 0x2001

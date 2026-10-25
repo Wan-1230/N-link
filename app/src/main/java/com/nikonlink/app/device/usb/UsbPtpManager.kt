@@ -805,6 +805,24 @@ class UsbPtpManager @Inject constructor(
         return outcome.data
     }
 
+    /**
+     * 发送带数据出的 USB PTP 事务（如 0x9523 位置写入）。
+     * @return 相机响应码；-1 = 链路/事务失败，没有拿到响应
+     */
+    suspend fun sendCommandDataOut(
+        operationCode: Int,
+        params: List<Int> = emptyList(),
+        data: ByteArray
+    ): Int {
+        val outcome = transact(
+            operationCode = operationCode,
+            params = params,
+            dataOut = data,
+            allowRetry = false
+        )
+        return outcome.response?.responseCode ?: -1
+    }
+
     /** 一次事务的完整结果：响应 + 数据（sink 模式下 data 为哨兵空数组） */
     private class TransactOutcome(
         val response: UsbPtpResponse?,

@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.nikonlink.app.camera.location.CameraLocationSyncManager
 import com.nikonlink.app.device.service.ConnectionHealthWorker
 import com.nikonlink.app.shared.common.AppEventLogger
 import androidx.work.WorkManager
@@ -25,6 +26,9 @@ class NLinkApp : Application(), Configuration.Provider {
     @Inject
     lateinit var eventLogger: AppEventLogger
 
+    @Inject
+    lateinit var cameraLocationSyncManager: CameraLocationSyncManager
+
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
             .setWorkerFactory(workerFactory)
@@ -41,6 +45,8 @@ class NLinkApp : Application(), Configuration.Provider {
         initLogging()
         createNotificationChannels()
         scheduleHealthCheck()
+        // 只观察前台/连接/权限，不改连接链路；关闭时立即停更。
+        cameraLocationSyncManager.start()
     }
 
     private fun initLogging() {

@@ -190,6 +190,18 @@ class AppSettings @Inject constructor(
         set(value) = prefs.edit().putBoolean("share_keep_gps", value).apply()
 
     /**
+     * 向相机发送手机位置（默认关）。
+     *
+     * 与 [shareKeepGps] 是两条互不相干的链路：
+     * - 本项经 PTP 0x9523 写进**相机**，影响相机此后拍摄的照片；
+     * - [shareKeepGps] 只决定 App 生成**分享副本**时是否复制原图 GPS。
+     * 开关本项不会读取/改写手机里任何照片的 EXIF，也不会改变分享行为。
+     */
+    var cameraLocationEnabled: Boolean
+        get() = prefs.getBoolean("camera_location_enabled", false)
+        set(value) = prefs.edit().putBoolean("camera_location_enabled", value).apply()
+
+    /**
      * 拍摄页「更多动作」按钮的当前动作（模块 3）。
      * 单击按钮弹出模式下拉切换并执行；记住用户上次选择，默认间隔拍摄。
      */

@@ -853,6 +853,77 @@ class PtpSessionManager @Inject constructor(
         }
     }
 
+    /**
+     * 发送带数据阶段（数据出）的 PTP/IP 命令，如 0x9523 位置写入。
+     *
+     * 与 [sendCommandWithData] 的区别：那条是相机 → App（数据入），这里按
+     * PTP/IP 规范先发 CommandRequest(dataPhase=2)，再发 StartData/Data/EndData，
+     * 最后等待 CommandResponse。小载荷（41B）走 StartData + EndData 两包即可。
+     */
+    suspend fun sendCommandWithDataOut(
+        operationCode: Int,
+        parameters: List<Int> = emptyList(),
+        data: ByteArray
+    ): CommandResponsePacket {
+        val txId = transactionId.incrementAndGet()
+        val packet = CommandRequestPacket(txId, operationCode, parameters, dataPhase = true)
+
+        return withContext(Dispatchers.IO) {
+            commandMutex.withLock {
+                lastCommandAt = System.currentTimeMillis()
+                try {
+                    if (commandOutput == null || commandInput == null) {
+                        Timber.tag(TAG).w(
+                            "sendCommandWithDataOut skipped (stream closed): op=0x${operationCode.toString(16)}"
+                        )
+                        return@withLock CommandResponsePacket(txId, PtpConstants.RESPONSE_GENERAL_ERROR)
+                    }
+                    sendPacket(packet)
+                    sendPacket(StartDataPacket(txId, data.size))
+                    if (data.isEmpty()) {
+                        sendPacket(EndDataPacket(txId, ByteArray(0)))
+                    } else {
+                        // 单包上限取 64KB：位置包远小于它，这里只是让方法对未来更大的载荷也成立
+                        val chunkSize = 64 * 1024
+                        var offset = 0
+                        while (offset + chunkSize < data.size) {
+                            sendPacket(DataPacket(txId, data.copyOfRange(offset, offset + chunkSize)))
+                            offset += chunkSize
+                        }
+                        sendPacket(EndDataPacket(txId, data.copyOfRange(offset, data.size)))
+                    }
+
+                    var response: CommandResponsePacket? = null
+                    while (response == null) {
+                        when (val pkt = PtpPacket.fromStream(commandInput!!) ?: break) {
+                            is PingPacket -> sendPacket(PongPacket)
+                            is CommandResponsePacket -> if (pkt.transactionId == txId) {
+                                response = pkt
+                            } else {
+                                Timber.tag(TAG).w(
+                                    "忽略旧响应：期望事务号=$txId，收到=${pkt.transactionId}"
+                                )
+                            }
+                            else -> Unit
+                        }
+                    }
+                    val finalResp = response
+                        ?: CommandResponsePacket(txId, PtpConstants.RESPONSE_GENERAL_ERROR)
+                    if (!finalResp.isOk) {
+                        Timber.tag(TAG).w(
+                            "Data-out command rejected: op=0x${operationCode.toString(16)} " +
+                                "code=0x${finalResp.responseCode.toString(16)}"
+                        )
+                    }
+                    finalResp
+                } catch (e: Exception) {
+                    Timber.tag(TAG).e(e, "Data-out command failed: op=0x${operationCode.toString(16)}")
+                    CommandResponsePacket(txId, PtpConstants.RESPONSE_GENERAL_ERROR)
+                }
+            }
+        }
+    }
+
     private fun progressTotal(received: Long, declared: Long): Long {
         return if (declared > 0 && declared != 0xFFFFFFFFL && declared >= received) declared else 0L
     }
