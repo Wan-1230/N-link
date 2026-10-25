@@ -1,5 +1,8 @@
 package com.nikonlink.app.camera.gallery
 
+import com.nikonlink.app.camera.share.ShareActivity
+import com.nikonlink.app.camera.share.ShareDraft
+import com.nikonlink.app.camera.share.ShareDraftStore
 import com.nikonlink.app.shared.ui.NlFeedback
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -123,7 +126,7 @@ class PreviewActivity : AppCompatActivity() {
     lateinit var photoMarkRepository: PhotoMarkRepository
 
     @Inject
-    lateinit var shareExporter: PreviewShareExporter
+    lateinit var shareDraftStore: ShareDraftStore
 
     @Inject
     lateinit var settings: AppSettings
@@ -200,7 +203,7 @@ class PreviewActivity : AppCompatActivity() {
         observeMarkState()
 
         binding.btnExif.setOnClickListener { showInfoSheet() }
-        binding.btnShare.setOnClickListener { showSharePanel() }
+        binding.btnShare.setOnClickListener { openSharePage() }
         // v2.6.4：大图页删除。相机源删卡上文件，本地源删手机里的那份；
         // 与相册网格的删除走同一个确认话术与同一条 TransferManager 链路。
         binding.btnDelete.pressEffect()
@@ -784,89 +787,43 @@ class PreviewActivity : AppCompatActivity() {
         return if (den == 0.0) null else num / den
     }
 
-    // ---------- F4：分享（预览副本 / 原图） ----------
+    // ---------- F4：分享（独立分享页） ----------
 
-    private fun showSharePanel() {
-        val copySupported = shareExporter.supportsPreviewCopy(file)
-        val options = buildList {
-            add(
-                if (copySupported) "分享预览副本（长边 2048）"
-                else "分享预览副本（${file.format.name} 暂不支持，需先下载原图）"
+    /**
+     * 大图页分享也走 ShareActivity：相机源可选预览副本/原图，已下载的用本地 URI，
+     * 未下载的在分享页内按需下载；不再先弹一个两选项对话框再等导出。
+     */
+    private fun openSharePage() {
+        // 本地照片的 handle 是 MediaStore ID 的负数；不能塞进相机源，否则分享页会去相机
+        // 下载一个不存在的 handle。
+        val isLocal = file.handle < 0
+        val item = if (isLocal) {
+            ShareDraft.ShareItem(
+                fileName = file.fileName,
+                size = file.size,
+                format = file.format,
+                localUri = localContentUri(file.handle).toString()
             )
-            add("分享原图")
+        } else {
+            ShareDraft.ShareItem(
+                fileName = file.fileName,
+                size = file.size,
+                format = file.format,
+                cameraFile = file,
+                localUri = downloadResults[currentPosition]
+            )
         }
-        NlGlass.dialog(this)
-            .setTitle("分享")
-            .setItems(options.toTypedArray()) { _, which ->
-                when (which) {
-                    0 -> if (copySupported) sharePreviewCopy() else {
-                        NlFeedback.show(this, "RAW/视频副本依赖预览通道，请先下载原图后分享")
-                    }
-
-                    else -> shareOriginal()
-                }
-            }
-            .setNegativeButton("取消", null)
-            .show()
+        val draft = ShareDraft(
+            items = listOf(item),
+            origin = if (isLocal) ShareDraft.Origin.LOCAL else ShareDraft.Origin.CAMERA
+        )
+        ShareActivity.start(this, shareDraftStore.put(draft))
     }
 
-    private fun sharePreviewCopy() {
-        binding.progressDownload.visibility = View.VISIBLE
-        binding.progressDownload.isIndeterminate = true
-        lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                shareExporter.export(listOf(file)) { _, _ -> }
-            }
-            binding.progressDownload.visibility = View.GONE
-            binding.progressDownload.isIndeterminate = false
-            val uri = result.uris.firstOrNull()
-            if (uri == null) {
-                NlFeedback.show(this@PreviewActivity, "副本生成失败：${result.failed.firstOrNull() ?: "未知原因"}")
-                return@launch
-            }
-            shareUris(listOf(uri), "分享预览副本")
-        }
-    }
-
-    private fun shareOriginal() {
-        lifecycleScope.launch {
-            val alreadyDownloaded = downloadResults.containsKey(currentPosition)
-            if (!alreadyDownloaded) {
-                binding.progressDownload.visibility = View.VISIBLE
-                binding.progressDownload.isIndeterminate = true
-            }
-            val uri = withContext(Dispatchers.IO) {
-                shareExporter.exportOriginalUri(file, downloadResults[currentPosition])
-            }
-            binding.progressDownload.visibility = View.GONE
-            binding.progressDownload.isIndeterminate = false
-            if (uri == null) {
-                NlFeedback.show(this@PreviewActivity, "相机未连接或下载失败，无法分享原图")
-                return@launch
-            }
-            shareUris(listOf(uri), "分享原图")
-        }
-    }
-
-    private fun shareUris(uris: List<Uri>, title: String) {
-        if (uris.isEmpty()) return
-        val intent = Intent(
-            if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE
-        ).apply {
-            type = "*/*"
-            if (uris.size == 1) {
-                putExtra(Intent.EXTRA_STREAM, uris.first())
-            } else {
-                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
-            }
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        runCatching {
-            startActivity(Intent.createChooser(intent, title))
-        }.onFailure {
-            NlFeedback.show(this, "没有可用的分享应用")
-        }
-    }
+    private fun localContentUri(handle: Int): Uri = Uri.withAppendedPath(
+        android.provider.MediaStore.Files.getContentUri("external"),
+        (-handle).toString()
+    )
 
     // ---------- 下载（按当前页维护状态） ----------
 

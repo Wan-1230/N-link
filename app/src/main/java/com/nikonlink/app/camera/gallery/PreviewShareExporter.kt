@@ -93,7 +93,7 @@ class PreviewShareExporter @Inject constructor(
                     }
                     val source = downloadToCache(file, shareDir)
                         ?: throw IllegalStateException("下载原图到缓存失败")
-                    val copy = buildPreviewCopy(source, file, shareDir)
+                    val copy = buildPreviewCopy(source, file.fileName, shareDir)
                         ?: throw IllegalStateException("副本生成失败")
                     uris.add(fileProviderUri(copy))
                     source.takeIf { it !== copy }?.delete()
@@ -108,15 +108,85 @@ class PreviewShareExporter @Inject constructor(
     }
 
     /**
+     * 从本地 URI 批量生成预览副本（独立分享页用）。
+     *
+     * 与 [export] 的区别只在来源：这里已经是 content:// / file://（本地照片或已下载的相机原图），
+     * 不需要再走相机下载。重新编码与 EXIF 策略完全一致，避免两条分享路径产出不同画质/隐私口径。
+     */
+    suspend fun exportPreviewFromUris(
+        items: List<Pair<Uri, String>>,
+        onProgress: (Int, Int) -> Unit
+    ): ExportResult {
+        val uris = mutableListOf<Uri>()
+        val skipped = mutableListOf<String>()
+        val failed = mutableListOf<String>()
+        val shareDir = File(context.cacheDir, SHARE_SUB_DIR).apply { mkdirs() }
+
+        withContext(Dispatchers.IO) {
+            items.forEachIndexed { index, (uri, displayName) ->
+                runCatching {
+                    val safeName = displayName.substringAfterLast('/').ifBlank { "image.jpg" }
+                    val source = File(shareDir, "src_${System.nanoTime()}_$safeName")
+                    val input = if (uri.scheme == "file") {
+                        uri.path?.let { File(it).inputStream() }
+                    } else {
+                        context.contentResolver.openInputStream(uri)
+                    }
+                    val copied = input?.use { stream ->
+                        source.outputStream().use { output -> stream.copyTo(output) }
+                    } != null
+                    if (!copied || source.length() == 0L) {
+                        source.delete()
+                        throw IllegalStateException("读取本地图片失败")
+                    }
+                    val copy = buildPreviewCopy(source, safeName, shareDir)
+                        ?: throw IllegalStateException("副本生成失败")
+                    source.delete()
+                    uris.add(fileProviderUri(copy))
+                }.onFailure { e ->
+                    Timber.tag(TAG).w(e, "Preview copy from URI failed: $displayName")
+                    failed.add(displayName)
+                }
+                onProgress(index + 1, items.size)
+            }
+        }
+        return ExportResult(uris, skipped, failed)
+    }
+
+    /**
      * 导出原图分享 URI：已归档的用 MediaStore content URI；未归档的下载到 cache 走 FileProvider。
      * 返回 null 表示不可分享（相机未连接 / 下载失败）。
      */
     suspend fun exportOriginalUri(file: CameraFile, archivedPath: String?): Uri? {
-        archivedPath?.let { return Uri.parse(it) }
+        archivedPath?.let { return normalizeLocalUri(it) }
         val shareDir = File(context.cacheDir, SHARE_SUB_DIR).apply { mkdirs() }
         return withContext(Dispatchers.IO) {
             val source = downloadToCache(file, shareDir) ?: return@withContext null
             fileProviderUri(source)
+        }
+    }
+
+    /**
+     * 把传输历史里的 localPath 变成可跨应用授权的 URI。
+     * 历史数据正常是 content://；旧记录/手工路径可能是裸路径或 file://，
+     * 后者不能直接进 Intent（Android 7+ 会抛 FileUriExposedException），
+     * 所以复制进 cache/share 再用 FileProvider 借出。
+     */
+    private suspend fun normalizeLocalUri(path: String): Uri = withContext(Dispatchers.IO) {
+        when {
+            path.startsWith("content://") -> Uri.parse(path)
+            else -> {
+                val file = when {
+                    path.startsWith("file://") -> File(Uri.parse(path).path ?: return@withContext Uri.parse(path))
+                    else -> File(path)
+                }
+                if (!file.isFile) return@withContext Uri.parse(path)
+                val shareDir = File(context.cacheDir, SHARE_SUB_DIR).apply { mkdirs() }
+                val copy = File(shareDir, "orig_${System.nanoTime()}_${file.name}")
+                runCatching { file.inputStream().use { i -> copy.outputStream().use { o -> i.copyTo(o) } } }
+                    .getOrElse { return@withContext Uri.parse(path) }
+                fileProviderUri(copy)
+            }
         }
     }
 
@@ -134,7 +204,7 @@ class PreviewShareExporter @Inject constructor(
     /**
      * 重编码预览副本：解码 → 采样缩放 → 长边 ≤ 2048 → JPEG 90 → 回写参数 EXIF（默认无 GPS）。
      */
-    private fun buildPreviewCopy(source: File, file: CameraFile, shareDir: File): File? {
+    private fun buildPreviewCopy(source: File, displayName: String, shareDir: File): File? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(source.absolutePath, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
@@ -151,10 +221,13 @@ class PreviewShareExporter @Inject constructor(
         val scaled = downscale(bitmap)
         if (scaled !== bitmap) bitmap.recycle()
 
-        val output = File(
-            shareDir,
-            "${file.fileName.substringBeforeLast('.')}_preview.jpg"
-        )
+        val baseName = displayName.substringAfterLast('/').substringBeforeLast('.')
+            .ifBlank { "image" }
+        var output = File(shareDir, "${baseName}_preview.jpg")
+        if (output.exists()) {
+            // 同名不同目录的本地照片会撞名；不区分就会让两个 URI 指向同一张图
+            output = File(shareDir, "${baseName}_${System.nanoTime()}_preview.jpg")
+        }
         val keptGps = settings.shareKeepGps
         val ok = output.outputStream().use { out ->
             scaled.compress(Bitmap.CompressFormat.JPEG, PREVIEW_JPEG_QUALITY, out)

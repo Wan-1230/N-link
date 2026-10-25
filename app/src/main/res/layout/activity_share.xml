@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 独立分享页：先展示选中内容与目标应用，再在后台准备 URI。
+     旧实现把"生成副本 → 弹系统面板"塞在相册页的协程里，页面一离开/重建，
+     一次性事件就丢了；本页把状态留在自己的生命周期内。 -->
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/background"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingHorizontal="@dimen/page_margin"
+        android:paddingTop="@dimen/space_16"
+        android:paddingBottom="@dimen/space_24">
+
+        <!-- 顶栏 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:id="@+id/btnClose"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="关闭分享页"
+                android:padding="10dp"
+                android:src="@drawable/ic_close"
+                app:tint="@color/text_primary" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/space_4"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/tvTitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="分享"
+                    android:textColor="@color/text_primary"
+                    android:textSize="@dimen/font_title"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvSubtitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textColor="@color/text_tertiary"
+                    android:textSize="@dimen/font_foot" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- 选中内容缩略图（最多 6 张 + 余数） -->
+        <LinearLayout
+            android:id="@+id/previewRow"
+            android:layout_width="match_parent"
+            android:layout_height="72dp"
+            android:layout_marginTop="@dimen/space_16"
+            android:gravity="center_vertical"
+            android:orientation="horizontal" />
+
+        <!-- 发送方式（仅相机源展示） -->
+        <LinearLayout
+            android:id="@+id/groupQuality"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_16"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="@dimen/space_16">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="发送方式"
+                android:textColor="@color/text_primary"
+                android:textSize="@dimen/font_body"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_12"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/chipPreview"
+                    android:layout_width="0dp"
+                    android:layout_height="40dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_chip_selected"
+                    android:gravity="center"
+                    android:maxLines="1"
+                    android:text="预览副本 · 2048"
+                    android:textColor="@color/on_primary"
+                    android:textSize="@dimen/font_caption" />
+
+                <TextView
+                    android:id="@+id/chipOriginal"
+                    android:layout_width="0dp"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="@dimen/space_8"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_chip"
+                    android:gravity="center"
+                    android:maxLines="1"
+                    android:text="原图"
+                    android:textColor="@color/text_primary"
+                    android:textSize="@dimen/font_caption" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/tvQualityNote"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_8"
+                android:lineSpacingExtra="2dp"
+                android:textColor="@color/text_tertiary"
+                android:textSize="@dimen/font_foot" />
+        </LinearLayout>
+
+        <!-- 目标应用 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/module_gap_large"
+            android:text="分享到"
+            android:textColor="@color/text_primary"
+            android:textSize="@dimen/font_body"
+            android:textStyle="bold" />
+
+        <GridLayout
+            android:id="@+id/targetGrid"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_12"
+            android:columnCount="4" />
+
+        <TextView
+            android:id="@+id/tvTargetEmpty"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_12"
+            android:gravity="center"
+            android:paddingVertical="@dimen/space_20"
+            android:text="没有找到可接收图片的应用"
+            android:textColor="@color/text_tertiary"
+            android:textSize="@dimen/font_caption"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/tvNote"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_12"
+            android:lineSpacingExtra="2dp"
+            android:textColor="@color/text_tertiary"
+            android:textSize="@dimen/font_foot"
+            android:visibility="gone" />
+
+        <!-- 准备进度 -->
+        <LinearLayout
+            android:id="@+id/prepareBox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_16"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="@dimen/space_16"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/tvPrepare"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="正在准备照片…"
+                android:textColor="@color/text_secondary"
+                android:textSize="@dimen/font_foot" />
+
+            <ProgressBar
+                android:id="@+id/progressPrepare"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="4dp"
+                android:layout_marginTop="@dimen/space_8"
+                android:max="100"
+                android:progressTint="@color/primary" />
+        </LinearLayout>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnMore"
+            style="@style/NlButton.Outline"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:layout_marginTop="@dimen/module_gap_large"
+            android:text="更多分享方式（系统面板）" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_12"
+            android:lineSpacingExtra="2dp"
+            android:text="提示：预览副本会重新编码为长边 2048 的 JPEG，适合微信/QQ 等聊天软件；原图保留完整分辨率与原始 EXIF。RAW 与视频请用原图方式，部分应用可能不支持。"
+            android:textColor="@color/text_tertiary"
+            android:textSize="@dimen/font_foot" />
+    </LinearLayout>
+</androidx.core.widget.NestedScrollView>

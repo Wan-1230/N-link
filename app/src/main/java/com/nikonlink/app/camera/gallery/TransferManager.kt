@@ -1515,7 +1515,7 @@ class TransferManager @Inject constructor(
     }
 
     /** 只读查询该 handle 已完成记录的本地路径（优先 DAO，Hilt 未就绪时兑底逐条比对） */
-    private suspend fun completedLocalPath(handle: Int): String? {
+    suspend fun completedLocalPath(handle: Int): String? {
         val record = historyDaoOrNull()?.let { dao ->
             runCatching { dao.getByHandle(handle) }
                 .onFailure { Timber.tag(TAG).w(it, "getByHandle failed handle=$handle") }

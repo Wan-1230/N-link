@@ -1,5 +1,8 @@
 package com.nikonlink.app.camera.gallery
 
+import com.nikonlink.app.camera.share.ShareActivity
+import com.nikonlink.app.camera.share.ShareDraft
+import com.nikonlink.app.camera.share.ShareDraftStore
 import com.nikonlink.app.shared.ui.Motion
 import com.nikonlink.app.shared.ui.NlFeedback
 import com.nikonlink.app.shared.ui.pressEffect
@@ -67,6 +70,9 @@ class TransferFragment : Fragment(), GlassInsetAware {
 
     @Inject
     lateinit var thumbnailCache: ThumbnailCache
+
+    @Inject
+    lateinit var shareDraftStore: ShareDraftStore
 
     private lateinit var adapter: PhotoGridAdapter
     private val chipViews = mutableMapOf<PhotoFilter, TextView>()
@@ -866,12 +872,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
 
         binding.btnShare.pressEffect()
         binding.btnShare.setOnClickListener {
-            val started = when (viewModel.activeAlbum.value) {
-                // F4：相机源分享走「预览副本」链路（长边 2048，默认剥离 GPS）
-                AlbumSource.CAMERA -> viewModel.shareSelectedCameraCopies()
-                else -> shareLocalSelected()
-            }
-            if (started) finishMultiSelectAfterAction()
+            if (shareSelected()) finishMultiSelectAfterAction()
         }
     }
 
@@ -900,35 +901,55 @@ class TransferFragment : Fragment(), GlassInsetAware {
         popup.show()
     }
 
-    private fun shareLocalSelected(): Boolean {
-        val uris = viewModel.selectedLocalUris()
-        if (uris.isEmpty()) {
-            viewModel.showMessage("请先选择要分享的本地文件")
-            return false
+    /**
+     * 进入独立分享页。
+     *
+     * 相机源把 CameraFile 交给 ShareActivity：已下载的走本地副本，未下载的在分享页内
+     * 按需下载——分享不再要求"必须在相册页、必须还连着相机、必须等副本导完"。
+     */
+    private fun shareSelected(): Boolean {
+        val isLocal = viewModel.activeAlbum.value == AlbumSource.LOCAL
+        val draft = if (isLocal) {
+            val items = viewModel.selectedLocalShareItems().map { (uri, name) ->
+                ShareDraft.ShareItem(
+                    fileName = name,
+                    size = 0L,
+                    format = localFormat(name),
+                    localUri = uri.toString()
+                )
+            }
+            if (items.isEmpty()) {
+                viewModel.showMessage("请先选择要分享的本地文件")
+                return false
+            }
+            ShareDraft(items, ShareDraft.Origin.LOCAL)
+        } else {
+            val files = viewModel.selectedCameraFilesForShare()
+            if (files.isEmpty()) {
+                viewModel.showMessage("请先选择要分享的照片")
+                return false
+            }
+            ShareDraft(
+                files.map {
+                    ShareDraft.ShareItem(
+                        fileName = it.fileName,
+                        size = it.size,
+                        format = it.format,
+                        cameraFile = it
+                    )
+                },
+                ShareDraft.Origin.CAMERA
+            )
         }
-        shareUris(uris, "分享本地文件")
+        ShareActivity.start(requireContext(), shareDraftStore.put(draft))
         return true
     }
 
-    /** 统一的多文件分享面板（本地分享与 F4 预览副本共用） */
-    private fun shareUris(uris: List<Uri>, title: String) {
-        if (uris.isEmpty()) return
-        val intent = Intent(
-            if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE
-        ).apply {
-            type = "*/*"
-            if (uris.size == 1) {
-                putExtra(Intent.EXTRA_STREAM, uris.first())
-            } else {
-                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
-            }
-        }
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        runCatching {
-            startActivity(Intent.createChooser(intent, title))
-        }.onFailure {
-            viewModel.showMessage("没有可用的分享应用")
-        }
+    private fun localFormat(name: String): CameraFileFormat = when {
+        name.endsWith(".jpg", true) || name.endsWith(".jpeg", true) -> CameraFileFormat.JPEG
+        name.endsWith(".nef", true) || name.endsWith(".nrw", true) -> CameraFileFormat.RAW
+        name.endsWith(".mov", true) || name.endsWith(".mp4", true) -> CameraFileFormat.VIDEO
+        else -> CameraFileFormat.OTHER
     }
 
     /**
@@ -980,9 +1001,9 @@ class TransferFragment : Fragment(), GlassInsetAware {
             }
 
             AlbumSource.MARKED -> {
-                // F1：标记栏工作台 —— 下载 + 删除 + 标记切换（跳过已下载已迁至 chip 行）
+                // F1：标记栏工作台 —— 下载 + 删除 + 分享 + 标记切换（跳过已下载已迁至 chip 行）
                 binding.btnDownload.visibility = View.VISIBLE
-                binding.btnShare.visibility = View.GONE
+                binding.btnShare.visibility = View.VISIBLE
                 binding.btnDelete.text = "删除"
                 binding.btnMark.visibility = View.VISIBLE
                 renderMarkButton()
@@ -1178,22 +1199,7 @@ class TransferFragment : Fragment(), GlassInsetAware {
             }
         }
 
-        // F4：批量生成分享副本的进度与完成事件
-        viewLifecycleOwner.lifecycleScope.launch {
-            viewModel.shareExportProgress.collect { progress ->
-                if (progress == null) return@collect
-                val (done, total) = progress
-                binding.tvMessage.text = "生成分享副本 $done/$total…"
-            }
-        }
-        viewLifecycleOwner.lifecycleScope.launch {
-            viewModel.shareExportDone.collect { result ->
-                shareUris(result.uris, "分享照片")
-                if (result.failed.isNotEmpty()) {
-                    NlFeedback.show(requireContext(), "${result.failed.size} 个文件生成副本失败")
-                }
-            }
-        }
+        // F4：分享已迁到独立 ShareActivity，导出进度/结果不再经本页中转
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewModel.isLoading.collect { loading ->

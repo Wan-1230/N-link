@@ -55,7 +55,6 @@ class TransferViewModel @Inject constructor(
     private val thumbnailCache: ThumbnailCache,
     private val settings: AppSettings,
     private val photoMarkRepository: PhotoMarkRepository,
-    private val previewShareExporter: PreviewShareExporter,
     private val remoteShootingManager: RemoteShootingManager,
     private val apConnection: com.nikonlink.app.device.ap.ApConnectionService
 ) : ViewModel() {
@@ -1614,6 +1613,14 @@ class TransferViewModel @Inject constructor(
     }
 
     /** 当前选中集映射到相机文件（仅相机源有效；标记栏复用同一选中集语义） */
+    fun selectedCameraFilesForShare(): List<CameraFile> = selectedCameraFiles()
+
+    /** 本地相册选中的 (MediaStore URI, 文件名)，供独立分享页直接使用 */
+    fun selectedLocalShareItems(): List<Pair<Uri, String>> =
+        _localPhotos.value
+            .filter { it.handle in _selectedHandles.value }
+            .map { localContentUri(it.handle) to it.fileName }
+
     private fun selectedCameraFiles(): List<CameraFile> {
         val source = _activeAlbum.value
         val photos = when (source) {
@@ -1655,54 +1662,6 @@ class TransferViewModel @Inject constructor(
         _message.value = "已加入队列: ${candidates.size} 个文件"
         return candidates.size
     }
-
-    // ---------- F4：批量分享预览副本 ----------
-
-    /** 导出进度 (已完成, 总数)；null = 空闲 */
-    private val _shareExportProgress = MutableStateFlow<Pair<Int, Int>?>(null)
-    val shareExportProgress: StateFlow<Pair<Int, Int>?> = _shareExportProgress.asStateFlow()
-
-    /** 导出完成的一次性事件，载荷带可分享 URI 列表与跳过/失败清单 */
-    private val _shareExportDone = MutableSharedFlow<PreviewShareExporter.ExportResult>(extraBufferCapacity = 1)
-    val shareExportDone: Flow<PreviewShareExporter.ExportResult> = _shareExportDone
-
-    /**
-     * 相机源多选「分享」：为选中的 JPEG 生成预览副本后拉起分享面板。
-     * RAW/视频不在副本支持范围，计入跳过并提示（PRD F4 AC-4）。
-     */
-    /** @return 是否开始生成副本（false = 前置校验没过，调用方应保留选中） */
-    fun shareSelectedCameraCopies(): Boolean {
-        val selected = selectedCameraFiles()
-        if (selected.isEmpty()) {
-            _message.value = "请先选择要分享的照片"
-            return false
-        }
-        if (!transferManager.hasActiveSession()) {
-            _message.value = "相机未连接，无法生成分享副本"
-            return false
-        }
-        val eligible = selected.filter { previewShareExporter.supportsPreviewCopy(it) }
-        val skippedCount = selected.size - eligible.size
-        if (eligible.isEmpty()) {
-            _message.value = "所选文件暂不支持生成分享副本（RAW/视频请先下载原图）"
-            return false
-        }
-        viewModelScope.launch {
-            _shareExportProgress.value = 0 to eligible.size
-            val result = previewShareExporter.export(eligible) { done, total ->
-                _shareExportProgress.value = done to total
-            }
-            _shareExportProgress.value = null
-            val note = if (skippedCount > 0) "，已跳过 $skippedCount 个不支持的文件" else ""
-            _message.value = when {
-                result.failed.isEmpty() -> "已生成 ${result.uris.size} 个分享副本$note"
-                else -> "已生成 ${result.uris.size} 个，${result.failed.size} 个失败$note"
-            }
-            _shareExportDone.emit(result)
-        }
-        return true
-    }
-
 
     /**
      * 加载缩略图（旧入口，已由 requestThumbnail 接管）
