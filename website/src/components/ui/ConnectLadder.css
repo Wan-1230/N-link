@@ -1,0 +1,102 @@
+/* 连接时序面板：三行，每行 = 接法名 + 耗时 + 步骤链 + 出处 */
+.ladder {
+  width: min(100%, 420px);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+  background: var(--surface-glass);
+  box-shadow: var(--el-2), var(--el-ring);
+  padding: var(--sp-5) var(--sp-5) var(--sp-4);
+}
+
+.ladder__caption {
+  margin: 0 0 var(--sp-4);
+  color: var(--fg-faint);
+  font-size: var(--fs-200);
+  letter-spacing: var(--ls-head);
+}
+
+.ladder__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ladder__row + .ladder__row {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--hairline);
+}
+
+.ladder__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.ladder__name {
+  margin: 0;
+  color: var(--fg);
+  font-size: var(--fs-500);
+  font-weight: 600;
+  letter-spacing: var(--ls-head);
+  line-height: var(--lh-snug);
+}
+
+.ladder__time {
+  margin: 0;
+  color: var(--accent);
+  font-size: var(--fs-400);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 步骤链：只用间距成组。原先每两个之间有个连接圆点，
+   一旦换行那个点就变成游离的项目符号。 */
+.ladder__steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: var(--sp-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ladder__steps li {
+  margin: 0;
+  padding: 3px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r);
+  background: var(--surface-glass);
+  color: var(--fg-dim);
+  font-size: var(--fs-200);
+  line-height: var(--lh-snug);
+}
+
+.ladder__note {
+  margin: var(--sp-2) 0 0;
+  color: var(--fg-faint);
+  font-size: var(--fs-100);
+  line-height: var(--lh-body);
+}
+
+@media (max-width: 880px) {
+  .ladder {
+    width: 100%;
+  }
+}
+
+/* 320 档实测：名称与耗时并排会把「相机热点（AP）」挤成三行。
+   窄屏改成上下两行，名称拿到整行宽度。 */
+@media (max-width: 430px) {
+  .ladder__head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .ladder__name {
+    font-size: var(--fs-400);
+  }
+}

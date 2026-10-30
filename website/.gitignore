@@ -1,0 +1,6 @@
+node_modules
+dist
+.artifacts
+.finesse/
+*.local
+.DS_Store
