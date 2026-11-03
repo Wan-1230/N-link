@@ -360,12 +360,30 @@ struct GalleryView: View {
         }
     }
 
+    /// 3 列方形格的边长。
+    ///
+    /// 抽成 static 函数而不是写在 `GeometryReader` 里：那条表达式同时含
+    /// 减法、乘法、除法与三个 token 读取，塞在 ViewBuilder 内会让类型检查器
+    /// 在复杂 body 里超时（编译器直接报 "unable to type-check in reasonable time"）。
+    private static func cellSide(for containerWidth: CGFloat) -> CGFloat {
+        let usable = containerWidth - NlSpacing.pageMargin * 2 - NlSpacing.cellGap * 2
+        return max(1, usable / 3)
+    }
+
+    /// 3 个等宽固定列
+    private static func threeColumns(side: CGFloat, spacing: CGFloat) -> [GridItem] {
+        Array(repeating: GridItem(.fixed(side), spacing: spacing), count: 3)
+    }
+
     private var skeletonGrid: some View {
         GeometryReader { geo in
-            let side = (geo.size.width - NlSpacing.pageMargin * 2 - NlSpacing.cellGap * 2) / 3
+            let side = Self.cellSide(for: geo.size.width)
+            let spacing = NlSpacing.cellGap
             ScrollView {
-                LazyVGrid(columns: Array(repeating: GridItem(.fixed(side), spacing: NlSpacing.cellGap), count: 3),
-                          spacing: NlSpacing.cellGap) {
+                LazyVGrid(
+                    columns: Self.threeColumns(side: side, spacing: spacing),
+                    spacing: spacing
+                ) {
                     ForEach(0..<9, id: \.self) { _ in
                         RoundedRectangle(cornerRadius: 2)
                             .fill(NlColor.surfaceVariant)
@@ -380,10 +398,13 @@ struct GalleryView: View {
 
     private var grid: some View {
         GeometryReader { geo in
-            let side = max(1, (geo.size.width - NlSpacing.pageMargin * 2 - NlSpacing.cellGap * 2) / 3)
-            let columns = Array(repeating: GridItem(.fixed(side), spacing: NlSpacing.cellGap), count: 3)
+            let side = Self.cellSide(for: geo.size.width)
+            let spacing = NlSpacing.cellGap
             ScrollView {
-                LazyVGrid(columns: columns, spacing: NlSpacing.cellGap) {
+                LazyVGrid(
+                    columns: Self.threeColumns(side: side, spacing: spacing),
+                    spacing: spacing
+                ) {
                     if state.isLoading {
                         // 逐页填充时顶部给一条细进度，而不是整块骨架闪一下
                         ProgressView()

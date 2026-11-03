@@ -20,7 +20,12 @@ enum ShareExporter {
     /// 预览副本长边上限（发图不被二次压缩的常用尺寸）
     static let previewLongEdge: CGFloat = 2048
     private static let previewJPEGQuality: CGFloat = 0.90
-    private static let shareSubDir = "n-link_share"
+
+    /// 分享临时目录名。
+    ///
+    /// 不是 private：设置页的「清除缓存」要统计并清理同一个目录。
+    /// 两处各写一遍字符串迟早会漂移（改了这边忘那边，缓存就永远清不干净）。
+    static let shareSubDir = "n-link_share"
 
     // MARK: 结果
 
@@ -72,6 +77,7 @@ enum ShareExporter {
     // MARK: 导出
 
     /// 批量导出预览副本。逐张串行（内存可控）。
+    @MainActor
     static func exportPreview(
         files: [CameraFile],
         client: CameraConnectionClient,
@@ -108,6 +114,7 @@ enum ShareExporter {
     ///
     /// 与 `exportPreview(files:)` 的区别只在来源：这里已经是本地文件，
     /// 不需要再走相机下载。重编码与 EXIF 策略完全一致。
+    @MainActor
     static func exportPreview(
         localURLs: [(url: URL, displayName: String)],
         keepGps: Bool,
@@ -129,6 +136,7 @@ enum ShareExporter {
     }
 
     /// 导出原图：已下载的直接用本地路径；未下载的下载到临时目录。
+    @MainActor
     static func exportOriginal(
         file: CameraFile,
         localPath: String?,
@@ -147,6 +155,7 @@ enum ShareExporter {
     /// 与 `exportPreview` 的关键差异：**不做任何重编码**，所以 RAW 与视频也能走这条路。
     /// 代价是文件大一个数量级，因此这里不带 `skipped` 语义——只有成功与失败两种结果，
     /// 失败项必须说出原因，不能吞掉。
+    @MainActor
     static func exportOriginalBatch(
         files: [CameraFile],
         client: CameraConnectionClient,

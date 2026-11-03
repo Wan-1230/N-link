@@ -79,9 +79,10 @@ struct PhotoPreviewView: View {
         }
         .sheet(isPresented: $showEXIF) {
             if let file = current {
+                // `.presentationBackground` 自 iOS 16.4 才可用，本工程部署目标是 16.0。
+                // EXIFSheet 自身已有背景，去掉这个修饰符视觉无差别。
                 EXIFSheet(file: file)
                     .presentationDetents([.medium, .large])
-                    .presentationBackground(NlColor.surface)
             }
         }
     }

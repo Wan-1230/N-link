@@ -694,29 +694,34 @@ struct LiveViewView: View {
 
     private var assistPanel: some View {
         // 9 项三行三列（网格 / 水平仪 / 直方图 / 伪彩 / 波形 / DISP / 斑马纹 / 峰值 / 安全框）
-        let items: [(String, Bool, () -> Void)] = [
-            ("网格", env.settings.assistGridEnabled) { env.settings.assistGridEnabled.toggle() },
-            ("水平仪", env.settings.assistLevelEnabled) { env.settings.assistLevelEnabled.toggle() },
-            ("直方图", env.settings.histogramEnabled) { env.settings.histogramEnabled.toggle() },
-            ("伪彩", env.settings.pseudoColorEnabled) { env.settings.pseudoColorEnabled.toggle() },
-            ("波形", env.settings.waveformEnabled) { env.settings.waveformEnabled.toggle() },
-            ("DISP", env.settings.assistCleanEnabled) { env.settings.assistCleanEnabled.toggle() },
-            ("斑马纹", env.settings.zebraEnabled) { env.settings.zebraEnabled.toggle() },
-            ("峰值", env.settings.peakingEnabled) { env.settings.peakingEnabled.toggle() },
-            ("安全框", env.settings.safeAreaEnabled) { env.settings.safeAreaEnabled.toggle() }
+        //
+        // 每项显式写成三元组 `(标题, 是否开启, 动作)`：Swift 里「数组元素后面直接跟尾随闭包」
+        // 会被解析成函数调用的尾随闭包，而不是元组的第三段，于是报
+        // 「cannot convert '(String, Bool)' to '(String, Bool, () -> Void)'」。
+        // 把它们放进括号里、或显式标注类型，才能让编译器按元组读。
+        let items: [(title: String, on: Bool, toggle: () -> Void)] = [
+            ("网格", env.settings.assistGridEnabled, { env.settings.assistGridEnabled.toggle() }),
+            ("水平仪", env.settings.assistLevelEnabled, { env.settings.assistLevelEnabled.toggle() }),
+            ("直方图", env.settings.histogramEnabled, { env.settings.histogramEnabled.toggle() }),
+            ("伪彩", env.settings.pseudoColorEnabled, { env.settings.pseudoColorEnabled.toggle() }),
+            ("波形", env.settings.waveformEnabled, { env.settings.waveformEnabled.toggle() }),
+            ("DISP", env.settings.assistCleanEnabled, { env.settings.assistCleanEnabled.toggle() }),
+            ("斑马纹", env.settings.zebraEnabled, { env.settings.zebraEnabled.toggle() }),
+            ("峰值", env.settings.peakingEnabled, { env.settings.peakingEnabled.toggle() }),
+            ("安全框", env.settings.safeAreaEnabled, { env.settings.safeAreaEnabled.toggle() })
         ]
         return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: NlSpacing.s8), count: 3),
                          spacing: NlSpacing.s8) {
             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                Button(action: item.2) {
-                    Text(item.0)
+                Button(action: item.toggle) {
+                    Text(item.title)
                         .font(NlText.foot)
-                        .foregroundStyle(item.1 ? NlColor.liveViewOnSolid : NlColor.liveViewText)
+                        .foregroundStyle(item.on ? NlColor.liveViewOnSolid : NlColor.liveViewText)
                         .frame(maxWidth: .infinity)
                         .frame(height: 32)
                         .background(
                             RoundedRectangle(cornerRadius: NlRadius.control)
-                                .fill(item.1 ? NlColor.liveViewText : NlColor.liveViewChip)
+                                .fill(item.on ? NlColor.liveViewText : NlColor.liveViewChip)
                         )
                 }
                 .buttonStyle(.plain)
@@ -1072,11 +1077,15 @@ struct ArcWheelTicks: Shape {
         let radius = min(rect.width, rect.height * 2) * 0.42
         let center = CGPoint(x: rect.midX, y: rect.midY + radius * 0.55)
         for i in 0...36 {
-            let angle = 216.0 + 108.0 * Double(i) / 36.0
-            let rad = angle * .pi / 180
-            let inner = radius - (i % 6 == 0 ? 8 : 4)
-            let p1 = CGPoint(x: center.x + cos(rad) * inner, y: center.y + sin(rad) * inner)
-            let p2 = CGPoint(x: center.x + cos(rad) * radius, y: center.y + sin(rad) * radius)
+            // 显式用 Double 与 Foundation 的三角重载：`cos` 在 Darwin 里既有 Double 也有
+            // Float 重载，上下文不足以推断时会报「ambiguous use of 'cos'」。
+            let angle: Double = 216.0 + 108.0 * Double(i) / 36.0
+            let rad: Double = angle * Double.pi / 180.0
+            let inner: CGFloat = radius - (i % 6 == 0 ? 8 : 4)
+            let cosRad: CGFloat = CGFloat(cos(rad))
+            let sinRad: CGFloat = CGFloat(sin(rad))
+            let p1 = CGPoint(x: center.x + cosRad * inner, y: center.y + sinRad * inner)
+            let p2 = CGPoint(x: center.x + cosRad * radius, y: center.y + sinRad * radius)
             path.move(to: p1)
             path.addLine(to: p2)
         }

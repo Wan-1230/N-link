@@ -525,7 +525,10 @@ struct DeviceView: View {
                     .stroke(NlColor.outline, lineWidth: 1)
             )
         }
-        .buttonStyle(tappable ? .nlPress : .plain)
+        // 三元表达式里两个分支的 buttonStyle 类型不同（NlPressStyle vs PlainButtonStyle），
+        // 推断不出共同类型会报「type of expression is ambiguous」。
+        // 拆成两段 modifier 链最稳：可点时用自绘按压样式，不可点时保持系统默认行为。
+        .modifier(TileButtonStyle(isPressable: tappable))
         .disabled(!tappable)
         .accessibilityHint(tappable ? "查询机身快门次数" : "")
     }
@@ -801,5 +804,24 @@ final class RecentlyConnectedStore {
         if list.count > limit { list = Array(list.prefix(limit)) }
         let raw = list.map { ["host": $0.host, "port": $0.port, "name": $0.name] }
         UserDefaults.standard.set(raw, forKey: key)
+    }
+}
+
+// MARK: - 参数格按钮样式
+
+/// 参数四宫格的按钮样式。
+///
+/// 为什么不用 `buttonStyle(tappable ? .nlPress : .plain)`：三元表达式两侧是**不同类型**
+/// （`NlPressStyle` 与 `PlainButtonStyle`），推断不出共同类型，编译器会报歧义。
+/// 用一个小 ViewModifier 把「可点 / 不可点」收进一个具体类型里，调用点保持一行。
+private struct TileButtonStyle: ViewModifier {
+    let isPressable: Bool
+
+    func body(content: Content) -> some View {
+        if isPressable {
+            content.buttonStyle(.nlPress)
+        } else {
+            content.buttonStyle(.plain)
+        }
     }
 }

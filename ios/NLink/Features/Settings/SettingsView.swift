@@ -457,7 +457,7 @@ struct SettingsView: View {
         ]
         for dir in dirs {
             guard let enumerator = fm.enumerator(at: dir,
-                                                includingPropertiesForKeys: [.fileSizeKey],
+                                                includingPropertiesForKeys: [URLResourceKey.fileSizeKey],
                                                 options: [.skipsHiddenFiles]) else { continue }
             for case let url as URL in enumerator {
                 let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0

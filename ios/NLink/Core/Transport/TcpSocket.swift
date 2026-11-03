@@ -117,21 +117,21 @@ final class TcpSocket: @unchecked Sendable {
         }
         if connectRC != 0 && errno != EINPROGRESS {
             let e = errno
-            close(sock)
+            Darwin.close(sock)
             throw SocketError(op: "连接 \(host):\(port)", code: e)
         }
         if connectRC != 0 {
             var pfd = pollfd(fd: sock, events: Int16(POLLOUT), revents: 0)
             let ready = poll(&pfd, 1, connectTimeoutMs)
             if ready <= 0 {
-                close(sock)
+                Darwin.close(sock)
                 throw CameraError.timeout("连接相机超时（\(host):\(port)，\(connectTimeoutMs)ms）")
             }
             var soError: Int32 = 0
             var len = socklen_t(MemoryLayout<Int32>.size)
             getsockopt(sock, SOL_SOCKET, SO_ERROR, &soError, &len)
             if soError != 0 {
-                close(sock)
+                Darwin.close(sock)
                 throw SocketError(op: "连接 \(host):\(port)", code: soError)
             }
         }

@@ -268,6 +268,14 @@ enum NlSpacing {
     static let s16: CGFloat = 16
     static let s20: CGFloat = 20
     static let s24: CGFloat = 24
+
+    /// 网格格间距 4。
+    ///
+    /// 原先只定义在 `NlLiveViewSize` 里（监看工具行用它），但相册网格与监看网格
+    /// 用的是同一个值、同一个语义（「相邻两格之间那条缝」）。提到通用间距层后
+    /// 两处都从这里读——否则相册页要引用一个名字里带 `LiveView` 的命名空间，
+    /// 读起来像在借别人的东西。`NlLiveViewSize.cellGap` 保留为别名。
+    static let cellGap: CGFloat = 4
 }
 
 // MARK: - 尺寸
@@ -296,7 +304,8 @@ enum NlSize {
 enum NlLiveViewSize {
     static let barHPadding: CGFloat = 12
     static let barVPadding: CGFloat = 8
-    static let cellGap: CGFloat = 4
+    /// 别名：格间距已提升到通用层 NlSpacing.cellGap，这里保留名字避免改十几处调用点。
+    static let cellGap: CGFloat = NlSpacing.cellGap
     /// 工具行高 58（横屏 50）
     static let toolHeight: CGFloat = 58
     static let toolHeightLandscape: CGFloat = 50
