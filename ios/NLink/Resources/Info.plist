@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  接入宿主 App 时把本文件内容合并进宿主 target 的 Info.plist。
+  每一条使用说明都写清「为什么必须加」——App Store 审核会因为
+  「只写了一句模板话」直接打回，也会因为声明了用不到的权限被打回。
+-->
+<plist version="1.0">
+<dict>
+    <!-- ========== 网络与发现 ========== -->
+
+    <!-- 访问相机所在的局域网（192.168.x.x:15740）。
+         没有这条，iOS 14+ 会在首次建连时静默失败：连接直接 ECONNREFUSED，
+         日志里连一句「被拒绝」都不会有。这是三个必需项里最容易漏的一条。 -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>N-Link 需要访问本地网络，才能找到并连接你身边的尼康相机（PTP/IP，端口 15740）。不使用本地网络时，App 无法传输照片或遥控拍摄。</string>
+
+    <!-- 相机通过 mDNS/Bonjour 广播自身。
+         安卓端同时监听 `_ptp._tcp`（标准）与 `_nikon._tcp`（厂商）两个服务类型，
+         部分机身只广播后者——所以两个都必须声明，少一个会漏机。 -->
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_ptp._tcp</string>
+        <string>_nikon._tcp</string>
+    </array>
+
+    <!-- ========== 相册 ========== -->
+
+    <!-- 下载照片时写入系统相册。
+         只用 `.addOnly` 权限（只写不读），因此**不需要** NSPhotoLibraryUsageDescription。
+         申请两者之一却不用，是常见的审核打回原因。 -->
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>N-Link 需要把从相机下载的照片和视频保存到你的相册。App 只写入自己下载的文件，不会读取或修改你已有的照片。</string>
+
+    <!-- ========== 定位（可选功能） ========== -->
+
+    <!-- 「向相机发送位置信息」：把当前坐标写进相机，让此后机身拍摄的照片带 GPS。 -->
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>N-Link 需要读取当前定位，才能把坐标写进相机，让你此后拍的照片带 GPS 信息。位置只写入相机，不会上传到任何服务器。</string>
+
+    <!-- ========== 其它 ========== -->
+
+    <!-- 仅竖屏。安卓端主 Activity 也是锁竖屏，监看页单独走 sensor 旋转。
+         iOS 的监看页通过 verticalSizeClass 判断横屏并自动隐藏控件。 -->
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+    </array>
+
+    <!-- 深色主题跟随系统的前提下，用户仍可在设置页强制某一档。
+         这里声明 light 让系统在「跟随系统」时正确推断；App 内部用
+         `preferredColorScheme` 覆盖。 -->
+    <key>UIUserInterfaceStyle</key>
+    <string>Automatic</string>
+
+    <key>UILaunchScreen</key>
+    <dict>
+        <key>UIColorName</key>
+        <string>LaunchBackground</string>
+    </dict>
+
+    <!-- 文件名已在 App 内统一处理为 UTF-8；声明常见影像格式便于「文件」App 识别。 -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Image</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.jpeg</string>
+                <string>public.heic</string>
+                <string>com.nikon.raw-image</string>
+                <string>public.movie</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
