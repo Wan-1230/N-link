@@ -144,15 +144,18 @@ final class TcpSocket: @unchecked Sendable {
         var own = sockaddr_in()
         var ownLen = socklen_t(MemoryLayout<sockaddr_in>.size)
         var localIP: String?
-        withUnsafeMutablePointer(to: &own) { ptr in
+        // 先只让 getsockname 把本机地址写进 `own`（闭包内不读 own，避免独占访问冲突），
+        // 闭包结束后再从 own 里取 sin_addr —— 这样「写」和「读」不重叠。
+        let bound = withUnsafeMutablePointer(to: &own) { ptr -> Bool in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                if getsockname(sock, sa, &ownLen) == 0 {
-                    var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-                    var addr = own.sin_addr
-                    if inet_ntop(AF_INET, &addr, &buf, socklen_t(INET_ADDRSTRLEN)) != nil {
-                        localIP = String(cString: buf)
-                    }
-                }
+                getsockname(sock, sa, &ownLen) == 0
+            }
+        }
+        if bound {
+            var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+            var addr = own.sin_addr
+            if inet_ntop(AF_INET, &addr, &buf, socklen_t(INET_ADDRSTRLEN)) != nil {
+                localIP = String(cString: buf)
             }
         }
 
