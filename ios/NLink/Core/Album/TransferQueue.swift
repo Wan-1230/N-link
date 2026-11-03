@@ -188,12 +188,15 @@ final class TransferQueue: ObservableObject {
 
     init(
         client: CameraConnectionClient,
-        settings: AppSettings = .shared,
+        // `AppSettings.shared` 是 @MainActor 隔离的静态属性，不能直接用作默认实参
+        // （Swift 6 里是错误）。改成可选：调用方（AppEnvironment，本身在主 actor 上）
+        // 传真实例；缺省时在 init 体内回落——init 属于 @MainActor 类，体内读取合法。
+        settings: AppSettings? = nil,
         saver: FileSaver = FileSaver(),
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.client = client
-        self.settings = settings
+        self.settings = settings ?? AppSettings.shared
         self.saver = saver
         self.log = log
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("n-link_transfer", isDirectory: true)
@@ -358,7 +361,7 @@ final class TransferQueue: ObservableObject {
     // MARK: - 单文件下载
 
     private func run(_ file: CameraFile, isRetry: Bool = false) async -> TransferResult {
-        guard let session = await client?.sessionOrNil() else {
+        guard let session = client?.sessionOrNil() else {
             // 会话不在：等最多 30s 让连接层恢复，再试一次
             if !isRetry {
                 let recovered = await awaitSession()
@@ -368,7 +371,9 @@ final class TransferQueue: ObservableObject {
         }
 
         let temp = tempURL(for: file)
-        var offset: Int64 = fileExists(temp) ? fileSize(temp) : 0
+        // 起点用 let：后面的 `download(...)` 只在内部推进自己的 offset，
+        // 这个初值本身不会被重新赋值（原来写成 var 会报「never mutated」）。
+        let offset: Int64 = fileExists(temp) ? fileSize(temp) : 0
         if offset >= file.size && file.size > 0 {
             // 已下满：直接落盘
             return await save(temp: temp, file: file)
@@ -469,14 +474,20 @@ final class TransferQueue: ObservableObject {
     private func awaitSession() async -> Bool {
         let deadline = Clock.now() + Self.reconnectWait
         while Clock.now() < deadline {
-            if let session = await client?.sessionOrNil(), session != nil { return true }
+            // `sessionOrNil()` 返回 `PtpSession?`。原写法 `if let session = ..., session != nil`
+            // 的第二段恒为 true（解包后已是非可选），既产生「always returns true」告警，
+            // 也让读者误以为它可能是空的可选。直接判非空即可。
+            // 注意这是一次同步调用（client 是 @MainActor 属性、方法本身同步），不需要 await。
+            if client?.sessionOrNil() != nil { return true }
             try? await Clock.sleep(seconds: Self.reconnectPollInterval)
         }
         return false
     }
 
     private func is5GHzLink() async -> Bool {
-        await client?.isLink5GHz ?? false
+        // `isLink5GHz` 是同步计算属性，非 async；这里保留 async 包装是因为
+        // 调用方在 async 上下文里批量取链路属性，多一个 await 只是形式统一。
+        client?.isLink5GHz ?? false
     }
 
     private func reportProgress(file: CameraFile, received: Int64) {

@@ -460,9 +460,11 @@ final class CameraConnectionClient: ObservableObject {
     /// 返回 false 表示看门狗应停止。
     private func tickWatchdog() async -> Bool {
         guard let link else { return false }
-        let open = await link.isOpen
+        // `isOpen` 与 `lastReceiveAt()` 在 PtpIpLink 上是 nonisolated 的（内部用 NSLock 同步），
+        // 这里同步读即可；加 await 会产生「no 'async' operations occur」告警。
+        let open = link.isOpen
         guard open else { return false }
-        let last = await link.lastReceiveAt()
+        let last = link.lastReceiveAt()
         if Clock.now() - last > C.keepaliveDead {
             log("看门狗判定链路已死（\(Int(Clock.now() - last))s 无收包）")
             eventContinuation.yield(.keepaliveFailed(detail: "相机 60 秒没有响应。请确认相机还在开机状态，必要时重新连接。"))

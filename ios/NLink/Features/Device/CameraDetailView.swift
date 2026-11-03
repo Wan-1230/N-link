@@ -486,7 +486,7 @@ extension LocationProvider: CLLocationManagerDelegate {
         Task { @MainActor in finish(coordinate) }
     }
 
-    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: any Error) {
         Task { @MainActor in finish(nil) }
     }
 }

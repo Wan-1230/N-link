@@ -360,7 +360,10 @@ final class RemoteShootingManager: ObservableObject {
         }
 
         guard await fireShutter(session) else {
-            await restoreShutter(session)
+            // 触发失败要**保证**把快门值写回：否则机身停在 Bulb 上，用户下次按快门
+            // 会开一次不知道什么时候结束的曝光。写回失败也继续往下走并置 idle，
+            // 但要经 message 说明清楚，不能假装成功。
+            _ = await restoreShutter(session)
             message = "B 门触发失败。请确认机身处于 M 档且快门速度已设为 Bulb。"
             state = .idle
             liveView.endExpectedStall()

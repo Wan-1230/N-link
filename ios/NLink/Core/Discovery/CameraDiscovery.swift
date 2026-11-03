@@ -68,15 +68,15 @@ struct DiscoveryDiagnostics: Sendable {
 final class CameraDiscovery: ObservableObject {
 
     /// 总扫描窗口。安卓 B4 从 12s 提到 18s：给路由器过滤组播 / 客户端隔离更多机会。
-    static let scanTimeout: TimeInterval = 18
+    nonisolated static let scanTimeout: TimeInterval = 18
     /// 单主机盲扫超时（要控制 254 个地址的总耗时）
-    static let sweepTimeoutMs = 800
+    nonisolated static let sweepTimeoutMs = 800
     /// 候选确认 / 第二轮补扫的超时（覆盖相机从休眠唤醒的时延）
-    static let confirmTimeoutMs = 2_500
+    nonisolated static let confirmTimeoutMs = 2_500
     /// 并发上限
-    static let maxConcurrency = 32
+    nonisolated static let maxConcurrency = 32
     /// 等 WiFi 拿到 IPv4 的上限；等不到也要给出明确原因而不是静默返回
-    static let routeReadyWait: TimeInterval = 6
+    nonisolated static let routeReadyWait: TimeInterval = 6
 
     @Published private(set) var candidates: [CameraCandidate] = []
     @Published private(set) var isScanning = false
@@ -88,7 +88,7 @@ final class CameraDiscovery: ObservableObject {
 
     // MARK: - 扫描
 
-    func scan(timeout: TimeInterval = scanTimeout) async -> [CameraCandidate] {
+    func scan(timeout: TimeInterval = CameraDiscovery.scanTimeout) async -> [CameraCandidate] {
         cancel()
         isScanning = true
         candidates = []
@@ -226,7 +226,8 @@ final class CameraDiscovery: ObservableObject {
                 var port: Int = Ptp.defaultPtpIpPort
                 if case let .hostPort(h, p) = connection.currentPath?.remoteEndpoint {
                     host = "\(h)".split(separator: "%").first.map(String.init)
-                    port = Int(p.port)
+                    // `NWEndpoint.Port` 的原始值是 `.rawValue`（UInt16），没有 `.port` 成员。
+                    port = Int(p.rawValue)
                 }
                 if let host, WifiEndpoint.isProbeCandidate(host) {
                     self.bonjourHits["\(host):\(port)"] = (host, port, Self.cleanServiceName(name))

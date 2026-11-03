@@ -70,10 +70,10 @@ enum PtpIpProbe {
             try socket.write(PtpIpCodec.packet(type: Ptp.ipInitCommand, payload: payload))
             // 握手阶段超时 = 「端口开放但没回应」，不是「不可达」
             //
-            // `try?` 与 `let header` 的二段解包：`readExactly` 返回 `Data?`，
-            // `try?` 又把它包成一层可选 → 需要先解 `try?`，再解内层可选。
-            guard let headerData = try? socket.readExactly(PtpIpCodec.headerSize, idleOk: false),
-                  let header = headerData,
+            // `readExactly` 返回 `Data?`；`try?` 对「返回可选的抛错函数」会被 Swift
+            // 展平成同一层可选，所以 `guard let header = try? ...` 里 header 已是 `Data`，
+            // 不需要（也不能）再解一层。
+            guard let header = try? socket.readExactly(PtpIpCodec.headerSize, idleOk: false),
                   let (length, type) = try? PtpIpCodec.packetLength(header: header),
                   type == Ptp.ipInitCommandAck || type == Ptp.ipInitFail else {
                 return .tcpOpenNoPtp
