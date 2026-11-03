@@ -19,7 +19,7 @@ final class PtpSession: CameraSession, @unchecked Sendable {
 
     private static let readChunk = 256 * 1024
 
-    private let link: PtpLink
+    private let link: any PtpLink
     private let sessionId: UInt32
     private let log: @Sendable (String) -> Void
 
@@ -28,7 +28,7 @@ final class PtpSession: CameraSession, @unchecked Sendable {
     private var rangeStrategy: RangeStrategy = .unknown
     private let lock = NSLock()
 
-    init(link: PtpLink, sessionId: UInt32? = nil, log: @escaping @Sendable (String) -> Void = { _ in }) {
+    init(link: any PtpLink, sessionId: UInt32? = nil, log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.link = link
         // 随机会话号（逆向实现实证：如 804956382），避免与相机残留会话冲突
         self.sessionId = sessionId ?? UInt32.random(in: 1...0x7FFF_FFFF)
@@ -118,9 +118,11 @@ final class PtpSession: CameraSession, @unchecked Sendable {
             return r.dataIn ?? Data()
         }
 
-        lock.lock()
-        let strategy = rangeStrategy
-        lock.unlock()
+        // 用 `withLock` 而不是手动 lock/unlock：在 async 上下文里手动配对的
+        // lock / unlock 会触发「instance method 'lock' is unavailable from
+        // asynchronous contexts」（Swift 6 里直接是错误）。`withLock` 是同步
+        // 作用域闭包，从 async 函数调用安全，且异常路径也保证解锁。
+        let strategy = lock.withLock { rangeStrategy }
 
         switch strategy {
         case .extended:
@@ -227,7 +229,9 @@ final class PtpSession: CameraSession, @unchecked Sendable {
     // MARK: - 内部
 
     private func setStrategy(_ s: RangeStrategy) {
-        lock.lock(); rangeStrategy = s; lock.unlock()
+        // 与 readRange 的读侧保持同一把锁、同一种写法（withLock）；
+        // 混用「手动配对」与「作用域闭包」会让后续维护者分不清谁负责解锁。
+        lock.withLock { rangeStrategy = s }
     }
 
     private func checked(

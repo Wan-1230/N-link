@@ -26,7 +26,7 @@ struct FileSaver: Sendable {
         }
     }
 
-    func describe(_ error: Error) -> String {
+    func describe(_ error: any Error) -> String {
         if let saveError = error as? FileSaveError {
             return saveError.errorDescription ?? "保存失败"
         }

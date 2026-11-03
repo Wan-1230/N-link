@@ -214,7 +214,7 @@ final class CameraConnectionClient: ObservableObject {
         guard gen == generation else { return }
 
         // 4) 建会话；失败全清场再试一次
-        var lastError: Error?
+        var lastError: (any Error)?
         for attempt in 0..<C.sessionAttempts {
             if attempt > 0 {
                 cleanup()
@@ -262,7 +262,11 @@ final class CameraConnectionClient: ObservableObject {
             hostName: identity.hostName,
             log: log,
             onTransportLost: { [weak self] detail in
-                Task { @MainActor in self?.handleTransportLost(detail: detail) }
+                // 先把 weak self 绑成局部强引用再用：`[weak self]` 捕获的是可变可选项，
+                // 直接丢进嵌套的 Task（并发执行体）会报
+                // 「reference to captured var 'self' in concurrently-executing code」。
+                guard let self else { return }
+                Task { @MainActor in self.handleTransportLost(detail: detail) }
             }
         )
         setPhase(.openingEvent)
@@ -274,7 +278,12 @@ final class CameraConnectionClient: ObservableObject {
 
         setPhase(.openingSession)
         let newSession = PtpSession(link: newLink, log: log)
-        let info = try await newSession.open()
+        // `PtpSession.open()` 只建会话并读一次 DeviceInfo，返回 Void；
+        // 之前把它的返回值当成 DeviceInfo 用了（编译报 '()' 不能当 DeviceInfo）。
+        try await newSession.open()
+        guard let info = newSession.deviceInfo else {
+            throw CameraError.protocolViolation(detail: "会话已打开但读不到机身信息", causeDescription: nil)
+        }
 
         link = newLink
         session = newSession
@@ -302,15 +311,18 @@ final class CameraConnectionClient: ObservableObject {
         try await Clock.sleep(ms: C.regSettleFirstMs)
 
         var attempt = 0
-        var lastError: Error?
+        var lastError: (any Error)?
         while attempt < C.registrationBackoffMs.count {
             if attempt > 0 {
                 try await Clock.sleep(ms: C.registrationBackoffMs[attempt])
             }
             do {
                 let prepare = try await HostRegistrar.register(session: regSession) { [weak self] text in
+                    // 同 openWirelessSession：先把 weak 可选项解成强引用，
+                    // 再进并发执行体，否则 Swift 6 检查会拦。
+                    guard let self else { return }
                     await MainActor.run {
-                        self?.setState(.awaitingHostConfirm(prepare: text))
+                        self.setState(.awaitingHostConfirm(prepare: text))
                     }
                 }
                 log("主机注册成功 prepare=\(prepare)")
@@ -542,7 +554,7 @@ final class CameraConnectionClient: ObservableObject {
         }
     }
 
-    private func fail(_ error: Error) {
+    private func fail(_ error: any Error) {
         let cameraError = (error as? CameraError) ?? .protocolViolation(detail: error.localizedDescription, causeDescription: nil)
         if method.isWireless { lastConnectFailAt = Clock.now() }
         lastFailureText = cameraError.message

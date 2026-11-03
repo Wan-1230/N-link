@@ -59,9 +59,12 @@ enum HostRegistrar {
 
     /// 相机侧确认等待时长。8.5s 是安卓端实测值：太短会把「用户在机身上
     /// 还没来得及按确定」判成配对失败，太长又让失败不可感知。
-    static let confirmWaitMs: UInt64 = 8_500
+    ///
+    /// 用 `Int` 而不是 `UInt64`：`Clock.sleep(ms:)` 收的是 `Int`，
+    /// 这两个值全程只作「等多久」用，没有位宽意义，没必要多套一层 UInt64。
+    static let confirmWaitMs: Int = 8_500
     static let maxRetries = 3
-    static let retryIntervalMs: UInt64 = 1_500
+    static let retryIntervalMs: Int = 1_500
 
     /// 完整注册流程。
     ///
@@ -71,7 +74,7 @@ enum HostRegistrar {
     /// - Returns: 相机返回的预备字符串（通常是机身序列号或 `密钥：xxxx`）
     static func register(
         session: PtpSession,
-        confirmWaitMs: UInt64 = confirmWaitMs,
+        confirmWaitMs: Int = confirmWaitMs,
         retries: Int = maxRetries,
         onAwaitConfirm: (@Sendable (String) async -> Void)? = nil
     ) async throws -> String {
@@ -80,9 +83,11 @@ enum HostRegistrar {
 
         // 相机要先把确认界面推给用户，这个延迟不是「等相机响应」，
         // 是「等人按下机身按钮」，所以不能改成轮询。
-        await Clock.sleep(ms: confirmWaitMs)
+        // Clock.sleep 会因 Task 取消而抛出 —— 取消注册时直接让它冒泡，
+        // 由调用方按「用户取消」处理，而不是继续往下发 confirm 命令。
+        try await Clock.sleep(ms: confirmWaitMs)
 
-        var lastError: Error?
+        var lastError: (any Error)?
         for attempt in 0..<max(1, retries) {
             do {
                 try await session.hostRegisterConfirm()
@@ -90,7 +95,7 @@ enum HostRegistrar {
             } catch {
                 lastError = error
                 if attempt < retries - 1 {
-                    await Clock.sleep(ms: retryIntervalMs)
+                    try? await Clock.sleep(ms: retryIntervalMs)
                 }
             }
         }

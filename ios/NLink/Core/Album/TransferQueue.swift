@@ -392,7 +392,7 @@ final class TransferQueue: ObservableObject {
     }
 
     /// 分块下载。失败的分块把临时文件截回块起点；分块仍大于 1MB 时减半重试。
-    private func download(session: CameraSession, file: CameraFile, temp: URL, startOffset: Int64) async throws {
+    private func download(session: any CameraSession, file: CameraFile, temp: URL, startOffset: Int64) async throws {
         var offset = startOffset
         var chunk = ResumePolicy.chunkSize(is5GHz: await is5GHzLink())
         var rebuilt = false
@@ -504,7 +504,7 @@ final class TransferQueue: ObservableObject {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
     }
 
-    private func describe(_ error: Error, file: CameraFile, offset: Int64) -> String {
+    private func describe(_ error: any Error, file: CameraFile, offset: Int64) -> String {
         if let cameraError = error as? CameraError {
             return cameraError.message
         }

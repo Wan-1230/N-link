@@ -20,6 +20,7 @@
 //
 
 import SwiftUI
+import CoreLocation
 
 struct CameraDetailView: View {
 

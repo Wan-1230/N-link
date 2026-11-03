@@ -64,21 +64,26 @@ enum LiveFrameAnalysis {
         }
 
         var buffer = [UInt8](repeating: 0, count: sampleWidth * sampleHeight)
-        // 灰度上下文：每像素 1 字节。用 .deviceGray 而不是 sRGB —— 我们要的是亮度，
+        // 灰度上下文：每像素 1 字节。用 deviceGray 而不是 sRGB —— 我们要的是亮度，
         // 让 CoreGraphics 做一次色彩空间转换比我们自己加权求和更准也更快。
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.linearGray) ?? CGColorSpace(name: CGColorSpace.deviceGray),
-              let context = CGContext(
-                data: &buffer,
-                width: sampleWidth,
-                height: sampleHeight,
-                bitsPerComponent: 8,
-                bytesPerRow: sampleWidth,
-                space: colorSpace,
-                bitmapInfo: CGImageAlphaInfo.none.rawValue
-              ) else {
+        //
+        // `CGColorSpace(name:)` 需要的是已注册色彩的 CFString 名，`CGColorSpace.linearGray`
+        // 那类「静态成员」在 iOS 上并不存在；灰度设备空间要用 `CGColorSpaceCreateDeviceGray()`。
+        let colorSpace = CGColorSpaceCreateDeviceGray()
+        guard let context = CGContext(
+            data: &buffer,
+            width: sampleWidth,
+            height: sampleHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: sampleWidth,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ) else {
             return nil
         }
-        context.interpolationQuality = .low
+        // `interpolationQuality` 的类型是 `CGInterpolationQuality`，成员是 `.low` 没错，
+        // 但必须先显式写出枚举名——上下文推断在 `CGContext?` 的 guard 里会失效。
+        context.interpolationQuality = CGInterpolationQuality.low
         context.draw(image, in: CGRect(x: 0, y: 0, width: sampleWidth, height: sampleHeight))
         return buffer
     }

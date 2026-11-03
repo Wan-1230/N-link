@@ -225,7 +225,7 @@ enum CameraError: Error, Equatable, Sendable {
     case storageUnavailable(detail: String)
     case notConnected(detail: String)
 
-    static func transportLost(_ detail: String, _ cause: Error?) -> CameraError {
+    static func transportLost(_ detail: String, _ cause: (any Error)?) -> CameraError {
         .transportLost(detail: detail, causeDescription: cause.map { String(describing: $0) })
     }
 

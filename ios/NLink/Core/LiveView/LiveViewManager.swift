@@ -383,7 +383,7 @@ final class LiveViewManager: ObservableObject {
 
     // MARK: - 失败处理
 
-    private func handleFrameFailure(_ error: Error?, session: PtpSession) async {
+    private func handleFrameFailure(_ error: (any Error)?, session: PtpSession) async {
         metrics.failed += 1
 
         // 链路已死：直接报错，不再重试

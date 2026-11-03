@@ -52,10 +52,10 @@ actor AlbumLoader {
     /// 整轮加载的硬超时。卡上几千张时超时告警比无限转圈强。
     static let loadHardDeadline: TimeInterval = 60
 
-    private let session: CameraSession
+    private let session: any CameraSession
     private let log: @Sendable (String) -> Void
 
-    init(session: CameraSession, log: @escaping @Sendable (String) -> Void = { _ in }) {
+    init(session: any CameraSession, log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.session = session
         self.log = log
     }

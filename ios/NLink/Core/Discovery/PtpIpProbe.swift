@@ -69,8 +69,11 @@ enum PtpIpProbe {
             let payload = try PtpIpCodec.initCommandPayload(guid: randomGuid(), hostName: clientName)
             try socket.write(PtpIpCodec.packet(type: Ptp.ipInitCommand, payload: payload))
             // 握手阶段超时 = 「端口开放但没回应」，不是「不可达」
-            guard let header = try? socket.readExactly(PtpIpCodec.headerSize, idleOk: false),
-                  let header,
+            //
+            // `try?` 与 `let header` 的二段解包：`readExactly` 返回 `Data?`，
+            // `try?` 又把它包成一层可选 → 需要先解 `try?`，再解内层可选。
+            guard let headerData = try? socket.readExactly(PtpIpCodec.headerSize, idleOk: false),
+                  let header = headerData,
                   let (length, type) = try? PtpIpCodec.packetLength(header: header),
                   type == Ptp.ipInitCommandAck || type == Ptp.ipInitFail else {
                 return .tcpOpenNoPtp

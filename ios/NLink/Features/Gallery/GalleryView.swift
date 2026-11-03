@@ -804,10 +804,3 @@ struct ShareTarget: Identifiable {
     let fromCamera: Bool
 }
 
-extension AlbumSortDimension: CaseIterable {
-    public static var allCases: [AlbumSortDimension] { [.captureTime, .fileType] }
-}
-
-extension AlbumSortDirection: CaseIterable {
-    public static var allCases: [AlbumSortDirection] { [.asc, .desc] }
-}

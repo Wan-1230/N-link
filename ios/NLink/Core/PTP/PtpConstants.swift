@@ -17,6 +17,14 @@ enum Ptp {
 
     /// PTP/IP 默认端口
     static let defaultPort: Int = 15740
+
+    /// 默认端口的别名。业务层（端点解析、探测、模型默认值）统一读这个名字，
+    /// `defaultPort` 保留给协议层自己用——两者同值但语义不同，
+    /// 将来若要分离「协议端口」与「业务默认端口」，只需改这一处。
+    static let defaultPtpIpPort: Int = 15740
+
+    /// PTP/IP 协议版本号（InitCommand 载荷末尾的 u32，基准实现实证 0x00010000 = v1.0）
+    static let ptpIpProtocolVersion: UInt32 = 0x0001_0000
     /// 相机热点网关（CIPA DC-X005 / 官方手册互证）
     static let defaultApHost: String = "192.168.1.1"
     /// 尼康 USB 厂商标识
@@ -69,6 +77,10 @@ enum Ptp {
     static let opGetThumb: UInt16 = 0x100A
     static let opDeleteObject: UInt16 = 0x100B
     static let opInitiateCapture: UInt16 = 0x100E
+    /// 开光圈快门（B 门降级链的最后一档）
+    static let opInitiateOpenCapture: UInt16 = 0x100F
+    /// 结束开光圈快门（B 门收门降级链的第二档）
+    static let opTerminateOpenCapture: UInt16 = 0x1010
     static let opGetDevicePropDesc: UInt16 = 0x1014
     static let opGetDevicePropValue: UInt16 = 0x1015
     static let opSetDevicePropValue: UInt16 = 0x1016

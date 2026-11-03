@@ -350,9 +350,11 @@ actor PtpIpLink: PtpLink {
         let evt = evtSocket
         cmdSocket = nil
         evtSocket = nil
-        // socket 的 close 不是阻塞调用，但仍投到各自队列上执行以避开与读循环的竞态
-        await cmd?.runVoid { cmd?.close() }
-        await evt?.runVoid { evt?.close() }
+        // socket 的 close 不是阻塞调用，但仍投到各自队列上执行以避开与读循环的竞态。
+        // `runVoid` 是 throws 的（它会把闭包里的错误带回调用方），但关闭路径上
+        // **任何错误都必须被吞掉**：这里已经在收尾，再抛出去只会掩盖「为什么关」。
+        try? await cmd?.runVoid { cmd?.close() }
+        try? await evt?.runVoid { evt?.close() }
         openFlag.value = false
     }
 

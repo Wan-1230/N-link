@@ -28,10 +28,13 @@ struct LocalIPv4Address: Sendable, Hashable {
     var subnetText: String { "\(address)/\(prefixLength)" }
 
     /// 网段基址（如 192.168.1.0）
+    ///
+    /// 这些工具函数在 `LocalNetwork` 上是 `static`，不是本结构的成员——
+    /// 所以这里必须写 `LocalNetwork.` 而不是 `Self.`（`Self` 指向 `LocalIPv4Address`）。
     var networkBase: String {
-        guard let ip = Self.ipToUInt32(address) else { return address }
-        let mask = Self.mask(forPrefix: prefixLength)
-        return Self.uint32ToIp(ip & mask)
+        guard let ip = LocalNetwork.ipToUInt32(address) else { return address }
+        let mask = LocalNetwork.mask(forPrefix: prefixLength)
+        return LocalNetwork.uint32ToIp(ip & mask)
     }
 }
 

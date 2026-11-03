@@ -103,9 +103,11 @@ final class CameraDiscovery: ObservableObject {
         // 等不到也要把原因写进诊断。
         var subnets = LocalNetwork.ipv4Addresses()
         if subnets.isEmpty {
-            let deadline = Clock.now() + routeReadyWait
+            let deadline = Clock.now() + Self.routeReadyWait
             while Clock.now() < deadline, subnets.isEmpty {
-                await Clock.sleep(ms: 300)
+                // Clock.sleep 会因 Task 取消而抛出；扫描被取消就正常退出这个等待循环，
+                // 不把 CancellationError 当成「拿不到 IP」。
+                do { try await Clock.sleep(ms: 300) } catch { break }
                 subnets = LocalNetwork.ipv4Addresses()
             }
         }
@@ -142,7 +144,7 @@ final class CameraDiscovery: ObservableObject {
         // 第一轮用 800ms 短超时压缩总耗时；一条候选都没出时，用 2.5s 长超时
         // 再扫一遍 —— 覆盖「相机刚从休眠唤醒」，这时第一轮必然全部落空。
         if found.isEmpty {
-            await Clock.sleep(ms: 600)
+            do { try await Clock.sleep(ms: 600) } catch { return [] }
             diag.secondWave = true
             var secondDiag = DiscoveryDiagnostics()
             found = await sweep(subnets: subnets, timeout: timeout, diag: &secondDiag, timeoutMs: Self.confirmTimeoutMs)
@@ -196,10 +198,14 @@ final class CameraDiscovery: ObservableObject {
             params.includePeerToPeer = true
             let browser = NWBrowser(for: .bonjour(type: type, domain: nil), using: params)
             browser.stateUpdateHandler = { _ in }
+            // `browseResultsChangedHandler` 在 NWBrowser 的内部队列上回调（不是主队列），
+            // 而 `resolve` 是 @MainActor 隔离的。显式跳一次主 actor，别依赖「运行时恰好是主线程」。
             browser.browseResultsChangedHandler = { [weak self] results, _ in
                 guard let self else { return }
-                for result in results {
-                    self.resolve(result)
+                Task { @MainActor in
+                    for result in results {
+                        self.resolve(result)
+                    }
                 }
             }
             browser.start(queue: .main)
@@ -284,7 +290,10 @@ final class CameraDiscovery: ObservableObject {
 
             let batch = await withTaskGroup(of: CameraCandidate?.self) { group -> [CameraCandidate] in
                 for host in slice {
-                    group.addTask {
+                    // 显式标注返回类型：`return nil` 单独出现时编译器无法
+                    // 从 `withTaskGroup(of:)` 的泛型推回 `CameraCandidate?`，
+                    // 会报「'nil' is not compatible with closure result type」。
+                    group.addTask { () -> CameraCandidate? in
                         // 两段式：先只连 TCP（快），通了再判断是否需要完整握手。
                         // **不发 InitCommand 做盲扫**：尼康机身同时只允许一个 PTP/IP
                         // 客户端，盲扫握手会挤占/污染配对槽，反而把目标挤下线。

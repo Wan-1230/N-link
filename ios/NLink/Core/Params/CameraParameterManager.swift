@@ -106,8 +106,8 @@ final class CameraParameterManager: ObservableObject {
     private func readExposureProgram(_ session: PtpSession) async {
         guard let raw = await readUInt16(session, Ptp.propExposureProgramMode) else { return }
         exposureProgram = CameraParam(
-            currentValue: Self.describeExposureProgram(raw),
-            availableValues: exposureChoices.map(Self.describeExposureProgram),
+            currentValue: Self.describeExposureProgram(Int(raw)),
+            availableValues: exposureChoices.map { Self.describeExposureProgram($0) },
             availableRaw: exposureChoices,
             rawValue: Int(raw)
         )
@@ -283,7 +283,7 @@ final class CameraParameterManager: ObservableObject {
         exposureChoices = choices.map(Int.init)
         exposureProgram = CameraParam(
             currentValue: exposureProgram.currentValue,
-            availableValues: exposureChoices.map(Self.describeExposureProgram),
+            availableValues: exposureChoices.map { Self.describeExposureProgram($0) },
             availableRaw: exposureChoices,
             rawValue: exposureProgram.rawValue
         )
@@ -334,7 +334,7 @@ final class CameraParameterManager: ObservableObject {
             guard let head = try? await session.readRange(
                 handle: sample.handle,
                 offset: 0,
-                length: NikonShutterCountParser.exifHeadBytes
+                length: UInt32(NikonShutterCountParser.exifHeadBytes)
             ), !head.isEmpty else {
                 cameraInfo.shutterFailReason = .readFailed
                 continue
@@ -378,7 +378,7 @@ final class CameraParameterManager: ObservableObject {
         // 回 OK 不等于切了档：必须回读断言。
         if await confirmExposureProgram(raw) {
             exposureProgram = CameraParam(
-                currentValue: Self.describeExposureProgram(raw),
+                currentValue: Self.describeExposureProgram(Int(raw)),
                 availableValues: exposureProgram.availableValues,
                 availableRaw: exposureProgram.availableRaw,
                 rawValue: raw
