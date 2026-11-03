@@ -184,6 +184,11 @@ enum ShareExporter {
     }
 
     /// 下载原图到临时目录（不写相册、不进传输历史）。
+    ///
+    /// 与公开入口一样标 @MainActor：它要读 `client.sessionOrNil()`，
+    /// 而 client 是 @MainActor 隔离的。导出整条链都是串行、由 UI 触发，
+    /// 钉在主 actor 上没有并发代价，反而省掉每个调用点的 await 噪音。
+    @MainActor
     @discardableResult
     private static func downloadToCache(
         file: CameraFile,

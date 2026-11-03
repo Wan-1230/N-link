@@ -78,9 +78,9 @@ struct RemoteView: View {
                         }
                     }
                 ),
+                onColor: NlColor.onPrimary,
                 trackColor: NlColor.surfaceVariant,
-                selectedBackground: NlColor.primary,
-                onColor: NlColor.onPrimary
+                selectedBackground: NlColor.primary
             )
             .frame(width: 132, height: 34)
 
