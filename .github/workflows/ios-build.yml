@@ -7,7 +7,6 @@ name: iOS Build
 # 真实的 Swift 编译错误，而不是靠人工核对猜。
 #
 # 免费额度：公开仓库的 macOS runner 不计费（私有仓库 10 倍速率计费）。
-# 单次运行约 2-4 分钟（pod 缓存命中时）。
 #
 # 手动触发：仓库页 Actions → iOS Build → Run workflow。
 
@@ -24,10 +23,8 @@ on:
 jobs:
   build:
     # macos-14 = Apple Silicon + Xcode 15.x，对应 Package.swift 里的 iOS 16 平台。
-    # 不用 macos-13（Intel、Xcode 15.0 早期版本）：Swift 5.9 的
-    # `.enableUpcomingFeature` 需要较新的 toolchain。
     runs-on: macos-14
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -37,7 +34,8 @@ jobs:
         run: |
           xcodebuild -version
           swift --version
-          xcrun simctl list devices available | head -20
+          echo "--- available simulators ---"
+          xcrun simctl list devices available | grep -E "iPhone|-- iOS " | head -14
 
       - name: Resolve package
         working-directory: ios
@@ -45,22 +43,46 @@ jobs:
           swift package resolve || true
           swift package describe
 
-      - name: Build (iOS Simulator SDK)
+      # 用 xcodebuild 而不是 `swift build -Xswiftc -target ...`：
+      # 后者手动指定三元组时不会自动带上 -sysroot 与框架搜索路径，
+      # 于是 `import UIKit` 直接报 "cannot load underlying module for 'UIKit'"。
+      # xcodebuild 通过 destination 会自动配齐 SDK、sysroot 与模块缓存。
+      # SwiftPM 包在 Xcode 15 下可直接作为 scheme 构建（无需先生成 .xcodeproj）。
+      - name: Build for iOS Simulator
+        id: build
         working-directory: ios
         run: |
           set -o pipefail
-          swift build \
-            -Xswiftc -sdk -Xswiftc "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
-            -Xswiftc -target -Xswiftc "arm64-apple-ios16.0-simulator" \
-            2>&1 | tee /tmp/build.log
+          xcodebuild build \
+            -scheme NLink \
+            -destination 'platform=iOS Simulator,name=iPhone 15,OS=17.2' \
+            -configuration Debug \
+            -derivedDataPath /tmp/dd \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee /tmp/build.log | tail -100
 
-      # 编译失败时把错误行单独标出来，方便直接读结论。
-      # grep 不命中不算失败（exit 0），只有真的编译失败才会在上一 step 挂掉。
+      # 失败时先分辨是哪一类失败：scheme/目的地解析、还是真的编译错误。
+      # 前者说明构建入口没配好，后者才是源码问题。这两类不能混着看。
       - name: Summarize errors
         if: failure()
         run: |
-          echo "=== 编译错误摘要 ==="
-          grep -E "error:" /tmp/build.log | sed 's|'"$PWD"'/||' | head -60 || echo "（无 error: 行，可能是链接/配置阶段失败）"
+          echo "=== 失败分类 ==="
+          if grep -q "does not contain a scheme named" /tmp/build.log; then
+            echo "类别：构建入口问题（找不到 scheme NLink）"
+            echo "--- 实际可用的 scheme ---"
+            xcodebuild -list -json 2>/dev/null || true
+            swift package describe 2>/dev/null || true
+          elif grep -qE "^.*error:" /tmp/build.log; then
+            echo "类别：源码编译错误"
+            grep -E "error:" /tmp/build.log \
+              | sed -E 's|/Users/runner/work/[^/]+/[^/]+/ios/||' \
+              | grep -v "^<unknown>" \
+              | sort -u | head -60
+          else
+            echo "类别：链接/配置阶段失败（无 error: 行）"
+            tail -50 /tmp/build.log
+          fi
 
       - name: Upload full build log
         if: always()
