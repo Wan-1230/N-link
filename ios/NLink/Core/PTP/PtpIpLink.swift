@@ -363,7 +363,7 @@ actor PtpIpLink: PtpLink {
     private func startEventLoop(_ socket: TcpSocket) {
         eventTask = Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
-            while await self.isOpen {
+            while self.isOpen {
                 do {
                     guard let pkt = try await self.readPacketOrNull(socket) else { continue }
                     switch pkt.type {
@@ -378,7 +378,7 @@ actor PtpIpLink: PtpLink {
                         await self.logLine("PTP/IP 事件通道未知包类型 \(pkt.type)")
                     }
                 } catch {
-                    if await self.isOpen {
+                    if self.isOpen {
                         await self.transportLost("PTP/IP 事件通道断开：\(error)")
                     }
                     return
