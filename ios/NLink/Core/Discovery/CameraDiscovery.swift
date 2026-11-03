@@ -219,6 +219,9 @@ final class CameraDiscovery: ObservableObject {
         // 这里只做一次短命连接（不发数据），拿到 endpoint 后立即取消。
         let connection = NWConnection(to: result.endpoint, using: .tcp)
         connection.stateUpdateHandler = { [weak self] state in
+            // `stateUpdateHandler` 是 @Sendable 闭包：既不能直接改 @MainActor 属性
+            // `bonjourHits`，也不能在其中同步调用 @MainActor 的 `cleanServiceName`。
+            // 做法是先把地址算成纯值，再整体跳主 actor 落库。
             guard let self else { return }
             switch state {
             case .ready:
@@ -229,10 +232,14 @@ final class CameraDiscovery: ObservableObject {
                     // `NWEndpoint.Port` 的原始值是 `.rawValue`（UInt16），没有 `.port` 成员。
                     port = Int(p.rawValue)
                 }
-                if let host, WifiEndpoint.isProbeCandidate(host) {
-                    self.bonjourHits["\(host):\(port)"] = (host, port, Self.cleanServiceName(name))
-                }
+                let resolvedHost = host
+                let resolvedPort = port
                 connection.cancel()
+                guard let resolvedHost, WifiEndpoint.isProbeCandidate(resolvedHost) else { return }
+                Task { @MainActor in
+                    self.bonjourHits["\(resolvedHost):\(resolvedPort)"] =
+                        (resolvedHost, resolvedPort, Self.cleanServiceName(name))
+                }
             case .failed, .cancelled:
                 connection.cancel()
             default:
